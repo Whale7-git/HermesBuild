@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # Isolated build162 experiment: compare Release WMO and Incremental while
 # keeping -O, the pinned source commit, Xcode/SDK and runner constant.
-# No source content is changed; the incremental probe only touches AppTheme.swift.
+# No source content is changed; the probe only touches AppTheme.swift.
 set -euo pipefail
 
 SOURCE_SHA="1e57404cae21f567a67d4e2ce92276c101642908"
 TOOLING="$GITHUB_WORKSPACE/tooling"
-WRAPPER_SOURCE="$TOOLING/ci/xcodebuild-incremental-experiment-wrapper.sh"
-SUMMARIZER="$TOOLING/ci/summarize-incremental-release-experiment.py"
 
 prepare() {
   sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
@@ -42,53 +40,24 @@ PY
   echo "EXPERIMENT_PREPARE_OK source=$SOURCE_SHA xcode=26.3 ios_sdk=26.2 xcodegen=$xcodegen_version"
 }
 
-run_build() {
+make_wrapper() {
   local mode="$1"
-  local phase="$2"
-  local src="$GITHUB_WORKSPACE/src-$mode"
-  local derived="$RUNNER_TEMP/hermes-exp-$mode-derived"
   local wrapper_dir="$RUNNER_TEMP/hermes-exp-wrapper-$mode"
-  local driver_log="$RUNNER_TEMP/hermes-exp-$mode-$phase-driver.log"
-  local metrics="$RUNNER_TEMP/hermes-exp-$mode-$phase.json"
-  local validation="$src/release/validation.json"
-
-  if [[ "$phase" == "cold" ]]; then
-    rm -rf "$derived"
-  else
-    [[ -d "$derived/Build" ]] || {
-      echo "::error::Missing warm DerivedData for $mode"; exit 1;
-    }
-  fi
-  [[ -z "$(git -C "$src" status --porcelain)" ]] || {
-    echo "::error::Source tree is dirty before $mode/$phase build"; exit 1;
-  }
-
   mkdir -p "$wrapper_dir"
   cat >"$wrapper_dir/xcodebuild" <<'SH'
 #!/usr/bin/env bash
 exec bash "$HERMES_TOOLING_DIR/ci/xcodebuild-incremental-experiment-wrapper.sh" "$@"
 SH
   chmod 700 "$wrapper_dir/xcodebuild"
+  printf '%s' "$wrapper_dir"
+}
 
-  set +e
-  (
-    cd "$src"
-    PATH="$wrapper_dir:$PATH" \
-    HERMES_TOOLING_DIR="$TOOLING" \
-    HERMES_EXPERIMENT_MODE="$mode" \
-    HERMES_EXPERIMENT_PHASE="$phase" \
-    HERMES_EXPERIMENT_DERIVED="$derived" \
-    PR_HEAD_SHA="$SOURCE_SHA" \
-    bash scripts/github-build-ipa.sh
-  ) >"$driver_log" 2>&1
-  local status=$?
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    echo "::error::build162 $mode/$phase failed"
-    grep -E 'error:|ERROR:|SOURCE_GATE_FAILED|IPA_VERIFICATION_FAILED|XCODE_EXPERIMENT|XCODEBUILD_WALL' "$driver_log" | tail -40 || true
-    exit "$status"
-  fi
-
+capture_validation() {
+  local mode="$1"
+  local phase="$2"
+  local src="$GITHUB_WORKSPACE/src-$mode"
+  local validation="$src/release/validation.json"
+  local metrics="$RUNNER_TEMP/hermes-exp-$mode-$phase.json"
   [[ -s "$validation" && -s "$metrics" ]] || {
     echo "::error::Missing IPA validation or Xcode timing metrics for $mode/$phase"; exit 1;
   }
@@ -121,31 +90,140 @@ print(
     f"bytes={validation['ipa_bytes']} sha256={validation['sha256']}"
 )
 PY
+}
 
-  grep -E '^XCODEBUILD_WALL_SECONDS=|^XCODE_EXPERIMENT ' "$driver_log" || true
-
-  # Remove generated files between passes so the clean-checkout gate stays active.
-  rm -rf "$src/HermesShellCI.xcodeproj" "$src/release"
+clean_generated_outputs() {
+  local src="$1"
+  rm -rf "$src/release"
+  # XcodeGen's project is required for the warm rebuild. Ignore this generated
+  # project only in the disposable checkout's local Git exclude file.
+  touch "$src/.git/info/exclude"
+  grep -qxF 'HermesShellCI.xcodeproj/' "$src/.git/info/exclude" || \
+    printf '%s\n' 'HermesShellCI.xcodeproj/' >>"$src/.git/info/exclude"
   if [[ -f "$src/Package.resolved" ]] && ! git -C "$src" diff --quiet -- Package.resolved; then
     git -C "$src" checkout -- Package.resolved
   fi
   [[ -z "$(git -C "$src" status --porcelain)" ]] || {
-    echo "::error::Build left unexpected source-tree changes for $mode/$phase"
+    echo "::error::Unexpected source checkout changes remain"
     git -C "$src" status --short
     exit 1
   }
+}
+
+run_build() {
+  local mode="$1"
+  local phase="$2"
+  local src="$GITHUB_WORKSPACE/src-$mode"
+  local derived="$RUNNER_TEMP/hermes-exp-$mode-derived"
+  local wrapper_dir
+  wrapper_dir="$(make_wrapper "$mode")"
+  local driver_log="$RUNNER_TEMP/hermes-exp-$mode-$phase-driver.log"
+
+  if [[ "$phase" == "cold" ]]; then
+    rm -rf "$derived"
+    [[ -z "$(git -C "$src" status --porcelain)" ]] || {
+      echo "::error::Source tree is dirty before cold build: $mode"; exit 1;
+    }
+  else
+    [[ -d "$derived/Build" && -d "$src/HermesShellCI.xcodeproj" ]] || {
+      echo "::error::Warm DerivedData or generated project missing for $mode"; exit 1;
+    }
+    [[ -f "$RUNNER_TEMP/HermesCI-Info.plist" ]] || {
+      echo "::error::Generated CI Info.plist missing"; exit 1;
+    }
+    [[ -z "$(git -C "$src" status --porcelain)" ]] || {
+      echo "::error::Source tree is dirty before changed rebuild: $mode"; exit 1;
+    }
+  fi
+
+  set +e
+  if [[ "$phase" == "cold" ]]; then
+    (
+      cd "$src"
+      env PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+        HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
+        HERMES_EXPERIMENT_DERIVED="$derived" PR_HEAD_SHA="$SOURCE_SHA" \
+        bash scripts/github-build-ipa.sh
+    ) >"$driver_log" 2>&1
+  else
+    (
+      cd "$src"
+      env PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+        HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
+        HERMES_EXPERIMENT_DERIVED="$derived" \
+        xcodebuild "INFOPLIST_FILE=$RUNNER_TEMP/HermesCI-Info.plist" \
+          -project HermesShellCI.xcodeproj -scheme HermesShell \
+          -destination 'generic/platform=iOS' -sdk iphoneos \
+          -configuration Release -derivedDataPath "$RUNNER_TEMP/hermes-ipa-derived" \
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 'CODE_SIGN_IDENTITY=' \
+          STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO build
+    ) >"$driver_log" 2>&1
+    local build_status=$?
+    if [[ "$build_status" -eq 0 ]]; then
+      local version build name app stage ipa
+      version="$(python3 -c 'import json; print(json.load(open("release.json"))["version"])' 2>/dev/null)"
+      build="$(python3 -c 'import json; print(json.load(open("release.json"))["build"])' 2>/dev/null)"
+      name="Hermes-$version-build$build-unsigned"
+      app="$derived/Build/Products/Release-iphoneos/HermesShell.app"
+      ipa="$src/release/$name.ipa"
+      mkdir -p "$src/release"
+      if [[ ! -d "$app" || ! -f "$app/HermesShell" ]]; then
+        echo "::error::iPhoneOS app missing after changed rebuild"; exit 1;
+      fi
+      stage="$(mktemp -d "$RUNNER_TEMP/hermes-exp-payload.XXXXXX")"
+      mkdir -p "$stage/Payload"
+      cp -R "$app" "$stage/Payload/HermesShell.app"
+      ( cd "$stage" && zip -qry "$ipa" Payload )
+      rm -rf "$stage"
+      python3 - "$src/release/build-info.json" "$version" "$build" "$SOURCE_SHA" <<'PY'
+import datetime, json, pathlib, sys
+path, version, build, commit = sys.argv[1:]
+info = {
+    "version": version,
+    "build": build,
+    "working_tree": "clean",
+    "head_commit": commit,
+    "source_head_commit": commit,
+    "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "builder": "github-actions-macos-15-xcode-26.3-incremental-experiment",
+}
+pathlib.Path(path).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+      python3 tests/verify_ipa.py "$ipa" "$version" "$build" "$src/release/build-info.json" \
+        --label "$name.ipa" >"$src/release/validation.json"
+    fi
+    status="$build_status"
+  fi
+  status="${status:-$?}"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    echo "::error::build162 $mode/$phase failed"
+    grep -E 'error:|ERROR:|SOURCE_GATE_FAILED|IPA_VERIFICATION_FAILED|XCODE_EXPERIMENT|XCODEBUILD_WALL' "$driver_log" | tail -40 || true
+    exit "$status"
+  fi
+
+  capture_validation "$mode" "$phase"
+  grep -E '^XCODEBUILD_WALL_SECONDS=|^XCODE_EXPERIMENT ' "$driver_log" || true
+  clean_generated_outputs "$src"
   echo "EXPERIMENT_BUILD_OK mode=$mode phase=$phase"
 }
 
 touch_probe() {
   local mode="$1"
   local src="$GITHUB_WORKSPACE/src-$mode"
+  local file="$src/Sources/HermesShell/AppTheme.swift"
+  local before after
+  before="$(shasum -a 256 "$file" | awk '{print $1}')"
   sleep 2
-  touch "$src/Sources/HermesShell/AppTheme.swift"
-  [[ -z "$(git -C "$src" status --porcelain)" ]] || {
-    echo "::error::Timestamp-only probe unexpectedly changed tracked source: $mode"; exit 1;
+  touch "$file"
+  after="$(shasum -a 256 "$file" | awk '{print $1}')"
+  [[ "$before" == "$after" ]] || {
+    echo "::error::Probe changed source content for $mode"; exit 1;
   }
-  echo "INCREMENTAL_PROBE_TOUCHED mode=$mode file=Sources/HermesShell/AppTheme.swift content_unchanged=true"
+  [[ -z "$(git -C "$src" status --porcelain)" ]] || {
+    echo "::error::Timestamp-only probe dirtied source tree: $mode"; exit 1;
+  }
+  echo "INCREMENTAL_PROBE_TOUCHED mode=$mode file=AppTheme.swift content_sha256_unchanged=true"
 }
 
 report() {
@@ -154,13 +232,11 @@ import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 summary_path = pathlib.Path(sys.argv[2])
 def load(mode, phase):
-    path = root / f"hermes-exp-{mode}-{phase}.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads((root / f"hermes-exp-{mode}-{phase}.json").read_text(encoding="utf-8"))
 wmo_cold = load("wholemodule", "cold")
 inc_cold = load("incremental", "cold")
 inc_changed = load("incremental", "changed")
 wmo_changed = load("wholemodule", "changed")
-
 def seconds(row):
     return float(row["xcodebuild_wall_seconds"])
 wmo_rebuild = seconds(wmo_changed)
@@ -169,7 +245,6 @@ saving = wmo_rebuild - inc_rebuild
 pct = (saving / wmo_rebuild * 100) if wmo_rebuild else 0.0
 same_wmo_ipa = wmo_cold["ipa_sha256"] == wmo_changed["ipa_sha256"]
 same_inc_ipa = inc_cold["ipa_sha256"] == inc_changed["ipa_sha256"]
-
 rows = [
     ("WMO", "Cold full Release build", wmo_cold),
     ("Incremental", "Cold full Release build", inc_cold),
