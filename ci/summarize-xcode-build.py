@@ -93,10 +93,10 @@ def main():
         if key in settings:
             print(f"XCODE_{key}={settings[key]}")
     print(f"XCODE_{phase.upper()}_ACTIVITY_TASKS={len(tasks)}")
-    print(f"XCODE_{phase.upper()}_SWIFT_FILE_TASKS={len(swift_files)}")
+    print(f"XCODE_{phase.upper()}_SWIFT_ACTIVITY_LABELS={len(swift_files)}")
     if swift_files:
         for key, value in sorted(swift_files.items(), key=lambda pair: pair[1], reverse=True)[:15]:
-            print(f"XCODE_{phase.upper()}_SWIFT_FILE_HASH_{key}_SECONDS={value:.3f}")
+            print(f"XCODE_{phase.upper()}_SWIFT_ACTIVITY_LABEL_HASH_{key}_SECONDS={value:.3f}")
     for key, value in sorted(counters.items()):
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,80}", key) and isinstance(value, (str, int, float, bool)):
             print(f"XCODE_METRIC_{key}={value}")
@@ -106,12 +106,12 @@ def main():
         "",
         f"- Xcode action duration: **{duration:.3f} s**" if duration is not None else "- Xcode action duration: unavailable",
         f"- Activity task records: **{len(tasks)}**",
-        f"- Distinct Swift file task IDs: **{len(swift_files)}**",
+        f"- Distinct Swift activity labels: **{len(swift_files)}**",
     ]
     if settings:
         summary += [f"- {key}: '{value}'" for key, value in settings.items()]
     if swift_files:
-        summary += ["", "Slowest Swift file task IDs (hashed to avoid publishing private source paths):", "", "| File ID | Task duration (s) |", "|---|---:|"]
+        summary += ["", "Longest Swift activity labels (hashed; under whole-module mode these are module activity labels, not isolated per-file compile times):", "", "| File ID | Task duration (s) |", "|---|---:|"]
         summary += [f"| '{key}' | {value:.3f} |" for key, value in sorted(swift_files.items(), key=lambda pair: pair[1], reverse=True)[:15]]
     if counters:
         summary += ["", "Build operation counters:", ""] + [f"- {key}: {value}" for key, value in sorted(counters.items()) if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,80}", key)]
