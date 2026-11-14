@@ -1,6 +1,12 @@
 name: HermesShell Adaptive CI and Xcode Release
 
 on:
+  # Also run a preflight when this workflow definition itself changes.
+  # Ordinary HermesBuild source commits do not trigger this pipeline.
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/hermesshell-adaptive-release.yml"
   workflow_dispatch:
     inputs:
       source_ref:
@@ -35,7 +41,7 @@ jobs:
         if: ${{ inputs.publish_release }}
         shell: bash
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_REF: ${{ inputs.source_ref || 'main' }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" != "refs/heads/main" || "$SOURCE_REF" != "main" ]]; then
@@ -47,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Whale7-git/HermesShell
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ inputs.source_ref || 'main' }}
           token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
