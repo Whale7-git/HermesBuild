@@ -1,0 +1,185 @@
+--- a/Sources/Textual/Internal/StructuredText/BlockVStack.swift
++++ b/Sources/Textual/Internal/StructuredText/BlockVStack.swift
+@@ -12,6 +12,18 @@
+ extension StructuredText {
+   struct BlockVStack<Content: View>: View {
+     @Environment(\.multilineTextAlignment) private var textAlignment
++    @Environment(\.textEnvironment) private var textEnvironment
++    @Environment(\.inlineStyle) private var inlineStyle
++    @Environment(\.highlighterTheme) private var highlighterTheme
++    @Environment(\.locale) private var locale
++    @Environment(\.layoutDirection) private var layoutDirection
++    @Environment(\.displayScale) private var displayScale
++    @Environment(\.overflowMode) private var overflowMode
++    @Environment(\.deferredHighlightingAfter) private var deferredHighlightingAfter
++    @Environment(\.lineSpacing) private var lineSpacing
++    @Environment(\.paragraphStyle) private var paragraphStyle
++    @Environment(\.codeBlockStyle) private var codeBlockStyle
++    @Environment(\.listItemStyle) private var listItemStyle
+ 
+     private let content: Content
+ 
+@@ -21,7 +33,17 @@
+ 
+     var body: some View {
+       Group(subviews: content) { children in
+-        BlockVStackLayout(textAlignment: textAlignment) {
++        BlockVStackLayout(context: .init(
++          textEnvironment: textEnvironment, inlineStyle: inlineStyle,
++          highlighterTheme: highlighterTheme, locale: locale,
++          layoutDirection: layoutDirection, displayScale: displayScale,
++          textAlignment: textAlignment, overflowMode: overflowMode,
++          deferredHighlightingAfter: deferredHighlightingAfter,
++          lineSpacing: lineSpacing,
++          paragraphStyle: BlockStyleSignature(paragraphStyle),
++          codeBlockStyle: BlockStyleSignature(codeBlockStyle),
++          listItemStyle: BlockStyleSignature(listItemStyle)
++        )) {
+           ForEach(children) {
+             BlockLayoutView($0)
+           }
+@@ -61,24 +83,41 @@
+ 
+   fileprivate struct BlockVStackLayout: Layout {
+     struct Cache {
+-      let spacings: [CGFloat]
++      var spacings: [CGFloat]
++      var measurements = TextualBlockMeasurementCache<BlockMeasurementContext, CGSize>()
+     }
+ 
+-    let textAlignment: TextAlignment
++    let context: BlockMeasurementContext
+ 
+     func makeCache(subviews: Subviews) -> Cache {
+-      return Cache(
+-        spacings: subviews.indices.dropLast().map { index in
+-          let current = subviews[index]
+-          let next = subviews[index + 1]
+-          let currentBottom = current[BlockSpacingKey.self].bottom
+-          let nextTop = next[BlockSpacingKey.self].top
+-
+-          // Take the maximum block spacing, otherwise the preferred view spacing
+-          return [currentBottom, nextTop].compactMap(\.self).max()
+-            ?? current.spacing.distance(to: next.spacing, along: .vertical)
+-        }
+-      )
++      Cache(spacings: spacings(subviews: subviews))
++    }
++
++    func updateCache(_ cache: inout Cache, subviews: Subviews) {
++      // Includes same-count content changes, style DynamicProperty updates,
++      // asynchronous token/attachment completion and spacing preferences. Never
++      // carry an index's old size into a different SwiftUI subview generation.
++      cache.spacings = spacings(subviews: subviews)
++      cache.measurements.invalidate()
++    }
++
++    private func spacings(subviews: Subviews) -> [CGFloat] {
++      subviews.indices.dropLast().map { index in
++        let current = subviews[index]
++        let next = subviews[index + 1]
++        let currentBottom = current[BlockSpacingKey.self].bottom
++        let nextTop = next[BlockSpacingKey.self].top
++
++        // Take the maximum block spacing, otherwise the preferred view spacing
++        return [currentBottom, nextTop].compactMap(\.self).max()
++          ?? current.spacing.distance(to: next.spacing, along: .vertical)
++      }
++    }
++
++    private func sizes(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> [CGSize] {
++      cache.measurements.sizes(width: proposal.width.map(Double.init), count: subviews.count, context: context) { index in
++        subviews[index].sizeThatFits(.init(width: proposal.width, height: nil))
++      }
+     }
+ 
+     func sizeThatFits(
+@@ -91,8 +130,7 @@
+ 
+       var size = CGSize.zero
+ 
+-      for view in subviews {
+-        let viewSize = view.sizeThatFits(.init(width: proposal.width, height: nil))
++      for viewSize in sizes(proposal: proposal, subviews: subviews, cache: &cache) {
+         size.height += viewSize.height
+         size.width = max(size.width, viewSize.width)
+       }
+@@ -108,13 +146,14 @@
+       subviews: Subviews, cache: inout Cache
+     ) {
+       var currentY: CGFloat = 0
++      let measured = sizes(proposal: proposal, subviews: subviews, cache: &cache)
+ 
+       for (index, view) in zip(subviews.indices, subviews) {
+         let viewProposal = ProposedViewSize(width: proposal.width, height: nil)
+-        let viewSize = view.sizeThatFits(viewProposal)
++        let viewSize = measured[index]
+ 
+         var point = bounds.origin
+-        let alignment = view[BlockAlignmentKey.self] ?? textAlignment
++        let alignment = view[BlockAlignmentKey.self] ?? context.textAlignment
+ 
+         switch alignment {
+         case .leading:
+@@ -137,6 +176,61 @@
+       }
+     }
+   }
++
++  fileprivate struct BlockMeasurementContext: Equatable, Sendable {
++    let textEnvironment: TextEnvironmentValues
++    let inlineStyle: InlineStyle
++    let highlighterTheme: HighlighterTheme
++    let locale: Locale
++    let layoutDirection: LayoutDirection
++    let displayScale: CGFloat
++    let textAlignment: TextAlignment
++    let overflowMode: OverflowMode
++    let deferredHighlightingAfter: Int?
++    let lineSpacing: CGFloat
++    let paragraphStyle: BlockStyleSignature
++    let codeBlockStyle: BlockStyleSignature
++    let listItemStyle: BlockStyleSignature
++  }
++
++  /// A Sendable, value-based snapshot of a style environment value.
++  ///
++  /// Style environment values are existentials without `Equatable` or
++  /// `Sendable` conformance, so the measurement context cannot store them
++  /// directly. It records the concrete type plus a bounded fingerprint of the
++  /// stored values instead. Reference-typed or otherwise opaque stored values
++  /// are represented by their description (and instance identity for classes),
++  /// which may over-report a difference; that only costs a remeasurement and
++  /// can never validate a stale size. Custom styles that hide state behind an
++  /// opaque description are therefore not safe inputs for measurement reuse.
++  fileprivate struct BlockStyleSignature: Equatable, Sendable {
++    private let type: String
++    private let storedValues: [String]
++
++    init(_ style: Any) {
++      type = String(reflecting: Swift.type(of: style))
++      storedValues = Self.fingerprint(style, depth: 0)
++    }
++
++    private static func fingerprint(_ value: Any, depth: Int) -> [String] {
++      let mirror = Mirror(reflecting: value)
++      var parts: [String] = [String(reflecting: mirror.subjectType)]
++      if mirror.displayStyle == .class {
++        // Distinct instances must not compare equal only because their
++        // descriptions happen to match.
++        parts.append(String(describing: ObjectIdentifier(value as AnyObject)))
++      }
++      guard depth < 4, !mirror.children.isEmpty, mirror.children.count <= 32 else {
++        parts.append(String(describing: value))
++        return parts
++      }
++      for child in mirror.children {
++        parts.append(child.label ?? "_")
++        parts.append(contentsOf: fingerprint(child.value, depth: depth + 1))
++      }
++      return parts
++    }
++  }
+ }
+ 
+ @available(tvOS, unavailable)

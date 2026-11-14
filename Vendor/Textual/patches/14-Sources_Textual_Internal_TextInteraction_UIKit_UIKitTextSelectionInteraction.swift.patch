@@ -1,0 +1,21 @@
+--- a/Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextSelectionInteraction.swift
++++ b/Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextSelectionInteraction.swift
+@@ -14,14 +14,16 @@
+ 
+   struct UIKitTextSelectionInteraction: ViewModifier {
+     private let model: TextSelectionModel
++    private let menuActions: TextMenuActions?
+ 
+-    init(model: TextSelectionModel) {
++    init(model: TextSelectionModel, menuActions: TextMenuActions? = nil) {
+       self.model = model
++      self.menuActions = menuActions
+     }
+ 
+     func body(content: Content) -> some View {
+       content.overlayPreferenceValue(OverflowFrameKey.self) { frames in
+-        UIKitTextInteractionOverlay(model: model, overflowFrames: frames)
++        UIKitTextInteractionOverlay(model: model, overflowFrames: frames, menuActions: menuActions)
+       }
+     }
+   }

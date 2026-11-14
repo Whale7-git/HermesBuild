@@ -1,0 +1,11 @@
+--- a/Sources/Textual/StructuredText/Style/Overflow.swift
++++ b/Sources/Textual/StructuredText/Style/Overflow.swift
+@@ -1,7 +1,7 @@
+ import SwiftUI
+ 
+ /// Controls how content behaves when it overflows horizontally.
+-public enum OverflowMode: Hashable {
++public enum OverflowMode: Hashable, Sendable {
+   /// Wraps content to fit the available width.
+   case wrap
+   /// Allows horizontal scrolling.

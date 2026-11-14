@@ -1,0 +1,32 @@
+--- a/Sources/Textual/Internal/TextFragment/TextFragment.swift
++++ b/Sources/Textual/Internal/TextFragment/TextFragment.swift
+@@ -27,6 +27,9 @@
+ 
+ struct TextFragment<Content: AttributedStringProtocol>: View {
+   @Environment(\.textEnvironment) private var textEnvironment
++  #if canImport(UIKit) && !os(watchOS) && !os(tvOS)
++    @Environment(\.textualUsesNativeTextViews) private var usesNativeTextViews
++  #endif
+   @State private var textBuilder: TextBuilder?
+ 
+   private let content: Content
+@@ -36,6 +39,19 @@
+   }
+ 
+   var body: some View {
++    #if canImport(UIKit) && !os(watchOS) && !os(tvOS)
++      if usesNativeTextViews, content.attachments().isEmpty {
++        NativeSelectableText(content: AttributedString(content[content.startIndex..<content.endIndex]),
++                             environment: textEnvironment)
++      } else {
++        swiftUIText
++      }
++    #else
++      swiftUIText
++    #endif
++  }
++
++  private var swiftUIText: some View {
+     text
+       .customAttribute(TextFragmentAttribute())
+       .onGeometryChange(for: CGSize?.self, of: \.textContainerSize) { size in

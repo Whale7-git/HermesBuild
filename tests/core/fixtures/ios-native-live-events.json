@@ -1,0 +1,32 @@
+[
+  {
+    "event": "context_status",
+    "data": "{\"session_id\": \"fixture-session-001\", \"prefill\": {\"status\": \"not_configured\", \"source\": \"none\", \"label\": \"\", \"message_count\": 0}}",
+    "id": "fixture-stream-001:1"
+  },
+  {
+    "event": "token",
+    "data": "{\"text\": \"IOS\"}",
+    "id": "fixture-stream-001:2"
+  },
+  {
+    "event": "token",
+    "data": "{\"text\": \"_N\"}",
+    "id": "fixture-stream-001:3"
+  },
+  {
+    "event": "token",
+    "data": "{\"text\": \"ATIVE\"}",
+    "id": "fixture-stream-001:4"
+  },
+  {
+    "event": "token",
+    "data": "{\"text\": \"_OK\"}",
+    "id": "fixture-stream-001:5"
+  },
+  {
+    "event": "done",
+    "data": "{\"session\": {\"session_id\": \"fixture-session-001\", \"title\": \"这是一条 iOS 原生客户端协议测试。不要调用任何工具，不要读取记忆或文件，只回复 IOS_NATIVE_OK。\", \"workspace\": \"/fixture/workspace\", \"model\": \"fixture-model\", \"model_provider\": \"custom:fixture\", \"message_count\": 2, \"created_at\": 1700000000.0, \"updated_at\": 1700000000.0, \"last_message_at\": 1700000000.0, \"pinned\": false, \"archived\": false, \"project_id\": null, \"profile\": \"default\", \"input_tokens\": 0, \"output_tokens\": 0, \"estimated_cost\": null, \"cache_read_tokens\": 0, \"cache_write_tokens\": 0, \"cache_hit_percent\": null, \"personality\": null, \"compression_anchor_visible_idx\": null, \"compression_anchor_message_key\": null, \"compression_anchor_summary\": null, \"pre_compression_snapshot\": false, \"context_engine\": null, \"compression_anchor_engine\": null, \"compression_anchor_mode\": null, \"compression_anchor_details\": {}, \"context_engine_state\": {}, \"context_length\": null, \"threshold_tokens\": null, \"last_prompt_tokens\": null, \"post_compression_context_tokens_estimate\": null, \"compression_recovery\": {}, \"recommended_recovery_action\": null, \"gateway_routing\": null, \"gateway_routing_history\": [], \"manual_title\": false, \"created_workspace\": \"/fixture/workspace\", \"user_message_count\": 1, \"active_stream_id\": null, \"pending_user_message\": null, \"has_pending_user_message\": false, \"is_cli_session\": false, \"source_tag\": null, \"raw_source\": null, \"session_source\": null, \"source_label\": null, \"read_only\": false, \"enabled_toolsets\": null, \"composer_draft\": {}, \"process_wakeup_pause\": {}, \"share_token\": null, \"share_created_at\": null, \"is_streaming\": false, \"messages\": [{\"role\": \"user\", \"content\": \"这是一条 iOS 原生客户端协议测试。不要调用任何工具，不要读取记忆或文件，只回复 IOS_NATIVE_OK。\", \"timestamp\": 1700000000.0, \"id\": 1}, {\"role\": \"assistant\", \"content\": \"IOS_NATIVE_OK\", \"timestamp\": 1700000000.0, \"id\": 2}], \"tool_calls\": []}, \"usage\": {\"input_tokens\": 20, \"output_tokens\": 5, \"estimated_cost\": 0}}",
+    "id": "fixture-stream-001:6"
+  }
+]

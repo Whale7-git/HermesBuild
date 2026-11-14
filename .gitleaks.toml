@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "File SHA-256 values in reviewed source inventory manifests"
+condition = "AND"
+regexTarget = "line"
+paths = ['''(?:^|/)(?:tests/(?:baseline-[^/]+|release-baseline|release-scope-build[0-9]+)|Vendor/Textual/UPSTREAM-SHA256)\.json$''']
+regexes = ['''^\s*"[^"\r\n]+": "[a-f0-9]{64}",?\s*$''']

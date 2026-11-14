@@ -1,0 +1,63 @@
+--- a/Sources/Textual/Internal/TextInteraction/Shared/TextSelectionInteraction.swift
++++ b/Sources/Textual/Internal/TextInteraction/Shared/TextSelectionInteraction.swift
+@@ -15,6 +15,7 @@
+   #if TEXTUAL_ENABLE_TEXT_SELECTION
+     @Environment(\.textSelection) private var textSelection
+     @Environment(TextSelectionCoordinator.self) private var coordinator: TextSelectionCoordinator?
++    @Environment(\.textualTextMenuActions) private var menuActions: TextMenuActions?
+ 
+     @State private var model = TextSelectionModel()
+   #endif
+@@ -24,13 +25,20 @@
+       if textSelection.allowsSelection {
+         content
+           .overlayTextLayoutCollection { layoutCollection in
++            #if canImport(UIKit)
++              TextSelectionLayoutUpdater(model: model, coordinator: coordinator,
++                                         layoutCollection: layoutCollection)
++                .allowsHitTesting(false)
++                .accessibilityHidden(true)
++            #else
+             Color.clear
+               .onChange(of: AnyTextLayoutCollection(layoutCollection), initial: true) {
+                 model.setCoordinator(coordinator)
+                 model.setLayoutCollection(layoutCollection)
+               }
++            #endif
+           }
+-          .modifier(PlatformTextSelectionInteraction(model: model))
++          .modifier(PlatformTextSelectionInteraction(model: model, menuActions: menuActions))
+       } else {
+         content
+       }
+@@ -46,5 +54,30 @@
+     @available(watchOS, unavailable)
+     @usableFromInline
+     @Entry var textSelection: any TextSelectability.Type = DisabledTextSelectability.self
++
++    /// Message-level actions (copy all / edit / regenerate) surfaced in the
++    /// system edit menu when text is selected. The app shell sets this on the
++    /// markdown view; `TextMenuActions` is a reference type so the environment
++    /// value stays identity-comparable.
++    @available(tvOS, unavailable)
++    @available(watchOS, unavailable)
++    @Entry public var textualTextMenuActions: TextMenuActions? = nil
+   }
+ #endif
++
++/// Message-level actions shown in the system text-selection edit menu.
++public final class TextMenuActions {
++  public var copyAll: (() -> Void)?
++  public var edit: (() -> Void)?
++  public var regenerate: (() -> Void)?
++
++  public init(
++    copyAll: (() -> Void)? = nil,
++    edit: (() -> Void)? = nil,
++    regenerate: (() -> Void)? = nil
++  ) {
++    self.copyAll = copyAll
++    self.edit = edit
++    self.regenerate = regenerate
++  }
++}
