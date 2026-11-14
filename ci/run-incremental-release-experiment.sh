@@ -24,7 +24,7 @@ prepare() {
   xcodegen_version="$(xcodegen --version | awk '{print $NF}')"
   python3 - "$xcodegen_version" <<'PY'
 import re, sys
-match = re.fullmatch(r"(\\d+)\\.(\\d+)\\.(\\d+)", sys.argv[1])
+match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", sys.argv[1])
 if not match or tuple(map(int, match.groups())) < (2, 42, 0):
     raise SystemExit("XcodeGen 2.42.0 or newer is required; got " + sys.argv[1])
 PY
