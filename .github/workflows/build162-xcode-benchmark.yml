@@ -1,0 +1,180 @@
+name: HermesShell Xcode build162 benchmark
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermesshell-xcode-build162-benchmark
+  cancel-in-progress: false
+
+jobs:
+  xcode-build:
+    name: Build exact build162 source with GitHub macOS Runner
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout private HermesShell build162 source
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesShell
+          ref: release-2.24.0-build162
+          token: ${{ secrets.HERMESSHELL_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+
+      - name: Select and verify Xcode 26.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+          if [[ ! -d "$developer_dir" ]]; then
+            echo "::error::Xcode 26.3 is not installed on this runner image"
+            exit 1
+          fi
+          sudo xcode-select -s "$developer_dir"
+          version="$(xcodebuild -version | awk '/^Xcode / { print $2; exit }')"
+          echo "XCODE_VERSION=$version"
+          [[ "$version" == "26.3" ]]
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Verify exact source identity and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="1e57404cae21f567a67d4e2ce92276c101642908"
+          actual="$(git rev-parse HEAD)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Expected build162 source $expected, got $actual"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          release = json.loads(Path("release.json").read_text(encoding="utf-8"))
+          assert release["version"] == "2.24.0", release
+          assert release["build"] == "162", release
+          print("RELEASE=2.24.0")
+          print("BUILD=162")
+          print("SOURCE_COMMIT=1e57404cae21f567a67d4e2ce92276c101642908")
+          PY
+
+      - name: Build and verify unsigned iPhoneOS IPA
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          started="$(date +%s)"
+          private_log="$RUNNER_TEMP/hermesshell-xcode-build.log"
+
+          # The source is private and this repository is public. Capture all
+          # compiler/source diagnostics on the ephemeral runner; never stream
+          # them into public Actions logs or upload them as artifacts.
+          set +e
+          PR_HEAD_SHA="1e57404cae21f567a67d4e2ce92276c101642908" \
+            bash scripts/github-build-ipa.sh >"$private_log" 2>&1
+          rc=$?
+          set -e
+
+          finished="$(date +%s)"
+          duration=$((finished - started))
+          echo "BUILD_SECONDS=$duration" | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$rc" -ne 0 ]]; then
+            echo "::error::Xcode build/IPA verification failed (exit $rc). Private compiler log was not published."
+            exit "$rc"
+          fi
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          validation = json.loads(Path("release/validation.json").read_text(encoding="utf-8"))
+          info = json.loads(Path("release/build-info.json").read_text(encoding="utf-8"))
+          expected = {
+              "version": "2.24.0",
+              "build": "162",
+              "bundle": "com.whale7.hermes",
+              "arch": "arm64",
+              "unsigned": True,
+          }
+          for key, value in expected.items():
+              assert validation.get(key) == value, (key, validation.get(key), value)
+          assert info.get("head_commit") == "1e57404cae21f567a67d4e2ce92276c101642908"
+          assert info.get("source_head_commit") == "1e57404cae21f567a67d4e2ce92276c101642908"
+          assert info.get("working_tree") == "clean"
+          print("IPA_NAME=" + validation["ipa"])
+          print("IPA_SIZE_BYTES=" + str(validation["ipa_bytes"]))
+          print("IPA_SHA256=" + validation["sha256"])
+          print("BUNDLE_ID=" + validation["bundle"])
+          print("ARCH=" + validation["arch"])
+          print("UNSIGNED=" + str(validation["unsigned"]).lower())
+          print("SOURCE_PROVENANCE=PASS")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n## Xcode build162 result\n\n")
+              summary.write("| Check | Result |\n|---|---|\n")
+              summary.write(f"| IPA | {validation['ipa']} |\n")
+              summary.write(f"| Size | {validation['ipa_bytes']:,} bytes |\n")
+              summary.write(f"| SHA-256 | {validation['sha256']} |\n")
+              summary.write(f"| Bundle ID | {validation['bundle']} |\n")
+              summary.write(f"| Architecture | {validation['arch']} |\n")
+              summary.write("| Signing | Unsigned |\n")
+              summary.write("| Provenance | PASS |\n")
+          PY
+
+      - name: Compare against the existing 9th-runner build162 Release
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HERMESSHELL_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api "repos/Whale7-git/HermesShell/releases/tags/release-2.24.0-build162" \
+            >"$RUNNER_TEMP/build162-release.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          current = json.loads(Path("release/validation.json").read_text(encoding="utf-8"))
+          release_path = Path(os.environ["RUNNER_TEMP"]) / "build162-release.json"
+          release = json.loads(release_path.read_text(encoding="utf-8"))
+          expected_name = "Hermes-2.24.0-build162-unsigned.ipa"
+          assets = [asset for asset in release.get("assets", []) if asset.get("name") == expected_name]
+          assert len(assets) == 1, f"Expected exactly one existing IPA asset, got {len(assets)}"
+          old = assets[0]
+          old_digest = (old.get("digest") or "").removeprefix("sha256:")
+          new_digest = current["sha256"]
+          same = bool(old_digest) and old_digest == new_digest
+          print("EXISTING_9TH_IPA_SIZE_BYTES=" + str(old["size"]))
+          print("EXISTING_9TH_IPA_SHA256=" + (old_digest or "unavailable"))
+          print("XCODE_IPA_SIZE_BYTES=" + str(current["ipa_bytes"]))
+          print("XCODE_IPA_SHA256=" + new_digest)
+          print("BYTE_IDENTICAL=" + str(same).lower())
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n## Comparison with existing 9th-runner IPA\n\n")
+              summary.write("| Metric | 9th runner Release | GitHub macOS Xcode |\n|---|---:|---:|\n")
+              summary.write(f"| IPA size | {old['size']:,} bytes | {current['ipa_bytes']:,} bytes |\n")
+              summary.write(f"| SHA-256 | {old_digest or 'unavailable'} | {new_digest} |\n")
+              summary.write(f"| Byte-identical | {'YES' if same else 'NO'} | {'YES' if same else 'NO'} |\n")
+          PY
+
+      - name: Confirm no IPA or private source artifact was uploaded
+        if: always()
+        shell: bash
+        run: |
+          echo "No Actions artifact is uploaded by this benchmark workflow."
+          echo "The runner workspace and captured compiler log are ephemeral."
