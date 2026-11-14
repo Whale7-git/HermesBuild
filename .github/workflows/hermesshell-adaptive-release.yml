@@ -121,47 +121,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          log="$RUNNER_TEMP/source-gate.log"
-          if python3 tests/verify_source.py >"$log" 2>&1; then
-            echo "SOURCE_GATE=PASS"
-          else
-            rc=$?
-            reason="$(grep -m1 '^SOURCE_GATE_FAILED:' "$log" || true)"
-            label="SOURCE_GATE_FAILURE"
-            case "$reason" in
-              *"README release mismatch"*) label="README_RELEASE_MISMATCH";;
-              *"source content drifted"*) label="SOURCE_SHA256_MISMATCH";;
-              *"scope mismatch"*) label="RELEASE_SCOPE_MISMATCH";;
-              *"Info.plist release mismatch"*) label="INFO_PLIST_VERSION_MISMATCH";;
-              *"baseline changed"*) label="IMMUTABLE_BASELINE_MISMATCH";;
-            esac
-            echo "::error::Python source gate failed ($label). Private details are suppressed."
-            exit "$rc"
-          fi
+          python3 tests/verify_source.py 2>&1 | tee "$RUNNER_TEMP/source-gate.log"
 
       - name: Run SwiftUI modifier static guard
         shell: bash
         run: |
           set -euo pipefail
-          log="$RUNNER_TEMP/swiftui-guard.log"
-          if python3 tests/check_swiftui_modifiers.py >"$log" 2>&1; then
-            cat "$log"
-          else
-            echo "::error::SwiftUI modifier guard failed. Source diagnostics are suppressed because this workflow runs in a public repository."
-            exit 1
-          fi
+          python3 tests/check_swiftui_modifiers.py 2>&1 | tee "$RUNNER_TEMP/swiftui-guard.log"
 
       - name: Test SwiftUI modifier guard positive and negative fixtures
         shell: bash
         run: |
           set -euo pipefail
-          log="$RUNNER_TEMP/swiftui-unit.log"
-          if python3 -m unittest discover -s tests -p 'test_swiftui_modifiers.py' >"$log" 2>&1; then
-            tail -n 3 "$log"
-          else
-            echo "::error::SwiftUI guard unit tests failed. Detailed source diagnostics are suppressed."
-            exit 1
-          fi
+          python3 -m unittest discover -s tests -p 'test_swiftui_modifiers.py' -v 2>&1 | tee "$RUNNER_TEMP/swiftui-unit.log"
 
       - name: Write source gate summary
         if: success()
@@ -208,59 +180,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift --version | head -n 1
-          log="$RUNNER_TEMP/hermes-offline-regression.log"
-          trace="$RUNNER_TEMP/hermes-offline-trace.log"
+          swift --version
           started="$(date +%s)"
-          if bash -x tests/run_container.sh >"$log" 2>"$trace"; then
-            finished="$(date +%s)"
-            duration=$((finished - started))
-            grep -E '^==>|^HERMES_OFFLINE_TESTS_PASS$' "$log" | tail -n 20
-            echo "OFFLINE_REGRESSION_SECONDS=$duration" | tee -a "$GITHUB_STEP_SUMMARY"
-            grep -q '^HERMES_OFFLINE_TESTS_PASS$' "$log"
-            {
-              echo
-              echo "## Full offline regression"
-              echo
-              echo "- Result: PASS"
-              echo "- Duration: $duration seconds"
-              echo "- Swift toolchain: $(swift --version | head -n 1)"
-              echo "- Test runner: tests/run_container.sh"
-              if grep -q '^LOCAL_STORE_REPLACE_PASS$' "$log"; then
-                echo "- Atomic pending replacement regression: PASS"
-              fi
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            rc=$?
-            python3 - "$log" "$trace" <<'PY'
-          import re, sys
-          from pathlib import Path
-          output = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-          trace = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-          compiling = re.findall(r"(?m)^FAIL: compile ([A-Za-z0-9_-]+)$", output)
-          running = re.findall(r"(?m)^\++\s+stdbuf -oL \S+/([A-Za-z0-9_-]+)\s*$", trace)
-          serial = re.findall(r"(?m)^\++\s+bash (tests/[A-Za-z0-9_/-]+/run(?:_local)?\.sh)\s*$", trace)
-          markers = re.findall(r"(?m)^([A-Z][A-Z0-9_]*_PASS)(?:\s|$)", output)
-          if markers:
-              print("LAST_PASS_MARKER=" + markers[-1])
-              print("PASS_MARKER_COUNT=" + str(len(markers)))
-          sites = re.findall(r"(?m)([A-Za-z0-9_]+\.swift):(\d+):(?:\d+:)?\s*(?:Fatal error|Precondition failed|Assertion failed)", trace + "\n" + output)
-          if sites:
-              filename, number = sites[-1]
-              print("FAILED_ASSERTION_FILE=" + filename)
-              print("FAILED_ASSERTION_LINE=" + number)
-          if compiling:
-              print("FAILED_COMPILE_SUITE=" + compiling[-1])
-          if running:
-              print("LAST_EXECUTED_SUITE=" + running[-1])
-          if serial:
-              print("LAST_SERIAL_TEST_SCRIPT=" + serial[-1])
-          if not (compiling or running or serial):
-              print("FAILED_PHASE=BEFORE_SUITE_EXECUTION_OR_UNKNOWN")
-          PY
-            echo "::error::Full offline regression failed (exit $rc). Only safe test identifiers are shown; private compiler/test diagnostics were suppressed."
-            exit "$rc"
-          fi
+          # Stream full compiler/test output to the public Actions job log.
+          # GitHub masks configured secrets; do not print tokens or credentials.
+          bash tests/run_container.sh 2>&1 | tee "$RUNNER_TEMP/hermes-offline-regression.log"
+          duration=$(($(date +%s) - started))
+          grep -q '^HERMES_OFFLINE_TESTS_PASS$' "$RUNNER_TEMP/hermes-offline-regression.log"
+          echo "OFFLINE_REGRESSION_SECONDS=$duration" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo
+            echo "## Full offline regression"
+            echo
+            echo "- Result: PASS"
+            echo "- Duration: $duration seconds"
+            echo "- Swift toolchain: $(swift --version | head -n 1)"
+            echo "- Test runner: tests/run_container.sh"
+            if grep -q '^LOCAL_STORE_REPLACE_PASS$' "$RUNNER_TEMP/hermes-offline-regression.log"; then
+              echo "- Atomic pending replacement regression: PASS"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   xcode-build-release:
     name: Xcode iPhoneOS IPA build and optional private Release
@@ -342,25 +281,19 @@ jobs:
           PR_HEAD_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         run: |
           set -euo pipefail
-          private_log="$RUNNER_TEMP/hermesshell-xcode-build.log"
+          build_log="$RUNNER_TEMP/hermesshell-xcode-build.log"
           started="$(date +%s)"
-          set +e
-          PR_HEAD_SHA="$PR_HEAD_SHA" bash scripts/github-build-ipa.sh >"$private_log" 2>&1
-          rc=$?
-          set -e
-          finished="$(date +%s)"
-          duration=$((finished - started))
-          if [[ "$rc" -ne 0 ]]; then
-            echo "::error::Xcode build or IPA verification failed (exit $rc). Private compiler diagnostics were suppressed from public logs."
-            exit "$rc"
-          fi
+          # Stream the complete Xcode/Swift build log to GitHub Actions,
+          # including warnings and compiler errors (also saved to runner temp).
+          PR_HEAD_SHA="$PR_HEAD_SHA" bash scripts/github-build-ipa.sh 2>&1 | tee "$build_log"
+          duration=$(($(date +%s) - started))
 
           # Confirm the wrapper actually controlled the Xcode Release build.
-          grep -qx 'HERMES_SWIFT_COMPILATION_MODE=incremental' "$private_log" || {
+          grep -qx 'HERMES_SWIFT_COMPILATION_MODE=incremental' "$build_log" || {
             echo "::error::Incremental compilation was not applied"
             exit 1
           }
-          grep -qx 'HERMES_SWIFT_OPTIMIZATION_LEVEL=-O' "$private_log" || {
+          grep -qx 'HERMES_SWIFT_OPTIMIZATION_LEVEL=-O' "$build_log" || {
             echo "::error::Release -O optimization was not applied"
             exit 1
           }
