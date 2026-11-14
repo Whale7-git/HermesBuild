@@ -143,7 +143,7 @@ run_build() {
   if [[ "$phase" == "cold" ]]; then
     (
       cd "$src"
-      env RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+      env GITHUB_WORKSPACE="$src" RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
         HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
         HERMES_EXPERIMENT_DERIVED="$derived" PR_HEAD_SHA="$SOURCE_SHA" \
         bash scripts/github-build-ipa.sh
@@ -152,7 +152,7 @@ run_build() {
   else
     (
       cd "$src"
-      env RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+      env GITHUB_WORKSPACE="$src" RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
         HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
         HERMES_EXPERIMENT_DERIVED="$derived" \
         xcodebuild "INFOPLIST_FILE=$mode_temp/HermesCI-Info.plist" \
