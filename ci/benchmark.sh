@@ -36,15 +36,16 @@ PY
   build)
     phase="${2:?cold|warm required}"
     wrapper_dir="$RUNNER_TEMP/hermes-xcode-wrapper"
+    tooling_dir="$GITHUB_WORKSPACE/tooling"
     mkdir -p "$wrapper_dir"
     cat >"$wrapper_dir/xcodebuild" <<'SH'
 #!/usr/bin/env bash
-exec bash "$GITHUB_WORKSPACE/tooling/ci/xcodebuild-diagnostic-wrapper.sh" "$@"
+exec bash "$HERMES_TOOLING_DIR/ci/xcodebuild-diagnostic-wrapper.sh" "$@"
 SH
     chmod 700 "$wrapper_dir/xcodebuild"
     start="$(now)"
     set +e
-    ( cd "$SRC" && PATH="$wrapper_dir:$PATH" HERMES_BENCH_PHASE="$phase" \
+    ( cd "$SRC" && PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$tooling_dir" HERMES_BENCH_PHASE="$phase" \
       GITHUB_WORKSPACE="$PWD" PR_HEAD_SHA="$SOURCE_SHA" \
       bash scripts/github-build-ipa.sh >"$RUNNER_TEMP/hermes-build-${phase}.log" 2>&1 )
     rc=$?
