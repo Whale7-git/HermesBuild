@@ -355,6 +355,18 @@ jobs:
             exit "$rc"
           fi
 
+          # Confirm the wrapper actually controlled the Xcode Release build.
+          grep -qx 'HERMES_SWIFT_COMPILATION_MODE=incremental' "$private_log" || {
+            echo "::error::Incremental compilation was not applied"
+            exit 1
+          }
+          grep -qx 'HERMES_SWIFT_OPTIMIZATION_LEVEL=-O' "$private_log" || {
+            echo "::error::Release -O optimization was not applied"
+            exit 1
+          }
+          echo "RELEASE_SWIFT_COMPILE_MODE=incremental"
+          echo "RELEASE_SWIFT_OPTIMIZATION=-O"
+
           python3 - <<'PY'
           import json, os
           from pathlib import Path
