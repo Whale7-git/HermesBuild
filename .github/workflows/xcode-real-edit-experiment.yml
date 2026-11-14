@@ -1,0 +1,77 @@
+name: HermesShell build162 real Swift edit WMO vs Incremental
+
+on:
+  push:
+    branches:
+      - experiments/xcode-real-edit-build162
+    paths:
+      - .github/workflows/xcode-real-edit-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-build162-real-edit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Real source edit Release compilation comparison
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout isolated public test code
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesBuild
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable private build162 source for WMO
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesShell
+          ref: 1e57404cae21f567a67d4e2ce92276c101642908
+          path: src-wholemodule
+          token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout immutable private build162 source for Incremental
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesShell
+          ref: 1e57404cae21f567a67d4e2ce92276c101642908
+          path: src-incremental
+          token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Validate experiment scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tooling/ci/run-real-edit-experiment.sh
+          bash -n tooling/ci/xcodebuild-real-edit-wrapper.sh
+          python3 -m py_compile tooling/ci/count-swift-compile-tasks.py
+          python3 -m py_compile tooling/ci/summarize-incremental-release-experiment.py
+          echo "TEST_SCRIPT_SYNTAX_PASS"
+
+      - name: Verify Xcode, source provenance and dependencies
+        shell: bash
+        run: bash tooling/ci/run-real-edit-experiment.sh prepare
+
+      - name: Build cold and after real Swift comment edit
+        shell: bash
+        run: bash tooling/ci/run-real-edit-experiment.sh build
+
+      - name: Upload sanitized aggregate metrics only
+        uses: actions/upload-artifact@v4
+        with:
+          name: build162-real-edit-swiftcompile-metrics
+          path: ${{ runner.temp }}/hermes-build162-incremental-comparison.json
+          if-no-files-found: error
+          retention-days: 14
