@@ -1,0 +1,78 @@
+name: HermesShell build162 Release WMO vs Incremental experiment
+
+on:
+  push:
+    branches:
+      - experiments/xcode-incremental-release-build162
+    paths:
+      - .github/workflows/xcode-incremental-release-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-build162-incremental-experiment-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Compare WMO and Incremental Release builds
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout isolated experiment tooling
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesBuild
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout pinned build162 source for WMO
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesShell
+          ref: 1e57404cae21f567a67d4e2ce92276c101642908
+          path: src-wholemodule
+          token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+
+      - name: Checkout pinned build162 source for Incremental
+        uses: actions/checkout@v4
+        with:
+          repository: Whale7-git/HermesShell
+          ref: 1e57404cae21f567a67d4e2ce92276c101642908
+          path: src-incremental
+          token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          lfs: false
+
+      - name: Validate isolated experiment scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tooling/ci/run-incremental-release-experiment.sh
+          bash -n tooling/ci/xcodebuild-incremental-experiment-wrapper.sh
+          python3 -m py_compile tooling/ci/summarize-incremental-release-experiment.py
+          echo "EXPERIMENT_SCRIPT_SYNTAX_OK"
+
+      - name: Prepare pinned Xcode toolchain and verify both source checkouts
+        shell: bash
+        run: bash tooling/ci/run-incremental-release-experiment.sh prepare
+
+      - name: Build and compare WMO vs Incremental Release
+        shell: bash
+        run: bash tooling/ci/run-incremental-release-experiment.sh build
+
+      - name: Upload aggregate metrics only
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-build162-incremental-release-metrics
+          path: ${{ runner.temp }}/hermes-build162-incremental-comparison.json
+          if-no-files-found: error
+          retention-days: 14
