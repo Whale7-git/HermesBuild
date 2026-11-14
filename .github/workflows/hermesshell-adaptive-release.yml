@@ -31,6 +31,18 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       build: ${{ steps.metadata.outputs.build }}
     steps:
+      - name: Guard release source selection
+        if: ${{ inputs.publish_release }}
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" || "$SOURCE_REF" != "main" ]]; then
+            echo "::error::Release publication is allowed only from HermesBuild main using HermesShell main"
+            exit 1
+          fi
+
       - name: Checkout private HermesShell source
         uses: actions/checkout@v4
         with:
