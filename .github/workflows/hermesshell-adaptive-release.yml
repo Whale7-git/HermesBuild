@@ -237,6 +237,10 @@ jobs:
           compiling = re.findall(r"(?m)^FAIL: compile ([A-Za-z0-9_-]+)$", output)
           running = re.findall(r"(?m)^\++\s+stdbuf -oL \S+/([A-Za-z0-9_-]+)\s*$", trace)
           serial = re.findall(r"(?m)^\++\s+bash (tests/[A-Za-z0-9_/-]+/run(?:_local)?\.sh)\s*$", trace)
+          markers = re.findall(r"(?m)^([A-Z][A-Z0-9_]*_PASS)(?:\s|$)", output)
+          if markers:
+              print("LAST_PASS_MARKER=" + markers[-1])
+              print("PASS_MARKER_COUNT=" + str(len(markers)))
           if compiling:
               print("FAILED_COMPILE_SUITE=" + compiling[-1])
           if running:
