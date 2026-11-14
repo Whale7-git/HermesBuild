@@ -226,8 +226,9 @@ PY
 }
 
 touch_probe() {
-  local mode="$1" src="$GITHUB_WORKSPACE/src-$mode"
-  local file="$GITHUB_WORKSPACE/src-$mode/Sources/HermesShell/AppTheme.swift"
+  local mode="$1"
+  local src="$GITHUB_WORKSPACE/src-$mode"
+  local file="$src/Sources/HermesShell/AppTheme.swift"
   [[ -z "$(git -C "$src" diff --name-only)" ]] || { echo "::error::Source already modified"; exit 1; }
   printf '\n// CI-only incremental rebuild diagnostic; no runtime behavior change.\n' >> "$file"
   [[ "$(git -C "$src" diff --name-only)" == "Sources/HermesShell/AppTheme.swift" ]] || {
