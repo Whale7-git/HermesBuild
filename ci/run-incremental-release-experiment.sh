@@ -272,6 +272,7 @@ lines = [
     "- All four builds used Release -O; only SWIFT_COMPILATION_MODE changed.",
     "- Probe: touched Sources/HermesShell/AppTheme.swift without changing its contents.",
     "- Each mode used a separate DerivedData directory on the same runner.",
+    "- xcresult Swift activity labels may include cached tasks; do not interpret their counts as files recompiled. Compare Xcode wall time for this experiment.",
     "",
     "| Mode | Build phase | Xcode build (s) | Swift activity records | Distinct Swift labels | IPA size (MiB) | IPA verification |",
     "|---|---|---:|---:|---:|---:|---|",
