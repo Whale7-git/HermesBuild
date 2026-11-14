@@ -56,6 +56,8 @@ jobs:
       - name: Resolve immutable source identity
         id: identity
         shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
@@ -65,7 +67,7 @@ jobs:
             echo "## Source identity"
             echo
             echo "- Commit: $sha"
-            echo "- Requested ref: ${{ inputs.source_ref }}"
+            echo "- Requested ref: $SOURCE_REF"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Read release metadata
