@@ -64,7 +64,8 @@ SH
     else
       echo "XCODE_ACTIVITY_METRICS=unavailable"
     fi
-    rm -f "$metrics" "$settings" "$RUNNER_TEMP/hermes-$phase.xcresult" "$RUNNER_TEMP/hermes-$phase-xcresulttool.stderr"
+    rm -f "$metrics" "$settings" "$RUNNER_TEMP/hermes-$phase-xcresulttool.stderr"
+    rm -rf "$RUNNER_TEMP/hermes-$phase.xcresult"
     python3 - "$SRC/release/validation.json" "$GITHUB_OUTPUT" <<'PY'
 import json, sys
 v = json.load(open(sys.argv[1]))
