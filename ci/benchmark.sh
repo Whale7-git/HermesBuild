@@ -35,9 +35,17 @@ PY
     ;;
   build)
     phase="${2:?cold|warm required}"
+    wrapper_dir="$RUNNER_TEMP/hermes-xcode-wrapper"
+    mkdir -p "$wrapper_dir"
+    cat >"$wrapper_dir/xcodebuild" <<'SH'
+#!/usr/bin/env bash
+exec bash "$GITHUB_WORKSPACE/tooling/ci/xcodebuild-diagnostic-wrapper.sh" "$@"
+SH
+    chmod 700 "$wrapper_dir/xcodebuild"
     start="$(now)"
     set +e
-    ( cd "$SRC" && GITHUB_WORKSPACE="$PWD" PR_HEAD_SHA="$SOURCE_SHA" \
+    ( cd "$SRC" && PATH="$wrapper_dir:$PATH" HERMES_BENCH_PHASE="$phase" \
+      GITHUB_WORKSPACE="$PWD" PR_HEAD_SHA="$SOURCE_SHA" \
       bash scripts/github-build-ipa.sh >"$RUNNER_TEMP/hermes-build-${phase}.log" 2>&1 )
     rc=$?
     set -e
@@ -48,6 +56,14 @@ PY
       echo "::error::Xcode build/IPA verification failed. Private compiler logs not uploaded."
       exit "$rc"
     fi
+    metrics="$RUNNER_TEMP/hermes-${phase}-build-log.json"
+    settings="$RUNNER_TEMP/hermes-${phase}-build-settings.txt"
+    if [[ -s "$metrics" ]]; then
+      python3 "$GITHUB_WORKSPACE/tooling/ci/summarize-xcode-build.py" "$phase" "$metrics" "$settings"
+    else
+      echo "XCODE_ACTIVITY_METRICS=unavailable"
+    fi
+    rm -f "$metrics" "$settings" "$RUNNER_TEMP/hermes-$phase.xcresult" "$RUNNER_TEMP/hermes-$phase-xcresulttool.stderr"
     python3 - "$SRC/release/validation.json" "$GITHUB_OUTPUT" <<'PY'
 import json, sys
 v = json.load(open(sys.argv[1]))
