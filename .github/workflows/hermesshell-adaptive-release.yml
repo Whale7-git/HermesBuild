@@ -241,6 +241,11 @@ jobs:
           if markers:
               print("LAST_PASS_MARKER=" + markers[-1])
               print("PASS_MARKER_COUNT=" + str(len(markers)))
+          sites = re.findall(r"(?m)([A-Za-z0-9_]+\\.swift):(\\d+):(?:\\d+:)?\\s*(?:Fatal error|Precondition failed|Assertion failed)", trace + "\\n" + output)
+          if sites:
+              filename, number = sites[-1]
+              print("FAILED_ASSERTION_FILE=" + filename)
+              print("FAILED_ASSERTION_LINE=" + number)
           if compiling:
               print("FAILED_COMPILE_SUITE=" + compiling[-1])
           if running:
