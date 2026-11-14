@@ -72,6 +72,35 @@ jobs:
           print("SOURCE_COMMIT=1e57404cae21f567a67d4e2ce92276c101642908")
           PY
 
+      - name: Use optimized incremental Swift Release compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          shim_dir="$RUNNER_TEMP/hermes-incremental-xcodebuild"
+          mkdir -p "$shim_dir"
+          cat >"$shim_dir/xcodebuild" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          args=()
+          action_build=false
+          for arg in "$@"; do
+            if [[ "$arg" == "build" ]]; then
+              action_build=true
+            else
+              args+=("$arg")
+            fi
+          done
+          if [[ "$action_build" == true ]]; then
+            echo "HERMES_SWIFT_COMPILATION_MODE=incremental"
+            echo "HERMES_SWIFT_OPTIMIZATION_LEVEL=-O"
+            exec /usr/bin/xcodebuild "${args[@]}" SWIFT_COMPILATION_MODE=incremental SWIFT_OPTIMIZATION_LEVEL=-O build
+          fi
+          exec /usr/bin/xcodebuild "$@"
+          SH
+          chmod 700 "$shim_dir/xcodebuild"
+          echo "$shim_dir" >> "$GITHUB_PATH"
+          echo "RELEASE_SWIFT_INCREMENTAL_OVERRIDE=ENABLED"
+          
       - name: Build and verify unsigned iPhoneOS IPA
         id: build
         shell: bash
