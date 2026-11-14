@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout private HermesShell build162 source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        uses: actions/checkout@v4
         with:
           repository: Whale7-git/HermesShell
           ref: release-2.24.0-build162
@@ -172,193 +172,107 @@ jobs:
               summary.write(f"| Byte-identical | {'YES' if same else 'NO'} | {'YES' if same else 'NO'} |\n")
           PY
 
-      - name: Upload Xcode IPA and provenance to private HermesShell Release
+      - name: Upload Xcode IPA to private HermesShell build162 Release
         if: success()
         shell: bash
         env:
-          HERMESSHELL_RELEASE_TOKEN: ${{ secrets.HERMESSHELL_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.HERMESSHELL_RELEASE_TOKEN }}
           BASH_ENV: ""
-          ENV: ""
-          PATH: /usr/bin:/bin:/usr/sbin:/sbin
-          PYTHONPATH: ""
-          PYTHONHOME: ""
-          PYTHONSTARTUP: ""
-          DYLD_INSERT_LIBRARIES: ""
-          CURL_HOME: "/dev/null"
-          CURL_CA_BUNDLE: ""
-          HTTPS_PROXY: ""
-          https_proxy: ""
-          HTTP_PROXY: ""
-          http_proxy: ""
-          ALL_PROXY: ""
-          all_proxy: ""
-          SSL_CERT_FILE: ""
-          SSL_CERT_DIR: ""
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Only main may publish to HermesShell"; exit 1; }
-          : "${HERMESSHELL_RELEASE_TOKEN:?Add HERMESSHELL_RELEASE_TOKEN to HermesBuild Actions secrets}"
+          : "${GH_TOKEN:?Add HERMESSHELL_RELEASE_TOKEN to HermesBuild Actions secrets}"
 
           source_ipa="release/Hermes-2.24.0-build162-unsigned.ipa"
           ipa="release/Hermes-2.24.0-build162-xcode-unsigned.ipa"
-          [[ -f "$source_ipa" && ! -L "$source_ipa" && -s "$source_ipa" ]] || {
-            echo "::error::Expected Xcode IPA is missing or invalid"
-            exit 1
-          }
-          /bin/cp "$source_ipa" "$ipa"
+          [[ -s "$source_ipa" ]] || { echo "::error::Xcode IPA missing"; exit 1; }
+          cp "$source_ipa" "$ipa"
 
-          # Rebuild provenance manifests after compilation. The Xcode IPA is
-          # uploaded only to the existing PRIVATE HermesShell Release; never
-          # to this public repository or its Actions artifacts.
-          /usr/bin/python3 - <<'PY'
-          import datetime, hashlib, json, os, pathlib
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
           root = pathlib.Path("release")
           ipa = root / "Hermes-2.24.0-build162-xcode-unsigned.ipa"
           validation = json.loads((root / "validation.json").read_text(encoding="utf-8"))
-          build_info = json.loads((root / "build-info.json").read_text(encoding="utf-8"))
-
+          info = json.loads((root / "build-info.json").read_text(encoding="utf-8"))
           expected = {
-              "version": "2.24.0",
-              "build": "162",
-              "bundle": "com.whale7.hermes",
-              "arch": "arm64",
-              "unsigned": True,
+              "version": "2.24.0", "build": "162",
+              "bundle": "com.whale7.hermes", "arch": "arm64", "unsigned": True,
           }
           for key, value in expected.items():
-              if validation.get(key) != value:
-                  raise SystemExit(f"IPA validation mismatch for {key}: {validation.get(key)!r}")
-          expected_commit = "1e57404cae21f567a67d4e2ce92276c101642908"
-          if build_info.get("head_commit") != expected_commit or build_info.get("source_head_commit") != expected_commit:
-              raise SystemExit("Build provenance does not match the pinned build162 source")
-          if build_info.get("working_tree") != "clean":
-              raise SystemExit("Build source working tree is not clean")
+              assert validation.get(key) == value, (key, validation.get(key), value)
+          commit = "1e57404cae21f567a67d4e2ce92276c101642908"
+          assert info.get("head_commit") == commit
+          assert info.get("source_head_commit") == commit
+          assert info.get("working_tree") == "clean"
+          digest = hashlib.sha256(ipa.read_bytes()).hexdigest()
+          assert validation.get("sha256") == digest
+          assert validation.get("ipa_bytes") == ipa.stat().st_size
 
-          actual_sha = hashlib.sha256(ipa.read_bytes()).hexdigest()
-          if validation.get("sha256") != actual_sha or validation.get("ipa_bytes") != ipa.stat().st_size:
-              raise SystemExit("IPA digest or size differs from the verified validation report")
-
-          validation["ipa"] = "Hermes-2.24.0-build162-xcode-unsigned.ipa"
+          validation["ipa"] = ipa.name
           validation["build_channel"] = "github-hosted-macos-xcode"
           (root / "validation-xcode.json").write_text(
               json.dumps(validation, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-          build_info.update({
+          info.update({
               "build_channel": "github-hosted-macos-xcode",
               "xcode_version": "26.3",
               "ios_sdk_version": "26.2",
               "runner_image": "macos-15-arm64",
               "github_actions_run_id": os.environ["GITHUB_RUN_ID"],
               "github_actions_run_url": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
-              "source_commit": expected_commit,
-              "ipa_sha256": actual_sha,
+              "source_commit": commit,
+              "ipa_sha256": digest,
               "ipa_size_bytes": ipa.stat().st_size,
           })
           (root / "build-info-xcode.json").write_text(
-              json.dumps(build_info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-          manifest_files = [
-              ipa,
-              root / "build-info-xcode.json",
-              root / "validation-xcode.json",
-          ]
+              json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          files = [ipa, root / "build-info-xcode.json", root / "validation-xcode.json"]
           manifest = "".join(
-              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
-              for path in manifest_files
+              f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files
           )
           (root / "SHA256SUMS-xcode.txt").write_text(manifest, encoding="utf-8")
-          print(f"IPA_SHA256={actual_sha}")
-          print(f"IPA_SIZE_BYTES={ipa.stat().st_size}")
-          print("PROVENANCE=PASS")
+          print("XCODE_IPA_SHA256=" + digest)
+          print("XCODE_IPA_SIZE_BYTES=" + str(ipa.stat().st_size))
           PY
 
-          # Confirm the destination is the existing build162 Release and that
-          # its tag still points at the exact source commit. Existing assets
-          # are immutable here: a conflicting same-name asset fails closed.
-          api="https://api.github.com/repos/Whale7-git/HermesShell/releases/tags/release-2.24.0-build162"
-          /usr/bin/curl --disable --fail --silent --show-error --retry 3 --retry-all-errors \
-            -H "Authorization: Bearer $HERMESSHELL_RELEASE_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$api" -o "$RUNNER_TEMP/hermesshell-release.json"
-
-          /usr/bin/python3 - "$RUNNER_TEMP/hermesshell-release.json" <<'PY'
-          import json, sys
-          release = json.load(open(sys.argv[1], encoding="utf-8"))
+          release_tag="release-2.24.0-build162"
+          gh api "repos/Whale7-git/HermesShell/releases/tags/$release_tag" >"$RUNNER_TEMP/private-release.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = json.loads(Path(os.environ["RUNNER_TEMP"], "private-release.json").read_text(encoding="utf-8"))
           assert release["tag_name"] == "release-2.24.0-build162"
-          assert release["target_commitish"] == "1e57404cae21f567a67d4e2ce92276c101642908", release["target_commitish"]
+          assert release["target_commitish"] == "1e57404cae21f567a67d4e2ce92276c101642908"
           assert release["draft"] is False and release["prerelease"] is False
+          names = {asset["name"] for asset in release.get("assets", [])}
+          expected = {
+              "Hermes-2.24.0-build162-xcode-unsigned.ipa",
+              "build-info-xcode.json",
+              "validation-xcode.json",
+              "SHA256SUMS-xcode.txt",
+          }
+          conflicts = names & expected
+          if conflicts:
+              raise SystemExit("Refusing to overwrite existing Release assets: " + ", ".join(sorted(conflicts)))
           print("PRIVATE_RELEASE_ID=" + str(release["id"]))
           PY
 
-          release_id="$(/usr/bin/python3 - "$RUNNER_TEMP/hermesshell-release.json" <<'PY'
-          import json, sys
-          print(json.load(open(sys.argv[1], encoding="utf-8"))["id"])
-          PY
-          )"
-          upload_base="https://uploads.github.com/repos/Whale7-git/HermesShell/releases/$release_id/assets"
+          gh release upload "$release_tag" \
+            "$ipa" \
+            release/build-info-xcode.json \
+            release/validation-xcode.json \
+            release/SHA256SUMS-xcode.txt \
+            --repo Whale7-git/HermesShell
 
-          for asset in \
-            "Hermes-2.24.0-build162-xcode-unsigned.ipa" \
-            "build-info-xcode.json" \
-            "validation-xcode.json" \
-            "SHA256SUMS-xcode.txt"; do
-            asset_path="release/$asset"
-            expected_sha="$(/usr/bin/shasum -a 256 "$asset_path" | /usr/bin/awk '{print $1}')"
-
-            /usr/bin/curl --disable --fail --silent --show-error --retry 3 --retry-all-errors \
-              -H "Authorization: Bearer $HERMESSHELL_RELEASE_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "$api" -o "$RUNNER_TEMP/hermesshell-release-current.json"
-
-            existing="$(/usr/bin/python3 - "$RUNNER_TEMP/hermesshell-release-current.json" "$asset" <<'PY'
-          import json, sys
-          release = json.load(open(sys.argv[1], encoding="utf-8"))
-          matches = [a for a in release.get("assets", []) if a["name"] == sys.argv[2]]
-          if len(matches) > 1:
-              raise SystemExit("Duplicate destination assets detected")
-          if matches:
-              print(matches[0].get("digest", ""))
-          PY
-            )"
-
-            if [[ -n "$existing" ]]; then
-              if [[ "$existing" == "sha256:$expected_sha" ]]; then
-                echo "ASSET_ALREADY_PRESENT=$asset"
-                continue
-              fi
-              echo "::error::A different asset with the same name already exists: $asset. Refusing to overwrite."
-              exit 1
-            fi
-
-            /usr/bin/curl --disable --fail --silent --show-error --retry 3 --retry-all-errors \
-              -H "Authorization: Bearer $HERMESSHELL_RELEASE_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary "@$asset_path" \
-              "$upload_base?name=$asset" \
-              -o "$RUNNER_TEMP/uploaded-asset.json"
-
-            echo "UPLOADED_PRIVATE_ASSET=$asset"
-          done
-
-          # Verify the uploaded IPA is visible on the private Release with the
-          # expected SHA-256 digest. No public artifact or public Release is made.
-          /usr/bin/curl --disable --fail --silent --show-error \
-            -H "Authorization: Bearer $HERMESSHELL_RELEASE_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$api" -o "$RUNNER_TEMP/hermesshell-release-verified.json"
-
-          /usr/bin/python3 - "$RUNNER_TEMP/hermesshell-release-verified.json" "release/Hermes-2.24.0-build162-xcode-unsigned.ipa" <<'PY'
-          import hashlib, json, pathlib, sys
-          release = json.load(open(sys.argv[1], encoding="utf-8"))
-          ipa = pathlib.Path(sys.argv[2])
+          gh api "repos/Whale7-git/HermesShell/releases/tags/$release_tag" >"$RUNNER_TEMP/private-release-verified.json"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          release = json.loads(Path(os.environ["RUNNER_TEMP"], "private-release-verified.json").read_text(encoding="utf-8"))
+          ipa = Path("release/Hermes-2.24.0-build162-xcode-unsigned.ipa")
           digest = hashlib.sha256(ipa.read_bytes()).hexdigest()
-          matches = [a for a in release.get("assets", []) if a["name"] == "Hermes-2.24.0-build162-xcode-unsigned.ipa"]
-          assert len(matches) == 1, "Expected exactly one Xcode IPA asset in the private Release"
-          assert matches[0].get("digest") == "sha256:" + digest, matches[0].get("digest")
+          matches = [a for a in release["assets"] if a["name"] == ipa.name]
+          assert len(matches) == 1
+          assert matches[0].get("digest") == "sha256:" + digest
           assert matches[0]["size"] == ipa.stat().st_size
           print("PRIVATE_RELEASE_UPLOAD=VERIFIED")
           print("PRIVATE_RELEASE_ASSET=" + matches[0]["name"])
