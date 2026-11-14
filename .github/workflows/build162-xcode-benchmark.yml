@@ -12,7 +12,6 @@ concurrency:
 
 jobs:
   xcode-build:
-    if: github.ref == 'refs/heads/main'
     name: Build exact build162 source with GitHub macOS Runner
     runs-on: macos-15
     timeout-minutes: 90
@@ -174,7 +173,7 @@ jobs:
           PY
 
       - name: Upload Xcode IPA and provenance to private HermesShell Release
-        if: success() && github.ref == 'refs/heads/main'
+        if: success()
         shell: bash
         env:
           HERMESSHELL_RELEASE_TOKEN: ${{ secrets.HERMESSHELL_RELEASE_TOKEN }}
@@ -195,9 +194,9 @@ jobs:
           all_proxy: ""
           SSL_CERT_FILE: ""
           SSL_CERT_DIR: ""
-          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Only main may publish to HermesShell"; exit 1; }
           : "${HERMESSHELL_RELEASE_TOKEN:?Add HERMESSHELL_RELEASE_TOKEN to HermesBuild Actions secrets}"
 
           source_ipa="release/Hermes-2.24.0-build162-unsigned.ipa"
