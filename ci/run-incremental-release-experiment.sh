@@ -114,14 +114,16 @@ run_build() {
   local mode="$1"
   local phase="$2"
   local src="$GITHUB_WORKSPACE/src-$mode"
-  local derived="$RUNNER_TEMP/hermes-exp-$mode-derived"
+  local mode_temp="$RUNNER_TEMP/hermes-exp-$mode-tmp"
+  local derived="$mode_temp/hermes-ipa-derived"
   local wrapper_dir
   local driver_log="$RUNNER_TEMP/hermes-exp-$mode-$phase-driver.log"
   local status=0
   wrapper_dir="$(make_wrapper "$mode")"
 
   if [[ "$phase" == "cold" ]]; then
-    rm -rf "$derived"
+    rm -rf "$mode_temp"
+    mkdir -p "$mode_temp"
     [[ -z "$(git -C "$src" status --porcelain)" ]] || {
       echo "::error::Source tree is dirty before cold build: $mode"; exit 1;
     }
@@ -129,8 +131,8 @@ run_build() {
     [[ -d "$derived/Build" && -d "$src/HermesShellCI.xcodeproj" ]] || {
       echo "::error::Warm DerivedData or generated project missing for $mode"; exit 1;
     }
-    [[ -f "$RUNNER_TEMP/HermesCI-Info.plist" ]] || {
-      echo "::error::Generated CI Info.plist missing"; exit 1;
+    [[ -f "$mode_temp/HermesCI-Info.plist" ]] || {
+      echo "::error::Generated CI Info.plist missing for $mode"; exit 1;
     }
     [[ -z "$(git -C "$src" status --porcelain)" ]] || {
       echo "::error::Source tree is dirty before changed rebuild: $mode"; exit 1;
@@ -141,7 +143,7 @@ run_build() {
   if [[ "$phase" == "cold" ]]; then
     (
       cd "$src"
-      env PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+      env RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
         HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
         HERMES_EXPERIMENT_DERIVED="$derived" PR_HEAD_SHA="$SOURCE_SHA" \
         bash scripts/github-build-ipa.sh
@@ -150,13 +152,13 @@ run_build() {
   else
     (
       cd "$src"
-      env PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
+      env RUNNER_TEMP="$mode_temp" PATH="$wrapper_dir:$PATH" HERMES_TOOLING_DIR="$TOOLING" \
         HERMES_EXPERIMENT_MODE="$mode" HERMES_EXPERIMENT_PHASE="$phase" \
         HERMES_EXPERIMENT_DERIVED="$derived" \
-        xcodebuild "INFOPLIST_FILE=$RUNNER_TEMP/HermesCI-Info.plist" \
+        xcodebuild "INFOPLIST_FILE=$mode_temp/HermesCI-Info.plist" \
           -project HermesShellCI.xcodeproj -scheme HermesShell \
           -destination 'generic/platform=iOS' -sdk iphoneos \
-          -configuration Release -derivedDataPath "$RUNNER_TEMP/hermes-ipa-derived" \
+          -configuration Release -derivedDataPath "$derived" \
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 'CODE_SIGN_IDENTITY=' \
           STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO build
     ) >"$driver_log" 2>&1
@@ -188,7 +190,7 @@ run_build() {
     if [[ ! -d "$app" || ! -f "$app/HermesShell" ]]; then
       echo "::error::iPhoneOS app missing after changed rebuild"; exit 1;
     fi
-    stage="$(mktemp -d "$RUNNER_TEMP/hermes-exp-payload.XXXXXX")"
+    stage="$(mktemp -d "$mode_temp/hermes-exp-payload.XXXXXX")"
     mkdir -p "$stage/Payload"
     cp -R "$app" "$stage/Payload/HermesShell.app"
     ( cd "$stage" && zip -qry "$ipa" Payload )
@@ -210,6 +212,9 @@ PY
     ( cd "$src" && python3 tests/verify_ipa.py "release/$name.ipa" "$version" "$build" "release/build-info.json" --label "$name.ipa" >"release/validation.json" )
   fi
 
+  # The app build script expects DerivedData below RUNNER_TEMP. Give each
+  # mode its own RUNNER_TEMP and copy only its aggregate metrics to the report.
+  cp "$mode_temp/hermes-exp-$mode-$phase.json" "$RUNNER_TEMP/hermes-exp-$mode-$phase.json"
   capture_validation "$mode" "$phase"
   grep -E '^XCODEBUILD_WALL_SECONDS=|^XCODE_EXPERIMENT ' "$driver_log" || true
   clean_generated_outputs "$src"
