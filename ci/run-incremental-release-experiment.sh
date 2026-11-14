@@ -116,8 +116,9 @@ run_build() {
   local src="$GITHUB_WORKSPACE/src-$mode"
   local derived="$RUNNER_TEMP/hermes-exp-$mode-derived"
   local wrapper_dir
-  wrapper_dir="$(make_wrapper "$mode")"
   local driver_log="$RUNNER_TEMP/hermes-exp-$mode-$phase-driver.log"
+  local status=0
+  wrapper_dir="$(make_wrapper "$mode")"
 
   if [[ "$phase" == "cold" ]]; then
     rm -rf "$derived"
@@ -145,6 +146,7 @@ run_build() {
         HERMES_EXPERIMENT_DERIVED="$derived" PR_HEAD_SHA="$SOURCE_SHA" \
         bash scripts/github-build-ipa.sh
     ) >"$driver_log" 2>&1
+    status=$?
   else
     (
       cd "$src"
@@ -158,24 +160,40 @@ run_build() {
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 'CODE_SIGN_IDENTITY=' \
           STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO build
     ) >"$driver_log" 2>&1
-    local build_status=$?
-    if [[ "$build_status" -eq 0 ]]; then
-      local version build name app stage ipa
-      version="$(python3 -c 'import json; print(json.load(open("release.json"))["version"])' 2>/dev/null)"
-      build="$(python3 -c 'import json; print(json.load(open("release.json"))["build"])' 2>/dev/null)"
-      name="Hermes-$version-build$build-unsigned"
-      app="$derived/Build/Products/Release-iphoneos/HermesShell.app"
-      ipa="$src/release/$name.ipa"
-      mkdir -p "$src/release"
-      if [[ ! -d "$app" || ! -f "$app/HermesShell" ]]; then
-        echo "::error::iPhoneOS app missing after changed rebuild"; exit 1;
-      fi
-      stage="$(mktemp -d "$RUNNER_TEMP/hermes-exp-payload.XXXXXX")"
-      mkdir -p "$stage/Payload"
-      cp -R "$app" "$stage/Payload/HermesShell.app"
-      ( cd "$stage" && zip -qry "$ipa" Payload )
-      rm -rf "$stage"
-      python3 - "$src/release/build-info.json" "$version" "$build" "$SOURCE_SHA" <<'PY'
+    status=$?
+  fi
+  set -e
+
+  if [[ "$status" -ne 0 ]]; then
+    echo "::error::build162 $mode/$phase failed"
+    grep -E 'error:|ERROR:|SOURCE_GATE_FAILED|IPA_VERIFICATION_FAILED|XCODE_EXPERIMENT|XCODEBUILD_WALL' "$driver_log" | tail -40 || true
+    exit "$status"
+  fi
+
+  if [[ "$phase" == "changed" ]]; then
+    # The generated Xcode project and IPA directory are local build products,
+    # not source. Exclude them in this disposable clone so build provenance
+    # remains clean during the second IPA verification.
+    touch "$src/.git/info/exclude"
+    grep -qxF 'HermesShellCI.xcodeproj/' "$src/.git/info/exclude" || printf '%s\n' 'HermesShellCI.xcodeproj/' >>"$src/.git/info/exclude"
+    grep -qxF 'release/' "$src/.git/info/exclude" || printf '%s\n' 'release/' >>"$src/.git/info/exclude"
+
+    local version build name app stage ipa
+    version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$src/release.json")"
+    build="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build"])' "$src/release.json")"
+    name="Hermes-$version-build$build-unsigned"
+    app="$derived/Build/Products/Release-iphoneos/HermesShell.app"
+    ipa="$src/release/$name.ipa"
+    mkdir -p "$src/release"
+    if [[ ! -d "$app" || ! -f "$app/HermesShell" ]]; then
+      echo "::error::iPhoneOS app missing after changed rebuild"; exit 1;
+    fi
+    stage="$(mktemp -d "$RUNNER_TEMP/hermes-exp-payload.XXXXXX")"
+    mkdir -p "$stage/Payload"
+    cp -R "$app" "$stage/Payload/HermesShell.app"
+    ( cd "$stage" && zip -qry "$ipa" Payload )
+    rm -rf "$stage"
+    python3 - "$src/release/build-info.json" "$version" "$build" "$SOURCE_SHA" <<'PY'
 import datetime, json, pathlib, sys
 path, version, build, commit = sys.argv[1:]
 info = {
@@ -189,17 +207,7 @@ info = {
 }
 pathlib.Path(path).write_text(json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
-      python3 tests/verify_ipa.py "$ipa" "$version" "$build" "$src/release/build-info.json" \
-        --label "$name.ipa" >"$src/release/validation.json"
-    fi
-    status="$build_status"
-  fi
-  status="${status:-$?}"
-  set -e
-  if [[ "$status" -ne 0 ]]; then
-    echo "::error::build162 $mode/$phase failed"
-    grep -E 'error:|ERROR:|SOURCE_GATE_FAILED|IPA_VERIFICATION_FAILED|XCODE_EXPERIMENT|XCODEBUILD_WALL' "$driver_log" | tail -40 || true
-    exit "$status"
+    ( cd "$src" && python3 tests/verify_ipa.py "release/$name.ipa" "$version" "$build" "release/build-info.json" --label "$name.ipa" >"release/validation.json" )
   fi
 
   capture_validation "$mode" "$phase"
