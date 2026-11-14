@@ -22,7 +22,7 @@ jobs:
         with:
           repository: Whale7-git/HermesShell
           ref: release-2.24.0-build162
-          token: ${{ secrets.HERMESSHELL_READ_TOKEN }}
+          token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
           lfs: false
@@ -139,7 +139,7 @@ jobs:
         if: success()
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HERMESSHELL_READ_TOKEN }}
+          GH_TOKEN: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           gh api "repos/Whale7-git/HermesShell/releases/tags/release-2.24.0-build162" \
@@ -176,12 +176,12 @@ jobs:
         if: success()
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HERMESSHELL_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
           BASH_ENV: ""
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::Only main may publish to HermesShell"; exit 1; }
-          : "${GH_TOKEN:?Add HERMESSHELL_RELEASE_TOKEN to HermesBuild Actions secrets}"
+          : "${GH_TOKEN:?Add HERMESSHELL_READ_RELEASE_TOKEN to HermesBuild Actions secrets}"
 
           source_ipa="release/Hermes-2.24.0-build162-unsigned.ipa"
           ipa="release/Hermes-2.24.0-build162-xcode-unsigned.ipa"
