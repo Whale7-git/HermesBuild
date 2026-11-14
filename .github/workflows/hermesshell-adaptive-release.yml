@@ -41,7 +41,7 @@ jobs:
         if: ${{ inputs.publish_release }}
         shell: bash
         env:
-          SOURCE_REF: ${{ inputs.source_ref || 'ci/build165-preflight-fixes' }}
+          SOURCE_REF: ${{ inputs.source_ref || 'main' }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" != "refs/heads/main" || "$SOURCE_REF" != "main" ]]; then
@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Whale7-git/HermesShell
-          ref: ${{ inputs.source_ref || 'ci/build165-preflight-fixes' }}
+          ref: ${{ inputs.source_ref || 'main' }}
           token: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
