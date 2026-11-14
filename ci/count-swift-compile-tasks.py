@@ -14,15 +14,15 @@ rows = log.read_text(encoding="utf-8", errors="replace").splitlines()
 # intentionally distinct from xcresult activity labels (which can include
 # previously cached task records).
 executed = [line.strip() for line in rows
-            if re.match(r"^\\s*SwiftCompile\\s+normal\\s+", line)]
+            if re.match(r"^\s*SwiftCompile\s+normal\s+", line)]
 drivers = [line for line in rows
-           if re.match(r"^\\s*SwiftDriver\\s+", line)]
+           if re.match(r"^\s*SwiftDriver\s+", line)]
 emit_modules = [line for line in rows
-                if re.match(r"^\\s*SwiftEmitModule\\s+", line)]
+                if re.match(r"^\s*SwiftEmitModule\s+", line)]
 filenames = set()
 for line in executed:
     # Xcode may group multiple Swift source files into a single compile task.
-    for match in re.finditer(r"([A-Za-z0-9_+.-]+\\.swift)(?=\\b)", line):
+    for match in re.finditer(r"([A-Za-z0-9_+.-]+\.swift)(?=\b)", line):
         filenames.add(match.group(1))
 metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
 metrics["xcode_stdout_swiftcompile_task_headers"] = len(executed)
