@@ -1,4 +1,4 @@
-name: HermesShell encrypted DerivedData cache benchmark
+name: HermesShell encrypted cache + Xcode build diagnostics
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
         shell: bash
         run: bash tooling/ci/benchmark.sh prepare
 
-      - name: Cold compile and verify IPA
+      - name: Cold compile, verify IPA and capture Xcode task timings
         id: build
         shell: bash
         run: bash tooling/ci/benchmark.sh build cold
@@ -145,7 +145,7 @@ jobs:
           HERMESSHELL_CACHE_TOKEN: ${{ secrets.HERMESSHELL_READ_RELEASE_TOKEN }}
         run: bash tooling/ci/benchmark.sh unpack
 
-      - name: Warm compile and verify IPA
+      - name: Warm compile, verify IPA and capture Xcode task timings
         id: build
         shell: bash
         run: bash tooling/ci/benchmark.sh build warm
