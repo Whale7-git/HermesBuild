@@ -28,7 +28,7 @@ match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", sys.argv[1])
 if not match or tuple(map(int, match.groups())) < (2, 42, 0):
     raise SystemExit("XcodeGen 2.42.0 or newer is required; got " + sys.argv[1])
 PY
-  printf '%s\\n' "$xcodegen_version" >"$RUNNER_TEMP/hermes-exp-xcodegen-version.txt"
+  printf '%s\n' "$xcodegen_version" >"$RUNNER_TEMP/hermes-exp-xcodegen-version.txt"
   for mode in wholemodule incremental; do
     local src="$GITHUB_WORKSPACE/src-$mode"
     [[ "$(git -C "$src" rev-parse HEAD)" == "$SOURCE_SHA" ]] || {
