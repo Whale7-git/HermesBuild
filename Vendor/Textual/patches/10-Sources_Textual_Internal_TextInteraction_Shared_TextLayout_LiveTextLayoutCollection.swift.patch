@@ -1,0 +1,22 @@
+--- a/Sources/Textual/Internal/TextInteraction/Shared/TextLayout/LiveTextLayoutCollection.swift
++++ b/Sources/Textual/Internal/TextInteraction/Shared/TextLayout/LiveTextLayoutCollection.swift
+@@ -6,14 +6,17 @@
+ 
+     private let base: Text.LayoutKey.Value
+     private let geometry: GeometryProxy
++    private let size: CGSize
+ 
+-    init(base: Text.LayoutKey.Value, geometry: GeometryProxy) {
++    init(base: Text.LayoutKey.Value, geometry: GeometryProxy, size: CGSize) {
+       self.base = base
+       self.geometry = geometry
++      self.size = size
+     }
+ 
+     func isEqual(to other: any TextLayoutCollection) -> Bool {
+-      base == (other as? LiveTextLayoutCollection)?.base
++      guard let other = other as? LiveTextLayoutCollection else { return false }
++      return base == other.base && size == other.size
+     }
+ 
+     func needsPositionReconciliation(with other: any TextLayoutCollection) -> Bool {

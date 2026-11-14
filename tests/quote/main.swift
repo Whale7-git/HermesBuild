@@ -1,0 +1,41 @@
+import Foundation
+
+var checks = 0
+func check(_ value: @autoclosure () -> Bool, _ label: String) {
+    checks += 1
+    if !value() { print("FAIL: \(label)"); exit(1) }
+}
+
+let assistant = ChatMessage(id: "a", role: "assistant", content: "第一段\n第二段")
+check(ChatQuote.insertion(for: assistant) ==
+      "> **引用 Hermes**\n> 第一段\n> 第二段\n\n",
+      "assistant quote uses editable Markdown and leaves a reply caret")
+let user = ChatMessage(id: "u", role: "user", content: "  你好  ")
+check(ChatQuote.insertion(for: user) == "> **引用 你**\n> 你好\n\n",
+      "user quote is labelled and surrounding whitespace is trimmed")
+let blank = ChatMessage(id: "b", role: "assistant", content: "\u{200B}\n ")
+check(ChatQuote.insertion(for: blank) == nil, "invisible content has no quote action")
+
+let long = ChatMessage(id: "l", role: "assistant",
+                       content: String(repeating: "长", count: ChatQuote.maximumCharacters + 200))
+let clipped = ChatQuote.insertion(for: long)!
+check(clipped.contains("（引用已截断）"), "long quote discloses truncation")
+check(clipped.count < ChatQuote.maximumCharacters + 80, "long quote stays bounded")
+
+let many = ChatMessage(id: "m", role: "assistant",
+                       content: (0..<40).map { "第 \($0) 行" }.joined(separator: "\n"))
+check(ChatQuote.insertion(for: many)!.contains("（引用已截断）"),
+      "line cap discloses truncation")
+
+check(ChatComposerInsertionPlan.append("> quote\n\n", to: "") == "> quote\n\n",
+      "an empty draft receives the quote unchanged")
+check(ChatComposerInsertionPlan.append("> quote\n\n", to: "reply") == "reply\n\n> quote\n\n",
+      "a nonempty draft keeps its text and gains one blank line")
+check(ChatComposerInsertionPlan.append("> quote\n\n", to: "reply\n") == "reply\n\n> quote\n\n",
+      "an existing single newline is normalized to one blank line")
+check(ChatComposerInsertionPlan.append("> quote\n\n", to: "reply\n\n") == "reply\n\n> quote\n\n",
+      "existing blank spacing is not duplicated")
+check(ChatComposerInsertionPlan.append("", to: "reply") == "reply",
+      "an empty insertion is a no-op")
+
+print("CHAT_QUOTE_PASS \(checks) assertions")

@@ -1,0 +1,76 @@
+Third-party software notices
+============================
+
+Textual 0.5.0 - https://github.com/gonzalezreal/textual
+Copyright (c) 2024 Guille Gonzalez
+
+  Vendored, not fetched: the sources ship in Vendor/Textual of this repository.
+  Upstream revision: 01b51875a5406eefc95f52a058cb059e7bc94dc4 (tag 0.5.0).
+  Original MIT license retained as Vendor/Textual/LICENSE.
+  The upstream file digests of the copy are recorded in
+  Vendor/Textual/UPSTREAM-SHA256.json, so a local edit can be told apart from
+  an upstream change.
+
+  Local modifications (full rationale in Vendor/Textual/HERMES-PATCHES.md):
+    1. Package.swift drops the upstream-only snapshot test target and its
+       dependency; the library sources and resources are unchanged in scope.
+    2. StructuredText.swift adds init(attributedString:deferCodeHighlightingAfter:)
+       so prepared Markdown skips a UI-thread parse.
+    3. BlockContent.swift makes blocks Equatable so unchanged bodies are skipped.
+    4. CodeBlock.swift defers Prism highlighting for the active streaming tail.
+    5. WithAttachments.swift moves the generic view's observable model out of the
+       view and discards cancelled or superseded resolves.
+    6. BlockVStack.swift shares real child measurements within one layout cache
+       generation and invalidates reuse on environment/content changes.
+    7. HighlightedTextFragment.swift / CodeTokenizer.swift key highlight work by
+       input plus language, reject cancelled or superseded generations, and allow
+       one retained result per mounted fragment.
+    8. New source-local helpers BlockMeasurementCache.swift and
+       TokenizationWork.swift hold the measurement-cache and publication logic.
+    9. Selection interaction files (UITextInteractionView, TextSelectionInteraction,
+       UIKitTextSelectionInteraction, UIKitTextInteractionOverlay, AppKit peer,
+       TextSelectionLayoutUpdater, TextSelectionUpdateRelay) forward text menu
+       actions and coalesce selection delivery; see HERMES-PATCHES.md.
+   10. TextFragment/NativeSelectableText opt-in for native text views, described
+       in the build35 section of HERMES-PATCHES.md.
+
+  These modifications are distributed under the same MIT license as upstream.
+  No binaries and no newly fetched runtime dependencies were added.
+
+ConcurrencyExtras 1.4.3 - https://github.com/pointfreeco/swift-concurrency-extras
+Copyright (c) 2023 Point-Free
+
+SwiftUIMath 0.1.0 - https://github.com/gonzalezreal/swiftui-math
+Copyright (c) 2026 Guille Gonzalez
+Copyright (c) 2023 Computer Inspirations (SwiftMath)
+Copyright (c) 2013 MathChat (iosMath)
+
+  Consumed as a source dependency, pinned to the 0.1.x minor line by
+  Package.swift (.upToNextMinor(from: "0.1.0")) and locked to revision
+  0b5c2cfaaec8d6193db206f675048eeb5ce95f71 in Package.resolved.
+
+Prism - https://github.com/PrismJS/prism
+Copyright (c) 2012 Lea Verou
+
+The components above are distributed under the MIT License:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The math fonts distributed with SwiftUIMath retain their accompanying
+GUST-FONT-LICENSE.txt, LICENSE, and other font notice files in mathFonts.bundle.

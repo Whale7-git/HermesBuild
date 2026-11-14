@@ -1,0 +1,13 @@
+--- a/Sources/Textual/Internal/TextInteraction/Shared/TextLayout/View+TextLayoutCollection.swift
++++ b/Sources/Textual/Internal/TextInteraction/Shared/TextLayout/View+TextLayoutCollection.swift
+@@ -16,7 +16,9 @@
+     ) -> some View {
+       overlayPreferenceValue(Text.LayoutKey.self) { value in
+         GeometryReader { geometry in
+-          content(LiveTextLayoutCollection(base: value, geometry: geometry))
++          // Reading size here makes width/height an explicit dependency. The
++          // first staged hosting pass can have a width but no usable lines.
++          content(LiveTextLayoutCollection(base: value, geometry: geometry, size: geometry.size))
+         }
+       }
+     }

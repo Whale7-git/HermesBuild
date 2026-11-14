@@ -1,0 +1,201 @@
+import Combine
+import SwiftUI
+
+/// Draft, focus and toolbar changes never rebuild the message/tool timeline.
+@MainActor
+final class ChatTimelineProjection: ObservableObject {
+    private struct Source: Equatable {
+        let messages: [ChatMessage]
+        let tools: [ChatTool]
+        let notices: [ChatNotice]
+        let running: Bool
+        let toolsAreLive: Bool
+    }
+    @Published private(set) var items: [ChatRowItem] = [] {
+        didSet { itemsVersion &+= 1 }
+    }
+    private let itemsOwner = UUID()
+    private var itemsVersion: UInt64 = 0
+    var itemsStamp: ChatTimelineItemsStamp {
+        ChatTimelineItemsStamp(owner: itemsOwner, version: itemsVersion)
+    }
+    private var subscription: AnyCancellable?
+    private var previousSource: Source?
+    /// Message ID → rendered row index; refreshed only on a structural
+    /// projection rebuild. A streaming token now locates its host in O(1).
+    private var itemIndexByID: [String: Int] = [:]
+    /// Turns that first appeared at the top edge of a history window are kept
+    /// as normal rows permanently. If a later prepend reveals their original
+    /// user row, regrouping that turn would replace a visible row id and defeat
+    /// the scroll anchor. Other completed turns can still use process rows.
+    private var protectedLeadingTurnIDs = Set<String>()
+
+    init(model: NativeChatModel) {
+        // 相位收敛后，原来订阅 5 个布尔（running/uncertain/reconnecting/suspended/
+        // streamConnected）改成订阅一个 phase + 两个正交事实。组合逻辑仍然只有
+        // 这一处，但因为相位互斥，不会出现「running 与 reconnecting 同时为真」
+        // 这种原先会让 live 判断失真的组合。
+        let live = model.$phase
+            .combineLatest(model.$uncertain, model.$suspended)
+            .map { phase, uncertain, suspended in
+                phase.isRunning && phase.isConnected && !uncertain && !suspended
+            }
+            .removeDuplicates()
+        subscription = model.$transcript.combineLatest(model.$phase, live)
+            .map { transcript, phase, toolsAreLive in
+                Source(messages: transcript.messages, tools: transcript.tools,
+                       notices: transcript.notices,
+                       running: phase.isRunning && !transcript.terminal,
+                       toolsAreLive: toolsAreLive && !transcript.terminal)
+            }
+            .sink { [weak self] source in
+                guard let self else { return }
+                let projectionSample = ChatPerformanceRecorder.shared.begin()
+                defer {
+                    ChatPerformanceRecorder.shared.finish(.timelineProjection, projectionSample)
+                }
+                if let previous = self.previousSource {
+                    // Streaming text is the overwhelmingly common update.
+                    // Probe the verified tail-only fast path BEFORE running a
+                    // second whole-history Source equality scan.
+                    if let updated = self.fastStreamingUpdate(from: previous, to: source) {
+                        self.previousSource = source
+                        self.items = updated
+                        return
+                    }
+                    if source == previous { return }
+                    if let updated = self.fastToolUpdate(from: previous, to: source) {
+                        self.previousSource = source
+                        self.items = updated
+                        return
+                    }
+                }
+                self.previousSource = source
+                let tail = source.running && source.messages.last?.role == "assistant"
+                    ? source.messages.last?.id : nil
+                let activeTools = source.toolsAreLive
+                    ? ChatActivity.activeToolIDs(messages: source.messages, tools: source.tools) : []
+                let turnIDs = ChatTimeline.turnIDs(for: source.messages)
+                let userTurnIDs = source.messages.compactMap { message in
+                    message.role == "user" ? turnIDs[message.id] : nil
+                }
+                if let leading = userTurnIDs.first {
+                    self.protectedLeadingTurnIDs.insert(leading)
+                }
+                var completed = Set(userTurnIDs.dropLast())
+                if !source.running, let tail = userTurnIDs.last {
+                    completed.insert(tail)
+                }
+                let foldable = completed.subtracting(self.protectedLeadingTurnIDs)
+                let projected = ChatTimeline.build(
+                    messages: source.messages, tools: source.tools,
+                    notices: source.notices, running: source.running,
+                    completeTurnIDs: foldable)
+                    .map { row in
+                        let toolsAreLive: Bool
+                        if case .tools(let tools) = row.kind {
+                            toolsAreLive = tools.contains { activeTools.contains($0.id) }
+                        } else if case .process(let group) = row.kind {
+                            toolsAreLive = group.tools.contains { activeTools.contains($0.id) }
+                        } else { toolsAreLive = false }
+                        return ChatRowItem(row: row, isStreaming: row.id == "m-\(tail ?? "")", toolsAreLive: toolsAreLive)
+                    }
+                self.itemIndexByID = Dictionary(
+                    projected.enumerated().map { ($0.element.id, $0.offset) },
+                    uniquingKeysWith: { first, _ in first })
+                self.items = projected
+            }
+    }
+
+    /// The live tail is the only row that changes on every token batch. If all
+    /// row identities, roles, tools, notices and phase facts are unchanged,
+    /// replace that one message in place instead of rebuilding dictionaries and
+    /// regrouping up to 2,000 rows every 40–140 ms. Any structural change takes
+    /// the normal full projection path.
+    private func fastStreamingUpdate(from previous: Source,
+                                     to next: Source) -> [ChatRowItem]? {
+        guard previous.tools == next.tools,
+              previous.notices == next.notices,
+              previous.running == next.running,
+              previous.toolsAreLive == next.toolsAreLive,
+              previous.messages.count == next.messages.count,
+              previous.messages.count > 0,
+              previous.messages.dropLast() == next.messages.dropLast(),
+              let oldLast = previous.messages.last,
+              let newLast = next.messages.last,
+              oldLast.id == newLast.id,
+              oldLast.role == newLast.role,
+              oldLast.sourceIndex == newLast.sourceIndex,
+              oldLast.timestamp == newLast.timestamp,
+              oldLast.attachmentPaths == newLast.attachmentPaths,
+              (oldLast.content != newLast.content || oldLast.delivery != newLast.delivery),
+              ChatRenderableText.hasVisibleContent(newLast.content)
+                || !newLast.attachmentPaths.isEmpty,
+              let index = itemIndexByID["m-\(newLast.id)"],
+              items.indices.contains(index),
+              items[index].id == "m-\(newLast.id)" else {
+            return nil
+        }
+        var updated = items
+        updated[index] = updated[index].replacingMessage(newLast)
+        return updated
+    }
+
+    /// A tool event can update one already-visible group. Rebuild only when the
+    /// IDs, order or anchors change; payload-only updates keep the row and its
+    /// measured viewport anchor stable.
+    private func fastToolUpdate(from previous: Source,
+                                to next: Source) -> [ChatRowItem]? {
+        guard previous.messages == next.messages,
+              previous.notices == next.notices,
+              previous.running == next.running,
+              previous.toolsAreLive == next.toolsAreLive,
+              previous.tools.count == next.tools.count,
+              previous.tools.count > 0 else { return nil }
+        let oldIDs = previous.tools.map(\.id)
+        let newIDs = next.tools.map(\.id)
+        guard oldIDs == newIDs else { return nil }
+        let oldAnchors = previous.tools.map(\.afterMessageID)
+        let newAnchors = next.tools.map(\.afterMessageID)
+        guard oldAnchors == newAnchors else { return nil }
+        let changed = zip(previous.tools, next.tools).enumerated().compactMap {
+            $0.element.0 == $0.element.1 ? nil : $0.offset
+        }
+        guard !changed.isEmpty else { return nil }
+        let activeTools = next.toolsAreLive
+            ? ChatActivity.activeToolIDs(messages: next.messages, tools: next.tools) : []
+        var byRow: [String: [ChatTool]] = [:]
+        var changedByRow: [String: Bool] = [:]
+        // Build ownership once; repeated scans were quadratic in tool-heavy sessions.
+        var toolRows: [String: String] = [:]
+        var rowIndices: [String: Int] = [:]
+        for (index, item) in items.enumerated() {
+            rowIndices[item.id] = index
+            let tools: [ChatTool]
+            switch item.row.kind {
+            case .tools(let value): tools = value
+            case .process(let group): tools = group.tools
+            default: continue
+            }
+            for tool in tools where toolRows[tool.id] == nil { toolRows[tool.id] = item.id }
+        }
+        for index in previous.tools.indices {
+            let old = previous.tools[index]
+            guard let rowID = toolRows[old.id] else { return nil }
+            byRow[rowID, default: []].append(next.tools[index])
+            changedByRow[rowID, default: false] =
+                changedByRow[rowID, default: false] || old != next.tools[index]
+        }
+        var updated = items
+        for (rowID, replacement) in byRow where changedByRow[rowID] == true {
+            guard let index = rowIndices[rowID],
+                  let value = updated[index].replacingTools(
+                    replacement,
+                    allTools: next.tools,
+                    toolsAreLive: replacement.contains { activeTools.contains($0.id) })
+            else { return nil }
+            updated[index] = value
+        }
+        return updated
+    }
+}

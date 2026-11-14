@@ -1,0 +1,56 @@
+--- a/Sources/Textual/Internal/Highlighter/CodeTokenizer.swift
++++ b/Sources/Textual/Internal/Highlighter/CodeTokenizer.swift
+@@ -47,24 +47,29 @@
+       self.context = context
+     }
+ 
+-    func tokenize(code: String, language: String) -> [CodeToken] {
+-      guard
+-        let tokenizeCode = context.objectForKeyedSubscript("tokenizeCode"),
+-        let result = tokenizeCode.call(withArguments: [code, language]),
+-        let array = result.toArray() as? [[String: String]]
+-      else {
+-        logger.error("Tokenization failed.")
+-        return [CodeToken(content: code, type: .plain)]
+-      }
+-
+-      return array.compactMap { token in
++    func tokenize(code: String, language: String, duration: (@Sendable (Double) -> Void)? = nil) -> [CodeToken] {
++      // A cancelled caller may have waited behind another synchronous JS job.
++      // Check inside the actor, before doing any work, as well as at publication.
++      return textualTokenizeIfActive(plain: [CodeToken(content: code, type: .plain)], duration: duration) {
+         guard
+-          let content = token["content"],
+-          let type = token["type"]
++          let tokenizeCode = context.objectForKeyedSubscript("tokenizeCode"),
++          let result = tokenizeCode.call(withArguments: [code, language]),
++          let array = result.toArray() as? [[String: String]]
+         else {
+-          return nil
++          logger.error("Tokenization failed.")
++          return [CodeToken(content: code, type: .plain)]
++        }
++
++        guard !Task.isCancelled else { return [CodeToken(content: code, type: .plain)] }
++        return array.compactMap { token in
++          guard
++            let content = token["content"],
++            let type = token["type"]
++          else {
++            return nil
++          }
++          return CodeToken(content: content, type: .init(rawValue: type))
+         }
+-        return CodeToken(content: content, type: .init(rawValue: type))
+       }
+     }
+   }
+@@ -79,7 +84,7 @@
+       return nil
+     }
+ 
+-    func tokenize(code: String, language: String) -> [CodeToken] {
++    func tokenize(code: String, language: String, duration: (@Sendable (Double) -> Void)? = nil) -> [CodeToken] {
+       [CodeToken(content: code, type: .plain)]
+     }
+   }

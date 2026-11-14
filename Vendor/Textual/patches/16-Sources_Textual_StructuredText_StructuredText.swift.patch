@@ -1,0 +1,43 @@
+--- a/Sources/Textual/StructuredText/StructuredText.swift
++++ b/Sources/Textual/StructuredText/StructuredText.swift
+@@ -106,6 +106,8 @@
+ 
+   private let markup: String
+   private let parser: any MarkupParser
++  private let preparedContent: AttributedString?
++  private let deferredHighlightingAfter: Int?
+ 
+   /// Creates a structured-text view by parsing `markup` with a custom parser.
+   ///
+@@ -113,17 +115,29 @@
+   public init(_ markup: String, parser: any MarkupParser) {
+     self.markup = markup
+     self.parser = parser
++    self.preparedContent = nil
++    self.deferredHighlightingAfter = nil
++  }
++
++  /// Hermes addition: deliver a document prepared away from the UI thread.
++  /// Retains the original single selection coordinator across all blocks.
++  public init(attributedString: AttributedString, deferCodeHighlightingAfter identity: Int? = nil) {
++    self.markup = ""
++    self.parser = AttributedStringMarkdownParser(baseURL: nil)
++    self.preparedContent = attributedString
++    self.deferredHighlightingAfter = identity
+   }
+ 
+   public var body: some View {
+-    WithAttachments(attributedString) {
++    WithAttachments(preparedContent ?? attributedString) {
+       BlockContent(content: $0)
+         .modifier(TextSelectionInteraction())
+         .modifier(TextSelectionCoordination())
+     }
+     .coordinateSpace(.textContainer)
++    .environment(\.deferredHighlightingAfter, deferredHighlightingAfter)
+     .onChange(of: markup, initial: true) {
+-      markupDidChange(markup)
++      if preparedContent == nil { markupDidChange(markup) }
+     }
+     // Disable line limit to avoid per-fragment truncation
+     .lineLimit(nil)

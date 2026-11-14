@@ -1,0 +1,76 @@
+--- a/Sources/Textual/Internal/TextInteraction/UIKit/UITextInteractionView.swift
++++ b/Sources/Textual/Internal/TextInteraction/UIKit/UITextInteractionView.swift
+@@ -21,6 +21,13 @@
+     var exclusionRects: [CGRect]
+     var openURL: OpenURLAction
+ 
++    /// Message-level actions injected by the app shell and shown in the system
++    /// edit menu alongside Copy. This is how a chat client keeps "copy all /
++    /// edit / regenerate" reachable without a SwiftUI `.contextMenu`, which
++    /// would steal the long-press gesture from UITextInteraction and make
++    /// partial text selection impossible.
++    var menuActions: TextMenuActions?
++
+     weak var inputDelegate: (any UITextInputDelegate)?
+ 
+     let logger = Logger(category: .textInteraction)
+@@ -62,7 +69,7 @@
+       case #selector(copy(_:)), #selector(share(_:)):
+         return !(model.selectedRange?.isCollapsed ?? true)
+       default:
+-        return false
++        return super.canPerformAction(action, withSender: sender)
+       }
+     }
+ 
+@@ -147,8 +154,10 @@
+ 
+   extension UITextInteractionView: UITextInteractionDelegate {
+     func interactionShouldBegin(_ interaction: UITextInteraction, at point: CGPoint) -> Bool {
+-      logger.debug("interactionShouldBegin(at: \(point.logDescription)) -> true")
+-      return true
++      // Initial/removed layouts have no valid document positions yet.
++      // Once the delivery view installs a populated layout, selection may start.
++      logger.debug("interactionShouldBegin(at: \(point.logDescription)) hasText=\(self.model.hasText)")
++      return model.hasText
+     }
+ 
+     func interactionWillBegin(_ interaction: UITextInteraction) {
+@@ -159,6 +168,37 @@
+     func interactionDidEnd(_ interaction: UITextInteraction) {
+       logger.debug("interactionDidEnd")
+     }
++
++    /// Extend the system edit menu with message-level actions. Falls back to
++    /// the default menu when the app shell provided no actions.
++    func editMenu(
++      for textRange: UITextRange,
++      suggestedActions: [UIMenuElement]
++    ) -> UIMenu? {
++      var children = suggestedActions
++      if let copyAll = menuActions?.copyAll {
++        children.append(
++          UIAction(title: "复制全文", image: UIImage(systemName: "doc.on.doc")) { _ in
++            copyAll()
++          }
++        )
++      }
++      if let edit = menuActions?.edit {
++        children.append(
++          UIAction(title: "编辑并在分支发送", image: UIImage(systemName: "pencil")) { _ in
++            edit()
++          }
++        )
++      }
++      if let regenerate = menuActions?.regenerate {
++        children.append(
++          UIAction(title: "在分支重新生成", image: UIImage(systemName: "arrow.clockwise")) { _ in
++            regenerate()
++          }
++        )
++      }
++      return UIMenu(children: children)
++    }
+   }
+ 
+   extension Logger.Textual.Category {

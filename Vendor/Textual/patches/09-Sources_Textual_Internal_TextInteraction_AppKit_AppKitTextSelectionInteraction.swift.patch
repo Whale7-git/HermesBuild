@@ -1,0 +1,15 @@
+--- a/Sources/Textual/Internal/TextInteraction/AppKit/AppKitTextSelectionInteraction.swift
++++ b/Sources/Textual/Internal/TextInteraction/AppKit/AppKitTextSelectionInteraction.swift
+@@ -16,9 +16,11 @@
+     @State private var cursorPushed = false
+ 
+     private let model: TextSelectionModel
++    private let menuActions: TextMenuActions?
+ 
+-    init(model: TextSelectionModel) {
++    init(model: TextSelectionModel, menuActions: TextMenuActions? = nil) {
+       self.model = model
++      self.menuActions = menuActions
+     }
+ 
+     func body(content: Content) -> some View {

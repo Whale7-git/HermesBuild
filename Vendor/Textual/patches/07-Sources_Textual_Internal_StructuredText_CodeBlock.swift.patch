@@ -1,0 +1,42 @@
+--- a/Sources/Textual/Internal/StructuredText/CodeBlock.swift
++++ b/Sources/Textual/Internal/StructuredText/CodeBlock.swift
+@@ -4,6 +4,7 @@
+   struct CodeBlock: View {
+     @Environment(\.highlighterTheme) private var highlighterTheme
+     @Environment(\.codeBlockStyle) private var codeBlockStyle
++    @Environment(\.deferredHighlightingAfter) private var deferredHighlightingAfter
+ 
+     private let content: AttributedSubstring
+     private let languageHint: String?
+@@ -20,11 +21,7 @@
+     var body: some View {
+       let configuration = CodeBlockStyleConfiguration(
+         label: .init(
+-          HighlightedTextFragment(
+-            content,
+-            languageHint: languageHint,
+-            theme: highlighterTheme
+-          )
++          codeLabel
+         ),
+         indentationLevel: indentationLevel,
+         languageHint: languageHint,
+@@ -39,5 +36,18 @@
+     private var indentationLevel: Int {
+       content.presentationIntent?.indentationLevel ?? 0
+     }
++
++    @ViewBuilder private var codeLabel: some View {
++      if let limit = deferredHighlightingAfter,
++         (content.presentationIntent?.components.last?.identity ?? Int.max) > limit {
++        TextFragment(AttributedString(content)).foregroundStyle(highlighterTheme.foregroundColor)
++      } else {
++        HighlightedTextFragment(content, languageHint: languageHint, theme: highlighterTheme)
++      }
++    }
+   }
+ }
++
++extension EnvironmentValues {
++  @Entry var deferredHighlightingAfter: Int? = nil
++}

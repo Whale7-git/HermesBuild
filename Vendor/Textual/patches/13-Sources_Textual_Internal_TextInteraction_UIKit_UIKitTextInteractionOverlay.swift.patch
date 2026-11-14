@@ -1,0 +1,34 @@
+--- a/Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextInteractionOverlay.swift
++++ b/Sources/Textual/Internal/TextInteraction/UIKit/UIKitTextInteractionOverlay.swift
+@@ -13,24 +13,29 @@
+   struct UIKitTextInteractionOverlay: UIViewRepresentable {
+     private let model: TextSelectionModel
+     private let overflowFrames: [CGRect]
++    private let menuActions: TextMenuActions?
+ 
+-    init(model: TextSelectionModel, overflowFrames: [CGRect]) {
++    init(model: TextSelectionModel, overflowFrames: [CGRect], menuActions: TextMenuActions? = nil) {
+       self.model = model
+       self.overflowFrames = overflowFrames
++      self.menuActions = menuActions
+     }
+ 
+     func makeUIView(context: Context) -> UITextInteractionView {
+-      UITextInteractionView(
++      let view = UITextInteractionView(
+         model: model,
+         exclusionRects: overflowFrames,
+         openURL: context.environment.openURL
+       )
++      view.menuActions = menuActions
++      return view
+     }
+ 
+     func updateUIView(_ uiView: UITextInteractionView, context: Context) {
+       uiView.model = model
+       uiView.exclusionRects = overflowFrames
+       uiView.openURL = context.environment.openURL
++      uiView.menuActions = menuActions
+     }
+   }
+ #endif

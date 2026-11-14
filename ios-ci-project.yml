@@ -1,0 +1,67 @@
+# Generated only in CI, not an alternative local source tree.
+# The SwiftUI @main entry point is Sources/HermesShell/HermesShellApp.swift.
+name: HermesShellCI
+options:
+  minimumXcodeGenVersion: 2.42.0
+  createIntermediateGroups: true
+packages:
+  Textual:
+    path: Vendor/Textual
+targets:
+  HermesShell:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources/HermesShell
+      - path: Resources/THIRD_PARTY_NOTICES.txt
+        buildPhase: resources
+      - path: Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Resources/AppIcon60x60@2x.png
+        buildPhase: resources
+      - path: Resources/AppIcon60x60@3x.png
+        buildPhase: resources
+      - path: Resources/AppIcon76x76~ipad.png
+        buildPhase: resources
+      - path: Resources/AppIcon76x76@2x~ipad.png
+        buildPhase: resources
+      - path: Resources/AppIcon83.5x83.5@2x~ipad.png
+        buildPhase: resources
+      - path: Resources/AppIcon29x29@2x.png
+        buildPhase: resources
+      - path: Resources/AppIcon29x29@3x.png
+        buildPhase: resources
+      - path: Resources/AppIcon40x40@2x.png
+        buildPhase: resources
+      - path: Resources/AppIcon40x40@3x.png
+        buildPhase: resources
+      - path: Resources/AppIcon1024.png
+        buildPhase: resources
+    dependencies:
+      - package: Textual
+        product: Textual
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.whale7.hermes
+        PRODUCT_NAME: HermesShell
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        STRIP_INSTALLED_PRODUCT: NO
+        COPY_PHASE_STRIP: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+schemes:
+  HermesShell:
+    build:
+      targets:
+        HermesShell: all
+    run:
+      config: Release
+    archive:
+      config: Release

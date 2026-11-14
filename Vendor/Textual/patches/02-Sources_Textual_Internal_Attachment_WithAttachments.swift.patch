@@ -1,0 +1,64 @@
+--- a/Sources/Textual/Internal/Attachment/WithAttachments.swift
++++ b/Sources/Textual/Internal/Attachment/WithAttachments.swift
+@@ -17,7 +17,7 @@
+   @Environment(\.emojiAttachmentLoader) private var emojiAttachmentLoader
+   @Environment(\.colorEnvironment) private var colorEnvironment
+ 
+-  @State private var model = Model()
++  @State private var model = ResolvedAttachmentModel()
+ 
+   private let attributedString: AttributedString
+   private let content: (AttributedString) -> Content
+@@ -31,7 +31,7 @@
+   }
+ 
+   var body: some View {
+-    content(model.resolvedAttributedString ?? attributedString)
++    content(model.source == attributedString ? model.resolvedAttributedString ?? attributedString : attributedString)
+       .task(id: attributedString) {
+         await model.resolveAttachments(
+           in: attributedString,
+@@ -43,8 +43,8 @@
+   }
+ }
+ 
+-extension WithAttachments {
+-  @MainActor @Observable final class Model {
++  @MainActor @Observable private final class ResolvedAttachmentModel {
++    var source: AttributedString?
+     var resolvedAttributedString: AttributedString?
+ 
+     func resolveAttachments(
+@@ -53,6 +53,8 @@
+       emojiAttachmentLoader: any AttachmentLoader,
+       environment: ColorEnvironmentValues
+     ) async {
++      source = nil
++      resolvedAttributedString = nil
+       guard attributedString.containsValues(for: [\.imageURL, \.textual.emojiURL]) else {
+         return
+       }
+@@ -93,6 +95,7 @@
+         }
+       }
+ 
++      guard !Task.isCancelled else { return }
+       resolveAttachmentsFinished(
+         attributedString: attributedString,
+         attachments: Array(zip(ranges, attachments))
+@@ -103,6 +106,7 @@
+       attributedString: AttributedString,
+       attachments: [(Range<AttributedString.Index>, AnyAttachment)]
+     ) {
++      let original = attributedString
+       var attributedString = attributedString
+ 
+       for (range, attachment) in attachments {
+@@ -110,6 +114,6 @@
+       }
+ 
+       self.resolvedAttributedString = attributedString
++      self.source = original
+     }
+   }
+-}

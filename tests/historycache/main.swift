@@ -1,0 +1,255 @@
+import Foundation
+
+@main struct HistoryCacheTests {
+    static let manager = FileManager.default
+
+    static func snapshot(session: String = "test", offset: Int = 0, texts: [String] = ["first", "second"], active: String? = nil) throws -> ChatSnapshot {
+        var fields: [String: Any] = ["session_id": session, "read_only": false,
+            "_messages_offset": offset, "model": "verified-model", "last_prompt_tokens": 20,
+            "context_length": 100, "messages": texts.enumerated().map {
+                ["id": "message-\(offset + $0.offset)", "role": $0.offset % 2 == 0 ? "user" : "assistant",
+                 "content": $0.element, "timestamp": 1234] as [String: Any]
+            }]
+        if let active { fields["active_stream_id"] = active }
+        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: fields))
+    }
+
+    static func root() throws -> URL {
+        let url = manager.temporaryDirectory.appendingPathComponent("Hermes-history-tests-" + UUID().uuidString)
+        try manager.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static func jsonFiles(_ root: URL) throws -> [URL] {
+        try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+    }
+
+    static func main() async throws {
+        let directory = try root()
+        defer { try? manager.removeItem(at: directory) }
+        let namespace = UUID().uuidString
+        let store = ChatHistoryStore(instanceID: namespace, sessionID: "test", accountScope: "account-a", rootDirectory: directory)
+        var record = ChatHistoryRecord(snapshot: try snapshot(offset: 8, active: "old-running-stream"))
+        record.messages[1].attachmentPaths = ["/api/file/raw?path=example.png"]
+        record.tools = [ChatTool(id: "tool-1", name: "search", args: "query", result: "result", done: true,
+                                 isError: false, afterMessageID: record.messages[0].id)]
+        store.schedule(record)
+        await store.flush()
+        let restored = await store.load()
+        precondition(restored?.messages == record.messages && restored?.tools == record.tools)
+        precondition(restored?.olderOffset == 8 && restored?.usage?.contextFraction == 0.2)
+        precondition(restored?.model == "verified-model")
+        let file = try jsonFiles(directory).first!
+        let json = String(decoding: try Data(contentsOf: file), as: UTF8.self)
+        precondition(!json.contains("old-running-stream") && !json.contains("activeStream") && !json.contains("lastEventID"))
+        precondition(!file.lastPathComponent.contains(namespace), "names must stay opaque in directory listings")
+        print("HISTORY_PASS display snapshot round trip excludes runtime stream state")
+
+        // Write failures are classified without changing the cache contract:
+        // the oversized single message is omitted whole, and the caller gets a
+        // category it can put in runtime diagnostics without IDs or text.
+        let reportRoot = try root()
+        defer { try? manager.removeItem(at: reportRoot) }
+        var reportPolicy = ChatHistoryStore.Policy()
+        reportPolicy.maxEntryBytes = 100
+        let reports = ReportBox()
+        let reportStore = ChatHistoryStore(
+            instanceID: namespace, sessionID: "report", accountScope: "account-report",
+            rootDirectory: reportRoot, policy: reportPolicy,
+            report: { reports.append($0) })
+        reportStore.schedule(ChatHistoryRecord(
+            snapshot: try snapshot(session: "report",
+                                   texts: [String(repeating: "x", count: 1000)])))
+        await reportStore.flush()
+        precondition(reports.values == [ChatHistoryStore.WriteReport.failed(.sizeBudget)])
+        let missingReportRecord = await reportStore.load()
+        precondition(missingReportRecord == nil)
+        print("HISTORY_PASS write failure category is reported once without payload data")
+
+        for other in [ChatHistoryStore(instanceID: namespace + "/other", sessionID: "test", accountScope: "account-a", rootDirectory: directory),
+                      ChatHistoryStore(instanceID: namespace, sessionID: "other", accountScope: "account-a", rootDirectory: directory),
+                      ChatHistoryStore(instanceID: namespace, sessionID: "test", accountScope: "account-b", rootDirectory: directory)] {
+            let value = await other.load()
+            precondition(value == nil, "instance, session and account must each isolate content")
+        }
+        let tupleA = ChatHistoryStore(instanceID: "a|b", sessionID: "c", accountScope: namespace, rootDirectory: directory)
+        let tupleB = ChatHistoryStore(instanceID: "a", sessionID: "b|c", accountScope: namespace, rootDirectory: directory)
+        let tupleRecord = ChatHistoryRecord(snapshot: try snapshot(session: "c"))
+        tupleA.schedule(tupleRecord)
+        await tupleA.flush()
+        let isolated = await tupleB.load()
+        precondition(isolated == nil)
+        print("HISTORY_PASS exact instance/session/account tuple isolation")
+
+        let wrongSession = ChatHistoryStore(instanceID: namespace, sessionID: "wrong", accountScope: "account-a", rootDirectory: directory)
+        wrongSession.schedule(record)
+        await wrongSession.flush()
+        let refused = await wrongSession.load()
+        precondition(refused == nil, "a miswired store must refuse another session's confirmed record")
+
+        // Calls coalesce before encoding. Source positions keep optimistic and
+        // live token rows out even if a caller passes an unsafe transcript.
+        var unsafe = record
+        unsafe.messages += [ChatMessage(id: "local-x", role: "user", content: "not confirmed", sourceIndex: 10),
+                            ChatMessage(id: "streaming:x", role: "assistant", content: "partial", sourceIndex: 11),
+                            ChatMessage(id: "no-source", role: "assistant", content: "partial")]
+        unsafe.tools.append(ChatTool(id: "stream-tool:x", name: "busy", args: "", result: "", done: false, isError: false))
+        for index in 0..<100 {
+            unsafe.messages[0].content = "newest-\(index)"
+            store.schedule(unsafe)
+        }
+        await store.flush()
+        let coalesced = await store.load()
+        precondition(coalesced?.messages.count == record.messages.count && coalesced?.tools.count == 1)
+        precondition(coalesced?.messages.first?.content == "newest-99")
+        print("HISTORY_PASS burst updates coalesce and unconfirmed rows are rejected")
+
+        let capacityRoot = try root()
+        defer { try? manager.removeItem(at: capacityRoot) }
+        var smallPolicy = ChatHistoryStore.Policy()
+        smallPolicy.maxMessages = 2
+        let small = ChatHistoryStore(instanceID: namespace, sessionID: "test", accountScope: "small", rootDirectory: capacityRoot, policy: smallPolicy)
+        small.schedule(ChatHistoryRecord(snapshot: try snapshot(offset: 10, texts: ["one", "two", "three", "four"])))
+        await small.flush()
+        let bounded = await small.load()
+        precondition(bounded?.messages.map(\.content) == ["three", "four"] && bounded?.olderOffset == 12)
+        // Oversized single messages are omitted whole, never truncated.
+        var tinyPolicy = smallPolicy
+        tinyPolicy.maxEntryBytes = 100
+        let tiny = ChatHistoryStore(instanceID: namespace, sessionID: "large", accountScope: "small", rootDirectory: capacityRoot, policy: tinyPolicy)
+        tiny.schedule(ChatHistoryRecord(snapshot: try snapshot(texts: [String(repeating: "x", count: 1000)])))
+        await tiny.flush()
+        let oversized = await tiny.load()
+        precondition(oversized == nil)
+        print("HISTORY_PASS capacity preserves complete newest messages and correct pagination boundary")
+
+        let byteRoot = try root()
+        defer { try? manager.removeItem(at: byteRoot) }
+        var bytePolicy = ChatHistoryStore.Policy()
+        bytePolicy.maxEntryBytes = 5000
+        let byteStore = ChatHistoryStore(instanceID: namespace, sessionID: "bytes", accountScope: "byte-budget", rootDirectory: byteRoot, policy: bytePolicy)
+        var longRows = ChatHistoryRecord(snapshot: try snapshot(session: "bytes", texts: (0..<20).map { "\($0)" + String(repeating: "x", count: 1000) }))
+        longRows.tools = [ChatTool(id: "huge-tool", name: "search", args: "", result: String(repeating: "r", count: 20_000), done: true, isError: false)]
+        byteStore.schedule(longRows)
+        await byteStore.flush()
+        let byteBounded = await byteStore.load()
+        let byteStats = await ChatHistoryStore.statistics(rootDirectory: byteRoot)
+        precondition(byteBounded?.messages.count == 2 && byteBounded?.messages.first?.sourceIndex == 18)
+        precondition(byteBounded?.tools.isEmpty == true && byteStats.bytes <= Int64(bytePolicy.maxEntryBytes))
+        print("HISTORY_PASS pre-encode byte budget bounds long-message and tool allocations")
+
+        let corruptRoot = try root()
+        defer { try? manager.removeItem(at: corruptRoot) }
+        let corrupt = ChatHistoryStore(instanceID: namespace, sessionID: "test", accountScope: "corrupt", rootDirectory: corruptRoot)
+        corrupt.schedule(record)
+        await corrupt.flush()
+        let corruptFile = try jsonFiles(corruptRoot).first!
+        try Data("{incomplete".utf8).write(to: corruptFile)
+        let broken = await corrupt.load()
+        precondition(broken == nil && !manager.fileExists(atPath: corruptFile.path))
+        corrupt.schedule(record)
+        await corrupt.flush()
+        var invalid = try JSONSerialization.jsonObject(with: Data(contentsOf: corruptFile)) as! [String: Any]
+        invalid["version"] = 999
+        try JSONSerialization.data(withJSONObject: invalid).write(to: corruptFile)
+        let futureVersion = await corrupt.load()
+        precondition(futureVersion == nil)
+        var old = record
+        old.savedAt = Date().addingTimeInterval(-31 * 24 * 60 * 60)
+        corrupt.schedule(old)
+        await corrupt.flush()
+        let expired = await corrupt.load()
+        precondition(expired == nil)
+        print("HISTORY_PASS interrupted JSON, unknown versions and expired records recover as cache misses")
+
+        let totalRoot = try root()
+        defer { try? manager.removeItem(at: totalRoot) }
+        let first = ChatHistoryStore(instanceID: namespace, sessionID: "one", accountScope: "capacity", rootDirectory: totalRoot)
+        var oldest = ChatHistoryRecord(snapshot: try snapshot(texts: [String(repeating: "a", count: 200)]))
+        oldest.savedAt = Date().addingTimeInterval(-5)
+        oldest = ChatHistoryRecord(snapshot: try snapshot(session: "one", texts: [String(repeating: "a", count: 200)]), savedAt: oldest.savedAt)
+        first.schedule(oldest)
+        await first.flush()
+        let initialStats = await ChatHistoryStore.statistics(rootDirectory: totalRoot)
+        var totalPolicy = ChatHistoryStore.Policy()
+        totalPolicy.maxTotalBytes = initialStats.bytes + 64
+        let second = ChatHistoryStore(instanceID: namespace, sessionID: "two", accountScope: "capacity", rootDirectory: totalRoot, policy: totalPolicy)
+        second.schedule(ChatHistoryRecord(snapshot: try snapshot(session: "two", texts: [String(repeating: "b", count: 200)])))
+        await second.flush()
+        let limited = await ChatHistoryStore.statistics(rootDirectory: totalRoot)
+        let evicted = await first.load()
+        let newest = await second.load()
+        precondition(limited.entries == 1 && limited.bytes <= totalPolicy.maxTotalBytes && evicted == nil && newest != nil)
+        print("HISTORY_PASS global byte cap evicts oldest sessions across files")
+
+        store.schedule(record)
+        await ChatHistoryStore.remove(instanceID: namespace, accountScope: "account-a", rootDirectory: directory)
+        store.schedule(record)
+        await store.flush()
+        let retiredAccount = await store.load()
+        precondition(retiredAccount == nil, "late old-account callbacks must not recreate files after signout")
+        let sessionStore = ChatHistoryStore(instanceID: namespace, sessionID: "delete", accountScope: "account-b", rootDirectory: directory)
+        let deleteRecord = ChatHistoryRecord(snapshot: try snapshot(session: "delete"))
+        sessionStore.schedule(deleteRecord)
+        await sessionStore.remove()
+        sessionStore.schedule(deleteRecord)
+        await sessionStore.flush()
+        let deletedSession = await sessionStore.load()
+        precondition(deletedSession == nil)
+        tupleA.schedule(tupleRecord)
+        await ChatHistoryStore.clearAll(rootDirectory: directory)
+        tupleA.schedule(tupleRecord)
+        await tupleA.flush()
+        let cleared = await ChatHistoryStore.statistics(rootDirectory: directory)
+        precondition(cleared.entries == 0)
+        let newGeneration = ChatHistoryStore(instanceID: "a|b", sessionID: "c", accountScope: namespace, rootDirectory: directory)
+        newGeneration.schedule(tupleRecord)
+        await newGeneration.flush()
+        let fresh = await newGeneration.load()
+        precondition(fresh != nil, "reopened pages use a new generation after clear-all")
+        print("HISTORY_PASS namespace, session and all-cache retirement block delayed resurrection")
+        // build159: cleanup must distinguish a directory read failure from
+        // an empty cache, and return verifiable per-file counts.
+        let blockedRoot = directory.appendingPathComponent("not-a-directory")
+        precondition(manager.createFile(atPath: blockedRoot.path,
+                                        contents: Data("file".utf8)))
+        let globalFailure = await ChatHistoryStore.clearAll(rootDirectory: blockedRoot)
+        precondition(!globalFailure.succeeded && globalFailure.failed == 1,
+                     "an unreadable/non-directory root cannot be reported as cleaned")
+        let scopedFailure = await ChatHistoryStore.remove(
+            instanceID: "missing", accountScope: "missing", rootDirectory: blockedRoot)
+        precondition(!scopedFailure.succeeded && scopedFailure.failed == 1,
+                     "account cleanup must report failed directory enumeration")
+        try manager.removeItem(at: blockedRoot)
+
+        let positiveRoot = try root()
+        defer { try? manager.removeItem(at: positiveRoot) }
+        let positive = ChatHistoryStore(instanceID: namespace, sessionID: "cleanup-result",
+            accountScope: "cleanup", rootDirectory: positiveRoot)
+        positive.schedule(ChatHistoryRecord(snapshot: try snapshot(session: "cleanup-result")))
+        await positive.flush()
+        let positiveReport = await ChatHistoryStore.remove(
+            instanceID: namespace, accountScope: "cleanup", rootDirectory: positiveRoot)
+        precondition(positiveReport.succeeded && positiveReport.attempted == 1
+                     && positiveReport.removed == 1,
+                     "successful account cleanup reports exactly one deleted history file")
+        let remainingPositive = try jsonFiles(positiveRoot)
+        precondition(remainingPositive.isEmpty)
+        print("HISTORY_CACHE_TESTS_PASS")
+    }
+}
+
+private final class ReportBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [ChatHistoryStore.WriteReport] = []
+    var values: [ChatHistoryStore.WriteReport] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+    func append(_ value: ChatHistoryStore.WriteReport) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+}
