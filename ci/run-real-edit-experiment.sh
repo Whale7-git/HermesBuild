@@ -269,15 +269,15 @@ lines = [
     "- All four builds used Release -O; only SWIFT_COMPILATION_MODE changed.",
     "- Probe: added a harmless Swift comment in each disposable AppTheme.swift.",
     "- Each mode used a separate DerivedData directory on the same runner.",
-    "- xcresult Swift activity labels may include cached tasks; do not interpret their counts as files recompiled. Compare Xcode wall time for this experiment.",
+    "- SwiftCompile task counts are from the actual xcodebuild output. xcresult activity labels can include cached records and are not direct recompilation counts.",
     "",
-    "| Mode | Build phase | Xcode build (s) | Swift activity records | Distinct Swift labels | IPA size (MiB) | IPA verification |",
+    "| Mode | Build phase | Xcode build (s) | Executed SwiftCompile tasks | File labels from tasks | IPA size (MiB) | IPA verification |",
     "|---|---|---:|---:|---:|---:|---|",
 ]
 for mode, phase, row in rows:
     lines.append(
         f"| {mode} | {phase} | {seconds(row):.3f} | "
-        f"{row['swift_activity_records']} | {row['distinct_swift_activity_labels']} | "
+        f"{row['xcode_stdout_swiftcompile_task_headers']} | {row['xcode_stdout_swift_filenames_from_task_headers']} | "
         f"{row['ipa_bytes']/1048576:.2f} | {row['ipa_verification']} |"
     )
 lines += [
@@ -289,6 +289,8 @@ lines += [
     f"- Incremental saving: **{saving:+.3f} s ({pct:+.1f}%)**",
     f"- WMO IPA unchanged across comment-only source edit: **{same_wmo_ipa}**",
     f"- Incremental IPA unchanged across comment-only source edit: **{same_inc_ipa}**",
+    f"- Incremental SwiftCompile task headers: **{inc_changed['xcode_stdout_swiftcompile_task_headers']}**",
+    f"- WMO SwiftCompile task headers: **{wmo_changed['xcode_stdout_swiftcompile_task_headers']}**",
     "",
     "### Interpretation",
     "",
@@ -296,7 +298,7 @@ lines += [
 if inc_rebuild < wmo_rebuild:
     lines.append(
         "Incremental was faster for the controlled one-file-change rebuild. "
-        "This supports follow-up validation on a representative real code edit; "
+        "This result is for a comment-only edit and does not establish speedups for signature-changing edits; "
         "it does not authorize changing the production Release setting."
     )
 else:
