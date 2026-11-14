@@ -20,9 +20,15 @@ prepare() {
   if ! command -v xcodegen >/dev/null 2>&1; then
     brew install xcodegen >"$RUNNER_TEMP/hermes-exp-xcodegen-install.log" 2>&1
   fi
-  [[ "$(xcodegen --version | awk '{print $NF}')" == "2.42.0" ]] || {
-    echo "::error::Expected XcodeGen 2.42.0"; xcodegen --version; exit 1;
-  }
+  local xcodegen_version
+  xcodegen_version="$(xcodegen --version | awk '{print $NF}')"
+  python3 - "$xcodegen_version" <<'PY'
+import re, sys
+match = re.fullmatch(r"(\\d+)\\.(\\d+)\\.(\\d+)", sys.argv[1])
+if not match or tuple(map(int, match.groups())) < (2, 42, 0):
+    raise SystemExit("XcodeGen 2.42.0 or newer is required; got " + sys.argv[1])
+PY
+  printf '%s\\n' "$xcodegen_version" >"$RUNNER_TEMP/hermes-exp-xcodegen-version.txt"
   for mode in wholemodule incremental; do
     local src="$GITHUB_WORKSPACE/src-$mode"
     [[ "$(git -C "$src" rev-parse HEAD)" == "$SOURCE_SHA" ]] || {
@@ -33,7 +39,7 @@ prepare() {
     }
     python3 "$src/tests/verify_source.py" "$src" >/dev/null
   done
-  echo "EXPERIMENT_PREPARE_OK source=$SOURCE_SHA xcode=26.3 ios_sdk=26.2 xcodegen=2.42.0"
+  echo "EXPERIMENT_PREPARE_OK source=$SOURCE_SHA xcode=26.3 ios_sdk=26.2 xcodegen=$xcodegen_version"
 }
 
 run_build() {
@@ -174,7 +180,7 @@ lines = [
     "## HermesShell build162 — Release WMO vs Incremental experiment",
     "",
     "- Source: 1e57404cae21f567a67d4e2ce92276c101642908",
-    "- Toolchain: Xcode 26.3 / iPhoneOS SDK 26.2 / XcodeGen 2.42.0 / macOS 15",
+    "- Toolchain: Xcode 26.3 / iPhoneOS SDK 26.2 / XcodeGen " + (root / "hermes-exp-xcodegen-version.txt").read_text().strip() + " / macOS 15",
     "- All four builds used Release -O; only SWIFT_COMPILATION_MODE changed.",
     "- Probe: touched Sources/HermesShell/AppTheme.swift without changing its contents.",
     "- Each mode used a separate DerivedData directory on the same runner.",
@@ -226,7 +232,7 @@ with summary_path.open("a", encoding="utf-8") as output:
     output.write(summary)
 comparison = {
     "source_commit": "1e57404cae21f567a67d4e2ce92276c101642908",
-    "toolchain": {"xcode": "26.3", "ios_sdk": "26.2", "xcodegen": "2.42.0"},
+    "toolchain": {"xcode": "26.3", "ios_sdk": "26.2", "xcodegen": (root / "hermes-exp-xcodegen-version.txt").read_text().strip()},
     "optimization": "-O",
     "probe": "touch AppTheme.swift; source contents unchanged",
     "results": {f"{mode}_{phase}": row for mode, phase, row in rows},
