@@ -337,7 +337,7 @@ extension NativeChatModel {
                 }
             } else {
                 uncertain = true
-                queueAutomaticDispatchPaused = true
+                pauseQueueForRecovery()
                 notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
                 probeAcceptedRun(receipt)
             }
@@ -499,7 +499,7 @@ extension NativeChatModel {
                         self.pendingAbsent = false
                     }
                     self.uncertain = false
-                    self.queueAutomaticDispatchPaused = false
+                    self.resumeQueueAfterRecovery()
                     self.notice = nil
                     self.attach(streamID: receipt.runID)
                 case .terminal:
@@ -507,13 +507,13 @@ extension NativeChatModel {
                     // Ending the run does not prove history has its final reply.
                     // Keep the queue paused and leave other unresolved sends alone.
                     guard self.clearAcceptedTurnRecovery() else { return }
-                    self.queueAutomaticDispatchPaused = true
+                    self.pauseQueueForRecovery()
                     self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
                         || self.activeRecoveryUnreadable
                     if !self.uncertain { self.notice = nil }
                 case .unknown:
                     self.uncertain = true
-                    self.queueAutomaticDispatchPaused = true
+                    self.pauseQueueForRecovery()
                     self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
                 }
             } catch {
@@ -521,7 +521,7 @@ extension NativeChatModel {
                       self.activeTurnRecovery == receipt else { return }
                 if self.handleAuthenticationFailure(error) { return }
                 self.uncertain = true
-                self.queueAutomaticDispatchPaused = true
+                self.pauseQueueForRecovery()
                 self.notice = "后台任务状态核对失败；消息不会重新发送，请稍后刷新。"
             }
         }
@@ -684,7 +684,8 @@ extension NativeChatModel {
                     do {
                         let snap = try await api.history(sessionID:sessionID,before:nil)
                         guard generation == revision, !Task.isCancelled else { return }
-                        let automaticDispatchWasPaused = queueAutomaticDispatchPaused
+                        let userPauseWasActive = queueUserPaused
+                        let recoveryPauseWasActive = queueRecoveryPaused
                         try applySnapshot(snap, preserveLoadedOlder: true)
                         error = terminalFailure
                         if pendingSend == nil {
@@ -702,7 +703,9 @@ extension NativeChatModel {
                                 // The matching terminal frame resolves the temporary
                                 // pause introduced by an incomplete history window.
                                 // Preserve any pause that existed before this GET.
-                                queueAutomaticDispatchPaused = automaticDispatchWasPaused
+                                queueUserPaused = userPauseWasActive
+                                queueRecoveryPaused = recoveryPauseWasActive
+                                updateQueuePause()
                             }
                         }
                         if snap.activeStreamID == nil && terminalFailure == nil,

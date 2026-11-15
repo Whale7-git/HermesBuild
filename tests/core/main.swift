@@ -95,6 +95,16 @@ test("internal_notification_origin") {
     expect(s.messages.count == 2, "internal notification stays in transcript")
     expect(s.messages[0].displayKind == "internal_notification", "server display_kind survives normalization")
     expect(s.messages[1].displayKind == nil, "user-authored OOB-like text is not hidden")
+    expect(ChatBackgroundEnvelope.userBody(s.messages[0]) == nil,
+           "mislabelled plain user text remains a user bubble")
+    let actual = ChatMessage(id: "oob", role: "user",
+                             content: "[OUT-OF-BAND USER MESSAGE — notification]\nBackground work[/OUT-OF-BAND USER MESSAGE]",
+                             displayKind: "internal_notification")
+    expect(ChatBackgroundEnvelope.userBody(actual) == "Background work",
+           "a labelled, balanced background envelope is recognized")
+    let userTyped = ChatMessage(id: "typed", role: "user", content: actual.content)
+    expect(ChatBackgroundEnvelope.userBody(userTyped) == nil,
+           "a pasted wrapper is still a normal user bubble")
 }
 
 test("snapshot_errors") {

@@ -195,6 +195,27 @@ import Foundation
         model.disconnect()
     }
 
+    // Recovery and enqueue must never silently override a user's pause.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "paused-queue", api: service)
+        await model.load()
+        model.setQueueAutomaticDispatchPaused(true)
+        model.draft = "initial"; _ = await model.send()
+        model.sendMode = .queue
+        model.draft = "queued"; _ = await model.send()
+        precondition(model.queueUserPaused && model.queueAutomaticDispatchPaused,
+                     "enqueue must preserve explicit pause")
+        model.pauseQueueForRecovery()
+        model.resumeQueueAfterRecovery()
+        precondition(model.queueUserPaused && model.queueAutomaticDispatchPaused,
+                     "recovery cannot override user pause")
+        model.setQueueAutomaticDispatchPaused(false)
+        precondition(!model.queueAutomaticDispatchPaused,
+                     "explicit resume clears user pause after safe recovery")
+        model.disconnect()
+    }
+
     // Queueing appends complete turns instead of replacing the first payload.
     do {
         let service = SendSafetyService()
