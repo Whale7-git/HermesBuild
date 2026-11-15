@@ -160,7 +160,6 @@ struct RootView: View {
                         SessionListPane(
                             mode: .page,
                             selectedID: app.currentSessionID,
-                            startSearching: browserSearchRequested,
                             onSelect: { session in
                                 browserOpen = false
                                 app.openSession(session)
@@ -173,7 +172,8 @@ struct RootView: View {
                                 browserOpen = false
                                 app.showSettings = true
                             },
-                            onClose: { browserOpen = false }
+                            onClose: { browserOpen = false },
+                            startSearching: browserSearchRequested
                         )
                         .environmentObject(app)
                     }
