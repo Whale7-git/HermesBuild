@@ -1,0 +1,152 @@
+name: HermesBuild single-build candidate
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-candidate-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: Source and release plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 tests/verify_source.py
+      - run: |
+          python3 tests/check_swiftui_modifiers.py
+          python3 tests/test_swiftui_modifiers.py
+          python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
+
+  offline:
+    name: Swift offline regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          swift --version
+          bash tests/run_container.sh
+        env:
+          HERMES_TEST_JOBS: "4"
+
+  candidate:
+    name: Compile and upload one candidate IPA
+    needs: [source, offline]
+    if: >-
+      ${{ needs.source.result == 'success' && needs.offline.result == 'success' &&
+          (github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Report Apple toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Compute candidate identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json; print(json.load(open("release.json"))["version"])')"
+          build="$(python3 -c 'import json; print(json.load(open("release.json"))["build"])')"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "workflow_sha=$(git hash-object .github/workflows/hermesshell-single-build.yml)" >> "$GITHUB_OUTPUT"
+          echo "artifact=hermes-candidate-${version}-build${build}-tree${tree}" >> "$GITHUB_OUTPUT"
+
+      - name: Build one immutable candidate
+        env:
+          HERMES_EVENT_NAME: ${{ github.event_name }}
+          HERMES_RUN_ID: ${{ github.run_id }}
+          HERMES_RUN_ATTEMPT: ${{ github.run_attempt }}
+          HERMES_WORKFLOW_PATH: .github/workflows/hermesshell-single-build.yml
+          HERMES_WORKFLOW_BLOB_SHA: ${{ steps.identity.outputs.workflow_sha }}
+          HERMES_CANDIDATE_DIR: ${{ runner.temp }}/hermes-candidate-release
+          HERMES_DERIVED_DATA: ${{ runner.temp }}/hermes-main-ipa-derived
+        run: bash scripts/github-build-ipa-main.sh
+
+      - name: Enforce candidate pull-request identity
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          CANDIDATE_DIR: ${{ runner.temp }}/hermes-candidate-release
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 - "$CANDIDATE_DIR" "$EXPECTED_RUN_ID" "$EXPECTED_RUN_ATTEMPT" <<'PY'
+          import json
+          import pathlib
+          import sys
+          root, expected_run, expected_attempt = sys.argv[1:]
+          manifest = json.loads(
+              (pathlib.Path(root) / "candidate-manifest.json").read_text()
+          )
+          producer = manifest["producer"]
+          assert producer["event"] == "pull_request"
+          assert producer["run_id"] == expected_run
+          assert producer["run_attempt"] == expected_attempt
+          PY
+
+      - name: Verify candidate manifest and files
+        shell: bash
+        env:
+          EXPECTED_TREE: ${{ steps.identity.outputs.tree }}
+        run: |
+          python3 scripts/verify-candidate.py \
+            "$RUNNER_TEMP/hermes-candidate-release" \
+            --expected-tree "$EXPECTED_TREE"
+
+      - name: Upload immutable candidate
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.identity.outputs.artifact }}
+          path: ${{ runner.temp }}/hermes-candidate-release/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 14
+
+      - name: Record candidate result
+        env:
+          ARTIFACT_NAME: ${{ steps.identity.outputs.artifact }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          SOURCE_TREE: ${{ steps.identity.outputs.tree }}
+        run: |
+          {
+            echo "### HermesBuild candidate"
+            echo
+            echo "- Artifact: \`$ARTIFACT_NAME\`"
+            echo "- Artifact ID: \`$ARTIFACT_ID\`"
+            echo "- Artifact digest: \`$ARTIFACT_DIGEST\`"
+            echo "- Source tree: \`$SOURCE_TREE\`"
+            echo "- Release publication: not performed"
+          } >> "$GITHUB_STEP_SUMMARY"

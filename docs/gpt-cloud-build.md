@@ -38,6 +38,8 @@ Note: a candidate that inherits main's version/build also inherits those app
 metadata values. It is an inspection artifact, not a separately versioned update.
 Do not mistake it for a new official Release.
 
-The original `scripts/github-build-ipa.sh` remains the one compiler
-implementation for both release and branch candidates. This wrapper does not
-fork packaging, source validation or the IPA verifier.
+The GPT wrapper calls `scripts/github-build-ipa.sh` only for isolated QA IPA
+builds. Official 2.28+ releases instead promote the PR candidate produced by
+`hermesshell-single-build.yml` using `scripts/github-build-ipa-main.sh`.
+A GPT push artifact is not eligible for official promotion. Opening a PR may
+produce a separate canonical candidate; do not relabel or forge producer IDs.
