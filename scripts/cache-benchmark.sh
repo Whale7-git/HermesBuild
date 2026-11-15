@@ -58,21 +58,40 @@ cmp release/validation.json "$benchmark_dir/independent-validation.json"
 payload="$benchmark_dir/payload"
 rm -rf "$payload"
 unzip -q "$ipa" -d "$payload"
-payload_sha="$(
-  python3 - "$payload" <<'PY'
+resource_sha="$(
+  python3 - "$payload" "$benchmark_dir/resource-manifest.json" <<'PY'
 import hashlib
+import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
+manifest_path = pathlib.Path(sys.argv[2])
+apps = list(root.glob("Payload/*.app"))
+if len(apps) != 1:
+    raise SystemExit(f"expected one app payload, got {apps}")
+app = apps[0]
+
+# Xcode embeds changing build metadata and Mach-O UUIDs in compiled products.
+# Compare the source-controlled resources that must remain byte-identical.
 digest = hashlib.sha256()
-for path in sorted(p for p in root.rglob("*") if p.is_file()):
-    relative = path.relative_to(root).as_posix().encode("utf-8")
+entries = []
+for path in sorted(
+    p for p in app.rglob("*") if p.is_file() and p.name != "HermesShell"
+):
+    relative = path.relative_to(app).as_posix().encode("utf-8")
+    data = path.read_bytes()
+    entries.append(
+        {"path": relative.decode("utf-8"), "sha256": hashlib.sha256(data).hexdigest()}
+    )
     digest.update(len(relative).to_bytes(8, "big"))
     digest.update(relative)
-    data = path.read_bytes()
     digest.update(len(data).to_bytes(8, "big"))
     digest.update(data)
+manifest_path.write_text(
+    json.dumps({"sha256": digest.hexdigest(), "files": entries}, indent=2) + "\n",
+    encoding="utf-8",
+)
 print(digest.hexdigest())
 PY
 )"
@@ -93,7 +112,7 @@ cat > "$benchmark_dir/result.json" <<EOF
   "iphoneos_sdk": "$sdk",
   "build_seconds": $build_seconds,
   "ipa_sha256": "$ipa_sha",
-  "payload_sha256": "$payload_sha",
+  "payload_sha256": "$resource_sha",
   "ipa_bytes": $ipa_bytes,
   "deriveddata_kib": $derived_kib,
   "deriveddata_bytes": $derived_bytes
@@ -105,7 +124,7 @@ output source_sha "$GITHUB_SHA"
 output toolchain "$toolchain"
 output iphoneos_sdk "$sdk"
 output ipa_sha "$ipa_sha"
-output payload_sha "$payload_sha"
+output payload_sha "$resource_sha"
 output ipa_bytes "$ipa_bytes"
 output deriveddata_kib "$derived_kib"
 output deriveddata_bytes "$derived_bytes"
@@ -121,7 +140,7 @@ output deriveddata_bytes "$derived_bytes"
   echo "| Xcode | ${toolchain} |"
   echo "| iPhoneOS SDK | ${sdk} |"
   echo "| IPA SHA-256 | \`${ipa_sha}\` |"
-  echo "| Extracted app SHA-256 | \`${payload_sha}\` |"
+  echo "| Bundled resource SHA-256 | \`${resource_sha}\` |"
 } >> "$GITHUB_STEP_SUMMARY"
 
 if [[ "$mode" == cold ]]; then

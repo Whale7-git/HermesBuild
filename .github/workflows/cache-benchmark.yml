@@ -2,13 +2,9 @@ name: macOS DerivedData cache benchmark
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - chore/cache-macos26
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: hermes-deriveddata-cache-benchmark-${{ github.ref }}

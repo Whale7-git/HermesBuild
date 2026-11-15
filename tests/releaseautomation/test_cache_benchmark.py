@@ -77,7 +77,7 @@ class CacheBenchmarkTests(unittest.TestCase):
             ]
             with self.assertRaises(SystemExit) as error:
                 compare.main()
-            self.assertIn("payloads differ", str(error.exception))
+            self.assertIn("resources differ", str(error.exception))
         finally:
             sys.argv = old_argv
 
@@ -164,8 +164,9 @@ class CacheWorkflowTests(unittest.TestCase):
     def test_workflow_cannot_skip_source_verification(self):
         workflow_path = ROOT / ".github" / "workflows" / "cache-benchmark.yml"
         workflow = workflow_path.read_text(encoding="utf-8")
-        self.assertIn("  workflow_dispatch:\n  push:\n", workflow)
-        self.assertIn("      - chore/cache-macos26\n", workflow)
+        self.assertIn("on:\n  workflow_dispatch:\n", workflow)
+        self.assertNotIn("  push:\n", workflow)
+        self.assertNotIn("actions: write", workflow)
         self.assertIn("run${{ github.run_id }}-attempt${{ github.run_attempt }}", workflow)
         self.assertNotIn("HERMES_SOURCE_VERIFIED_SHA", workflow)
 

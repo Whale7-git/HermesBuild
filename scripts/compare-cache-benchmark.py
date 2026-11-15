@@ -31,14 +31,13 @@ def main() -> int:
     if cold["iphoneos_sdk"] != warm["iphoneos_sdk"]:
         raise SystemExit("iPhoneOS SDK differs between cold and warm runs")
     if cold["payload_sha256"] != warm["payload_sha256"]:
-        raise SystemExit("cold and warm extracted app payloads differ")
-    if cold["ipa_bytes"] != warm["ipa_bytes"]:
-        raise SystemExit("cold and warm IPA sizes differ")
+        raise SystemExit("cold and warm bundled resources differ")
 
     cold_seconds = float(cold["build_seconds"])
     warm_seconds = float(warm["build_seconds"])
     net_seconds = cold_seconds - save_seconds - restore_seconds - warm_seconds
     ratio = warm_seconds / cold_seconds if cold_seconds else 0.0
+    payload_matches = cold["payload_sha256"] == warm["payload_sha256"]
 
     summary = [
         "### Cold/warm DerivedData benchmark",
@@ -52,9 +51,12 @@ def main() -> int:
         f"| Net saving across cold+warm pair | {net_seconds:+.3f}s |",
         f"| Warm/cold build ratio | {ratio:.3f} |",
         f"| Restored DerivedData source size | {source_bytes} bytes |",
-        f"| Extracted app SHA-256 | `{cold['payload_sha256']}` |",
+        f"| Bundled resources identical | {'yes' if payload_matches else 'no'} |",
+        f"| Bundled resource SHA-256 | `{cold['payload_sha256']}` |",
         f"| Cold IPA SHA-256 | `{cold['ipa_sha256']}` |",
         f"| Warm IPA SHA-256 | `{warm['ipa_sha256']}` |",
+        "",
+        "This is one same-commit pilot on separate hosted runners. It is not yet evidence that a later source commit benefits.",
         "",
         "The warm run performed a complete build and independent IPA verification.",
     ]
