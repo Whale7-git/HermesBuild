@@ -204,13 +204,14 @@ actor ConcurrencyProbe {
                   "run ID must remain durable when the state budget is exhausted")
         }
         let beforeCooldown = transport.requests.count
-        do {
-            _ = try await guarded.history(sessionID: "s", before: nil)
-            preconditionFailure("an exhausted run was probed repeatedly during backoff")
-        } catch {
-            check(transport.requests.count == beforeCooldown,
-                  "bounded backoff prevents request storms")
-        }
+        let historyDuringBackoff = try await guarded.history(sessionID: "s", before: nil)
+        check(historyDuringBackoff.activeStreamID == run,
+              "run backoff retains the unresolved ID in the history snapshot")
+        check(transport.requests.count == beforeCooldown + 1,
+              "history remains readable without a second status request during backoff")
+        let pathDuringBackoff = transport.requests.last?.url?.path
+        check(pathDuringBackoff?.hasSuffix("/messages") == true,
+              "backoff suppresses the status probe while allowing transcript GET")
         transport.statusCode = 200
         transport.status = "completed"
         let terminalFromFreshReader = try await backend(scope: failureScope)

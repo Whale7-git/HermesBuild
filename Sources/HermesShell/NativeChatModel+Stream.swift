@@ -370,10 +370,17 @@ extension NativeChatModel {
         guard let receipt = activeTurnRecovery,
               let boundary = receipt.historyEnd,
               let latest = latestRecoverySnapshot,
-              latest.sessionID == sessionID, latest.activeStreamID == nil,
-              latest.olderOffset > boundary, !latest.readOnly,
+              latest.sessionID == sessionID, !latest.readOnly,
               !submitting, !loading, !syncing, !running, !reconciling,
               !suspended else { return false }
+        if latest.activeStreamID == receipt.runID {
+            notice = "后台任务仍在运行；本轮结束前不会解除发送锁定。"
+            return false
+        }
+        guard latest.activeStreamID == nil, latest.olderOffset > boundary else {
+            notice = "最新历史已经覆盖本轮起点，但尚不足以确认结束；发送仍保持锁定。"
+            return false
+        }
         let generation = revision
         reconciling = true
         defer { reconciling = false }
@@ -388,11 +395,18 @@ extension NativeChatModel {
                 let older = try await api.history(sessionID: sessionID, before: cursor)
                 guard generation == revision, activeTurnRecovery == receipt,
                       !Task.isCancelled, !suspended else { return false }
-                guard older.sessionID == sessionID,
-                      older.activeStreamID == nil, !older.readOnly,
+                guard older.sessionID == sessionID, !older.readOnly,
                       older.rawMessageEndIndex == cursor,
                       older.olderOffset < cursor else {
                     notice = "历史分页发生变化或不连续；未解除发送锁定，请稍后核对。"
+                    return false
+                }
+                if older.activeStreamID == receipt.runID {
+                    notice = "后台任务仍在运行；本轮结束前不会解除发送锁定。"
+                    return false
+                }
+                guard older.activeStreamID == nil else {
+                    notice = "后台出现了另一轮运行；本轮发送仍保持锁定，请稍后核对。"
                     return false
                 }
                 pages.append(older)

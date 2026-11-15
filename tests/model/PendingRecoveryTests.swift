@@ -352,7 +352,7 @@ extension ModelTests {
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must
         // remain fail-closed; manual read-only pagination may prove completion.
-        for scenario in ["complete", "second-user", "changed-tail"] {
+        for scenario in ["complete", "second-user", "changed-tail", "still-running", "other-run"] {
             let longRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("HermesLongRun-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: longRoot) }
@@ -377,11 +377,13 @@ extension ModelTests {
             }
             service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
             service.appendHeadOnOlderPage = scenario == "changed-tail"
+            if scenario == "still-running" { service.active = "long-run" }
+            if scenario == "other-run" { service.active = "newer-run" }
             let model = NativeChatModel(sessionID: "test", api: service, draftStore: longStore)
             await model.load()
             if let probe = model.activeRunProbeTask { await probe.value }
-            precondition(model.uncertain && !model.canSend && service.startCalls == 0,
-                         "60-row tail must not prematurely release a long accepted run")
+            precondition(!model.canSend && service.startCalls == 0,
+                         "60-row tail must not release the send lock or replay a POST")
             let verified = await model.reconcileLongAcceptedRun()
             if scenario == "complete" {
                 precondition(verified && model.canSend
@@ -392,8 +394,14 @@ extension ModelTests {
                              && longStore.loadActiveRun().value != nil,
                              "ambiguous/changed long history must remain fail-closed")
             }
-            precondition(service.historyPageCalls >= 2 && service.startCalls == 0,
-                         "verification pages history without replaying a POST")
+            if scenario == "other-run" {
+                precondition(service.historyPageCalls == 0,
+                             "a competing live run prevents lookback")
+            } else {
+                precondition(service.historyPageCalls >= (scenario == "still-running" ? 1 : 2)
+                             && service.startCalls == 0,
+                             "verification pages history without replaying a POST")
+            }
             model.disconnect()
         }
         print("PENDING_PASS long-run history pagination, interleaved user and changed tail")

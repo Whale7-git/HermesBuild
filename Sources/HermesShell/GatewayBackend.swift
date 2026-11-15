@@ -306,7 +306,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     // MARK: - 聊天轮次
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
-        let active = try await activeRun(sessionID: sessionID)
+        // Run-status lookup is a recovery hint, not a prerequisite for reading
+        // history. A transient /v1/runs failure must not prevent the user from
+        // loading the canonical transcript that can prove completion.
+        let active = try await activeRun(sessionID: sessionID, allowBackoff: false)
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
@@ -357,10 +360,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
-    private func activeRun(sessionID: String) async throws -> String? {
+    private func activeRun(sessionID: String, allowBackoff: Bool = true) async throws -> String? {
         guard let runID = runStore.runID(for: sessionID) else { return nil }
         let now = Date().timeIntervalSince1970
-        if let retryAt = nextRunProbeAt[runID], now < retryAt {
+        if allowBackoff, let retryAt = nextRunProbeAt[runID], now < retryAt {
             throw GatewayDecodeError.malformed(
                 "后台任务状态仍待核对；已暂停频繁重试，不会清除运行记录或自动重发。")
         }
