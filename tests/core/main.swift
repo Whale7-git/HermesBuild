@@ -245,6 +245,55 @@ test("transcript_tools") {
     expect(!t.terminal, "tool completion is not stream completion")
 }
 
+test("transcript_tool_ambiguity") {
+    var t = ChatTranscript()
+    try t.apply(frame("tool", #"{"tid":"first","name":"run","preview":"one"}"#, "1"))
+    try t.apply(frame("tool", #"{"tid":"second","name":"run","preview":"two"}"#, "2"))
+    try t.apply(frame("tool_complete", #"{"name":"run","preview":"ambiguous"}"#, "3"))
+    expect(t.tools.count == 3, "id-less same-name completion creates an unresolved row")
+    expect(t.tools[0].id == "first" && !t.tools[0].done, "first same-name call is not guessed")
+    expect(t.tools[1].id == "second" && !t.tools[1].done, "second same-name call is not guessed")
+    expect(t.tools[2].done && t.tools[2].result == "ambiguous", "ambiguous result remains visible")
+}
+
+test("transcript_streaming_revision") {
+    var t = ChatTranscript()
+    t.messages = [ChatMessage(id: "u", role: "user", content: "question"),
+                  ChatMessage(id: "a", role: "assistant", content: "a")]
+    let before = ChatStreamingTailSnapshot(
+        messages: t.messages, tools: t.tools, notices: t.notices,
+        running: true, toolsAreLive: true,
+        transcriptRevision: t.transcriptRevision,
+        transcriptStructureRevision: t.transcriptStructureRevision)
+    try t.apply(frame("token", #"{"text":"b"}"#, "1"))
+    let after = ChatStreamingTailSnapshot(
+        messages: t.messages, tools: t.tools, notices: t.notices,
+        running: true, toolsAreLive: true,
+        transcriptRevision: t.transcriptRevision,
+        transcriptStructureRevision: t.transcriptStructureRevision)
+    expect(ChatStreamingTailProof.canReplaceTail(from: before, to: after),
+           "tail-only revision accepts the streaming fast path")
+
+    var structureChanged = t
+    structureChanged.messages[0].content = "edited history"
+    try structureChanged.apply(frame("token", #"{"text":"c"}"#, "2"))
+    let changed = ChatStreamingTailSnapshot(
+        messages: structureChanged.messages, tools: structureChanged.tools,
+        notices: structureChanged.notices, running: true, toolsAreLive: true,
+        transcriptRevision: structureChanged.transcriptRevision,
+        transcriptStructureRevision: structureChanged.transcriptStructureRevision)
+    expect(!ChatStreamingTailProof.canReplaceTail(from: after, to: changed),
+           "earlier-row mutation cannot use the tail fast path")
+
+    let unchanged = ChatStreamingTailSnapshot(
+        messages: t.messages, tools: t.tools, notices: t.notices,
+        running: true, toolsAreLive: true,
+        transcriptRevision: t.transcriptRevision,
+        transcriptStructureRevision: t.transcriptStructureRevision)
+    expect(!ChatStreamingTailProof.canReplaceTail(from: unchanged, to: unchanged),
+           "an unchanged revision cannot claim a tail update")
+}
+
 test("transcript_done") {
     var t = ChatTranscript()
     t.messages = [ChatMessage(id: "optimistic", role: "user", content: "pending")]

@@ -205,6 +205,30 @@ enum ChatProcessPlan {
             }
         }
         flushGroup()
+
+        let resolvedAnchorByToolID = Dictionary(
+            toolsByAnchor.flatMap { anchor, group in
+                group.map { ($0.id, anchor) }
+            },
+            uniquingKeysWith: { first, _ in first })
+        let eligibleTurnIDs = completedTurns.union(
+            running ? Set([turnIDs[visible.last?.id ?? ""]].compactMap { $0 }) : [])
+        for turnID in eligibleTurnIDs {
+            let turnTools = tools.filter {
+                resolvedAnchorByToolID[$0.id].flatMap { turnIDs[$0] } == turnID
+            }
+            if let existing = groupsByAnchor.first(where: { anchor, _ in
+                turnIDs[anchor] == turnID
+            })?.value {
+                groupsByAnchor[existing.messages.first?.id ?? ""] = ChatProcessGroup(
+                    messages: existing.messages, tools: turnTools)
+            } else if !turnTools.isEmpty,
+                      let anchor = visible.first(where: {
+                          $0.role == "assistant" && turnIDs[$0.id] == turnID
+                      })?.id {
+                groupsByAnchor[anchor] = ChatProcessGroup(messages: [], tools: turnTools)
+            }
+        }
         return Result(groupsByAnchor: groupsByAnchor,
                       foldedMessageIDs: foldedMessageIDs,
                       finalMessageIDs: Set(lastAssistantByTurn.values),
@@ -401,6 +425,9 @@ enum ChatTimeline {
         let processPlan = ChatProcessPlan.make(
             messages: messages, tools: tools, running: running,
             completeTurnIDs: completeTurnIDs, toolsByAnchor: byAnchor)
+        let processToolIDs = Set(processPlan.groupsByAnchor.values.flatMap {
+            $0.tools.map(\.id)
+        })
         // Consecutive tool runs in the same turn are one quiet process row.
         // A visible assistant segment or a new user message always breaks it.
         var coalescedByAnchor: [String: [ChatTool]] = [:]
@@ -464,7 +491,10 @@ enum ChatTimeline {
             }
             previous = message
             if emittedToolAnchors.contains(message.id),
-               let group = coalescedByAnchor[message.id], let first = group.first {
+               let group = coalescedByAnchor[message.id]?.filter({
+                   !processToolIDs.contains($0.id)
+               }),
+               let first = group.first {
                 rows.append(ChatRow(id: "tools-\(first.id)", kind: .tools(group)))
             }
         }
