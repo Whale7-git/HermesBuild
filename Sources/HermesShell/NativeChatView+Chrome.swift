@@ -71,7 +71,9 @@ extension NativeChatView {
             // keep the info panel accessible there instead of a permanent icon.
             Button {
                 composerFocused = false
-                Task { await app.createSession() }
+                // Match the drawer's New Chat action: a local empty draft
+                // workspace, not an empty network-created Session.
+                app.closeSession()
             } label: {
                 if app.creating { ProgressView().frame(width: 44, height: 44) }
                 else { ChromeIcon(symbol: "square.and.pencil") }
