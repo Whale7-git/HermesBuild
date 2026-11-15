@@ -783,7 +783,7 @@ extension NativeChatModel {
                         stopPending: stopping || stopAcknowledged,
                         sameRun: activeTurnRecovery == nil,
                         terminalFrame: terminalEvent != nil,
-                        finalHistoryConfirmed: finalHistoryConfirmed && streamID == nil,
+                        finalHistoryConfirmed: finalHistoryConfirmed && self.streamID == nil,
                         successful: settled, uncertain: uncertain,
                         userPaused: queueUserPaused, recoveryPaused: queueRecoveryPaused)
                     if decision == .keepLocked {
