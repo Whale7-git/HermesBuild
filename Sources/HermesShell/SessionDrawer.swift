@@ -14,6 +14,7 @@ struct SessionListPane: View {
     let onSettings: () -> Void
     var onClose: (() -> Void)?
     var onBrowseAll: (() -> Void)? = nil
+    var startSearching = false
 
     @State private var query = ""
     @State private var showsSearch = false
@@ -164,9 +165,6 @@ struct SessionListPane: View {
                             sectionCaption("正在处理 · \(running.count)")
                             rows(running)
                         }
-                        if !app.visibleTaskSummaries.isEmpty {
-                            taskCenterRow
-                        }
                         if !pinned.isEmpty { sectionCaption("置顶"); rows(pinned) }
                         ForEach(SessionRecencyBucket.allCases) { bucket in
                             let group = recent.filter { SessionRecencyBucket.bucket(for: $0.updatedDate) == bucket }
@@ -234,6 +232,10 @@ struct SessionListPane: View {
         // 撤销信息在 AppState 上，新建的列表页同样能看到这条提示。
         .onAppear {
             if !app.lastArchiveUndo.isEmpty { presentUndo() }
+            if startSearching && !selecting {
+                showsSearch = true
+                searchFocused = true
+            }
         }
         .onChange(of: app.lastArchiveUndo) { _, targets in
             if targets.isEmpty { dismissUndo() } else { presentUndo() }
@@ -453,11 +455,6 @@ struct SessionListPane: View {
                 Divider()
                 Button("刷新对话", systemImage: "arrow.clockwise") { Task { await refreshCurrentList() } }
                     .disabled(refreshing)
-                Button("任务中心", systemImage: "checklist") {
-                    cancelSearch()
-                    showTaskCenter = true
-                }
-                .disabled(selecting)
                 Button("设置", systemImage: "gearshape", action: onSettings)
             } label: { ChromeIcon(symbol: "ellipsis") }
             .accessibilityLabel("对话筛选与管理")
@@ -581,6 +578,23 @@ struct SessionListPane: View {
                 .contentShape(Rectangle())
             }
             .accessibilityLabel("搜索会话")
+
+            Button { showTaskCenter = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "list.bullet.clipboard")
+                    Text("任务中心").font(.subheadline.weight(.medium))
+                    Spacer(minLength: 0)
+                    if !app.visibleTaskSummaries.isEmpty {
+                        Text("\(app.visibleTaskSummaries.count)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel("任务中心，查看运行及待处理会话")
         }
         .foregroundStyle(.primary)
         .buttonStyle(.plain)

@@ -338,6 +338,20 @@ struct NativeChatView: View {
             guard !Task.isCancelled, visible, app.active.id == instance,
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
                   app.currentSessionID == sessionID else { return }
+            if let firstText = app.consumeHomeTurn(for: sessionID) {
+                // One-shot claim occurs BEFORE the send await. If this view
+                // disappears or the process dies, the original POST is never
+                // retried; its exact text remains in the session's draft store.
+                if model.canSend && !model.uncertain && model.draft == firstText {
+                    syncedDraft = firstText
+                    _ = await model.send()
+                } else {
+                    model.notice = "新会话已建立，首条消息尚未发送；请核对状态后手动发送已保存的草稿。"
+                }
+            }
+            guard !Task.isCancelled, visible, app.active.id == instance,
+                  app.historyAccountScope == account, app.activeChangeToken == changeToken,
+                  app.currentSessionID == sessionID else { return }
             restoreCollapsedCells()
             prepareResumeHint()
             await restoreReadingPosition()
