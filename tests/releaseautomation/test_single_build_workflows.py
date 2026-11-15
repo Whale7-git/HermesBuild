@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def triggers(text):
-    match = re.search(r"(?ms)^on:\s*\n((?:  .*\n?)+)", text)
+    match = re.search(r"(?ms)^on:\s*\n(.*?)(?=^[A-Za-z][A-Za-z0-9_-]*:\s*$)", text)
     if match is None:
         raise AssertionError("workflow has no on trigger block")
     return {
