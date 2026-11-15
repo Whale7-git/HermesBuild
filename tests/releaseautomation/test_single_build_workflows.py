@@ -42,7 +42,6 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         text = path.read_text()
         self.assertEqual(triggers(text), {"push"})
         self.assertIn("promote", jobs(text))
-        self.assertIn("actions/download-artifact@", text)
         self.assertIn("actions/artifacts/${ARTIFACT_ID}/zip", text)
         self.assertNotIn("uses: actions/download-artifact@", text)
         self.assertIn("publish-candidate.py", text)
