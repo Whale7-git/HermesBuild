@@ -45,6 +45,8 @@ struct LocalDataIssue: Equatable, Sendable {
 /// be read as another account's draft. Every successful write is read back and
 /// byte-compared before the caller is told that persistence succeeded.
 struct LocalDataFileStore: Sendable {
+    typealias DestinationReadBackVerifier = @Sendable (_ url: URL, _ expected: Data) -> Bool
+
     struct Statistics: Equatable, Sendable {
         let files: Int
         let payloadBytes: Int64
@@ -70,16 +72,22 @@ struct LocalDataFileStore: Sendable {
     private static let maxDraftBytes = 2 * 1024 * 1024
     private static let maxQueueBytes = 16 * 1024 * 1024
     private static let maxActiveRunBytes = 128 * 1024
+    private static let maxAttachmentDraftBytes = 48 * 1024 * 1024
 
     let root: URL
     let scopeHash: String
     let namespaceHash: String
+    private let destinationReadBackVerifier: DestinationReadBackVerifier
 
     init(instanceID: String, accountScope: String, sessionID: String,
-         rootDirectory: URL = LocalDataFileStore.defaultRoot) {
+         rootDirectory: URL = LocalDataFileStore.defaultRoot,
+         destinationReadBackVerifier: @escaping DestinationReadBackVerifier = {
+             url, expected in (try? Data(contentsOf: url)) == expected
+         }) {
         root = rootDirectory
         scopeHash = Self.digest([instanceID, accountScope, sessionID])
         namespaceHash = Self.digest([instanceID, accountScope])
+        self.destinationReadBackVerifier = destinationReadBackVerifier
     }
 
     static var defaultRoot: URL {
@@ -106,6 +114,10 @@ struct LocalDataFileStore: Sendable {
         root.appendingPathComponent("active-run-\(namespaceHash)-\(scopeHash).json")
     }
 
+    var attachmentDraftURL: URL {
+        root.appendingPathComponent("attachments-\(namespaceHash)-\(scopeHash).json")
+    }
+
     func loadActiveRun() -> (value: Data?, result: LocalStoreWriteResult) {
         switch loadData(activeRunURL, maxBytes: Self.maxActiveRunBytes) {
         case .missing: return (nil, .ok)
@@ -117,6 +129,19 @@ struct LocalDataFileStore: Sendable {
     func saveActiveRun(_ value: Data?) -> LocalStoreWriteResult {
         guard let value else { return remove(activeRunURL) }
         return save(value, to: activeRunURL, maxBytes: Self.maxActiveRunBytes)
+    }
+
+    func loadAttachmentDraft() -> (value: Data?, result: LocalStoreWriteResult) {
+        switch loadData(attachmentDraftURL, maxBytes: Self.maxAttachmentDraftBytes) {
+        case .missing: return (nil, .ok)
+        case .value(let value): return (value, .ok)
+        case .invalid: return (nil, .failed(.corruptFile))
+        }
+    }
+
+    func saveAttachmentDraft(_ value: Data?) -> LocalStoreWriteResult {
+        guard let value else { return remove(attachmentDraftURL) }
+        return save(value, to: attachmentDraftURL, maxBytes: Self.maxAttachmentDraftBytes)
     }
 
     func loadPending() -> (value: Data?, result: LocalStoreWriteResult) {
@@ -162,7 +187,9 @@ struct LocalDataFileStore: Sendable {
         let draft = loadDraft().result
         if !draft.succeeded { return draft }
         let queue = loadQueue().result
-        return queue.succeeded ? loadActiveRun().result : queue
+        if !queue.succeeded { return queue }
+        let active = loadActiveRun().result
+        return active.succeeded ? loadAttachmentDraft().result : active
     }
 
     func saveDraft(_ value: String) -> LocalStoreWriteResult {
@@ -184,9 +211,11 @@ struct LocalDataFileStore: Sendable {
         let second = remove(queueURL)
         let third = remove(pendingURL)
         let fourth = remove(activeRunURL)
+        let fifth = remove(attachmentDraftURL)
         if !first.succeeded { return first }
         if !second.succeeded { return second }
-        return third.succeeded ? fourth : third
+        if !third.succeeded { return third }
+        return fourth.succeeded ? fifth : fourth
     }
 
     static func removeAll(instanceID: String, accountScope: String,
@@ -272,6 +301,13 @@ struct LocalDataFileStore: Sendable {
         let temporary = directory.appendingPathComponent(
             ".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         defer { try? manager.removeItem(at: temporary) }
+        let backup = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).backup")
+        var keepBackup = false
+        var previousEncoded: Data?
+        defer {
+            if !keepBackup { try? manager.removeItem(at: backup) }
+        }
         do {
             #if os(iOS)
             try encoded.write(to: temporary, options: [.completeFileProtection])
@@ -280,6 +316,27 @@ struct LocalDataFileStore: Sendable {
             #else
             try encoded.write(to: temporary, options: [])
             #endif
+            // Verify the complete envelope before either the destination or its
+            // backup is touched. A failed temporary write cannot invalidate the
+            // previously committed value.
+            guard let temporaryReadBack = try? Data(contentsOf: temporary),
+                  temporaryReadBack == encoded,
+                  Self.readEnvelope(temporary, maxBytes: maxBytes)?.scopeHash == scopeHash else {
+                return .failed(.diskWrite)
+            }
+            let hadExistingValue = manager.fileExists(atPath: url.path)
+            if hadExistingValue { previousEncoded = try Data(contentsOf: url) }
+            if let previousEncoded {
+                // Keep a verified same-directory copy until the new destination
+                // has passed read-back. If rollback itself fails, retain the
+                // backup for recovery rather than deleting the last good copy.
+                try manager.copyItem(at: url, to: backup)
+                guard let backupReadBack = try? Data(contentsOf: backup),
+                      backupReadBack == previousEncoded,
+                      Self.readEnvelope(backup, maxBytes: maxBytes)?.scopeHash == scopeHash else {
+                    return .failed(.diskWrite)
+                }
+            }
             #if os(Linux)
             // swift-corelibs-foundation replaceItemAt can unlink the destination
             // and then fail with ENOENT on Linux. The temporary file is created
@@ -295,14 +352,79 @@ struct LocalDataFileStore: Sendable {
             }
             #endif
             // The guarantee is "persisted and readable", not "write() returned".
-            guard let readBack = try? Data(contentsOf: url), readBack == encoded,
-                  Self.readEnvelope(url, maxBytes: maxBytes)?.scopeHash == scopeHash else {
-                try? manager.removeItem(at: url)
+            let committedEnvelope = Self.readEnvelope(url, maxBytes: maxBytes)
+            guard let committedEnvelope, committedEnvelope.scopeHash == scopeHash,
+                  destinationReadBackVerifier(
+                    url, try JSONEncoder().encode(committedEnvelope)) else {
+                if let previousEncoded {
+                    if !Self.restoreCommittedValue(
+                        previousEncoded, to: url, directory: directory) {
+                        keepBackup = Self.preserveBackup(backup, for: url, in: directory)
+                    }
+                } else {
+                    try? manager.removeItem(at: url)
+                }
                 return .failed(.diskWrite)
             }
             return .ok
         } catch {
+            if let previousEncoded {
+                // A filesystem error after replacement (for example while
+                // checking protection attributes) still must not consume the
+                // last committed value. Restore it when possible and leave the
+                // backup behind when the filesystem cannot complete the rollback.
+                if !Self.restoreCommittedValue(
+                    previousEncoded, to: url, directory: directory) {
+                    // `backup` has its own defer cleanup. Preserve it explicitly
+                    // by moving it to a stable recovery name before returning.
+                    keepBackup = Self.preserveBackup(backup, for: url, in: directory)
+                }
+            }
             return .failed(.diskWrite)
+        }
+    }
+
+    private static func preserveBackup(_ backup: URL, for url: URL, in directory: URL) -> Bool {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: backup.path) else { return false }
+        let recovery = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).recovery")
+        do {
+            try manager.moveItem(at: backup, to: recovery)
+            return true
+        } catch {
+            // If moving fails, leave `backup` in place so the outer defer can
+            // preserve it rather than deleting the last readable copy.
+            return true
+        }
+    }
+
+
+    /// Restore a previously verified envelope without ever writing directly to
+    /// the live path. The caller has already retained the old bytes in memory;
+    /// the extra on-disk backup is only for process/filesystem failure diagnosis.
+    private static func restoreCommittedValue(
+        _ value: Data, to url: URL, directory: URL
+    ) -> Bool {
+        let manager = FileManager.default
+        let restore = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString).restore")
+        defer { try? manager.removeItem(at: restore) }
+        do {
+            try value.write(to: restore, options: [])
+            guard (try? Data(contentsOf: restore)) == value else { return false }
+            #if os(Linux)
+            guard Glibc.rename(restore.path, url.path) == 0 else { return false }
+            #else
+            if manager.fileExists(atPath: url.path) {
+                _ = try manager.replaceItemAt(url, withItemAt: restore)
+            } else {
+                try manager.moveItem(at: restore, to: url)
+            }
+            #endif
+            return (try? Data(contentsOf: url)) == value
+        } catch {
+            return false
         }
     }
 
@@ -350,6 +472,7 @@ struct LocalDataFileStore: Sendable {
         return name.hasPrefix(prefix) || name.hasPrefix(queuePrefix)
             || name.hasPrefix("pending-\(namespaceHash)-")
             || name.hasPrefix("active-run-\(namespaceHash)-")
+            || name.hasPrefix("attachments-\(namespaceHash)-")
     }
 
     private static func digest(_ components: [String]) -> String {

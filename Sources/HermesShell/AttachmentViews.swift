@@ -52,12 +52,15 @@ private struct AttachmentPickerFile: Transferable {
     /// 而不是用 `try!` 崩掉整个输入框（F-37）。
     let previewLoader: AttachmentPreviewLoader?
     private let coordinator: AttachmentUploadCoordinator
+    private let draftStore: ChatDraftStore
+    private let onPersistenceResult: (LocalStoreWriteResult) -> Void
     private var importTask: Task<Void, Never>?
     private var importGeneration = UUID()
 
     deinit { importTask?.cancel() }
 
-    init(api: HermesBackend, sessionID: String) {
+    init(api: HermesBackend, sessionID: String, draftStore: ChatDraftStore,
+         onPersistenceResult: @escaping (LocalStoreWriteResult) -> Void = { _ in }) {
         // 上传走 `api.attachmentBaseURL`，路由与认证都由后端声明：
         // WebUI 是 `api/upload` + cookie，网关是 `v1/files` + Bearer。
         // （此前这里写着「网关没有 multipart 端点」，是错的——网关的
@@ -75,6 +78,8 @@ private struct AttachmentPickerFile: Transferable {
                                                            authorization:api.attachmentPreviewAuthorization))
             .map { AttachmentPreviewLoader(policy: $0) }
         self.batch = AttachmentBatch(sessionID:sessionID)
+        self.draftStore = draftStore
+        self.onPersistenceResult = onPersistenceResult
         // 诊断日志：不再自动上报整段日志；上传失败只做本地留底。
         self.coordinator = AttachmentUploadCoordinator(sessionID:sessionID) { sessionID, draft, reportProgress in
             // Bind the scope now: the upload may finish after the user switched
@@ -112,7 +117,12 @@ private struct AttachmentPickerFile: Transferable {
                 throw error
             }
         }
-        coordinator.onChange = { [weak self] in self?.batch = $0 }
+        coordinator.onChange = { [weak self] batch in
+            guard let self else { return }
+            self.batch = batch
+            self.persist(batch)
+        }
+        restorePersistedDraft()
     }
 
     var isEditing: Bool { editingID != nil }
@@ -120,6 +130,50 @@ private struct AttachmentPickerFile: Transferable {
     func payload(for sessionID: String) throws -> [UploadedAttachment] {
         guard !isImporting, !isEditing else { throw AttachmentError.invalidMetadata }
         return try batch.payload(for:sessionID)
+    }
+
+    private func persist(_ batch: AttachmentBatch) {
+        let value = batch.persistedValue
+        guard !value.items.isEmpty else {
+            onPersistenceResult(draftStore.saveAttachmentDraft(nil))
+            return
+        }
+        guard let data = try? JSONEncoder().encode(value) else {
+            onPersistenceResult(.failed(.encoding))
+            return
+        }
+        guard draftStore.attachmentDraftFits(data) else {
+            errorMessage = "附件总大小已接近上限，无法保存草稿；发送成功前请勿关闭此页面。"
+            onPersistenceResult(.failed(.payloadTooLarge))
+            return
+        }
+        onPersistenceResult(draftStore.saveAttachmentDraft(data))
+    }
+
+    private func restorePersistedDraft() {
+        let loaded = draftStore.loadAttachmentDraft()
+        if let failure = loaded.result.failure {
+            errorMessage = "草稿附件无法恢复，请重新添加。"
+            onPersistenceResult(loaded.result)
+            return
+        }
+        guard let data = loaded.value else { return }
+        guard let value = try? JSONDecoder().decode(PersistedAttachmentBatch.self, from: data) else {
+            errorMessage = "草稿附件数据已损坏，请重新添加。"
+            onPersistenceResult(.failed(.corruptFile))
+            return
+        }
+        do {
+            try coordinator.restorePersisted(value)
+            batch = coordinator.batch
+            persist(batch)
+            for item in batch.items where item.canResumeUpload {
+                retry(item.id)
+            }
+        } catch {
+            errorMessage = "草稿附件无法恢复：\(error.localizedDescription)"
+            onPersistenceResult(.failed(.corruptFile))
+        }
     }
     func importFiles(_ result: Result<[URL], Error>) {
         guard !isImporting else { return }
@@ -318,6 +372,7 @@ private struct AttachmentPickerFile: Transferable {
         isImporting = false
         editingID = nil
         errorMessage = nil
+        onPersistenceResult(draftStore.saveAttachmentDraft(nil))
         coordinator.reset(sessionID:sessionID)
     }
 

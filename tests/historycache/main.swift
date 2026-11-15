@@ -162,6 +162,25 @@ import Foundation
         precondition(expired == nil)
         print("HISTORY_PASS interrupted JSON, unknown versions and expired records recover as cache misses")
 
+        // A cache is display data, not a five-minute stream snapshot. It must
+        // remain readable for the policy window and be retained by statistics
+        // cleanup during the same interval.
+        let ageRoot = try root()
+        defer { try? manager.removeItem(at: ageRoot) }
+        let ageStore = ChatHistoryStore(instanceID: namespace, sessionID: "age",
+            accountScope: "age-policy", rootDirectory: ageRoot)
+        let tenMinutesOld = ChatHistoryRecord(
+            snapshot: try snapshot(session: "age"), savedAt: Date().addingTimeInterval(-10 * 60))
+        ageStore.schedule(tenMinutesOld)
+        await ageStore.flush()
+        let ageStats = await ChatHistoryStore.statistics(rootDirectory: ageRoot)
+        let retainedAfterCleanup = await ageStore.load()
+        precondition(ageStats.entries == 1,
+                     "statistics cleanup must honor policy.maxAge rather than delete after five minutes")
+        precondition(retainedAfterCleanup?.messages == tenMinutesOld.messages,
+                     "a ten-minute-old cache remains readable under the default policy")
+        print("HISTORY_PASS read and cleanup both honor policy.maxAge")
+
         let totalRoot = try root()
         defer { try? manager.removeItem(at: totalRoot) }
         let first = ChatHistoryStore(instanceID: namespace, sessionID: "one", accountScope: "capacity", rootDirectory: totalRoot)

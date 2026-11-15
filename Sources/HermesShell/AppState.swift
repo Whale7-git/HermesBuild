@@ -96,6 +96,9 @@ final class AppState: ObservableObject {
     @Published var errorText: String?
     /// Sticky failure feedback: account-local files may still remain on disk.
     @Published private(set) var localCleanupWarning: String?
+    /// Task observations remain correct in memory when this is set; only their
+    /// cross-launch persistence is degraded.
+    @Published private(set) var sessionTaskPersistenceWarning: String?
 
     private func recordCleanupResult(_ result: LocalStoreWriteResult) {
         guard !result.succeeded else { return }
@@ -109,6 +112,29 @@ final class AppState: ObservableObject {
         localCleanupWarning = "本地历史缓存清理未完成（\(report.failed) 项失败或无法确认），部分文件可能仍在设备上。"
         RuntimeLogRecorder.shared.recordApp(.error, "history-cleanup",
             "history cache cleanup incomplete failures=\(report.failed)")
+    }
+
+    /// Persist the complete observation table and expose a distinct recovery
+    /// warning if the verified read-back fails. In-memory state is never rolled
+    /// back: losing the UI truth because disk is temporarily unavailable would
+    /// hide approvals or verification locks that still exist.
+    @discardableResult
+    private func persistSessionTaskObservations(
+        _ values: [String: SessionTaskObservation],
+        instanceID: String,
+        accountScope: String
+    ) -> Bool {
+        let saved = SessionTaskStore.save(
+            values, instanceID: instanceID, accountScope: accountScope)
+        if saved {
+            sessionTaskPersistenceWarning = nil
+            return true
+        }
+        sessionTaskPersistenceWarning =
+            "任务状态暂时无法保存到设备；本次使用不受影响，重启后可能需要重新核对。"
+        RuntimeLogRecorder.shared.recordApp(.error, "task-store",
+            "task observation persistence failed")
+        return false
     }
 
     /// Last successful list refresh in the current instance/account scope.
@@ -266,11 +292,8 @@ final class AppState: ObservableObject {
         } else {
             sessionTaskObservations[sessionID] = SessionTaskObservation(signals: persisted)
         }
-        _ = SessionTaskStore.save(
-            sessionTaskObservations,
-            instanceID: instance,
-            accountScope: account
-        )
+        persistSessionTaskObservations(
+            sessionTaskObservations, instanceID: instance, accountScope: account)
         // 恢复问题从无到有才提醒：一直存在的问题重复提醒只会淹没新问题。
         if persisted.contains(.recoveryIssue), !previousSignals.contains(.recoveryIssue) {
             let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
@@ -807,6 +830,7 @@ final class AppState: ObservableObject {
             instanceID: historyInstanceID,
             accountScope: historyAccountScope
         )
+        sessionTaskPersistenceWarning = nil
     }
 
     // MARK: - 任务确认（本地）
@@ -1104,27 +1128,33 @@ final class AppState: ObservableObject {
 
     func clearCachedHistory() async {
         guard !clearingHistory else { return }
+        let instance = historyInstanceID
+        let account = historyAccountScope
+        let scope = instance + "|" + account
         clearingHistory = true
-        sessionListCache.removeAll()
-        sessionListCacheOrder.removeAll()
+        forgetSessionList(scope: scope)
         // Keep the currently confirmed remote list visible: clearing local
         // history does not mean the server's sessions have disappeared.
         resetScopeView()
-        ImageRatioStore.shared.clearAll()
-        ChatAttachmentPlaceholderStore.shared.clearAll()
-        RecentModelStore.shared.clearAll()
-        sessionRefreshClock.clearAll()
+        ImageRatioStore.shared.remove(scope: scope)
+        ChatAttachmentPlaceholderStore.shared.removeScope(scope: scope)
+        RecentModelStore.shared.remove(scope: scope)
+        sessionRefreshClock.remove(scope: scope)
         // 草稿/阅读位置/折叠状态不在 ChatHistoryStore 里，必须单独按账号清理，
         // 否则「清除本地历史缓存」之后草稿仍然留在设备上。
         recordCleanupResult(ChatDraftStore.removeAll(
-            instanceID: historyInstanceID, accountScope: historyAccountScope))
-        ChatReadingPositionStore.removeAll(instanceID: historyInstanceID, accountScope: historyAccountScope)
-        ChatReaderPositionStore.removeAll(instanceID: historyInstanceID,
-                                          accountScope: historyAccountScope)
-        ChatCellStateStore.removeAll(instanceID: historyInstanceID, accountScope: historyAccountScope)
-        SessionTaskStore.remove(instanceID: historyInstanceID, accountScope: historyAccountScope)
+            instanceID: instance, accountScope: account))
+        ChatReadingPositionStore.removeAll(instanceID: instance, accountScope: account)
+        ChatReaderPositionStore.removeAll(instanceID: instance, accountScope: account)
+        ChatCellStateStore.removeAll(instanceID: instance, accountScope: account)
+        SessionTaskStore.remove(instanceID: instance, accountScope: account)
+        removeTaskAcknowledgements(instanceID: instance, accountScope: account)
+        taskAckDirty = true
+        taskAckLoaded = false
+        sessionTaskPersistenceWarning = nil
         sessionTaskObservations = [:]
-        let historyCleanup = await ChatHistoryStore.clearAll()
+        let historyCleanup = await ChatHistoryStore.remove(
+            instanceID: instance, accountScope: account)
         recordHistoryCleanupResult(historyCleanup)
         clearingHistory = false
     }
@@ -1142,7 +1172,7 @@ final class AppState: ObservableObject {
                            sessionID: sessionID).remove()
         if instanceID == historyInstanceID && accountScope == historyAccountScope {
             sessionTaskObservations.removeValue(forKey: sessionID)
-            _ = SessionTaskStore.save(
+            persistSessionTaskObservations(
                 sessionTaskObservations,
                 instanceID: instanceID,
                 accountScope: accountScope
@@ -1646,7 +1676,7 @@ final class AppState: ObservableObject {
             )
             if prunedTasks != sessionTaskObservations {
                 sessionTaskObservations = prunedTasks
-                _ = SessionTaskStore.save(
+                persistSessionTaskObservations(
                     prunedTasks,
                     instanceID: historyInstanceID,
                     accountScope: historyAccountScope

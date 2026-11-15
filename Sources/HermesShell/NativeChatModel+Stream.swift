@@ -13,6 +13,9 @@ extension NativeChatModel {
         if running && streamTask != nil { return }
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         let generation = revision
         suspended = false
@@ -334,6 +337,7 @@ extension NativeChatModel {
                 uncertain = true
                 queueAutomaticDispatchPaused = true
                 notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                probeAcceptedRun(receipt)
             }
         }
         authenticationReported = false
@@ -354,6 +358,59 @@ extension NativeChatModel {
         confirmedHistory = record
         historyStore?.schedule(record)
         flush()
+    }
+
+    /// A missing active_stream_id is not terminal evidence. Probe the exact
+    /// durable receipt once; history remains the only authority that clears the
+    /// receipt, and unknown/error states stay fail-closed.
+    func probeAcceptedRun(_ receipt: ActiveTurnRecovery) {
+        guard activeRunProbeRunID != receipt.runID else { return }
+        guard !suspended, !submitting, !syncing, !loading else { return }
+        activeRunProbeTask?.cancel()
+        activeRunProbeRunID = receipt.runID
+        let generation = revision
+        activeRunProbeTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.activeRunProbeRunID == receipt.runID {
+                    self.activeRunProbeTask = nil
+                }
+            }
+            do {
+                let result = try await self.api.probeActiveRun(
+                    sessionID: self.sessionID, runID: receipt.runID)
+                guard generation == self.revision, !Task.isCancelled,
+                      !self.suspended,
+                      self.activeTurnRecovery == receipt else { return }
+                switch result {
+                case .alive:
+                    self.streamID = receipt.runID
+                    // The receipt proves the POST was accepted, so an older
+                    // pre-POST PendingSend is now resolved as delivered.
+                    if self.pendingSend != nil {
+                        self.pendingSend = nil
+                        self.pendingAbsent = false
+                    }
+                    self.uncertain = false
+                    self.queueAutomaticDispatchPaused = false
+                    self.notice = nil
+                    self.attach(streamID: receipt.runID)
+                case .terminal, .unknown:
+                    // Terminal status alone is not enough to clear the receipt:
+                    // authoritative history must prove this exact turn landed.
+                    self.uncertain = true
+                    self.queueAutomaticDispatchPaused = true
+                    self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                }
+            } catch {
+                guard generation == self.revision, !Task.isCancelled,
+                      self.activeTurnRecovery == receipt else { return }
+                if self.handleAuthenticationFailure(error) { return }
+                self.uncertain = true
+                self.queueAutomaticDispatchPaused = true
+                self.notice = "后台任务状态核对失败；消息不会重新发送，请稍后刷新。"
+            }
+        }
     }
 
     func flush() {
@@ -715,6 +772,9 @@ extension NativeChatModel {
         guard !loading, !syncing else { return }
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
@@ -733,6 +793,9 @@ extension NativeChatModel {
         resumeRequested = false
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil

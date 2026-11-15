@@ -10,6 +10,8 @@ swiftc -swift-version 6 -warnings-as-errors \
   Sources/HermesShell/ChatCore.swift \
   Sources/HermesShell/AttachmentModels.swift \
   Sources/HermesShell/AttachmentHistory.swift \
+  Sources/HermesShell/LocalDataStorage.swift \
+  Sources/HermesShell/ChatDraftStore.swift \
   tests/attachments/main.swift tests/attachments/PreviewTests.swift \
   tests/attachments/DownloadTests.swift tests/attachments/ReliabilityTests.swift \
   -o "$BUILD/attachments-tests"

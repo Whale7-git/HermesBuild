@@ -197,6 +197,72 @@ do {
         _ = try b.append(name:"c.pdf", mime:"application/pdf", data:bytes)
     }
 }
+// Durable composer attachments: local bytes survive for pending uploads,
+// completed references do not need bytes, and restore validates session,
+// identity and quota before replacing the current batch.
+do {
+    var source = AttachmentBatch(sessionID: "persisted")
+    let pendingID = try source.append(
+        name: "notes.txt", mime: "text/plain", data: bytes)
+    let pendingAttempt = try source.begin(pendingID)
+    source.progress(pendingID, attempt: pendingAttempt, fraction: 0.5)
+    var restoredPending = AttachmentBatch(sessionID: "persisted")
+    try restoredPending.restorePersisted(source.persistedValue)
+    check(restoredPending.items.count == 1
+          && restoredPending.items[0].state == .queued
+          && restoredPending.items[0].data == bytes
+          && restoredPending.items[0].canResumeUpload,
+          "interrupted local upload restores as resumable queued bytes")
+
+    var readySource = AttachmentBatch(sessionID: "persisted")
+    let readyID = try readySource.append(
+        name: "report.pdf", mime: "application/pdf", data: bytes)
+    let readyAttempt = try readySource.begin(readyID)
+    let readyAttachment = UploadedAttachment(
+        name: "report.pdf", path: "/state/attachments/persisted/report.pdf",
+        size: bytes.count, mime: "application/pdf", isImage: false)
+    readySource.complete(readyID, attempt: readyAttempt, attachment: readyAttachment)
+    var restoredReady = AttachmentBatch(sessionID: "persisted")
+    try restoredReady.restorePersisted(readySource.persistedValue)
+    check(restoredReady.canSend && restoredReady.items[0].data.isEmpty
+          && (try? restoredReady.payload(for: "persisted")) == [readyAttachment],
+          "completed server reference restores without local bytes")
+
+    let wrongScope = PersistedAttachmentBatch(
+        version: readySource.persistedValue.version, sessionID: "other",
+        items: readySource.persistedValue.items)
+    rejects("persisted attachment batch is session scoped") {
+        try restoredReady.restorePersisted(wrongScope)
+    }
+    let duplicate = PersistedAttachmentBatch(
+        version: readySource.persistedValue.version,
+        sessionID: readySource.persistedValue.sessionID,
+        items: [readySource.persistedValue.items[0], readySource.persistedValue.items[0]])
+    rejects("persisted attachment IDs are unique") {
+        try restoredReady.restorePersisted(duplicate)
+    }
+    let original = readySource.persistedValue.items[0]
+    let invalidItem = PersistedAttachmentDraft(
+        id: original.id, name: original.name, mime: original.mime,
+        byteCount: original.byteCount, data: Data(), state: .pending,
+        reuploading: false)
+    rejects("pending attachment requires local bytes") {
+        try restoredReady.restorePersisted(PersistedAttachmentBatch(
+            version: readySource.persistedValue.version,
+            sessionID: readySource.persistedValue.sessionID,
+            items: [invalidItem]))
+    }
+    var quotaBatch = AttachmentBatch(sessionID: "quota-persist", maxTotalBytes: 3)
+    rejects("persisted attachment quota is rechecked") {
+        try quotaBatch.restorePersisted(PersistedAttachmentBatch(
+            version: PersistedAttachmentBatch.currentVersion,
+            sessionID: "quota-persist",
+            items: [PersistedAttachmentDraft(
+                id: UUID(), name: "a", mime: "text/plain", byteCount: 4,
+                data: bytes, state: .pending, reuploading: false)]))
+    }
+}
+
 let historyParts: [[String:Any]] = [
     ["type":"text", "text":"look MEDIA:/media/out.png and ![outside](https://tracker.invalid/pixel.png)"],
     ["type":"image_url", "image_url":["url":"/state/picture.png"]],

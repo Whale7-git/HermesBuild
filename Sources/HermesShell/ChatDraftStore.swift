@@ -84,6 +84,20 @@ struct ChatDraftStore {
             ? .ok : .failed(.diskWrite)
     }
 
+    func loadAttachmentDraft() -> (value: Data?, result: LocalStoreWriteResult) {
+        if let fileStore { return fileStore.loadAttachmentDraft() }
+        return (defaults.data(forKey: key + ".attachments"), .ok)
+    }
+
+    @discardableResult
+    func saveAttachmentDraft(_ value: Data?) -> LocalStoreWriteResult {
+        if let fileStore { return fileStore.saveAttachmentDraft(value) }
+        if let value { defaults.set(value, forKey: key + ".attachments") }
+        else { defaults.removeObject(forKey: key + ".attachments") }
+        return defaults.data(forKey: key + ".attachments") == value
+            ? .ok : .failed(.diskWrite)
+    }
+
     func load() -> String { loadDraftResult().value }
 
     func loadDraftResult() -> (value: String, result: LocalStoreWriteResult) {
@@ -117,7 +131,18 @@ struct ChatDraftStore {
         let queue = loadQueuedResult()
         if !queue.result.succeeded { return queue.result }
         let pending = loadPending().result
-        return pending.succeeded ? loadActiveRun().result : pending
+        if !pending.succeeded { return pending }
+        let active = loadActiveRun().result
+        return active.succeeded ? loadAttachmentDraft().result : active
+    }
+
+    /// The attachment editor owns bytes that can be large enough to exceed the
+    /// 48 MB attachment envelope only after JSON/base64 expansion. Probe the
+    /// exact encoded payload without replacing a previously good snapshot.
+    func attachmentDraftFits(_ value: Data?) -> Bool {
+        guard let value else { return true }
+        guard let encoded = try? JSONEncoder().encode(value) else { return false }
+        return encoded.count <= 47 * 1024 * 1024
     }
 
     /// An unsent queued turn shares this exact account/session namespace. It
@@ -165,6 +190,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + Self.queuedSuffix)
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
+        defaults.removeObject(forKey: key + ".attachments")
         if let legacy = legacyKey { defaults.removeObject(forKey: legacy) }
         _ = fileStore?.remove()
     }
@@ -211,6 +237,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + queuedSuffix)
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
+        defaults.removeObject(forKey: key + ".attachments")
         let fileStore = LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
                                            sessionID: sessionID, rootDirectory: fileRootDirectory)
         return fileStore.remove()

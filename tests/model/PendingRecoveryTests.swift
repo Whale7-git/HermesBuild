@@ -11,6 +11,8 @@ import Foundation
     var holdHistory = false
     var startCalls = 0
     var sent: [(String, [ChatAttachmentPayload])] = []
+    var probeResults: [ActiveRunProbe] = [.unknown]
+    var probeCalls = 0
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         if failHistory { throw URLError(.notConnectedToInternet) }
@@ -23,6 +25,10 @@ import Foundation
     }
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
         try await startNativeTurn(sessionID: sessionID, text: text, attachments: [])
+    }
+    func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        probeCalls += 1
+        return probeResults.count > 1 ? probeResults.removeFirst() : (probeResults.first ?? .unknown)
     }
     func startNativeTurn(sessionID: String, text: String, attachments: [ChatAttachmentPayload]) async throws -> String {
         startCalls += 1
@@ -54,6 +60,24 @@ extension ModelTests {
         precondition(probe.loadPending().value == second,
                      "repeat pending writes must remain durable and readable")
         print("LOCAL_STORE_REPLACE_PASS")
+
+        // Force the post-replacement read-back to fail. The previous committed
+        // envelope must be restored, not deleted together with the new value.
+        let rollbackRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hermes-atomic-rollback-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: rollbackRoot) }
+        let rollbackStore = LocalDataFileStore(
+            instanceID: "rollback", accountScope: "account", sessionID: "session",
+            rootDirectory: rollbackRoot,
+            destinationReadBackVerifier: { _, expected in
+                !String(decoding: expected, as: UTF8.self).contains("second-pending")
+            })
+        precondition(rollbackStore.savePending(first).succeeded)
+        precondition(rollbackStore.savePending(second).failure
+            == LocalStoreWriteFailure.diskWrite)
+        precondition(rollbackStore.loadPending().value == first,
+                     "failed post-replacement read-back must roll back the old durable value")
+        print("LOCAL_STORE_ROLLBACK_PASS")
 
         let attachment = ChatAttachmentPayload(name: "scan.pdf", path: "/attachments/new.pdf",
                                              mime: "application/pdf", size: 48, isImage: false)
@@ -250,6 +274,47 @@ extension ModelTests {
                          "explicit discard plus GET may unlock a corrupt local record")
             damaged.disconnect()
         }
+
+        // Receipt exists, but the history snapshot temporarily omits
+        // active_stream_id. A bounded run-status probe may attach only when the
+        // exact run is alive; unknown/terminal status never unlocks a POST.
+        for result in [ActiveRunProbe.alive, .terminal, .unknown] {
+            do {
+                let probeRoot = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("HermesRunProbe-" + UUID().uuidString)
+                defer { try? FileManager.default.removeItem(at: probeRoot) }
+                let probeFiles = LocalDataFileStore(
+                    instanceID: "probe", accountScope: "account",
+                    sessionID: "test", rootDirectory: probeRoot)
+                let probeStore = ChatDraftStore(
+                    instanceID: "probe", accountScope: "account",
+                    sessionID: "test", fileStore: probeFiles)
+                let receipt = ActiveTurnRecovery(
+                    runID: "receipt-run", historyEnd: 0, knownIDs: [],
+                    text: "receipt text", attachmentPaths: [])
+                let data = try JSONEncoder().encode(receipt)
+                precondition(probeStore.saveActiveRun(data).succeeded)
+                let service = PendingRecoveryService()
+                service.probeResults = [result]
+                let model = NativeChatModel(
+                    sessionID: "test", api: service, draftStore: probeStore)
+                await model.load()
+                try await eventually { service.probeCalls == 1 }
+                if result == .alive {
+                    try await eventually { model.streamID == receipt.runID }
+                    precondition(!model.canSend && model.uncertain == false,
+                                 "a proven live receipt attaches without replaying the POST")
+                } else {
+                    precondition(model.uncertain && !model.canSend
+                                 && model.streamID == nil && probeStore.loadActiveRun().value != nil,
+                                 "terminal/unknown status is fail-closed until history proves completion")
+                }
+                precondition(service.startCalls == 0,
+                             "run-status probing must never replay the original POST")
+                model.disconnect()
+            }
+        }
+        print("PENDING_PASS receipt-only run probe attaches alive and fails closed otherwise")
 
         let busyService = PendingRecoveryService()
         let busy = NativeChatModel(sessionID: "test", api: busyService)

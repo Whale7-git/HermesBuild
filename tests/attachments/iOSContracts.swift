@@ -58,7 +58,9 @@ import SwiftUI
 }
 
 @MainActor func verifyAttachmentUIBoundary(api: HermesAPI, attachment: UploadedAttachment) throws {
-    let model = AttachmentComposerModel(api:api, sessionID:"s")
+    let model = AttachmentComposerModel(
+        api: api, sessionID: "s",
+        draftStore: ChatDraftStore(instanceID: "test", accountScope: "test", sessionID: "s"))
     let _: Bool = model.canSend
     let _: [UploadedAttachment] = try model.payload(for:"s")
     model.reset(sessionID:"next")

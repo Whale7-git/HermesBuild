@@ -540,7 +540,7 @@ final class ChatHistoryStore: Sendable {
             clean(root: item.root, policy: item.policy)
             return .failed(.diskWrite)
         }
-        // 修改时间只影响淘汰顺序与 5 分钟新鲜度判断，失败可以容忍。
+        // 修改时间只影响淘汰顺序与 maxAge 判断，失败可以容忍。
         try? manager.setAttributes([.modificationDate: item.record.savedAt], ofItemAtPath: url.path)
         // F-55b：`isExcludedFromBackup` 是安全语义，不是优化。目录级那道（见
         // defaultDirectory）失败可以放过，因为这里还有文件级的一道；文件级失败
@@ -590,7 +590,6 @@ final class ChatHistoryStore: Sendable {
         guard fileSize(url) > 0, fileSize(url) <= policy.maxEntryBytes,
               let data = try? Data(contentsOf: url),
               let value = try? JSONDecoder().decode(Envelope.self, from: data), value.version == 1,
-              value.savedAt.timeIntervalSinceNow <= 5 * 60,
               -value.savedAt.timeIntervalSinceNow <= policy.maxAge,
               value.olderOffset >= 0,
               value.messages.count <= max(1, policy.maxMessages), value.tools.count <= max(0, policy.maxTools),
@@ -611,7 +610,6 @@ final class ChatHistoryStore: Sendable {
             let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
             let modified = attributes?[.modificationDate] as? Date ?? .distantPast
             guard size > 0, size <= policy.maxEntryBytes,
-                  modified.timeIntervalSinceNow <= 5 * 60,
                   -modified.timeIntervalSinceNow <= policy.maxAge else {
                 try? FileManager.default.removeItem(at: url)
                 return nil

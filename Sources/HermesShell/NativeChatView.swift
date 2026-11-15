@@ -189,7 +189,13 @@ struct NativeChatView: View {
         self.webURL = api.webConsoleBaseURL
             .appendingPathComponent("session")
             .appendingPathComponent(sessionID)
-        _attachments = StateObject(wrappedValue: AttachmentComposerModel(api: api, sessionID: sessionID))
+        let attachmentDraftStore = ChatDraftStore(
+            instanceID: instanceID, accountScope: accountScope, sessionID: sessionID,
+            legacyBaseURL: api.webConsoleBaseURL.absoluteString,
+            fileStore: LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
+                                          sessionID: sessionID))
+        _attachments = StateObject(wrappedValue: AttachmentComposerModel(
+            api: api, sessionID: sessionID, draftStore: attachmentDraftStore))
         // 关键：只把「如何构造」放进 autoclosure，不在这里真的构造。
         // StateObject 只在视图身份首次出现时求值一次，宿主重建不再白造模型；
         // 草稿键编码、比例快照（ImageRatioStore 的锁 + 字典构建）与阅读位置
@@ -388,6 +394,9 @@ struct NativeChatView: View {
         .onChange(of: model.uncertain) { _, value in if value { noticeBarDismissed = false } }
         .onChange(of: model.localPersistenceIssue) { _, value in if value != nil { noticeBarDismissed = false } }
         .onChange(of: model.queuePersistenceFailed) { _, value in if value { noticeBarDismissed = false } }
+        .onChange(of: attachments.errorMessage) { _, value in
+            if let value { showToast(value) }
+        }
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: true) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in

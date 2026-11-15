@@ -249,6 +249,10 @@ final class NativeChatModel: ObservableObject {
     @Published var activeRecoveryUnreadable = false
     var authenticationReported = false
     var streamTask: Task<Void,Never>?
+    /// One bounded receipt probe per receipt/page. The task is cancelled by
+    /// disconnect or a newer load, and only `.alive` can attach the run.
+    var activeRunProbeTask: Task<Void,Never>?
+    var activeRunProbeRunID: String?
     var buffer = ChatTranscript()
     var publishTask:Task<Void,Never>?
     var loadingOlder = false
@@ -380,6 +384,9 @@ final class NativeChatModel: ObservableObject {
     @discardableResult
     func clearAcceptedTurnRecovery() -> Bool {
         guard activeTurnRecovery != nil else { return true }
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         let result = draftStore?.saveActiveRun(nil) ?? .ok
         guard result.succeeded else {
             recordLocalWrite(result, kind: .runRecovery)
