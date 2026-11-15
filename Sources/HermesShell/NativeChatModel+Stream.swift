@@ -603,7 +603,7 @@ extension NativeChatModel {
                         // 收到帧即「已连上」。若此前处于重连中，这一帧就结束了恢复期，
                         // 恢复提示与残留错误一并撤掉。
                         let wasReconnecting = self.reconnecting
-                        if self.phase != .streaming(connected: true) {
+                        if self.phase != .streaming(connected: true) && !self.stopping {
                             self.transition(to: .streaming(connected: true))
                         }
                         if wasReconnecting {
@@ -764,6 +764,12 @@ extension NativeChatModel {
                         pendingSlashCommand = nil
                         await flushQueuedIfNeeded(completedStreamID: active)
                     }
+                    return
+                }
+                // A stop acknowledgement keeps the sending lock even if SSE
+                // disconnects; status verification owns its terminal decision.
+                if stopping {
+                    notice = "停止请求已受理，流连接已断开；请核对后台任务状态。"
                     return
                 }
                 // EOF and transport errors both recover via GET only. The
