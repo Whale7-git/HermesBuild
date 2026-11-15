@@ -34,6 +34,9 @@ import Foundation
         // An acknowledgement alone must not unlock a durable accepted-run receipt.
         rows.append(["id": "answer-\(startCalls)", "role": "assistant", "content": "stopped"])
     }
+    func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        active == runID ? .alive : .terminal(.cancelled)
+    }
     func steerNativeTurn(sessionID: String, text: String) async throws -> String? {
         steerCalls += 1
         lastSteerText = text
