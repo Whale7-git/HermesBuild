@@ -363,6 +363,7 @@ extension NativeChatView {
                 case .failed: showToast("尚不能确认发送结果，请稍后核对")
                 }
             case .verifyStatus, .retry:
+                let hadAcceptedRun = model.activeTurnRecovery != nil
                 await model.refresh(silent: true, preserveLoadedOlder: true)
                 // Accepted-run recovery may schedule a separate bounded probe.
                 if let probe = model.activeRunProbeTask { await probe.value }
@@ -371,9 +372,10 @@ extension NativeChatView {
                     showToast("已回溯本轮完整历史，确认回复完成")
                 } else if model.error != nil {
                     showToast("联网核对失败，发送仍保持锁定")
+                } else if hadAcceptedRun && model.activeTurnRecovery == nil && !model.uncertain && !model.running {
+                    showToast("已确认后台任务结束")
                 } else if model.activeTurnRecovery != nil && !model.running {
-                    model.notice = "本次已核对历史，仍无法确认后台任务结束；不会重新发送消息。"
-                    showToast("已核对，后台任务状态仍待确认")
+                    showToast("后台任务仍待确认，原因见提示")
                 } else if model.uncertain {
                     model.notice = model.notice ?? "本次核对仍无法确认后台状态；不会自动重发。"
                     showToast("已核对，后台状态仍不确定")
