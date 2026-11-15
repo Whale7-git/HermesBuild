@@ -20,6 +20,9 @@ struct RootView: View {
     @State private var homeFocused = false
     @State private var homeSelectedModel: ModelOption?
     @State private var homeModelPickerOpen = false
+    /// Retain the departing store across an instance switch long enough to
+    /// flush its last un-debounced keystrokes to the correct account scope.
+    @State private var boundHomeDraft: (scope: String, store: ChatDraftStore)?
 
     private var homeScope: String { app.historyInstanceID + "|" + app.historyAccountScope }
 
@@ -352,8 +355,12 @@ struct RootView: View {
                     .frame(minHeight: 48)
                     .padding(.horizontal, 24)
             } else {
+                let composerScope = homeScope
                 HomeConversationComposer(
                     text: $homeText, focused: $homeFocused,
+                    isCurrentScope: {
+                        composerScope == app.historyInstanceID + "|" + app.historyAccountScope
+                    },
                     draftStore: homeDraftStore,
                     modelLabel: homeSelectedModel?.label ?? "默认模型",
                     creating: app.creating, needsSetup: app.needsInstanceSetup,
@@ -369,7 +376,7 @@ struct RootView: View {
                         Task { await app.createSession() }
                     }
                 )
-                .id(homeScope)
+                .id(composerScope)
                 if let error = app.homeSendError {
                     Text(error)
                         .font(.caption)
@@ -415,9 +422,16 @@ struct RootView: View {
     }
 
     private func restoreHomeDraft() {
-        homeFocused = false
+        let scope = homeScope
+        guard boundHomeDraft?.scope != scope else { return }
+        if let previous = boundHomeDraft {
+            _ = previous.store.save(homeText)
+            homeFocused = false
+        }
         homeSelectedModel = nil
-        homeText = homeDraftStore.load()
+        let current = homeDraftStore
+        boundHomeDraft = (scope: scope, store: current)
+        homeText = current.load()
     }
 
     private func sendHomeMessage() {

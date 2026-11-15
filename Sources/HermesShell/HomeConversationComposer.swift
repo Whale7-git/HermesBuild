@@ -6,6 +6,7 @@ import SwiftUI
 struct HomeConversationComposer: View {
     @Binding var text: String
     @Binding var focused: Bool
+    let isCurrentScope: () -> Bool
     let draftStore: ChatDraftStore
     let modelLabel: String
     let creating: Bool
@@ -104,16 +105,20 @@ struct HomeConversationComposer: View {
             // avoids a protected-file rewrite on every input keystroke.
             do { try await Task.sleep(nanoseconds: 450_000_000) }
             catch { return }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, isCurrentScope() else { return }
             storageWarning = !draftStore.save(text).succeeded
         }
         .onDisappear {
-            // Root's accepted transfer clears text synchronously before this
-            // view disappears; an old delayed write is cancelled by its task.
+            // The root explicitly flushes the departing store on host change.
+            // An old view must never write the NEW host's bound text to its
+            // captured old file store when SwiftUI unmounts it.
+            guard isCurrentScope() else { return }
             storageWarning = !draftStore.save(text).succeeded
         }
         .onChange(of: focused) { _, value in
-            if !value { storageWarning = !draftStore.save(text).succeeded }
+            if !value && isCurrentScope() {
+                storageWarning = !draftStore.save(text).succeeded
+            }
         }
     }
 

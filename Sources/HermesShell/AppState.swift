@@ -2026,6 +2026,7 @@ final class AppState: ObservableObject {
     /// 新建失败明确报错，绝不退回网页或静默换会话。
     func createSession() async {
         guard !creating, !clearingHistory, !needsLogin else { return }
+        homeTurnClaim.cancel()
         let scope = actionScope
         let requestAPI = api
         let generation = UUID()

@@ -455,11 +455,6 @@ struct SessionListPane: View {
                 Divider()
                 Button("刷新对话", systemImage: "arrow.clockwise") { Task { await refreshCurrentList() } }
                     .disabled(refreshing)
-                Button("任务中心", systemImage: "checklist") {
-                    cancelSearch()
-                    showTaskCenter = true
-                }
-                .disabled(selecting)
                 Button("设置", systemImage: "gearshape", action: onSettings)
             } label: { ChromeIcon(symbol: "ellipsis") }
             .accessibilityLabel("对话筛选与管理")
