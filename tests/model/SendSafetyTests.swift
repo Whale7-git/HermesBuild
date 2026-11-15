@@ -702,6 +702,32 @@ import Foundation
         try await ModelTests.eventually { model.pendingApproval == nil }
         model.disconnect()
     }
+    // Multiple approval requests from one run must coexist. A duplicate frame
+    // is an update, while resolving one request must leave its siblings intact.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "approval-queue", api: service)
+        await model.load(); model.draft = "first"; _ = await model.send()
+        service.approval("a1")
+        service.approval("a2")
+        try await ModelTests.eventually {
+            model.pendingApprovals.map(\.requestID) == ["a1", "a2"]
+        }
+        service.approval("a1")
+        service.frames.append(SSEFrame(event: "token", data: "{\"text\":\"seen\"}", id: "seen"))
+        try await ModelTests.eventually { model.transcript.lastEventID == "seen" }
+        precondition(model.pendingApprovals.map(\.requestID) == ["a1", "a2"],
+                     "duplicate approval frame must upsert, not duplicate")
+        service.frames.append(SSEFrame(event: "approval_resolved",
+                                       data: "{\"request_id\":\"a1\"}", id: "a1-resolved"))
+        service.frames.append(SSEFrame(event: "token", data: "{\"text\":\"seen\"}", id: "a1-seen"))
+        try await ModelTests.eventually { model.transcript.lastEventID == "a1-seen" }
+        precondition(model.pendingApprovals.map(\.requestID) == ["a2"],
+                     "resolving one approval must preserve sibling requests")
+        precondition(!model.canRespondToApproval(requestID: "missing", choice: "once"),
+                     "a missing request ID must never fall back to another approval")
+        model.disconnect()
+    }
     // clarify：到达要能出卡片，答复要带对三件套（含 execution_generation），
     // settled 要能收掉卡片，换一条提问时旧卡片不能顶替新的。
     do {
@@ -745,6 +771,30 @@ import Foundation
         try await ModelTests.eventually { model.transcript.lastEventID == "c3-settle" }
         precondition(model.pendingClarify?.requestID == "c3",
                      "a settled frame for another request must not retire this card")
+        model.disconnect()
+    }
+    // Multiple clarify requests share a run; input state and exact removal are
+    // verified by the queued request contract rather than by one latest slot.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "clarify-queue", api: service)
+        await model.load(); model.draft = "go"; _ = await model.send()
+        service.clarify("q1", generation: 11)
+        service.clarify("q2", generation: 12)
+        try await ModelTests.eventually {
+            model.pendingClarifies.map(\.requestID) == ["q1", "q2"]
+        }
+        service.clarify("q1", generation: 11)
+        service.frames.append(SSEFrame(event: "token", data: "{\"text\":\"seen\"}", id: "q-seen"))
+        try await ModelTests.eventually { model.transcript.lastEventID == "q-seen" }
+        precondition(model.pendingClarifies.map(\.requestID) == ["q1", "q2"],
+                     "duplicate clarify frame must upsert, not duplicate")
+        await model.respondToClarify("answer q1", requestID: "q1")
+        precondition(service.clarifyCalls.last?.0 == "q1"
+                     && model.pendingClarifies.map(\.requestID) == ["q2"],
+                     "answering one clarify must remove only that request")
+        precondition(!model.canRespondToClarify(requestID: "missing"),
+                     "a missing request ID must never fall back to another clarify")
         model.disconnect()
     }
 

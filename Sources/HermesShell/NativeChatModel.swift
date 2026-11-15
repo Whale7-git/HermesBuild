@@ -197,22 +197,34 @@ final class NativeChatModel: ObservableObject {
     /// 仅当 `reconcilePending()` 用后台历史确认「没有这条」后才为 true。
     /// 视图据此才开放重发入口；其余时候必须保持锁定。
     @Published var pendingAbsent = false
-    /// 当前挂起的审批请求。非 nil 时界面显示确认卡片，本轮停在服务端等答复。
-    @Published var pendingApproval: ChatPendingApproval?
+    /// 当前挂起的审批请求。同一 run 可以同时有多个 requestID；按到达顺序
+    /// 全部保留，重复帧按 `id` 原位更新，不能互相覆盖。
+    @Published var pendingApprovals: [ChatPendingApproval] = []
+    /// Compatibility with existing single-slot readers. New UI code must render
+    /// the full array so an older request is never hidden behind a newer one.
+    var pendingApproval: ChatPendingApproval? { pendingApprovals.last }
     /// 审批到达时的外部通知钩子。
     ///
     /// 模型不认识 `AppState`，也不该认识：投递与否由上层决定（开关、前台抑制、
     /// 会话标题都在那里）。这里只把「哪个会话、哪个请求」交出去。
     var onApprovalArrived: ((_ sessionID: String, _ requestID: String?) -> Void)?
+    /// Exact request resolution, used to remove its delivered/pending
+    /// notification. This is intentionally separate from arrival: a page may
+    /// observe the resolution after its account scope is no longer current.
+    var onApprovalResolved: ((_ sessionID: String, _ requestID: String?) -> Void)?
     /// 正在回传审批，按钮期间禁用，避免连点发两次。
     @Published var approving = false
     var approvalSubmission = UUID()
     /// 当前挂起的补充信息请求。非 nil 时界面显示输入卡片，agent 停在服务端等答复。
     /// 与 `pendingApproval` 可以同时存在（一次执行里可能先问一句再要审批），
     /// 所以不能用同一个字段复用。
-    @Published var pendingClarify: ChatPendingClarify?
+    @Published var pendingClarifies: [ChatPendingClarify] = []
+    /// Compatibility with existing single-slot readers; newest request first
+    /// for callers that still use the legacy accessor.
+    var pendingClarify: ChatPendingClarify? { pendingClarifies.last }
     /// clarify 到达时的外部通知钩子（与审批同一套投递链路）。
     var onClarifyArrived: ((_ sessionID: String, _ requestID: String?) -> Void)?
+    var onClarifyResolved: ((_ sessionID: String, _ requestID: String?) -> Void)?
     /// 正在回传补充信息，输入框/按钮期间禁用。
     @Published var clarifying = false
     var clarifySubmission = UUID()

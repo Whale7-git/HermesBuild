@@ -17,8 +17,8 @@ private struct ChatTaskSignalRecorder: ViewModifier {
             .onChange(of: model.running) { _, _ in onChange() }
             .onChange(of: model.submitting) { _, _ in onChange() }
             .onChange(of: model.reconnecting) { _, _ in onChange() }
-            .onChange(of: model.pendingApproval) { _, _ in onChange() }
-            .onChange(of: model.pendingClarify) { _, _ in onChange() }
+            .onChange(of: model.pendingApprovals) { _, _ in onChange() }
+            .onChange(of: model.pendingClarifies) { _, _ in onChange() }
             .onChange(of: model.stopping) { _, _ in onChange() }
             .onChange(of: model.uncertain) { _, _ in onChange() }
             .onChange(of: model.hasPendingSend) { _, _ in onChange() }
@@ -121,9 +121,9 @@ struct NativeChatView: View {
     /// 外部改写输入框的指令（发送成功清空、分支预填、模型回填）。
     @State var draftSync = ChatComposerDraftSync()
     /// 补充信息卡片的输入态：「其他」把选项按钮翻成输入框时置起，换提问时复位。
-    @State var clarifyTextMode = false
-    @State var clarifyDraft = ""
-    @State var clarifySelection: Set<Int> = []
+    @State var clarifyTextModes: Set<String> = []
+    @State var clarifyDrafts: [String: String] = [:]
+    @State var clarifySelections: [String: Set<Int>] = [:]
     /// Quote insertion is separate from model-owned draft rewrites so it cannot
     /// overwrite text the user typed while the action sheet was open.
     @State var composerInsertion = ChatComposerInsertion()
@@ -317,11 +317,17 @@ struct NativeChatView: View {
                       app.activeChangeToken == changeToken else { return }
                 app.approvalArrived(sessionID: sessionID, requestID: requestID)
             }
+            model.onApprovalResolved = { [weak app] sessionID, requestID in
+                app?.approvalResolved(sessionID: sessionID, requestID: requestID)
+            }
             // clarify 走同一套作用域校验与投递链路。
             model.onClarifyArrived = { [weak app] sessionID, requestID in
                 guard let app, app.active.id == instance, app.historyAccountScope == account,
                       app.activeChangeToken == changeToken else { return }
                 app.clarifyArrived(sessionID: sessionID, requestID: requestID)
+            }
+            model.onClarifyResolved = { [weak app] sessionID, requestID in
+                app?.clarifyResolved(sessionID: sessionID, requestID: requestID)
             }
             await model.load()
             guard !Task.isCancelled, visible, app.active.id == instance,
@@ -361,6 +367,7 @@ struct NativeChatView: View {
             controllerBox.value?.turnReading.reset()
             model.disconnect()
             recordTaskSignals()
+            app.resetRequestTaskSignalIndex()
             visible = false
             pendingPanel = nil; afterPanelAction = nil; activePanel = nil
             attachmentHighlightTask?.cancel()

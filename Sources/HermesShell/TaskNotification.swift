@@ -8,6 +8,8 @@ struct TaskNotification: Equatable, Sendable {
     enum Kind: String, Equatable, Sendable {
         /// 服务端在等用户投票，run 挂起。
         case approvalPending
+        /// 服务端在等用户补充自由文本或选项，run 同样挂起。
+        case clarifyPending
         /// 后台那一轮跑完了。
         case runFinished
         /// 后台恢复遇到需要人看的问题。

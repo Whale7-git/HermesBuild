@@ -148,6 +148,11 @@ final class AppState: ObservableObject {
     @Published var creating = false
     /// 当前打开的会话 ID；nil 表示停在会话列表。
     @Published var currentSessionID: String?
+    /// App is in the foreground and the chat page (not a drawer, browser or
+    /// settings/login sheet) is actually on screen for `currentSessionID`.
+    /// RootView keeps these facts synchronized with scene and overlay state.
+    @Published private(set) var appIsActive = false
+    @Published private(set) var conversationIsVisible = false
     @Published var showSettings = false
     /// 模型目录；nil 表示尚未读取成功，不伪造空列表。
     @Published var modelCatalog: ModelCatalog?
@@ -170,6 +175,14 @@ final class AppState: ObservableObject {
     private var taskDerivedState = SessionTaskDerivedState()
     /// 通知投递。默认走系统实现，测试可注入替身。
     let notifier: any TaskNotificationDelivering
+    /// Exact IDs delivered for unresolved requests, grouped by the immutable
+    /// request identity. Resolution can arrive after an account switch, so the
+    /// original scoped ID must survive rather than be recomputed from current state.
+    private var pendingRequestNotificationIDs: [String: Set<String>] = [:]
+    /// Blocking request identities observed by this chat page. The model owns
+    /// the cards; this set keeps the task-center signal until the last sibling
+    /// request of that kind is resolved.
+    private var requestTaskSignals: Set<String> = []
     /// 用户对「需要处理」任务的本地确认。只影响展示，不改动持久化信号。
     @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = []
     private var taskAckDirty = true
@@ -285,6 +298,12 @@ final class AppState: ObservableObject {
         let persisted = SessionTaskCenter.persistable(signals)
         let instance = historyInstanceID
         let account = historyAccountScope
+        if persisted.isEmpty {
+            requestTaskSignals = requestTaskSignals.filter { key in
+                let parts = key.split(separator: "\u{0}", omittingEmptySubsequences: false)
+                return parts.count != 3 || String(parts[1]) != sessionID
+            }
+        }
         let previousSignals = sessionTaskObservations[sessionID]?.signals ?? []
         guard persisted != previousSignals else { return }
         if persisted.isEmpty {
@@ -301,6 +320,43 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Approval and clarify are separate blocking requests even when they
+    /// belong to the same session. Track their request identities so resolving
+    /// one does not remove the task-center fact for its siblings.
+    private func setRequestTaskSignal(_ signal: SessionTaskSignal,
+                                      sessionID: String, requestID: String?) {
+        guard requestID != nil else {
+            setSessionTaskSignals([signal], for: sessionID)
+            return
+        }
+        let key = requestSignalKey(signal, sessionID: sessionID, requestID: requestID)
+        requestTaskSignals.insert(key)
+        var signals = sessionTaskObservations[sessionID]?.signals ?? []
+        signals.insert(signal)
+        setSessionTaskSignals(signals, for: sessionID)
+    }
+
+    private func clearRequestTaskSignal(_ signal: SessionTaskSignal,
+                                        sessionID: String, requestID: String?) {
+        guard requestID != nil else {
+            setSessionTaskSignals([], for: sessionID)
+            return
+        }
+        let key = requestSignalKey(signal, sessionID: sessionID, requestID: requestID)
+        requestTaskSignals.remove(key)
+        let sessionPrefix = [signal.rawValue, sessionID].joined(separator: "\u{0}") + "\u{0}"
+        if !requestTaskSignals.contains(where: { $0.hasPrefix(sessionPrefix) }) {
+            var signals = sessionTaskObservations[sessionID]?.signals ?? []
+            signals.remove(signal)
+            setSessionTaskSignals(signals, for: sessionID)
+        }
+    }
+
+    private func requestSignalKey(_ signal: SessionTaskSignal, sessionID: String,
+                                  requestID: String?) -> String {
+        [signal.rawValue, sessionID, requestID ?? ""].joined(separator: "\u{0}")
+    }
+
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
         openedSession = session
@@ -312,6 +368,30 @@ final class AppState: ObservableObject {
     func closeSession() {
         currentSessionID = nil
         openedSession = nil
+    }
+
+    /// Called by RootView on scene and overlay changes. A notification is
+    /// suppressed only when the app is active and the exact conversation is
+    /// unobscured.
+    func setPresentationVisibility(appActive: Bool, conversationVisible: Bool) {
+        appIsActive = appActive
+        conversationIsVisible = appActive && conversationVisible
+    }
+
+    /// The request identity index belongs to the current instance/account and
+    /// chat page. Scope retirement and page teardown must not let an old request
+    /// suppress a same-kind signal from a later session.
+    func resetRequestTaskSignalIndex() {
+        requestTaskSignals.removeAll()
+    }
+
+    private var visibleSessionID: String? {
+        guard appIsActive, conversationIsVisible else { return nil }
+        return currentSessionID
+    }
+
+    private var canSuppressNotificationForVisibleConversation: Bool {
+        appIsActive && conversationIsVisible
     }
 
     // MARK: - 模型目录
@@ -974,7 +1054,7 @@ final class AppState: ObservableObject {
         guard !previous.isEmpty else { return }
         var streamingBefore: [String: Bool] = [:]
         for item in previous { streamingBefore[item.sessionId] = item.isStreaming == true }
-        let open = currentSessionID
+        let open = visibleSessionID
         var changed = false
         for item in next where item.sessionId != open
             && streamingBefore[item.sessionId] == true
@@ -994,11 +1074,13 @@ final class AppState: ObservableObject {
     private func notifyRunFinished(sessionID: String, title: String) {
         let settings = TaskNotificationPlanner.Settings(
             approvalEnabled: NotificationPreference.approval,
+            clarifyEnabled: NotificationPreference.clarify,
             finishedEnabled: NotificationPreference.finished,
             recoveryEnabled: NotificationPreference.recovery)
         guard let notification = TaskNotificationPlanner.finished(
             runID: nil, sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: currentSessionID,
+            settings: settings, foregroundSessionID: visibleSessionID,
+            appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         let sound = NotificationPreference.sound
         let deliverer = notifier
@@ -1009,11 +1091,13 @@ final class AppState: ObservableObject {
     private func notifyRecoveryIssue(sessionID: String, title: String) {
         let settings = TaskNotificationPlanner.Settings(
             approvalEnabled: NotificationPreference.approval,
+            clarifyEnabled: NotificationPreference.clarify,
             finishedEnabled: NotificationPreference.finished,
             recoveryEnabled: NotificationPreference.recovery)
         guard let notification = TaskNotificationPlanner.recovery(
             sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: currentSessionID,
+            settings: settings, foregroundSessionID: visibleSessionID,
+            appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         let sound = NotificationPreference.sound
         let deliverer = notifier
@@ -1024,24 +1108,94 @@ final class AppState: ObservableObject {
     ///
     /// 只在「用户不在这个会话」时提醒：正看着的人已经看到卡片了。
     func approvalArrived(sessionID: String, requestID: String?) {
+        // The task-center fact exists even when the current chat is visible
+        // and the notification is deliberately suppressed. Record it before
+        // the planner guard so exact resolution can still maintain siblings.
+        setRequestTaskSignal(.waitingForApproval, sessionID: sessionID,
+                             requestID: requestID)
         let settings = TaskNotificationPlanner.Settings(
             approvalEnabled: NotificationPreference.approval,
+            clarifyEnabled: NotificationPreference.clarify,
             finishedEnabled: NotificationPreference.finished,
             recoveryEnabled: NotificationPreference.recovery)
         let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
         guard let notification = TaskNotificationPlanner.approval(
             requestID: requestID, sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: currentSessionID,
+            settings: settings, foregroundSessionID: visibleSessionID,
+            appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
+        rememberPendingRequestNotification(notification, kind: "approval",
+                                            sessionID: sessionID, requestID: requestID)
         let sound = NotificationPreference.sound
         let deliverer = notifier
         Task { await deliverer.deliver(notification, sound: sound) }
     }
 
-    /// 补充信息请求到达。与审批共用同一条投递链路和同一个开关——
-    /// 对用户而言两者都是「这一轮停下来等你」，没有区分的必要。
+    /// 补充信息请求使用独立类型和稳定 ID；即使同一 run 同时有审批和
+    /// clarify，也不会互相替换或撤回。
     func clarifyArrived(sessionID: String, requestID: String?) {
-        approvalArrived(sessionID: sessionID, requestID: requestID)
+        // Clarify is a separate blocking request. Register its identity even
+        // when the visible conversation suppresses only the notification.
+        setRequestTaskSignal(.waitingForClarify, sessionID: sessionID,
+                             requestID: requestID)
+        let settings = TaskNotificationPlanner.Settings(
+            approvalEnabled: NotificationPreference.approval,
+            clarifyEnabled: NotificationPreference.clarify,
+            finishedEnabled: NotificationPreference.finished,
+            recoveryEnabled: NotificationPreference.recovery)
+        let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
+        guard let notification = TaskNotificationPlanner.clarify(
+            requestID: requestID, sessionID: sessionID, title: title,
+            settings: settings, foregroundSessionID: visibleSessionID,
+            appActive: canSuppressNotificationForVisibleConversation,
+            instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
+        rememberPendingRequestNotification(notification, kind: "clarify",
+                                            sessionID: sessionID, requestID: requestID)
+        let sound = NotificationPreference.sound
+        let deliverer = notifier
+        Task { await deliverer.deliver(notification, sound: sound) }
+    }
+
+    private func requestKey(kind: String, sessionID: String, requestID: String?) -> String {
+        (requestID ?? "") + "\u{0}" + sessionID + "\u{0}" + kind
+    }
+
+    private func rememberPendingRequestNotification(_ notification: TaskNotification,
+                                                     kind: String, sessionID: String,
+                                                     requestID: String?) {
+        let key = requestKey(kind: kind, sessionID: sessionID, requestID: requestID)
+        pendingRequestNotificationIDs[key, default: []].insert(notification.stableID)
+    }
+
+    private func removeRequestNotification(kind: String, sessionID: String,
+                                           requestID: String?) {
+        let stableID = TaskNotificationPlanner.requestIdentifier(
+            kind: kind, requestID: requestID, sessionID: sessionID,
+            instanceID: historyInstanceID, accountScope: historyAccountScope)
+        let key = requestKey(kind: kind, sessionID: sessionID, requestID: requestID)
+        let identifiers = pendingRequestNotificationIDs.removeValue(forKey: key) ?? [stableID]
+        let deliverer = notifier
+        // The event can arrive before a delivery task records its ID. Remove
+        // the deterministic ID anyway; system APIs are idempotent.
+        Task {
+            for identifier in identifiers {
+                await deliverer.remove(identifier: identifier)
+            }
+        }
+    }
+
+    func approvalResolved(sessionID: String, requestID: String?) {
+        clearRequestTaskSignal(.waitingForApproval, sessionID: sessionID,
+                               requestID: requestID)
+        removeRequestNotification(kind: "approval", sessionID: sessionID,
+                                  requestID: requestID)
+    }
+
+    func clarifyResolved(sessionID: String, requestID: String?) {
+        clearRequestTaskSignal(.waitingForClarify, sessionID: sessionID,
+                               requestID: requestID)
+        removeRequestNotification(kind: "clarify", sessionID: sessionID,
+                                  requestID: requestID)
     }
 
     func clearCompletion(sessionID: String) {
@@ -1079,6 +1233,7 @@ final class AppState: ObservableObject {
         catalogLoading = false
         sessionActionBusy = false
         sessionActionError = nil
+        resetRequestTaskSignalIndex()
         lastSessionRefresh = sessionRefreshClock.lastSuccess(
             scope: historyInstanceID + "|" + historyAccountScope)
         activeChangeToken &+= 1
@@ -1157,6 +1312,7 @@ final class AppState: ObservableObject {
             instanceID: instance, accountScope: account)
         recordHistoryCleanupResult(historyCleanup)
         clearingHistory = false
+        resetRequestTaskSignalIndex()
     }
 
     /// 删除一条会话在设备上留下的全部本地状态。

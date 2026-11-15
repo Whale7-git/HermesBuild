@@ -20,8 +20,18 @@ extension NativeChatView {
     /// 不回答本轮就不会继续，所以它必须比任何提示都显眼，且带着可点的选项。
     @ViewBuilder
     var approvalCard: some View {
-        if let pending = model.pendingApproval {
-            VStack(alignment: .leading, spacing: 10) {
+        if !model.pendingApprovals.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(model.pendingApprovals) { pending in
+                    approvalCard(pending)
+                }
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func approvalCard(_ pending: ChatPendingApproval) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "hand.raised.fill")
                         .font(.caption.weight(.semibold))
@@ -48,7 +58,7 @@ extension NativeChatView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 140))], spacing: 8) {
                     ForEach(pending.choices, id: \.self) { choice in
                         Button {
-                            Task { await model.respondToApproval(choice) }
+                            Task { await model.respondToApproval(choice, requestID: pending.id) }
                         } label: {
                             Text(Self.approvalLabel(choice))
                                 .font(.caption.weight(.medium))
@@ -56,7 +66,8 @@ extension NativeChatView {
                         }
                         .buttonStyle(.bordered)
                         .tint(choice.lowercased() == "deny" ? AppTheme.danger : AppTheme.accent)
-                        .disabled(model.approving)
+                        .disabled(!model.canRespondToApproval(requestID: pending.id,
+                                                              choice: choice))
                     }
                 }
                 if model.approving {
@@ -71,7 +82,6 @@ extension NativeChatView {
             .background(AppTheme.warning.opacity(0.12))
             .overlay(alignment: .top) { Rectangle().fill(AppTheme.hairline).frame(height: 0.5) }
             .accessibilityElement(children: .contain)
-        }
     }
 
     /// 服务端的选项名直接展示会让人看不懂（once/session/always/deny），
@@ -95,8 +105,18 @@ extension NativeChatView {
     /// 不需要退化成编号，而编号反而要用户自己去对照正文。
     @ViewBuilder
     var clarifyCard: some View {
-        if let pending = model.pendingClarify {
-            VStack(alignment: .leading, spacing: 10) {
+        if !model.pendingClarifies.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(model.pendingClarifies) { pending in
+                    clarifyCard(pending)
+                }
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    private func clarifyCard(_ pending: ChatPendingClarify) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "questionmark.bubble.fill")
                         .font(.caption.weight(.semibold))
@@ -110,7 +130,7 @@ extension NativeChatView {
                     }
                     Spacer(minLength: 0)
                 }
-                if pending.isOpenEnded || clarifyTextMode {
+                if pending.isOpenEnded || clarifyTextMode.contains(pending.id) {
                     clarifyInput(pending)
                 } else {
                     clarifyChoices(pending)
@@ -127,13 +147,13 @@ extension NativeChatView {
             .background(AppTheme.accent.opacity(0.10))
             .overlay(alignment: .top) { Rectangle().fill(AppTheme.hairline).frame(height: 0.5) }
             .accessibilityElement(children: .contain)
-            .onChange(of: model.pendingClarify) { _, new in
-                // 换了一条提问就把「其他」模式收回去，否则上一条的输入框会带到下一条。
-                if new == nil || new?.requestID != pending.requestID { clarifyTextMode = false }
-                clarifyDraft = ""
-                clarifySelection = []
+            .onChange(of: model.pendingClarifies.map(\.id)) { _, ids in
+                if !ids.contains(pending.id) {
+                    clarifyTextModes.remove(pending.id)
+                    clarifyDrafts.removeValue(forKey: pending.id)
+                    clarifySelections.removeValue(forKey: pending.id)
+                }
             }
-        }
     }
 
     /// 选项按钮：每行一个（选项文字可能很长，横排会挤成一团），末行「其他」。
@@ -142,14 +162,17 @@ extension NativeChatView {
             ForEach(Array(pending.choices.enumerated()), id: \.offset) { index, choice in
                 Button {
                     if pending.multiSelect {
-                        if !clarifySelection.insert(index).inserted { clarifySelection.remove(index) }
+                        var selected = clarifySelections[pending.id] ?? []
+                        if !selected.insert(index).inserted { selected.remove(index) }
+                        clarifySelections[pending.id] = selected
                     } else {
-                        Task { await model.respondToClarify(choice) }
+                        Task { await model.respondToClarify(choice, requestID: pending.id) }
                     }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: pending.multiSelect
-                            ? (clarifySelection.contains(index) ? "checkmark.circle.fill" : "circle")
+                            ? ((clarifySelections[pending.id] ?? []).contains(index)
+                                ? "checkmark.circle.fill" : "circle")
                             : "chevron.right")
                             .font(.caption2.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -164,20 +187,22 @@ extension NativeChatView {
                 }
                 .buttonStyle(.bordered)
                 .tint(AppTheme.accent)
-                .disabled(model.clarifying)
+                .disabled(!model.canRespondToClarify(requestID: pending.id))
             }
             if pending.multiSelect {
-                Button("提交所选（\(clarifySelection.count)）") {
+                let selection = clarifySelections[pending.id] ?? []
+                Button("提交所选（\(selection.count)）") {
                     let answer = pending.choices.enumerated()
-                        .filter { clarifySelection.contains($0.offset) }.map { String($0.offset + 1) }.joined(separator: ",")
-                    Task { await model.respondToClarify(answer) }
+                        .filter { selection.contains($0.offset) }.map { String($0.offset + 1) }.joined(separator: ",")
+                    Task { await model.respondToClarify(answer, requestID: pending.id) }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(clarifySelection.isEmpty || model.clarifying)
+                .disabled(selection.isEmpty
+                          || !model.canRespondToClarify(requestID: pending.id))
                 .frame(minHeight: 44)
             }
             Button {
-                clarifyTextMode = true
+                clarifyTextModes.insert(pending.id)
             } label: {
                 Text("其他（自己输入）")
                     .font(.caption.weight(.medium))
@@ -185,7 +210,7 @@ extension NativeChatView {
             }
             .buttonStyle(.bordered)
             .tint(.secondary)
-            .disabled(model.clarifying)
+            .disabled(!model.canRespondToClarify(requestID: pending.id))
         }
     }
 
@@ -193,18 +218,21 @@ extension NativeChatView {
     private func clarifyInput(_ pending: ChatPendingClarify) -> some View {
         VStack(spacing: 8) {
             TextField(pending.multiSelect ? "输入编号或选项，用逗号分隔" : "输入回答",
-                      text: $clarifyDraft, axis: .vertical)
+                      text: Binding(
+                        get: { clarifyDrafts[pending.id] ?? "" },
+                        set: { clarifyDrafts[pending.id] = $0 }
+                      ), axis: .vertical)
                 .font(.caption)
                 .lineLimit(1...4)
                 .textFieldStyle(.roundedBorder)
-                .disabled(model.clarifying)
+                .disabled(!model.canRespondToClarify(requestID: pending.id))
                 .onSubmit { submitClarify(pending) }
             HStack(spacing: 8) {
                 if !pending.isOpenEnded {
-                    Button("返回选项") { clarifyTextMode = false }
+                    Button("返回选项") { clarifyTextModes.remove(pending.id) }
                         .font(.caption.weight(.medium))
                         .frame(minHeight: 44)
-                        .disabled(model.clarifying)
+                        .disabled(!model.canRespondToClarify(requestID: pending.id))
                 }
                 Spacer(minLength: 0)
                 Button("提交") { submitClarify(pending) }
@@ -212,16 +240,17 @@ extension NativeChatView {
                     .frame(minWidth: 88, minHeight: 44)
                     .buttonStyle(.borderedProminent)
                     .tint(AppTheme.accent)
-                    .disabled(model.clarifying
-                              || clarifyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!model.canRespondToClarify(requestID: pending.id)
+                              || (clarifyDrafts[pending.id] ?? "")
+                                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }
 
     private func submitClarify(_ pending: ChatPendingClarify) {
-        let answer = clarifyDraft
-        clarifyDraft = ""
-        Task { await model.respondToClarify(answer) }
+        let answer = clarifyDrafts[pending.id] ?? ""
+        clarifyDrafts[pending.id] = ""
+        Task { await model.respondToClarify(answer, requestID: pending.id) }
     }
 
     var noticeBar: some View {

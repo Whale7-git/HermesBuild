@@ -18,6 +18,7 @@ func expectEqual<T: Equatable>(_ lhs: T, _ rhs: T, _ message: String) {
 
 let allOn = TaskNotificationPlanner.Settings()
 let approvalOff = TaskNotificationPlanner.Settings(approvalEnabled: false)
+let clarifyOff = TaskNotificationPlanner.Settings(clarifyEnabled: false)
 let finishedOff = TaskNotificationPlanner.Settings(finishedEnabled: false)
 let recoveryOff = TaskNotificationPlanner.Settings(recoveryEnabled: false)
 
@@ -37,6 +38,12 @@ let same = TaskNotificationPlanner.approval(
     requestID: "req1", sessionID: "s1", title: "会话一",
     settings: allOn, foregroundSessionID: "s1")
 expect(same == nil, "审批：正在该会话时不发")
+
+// App 已到后台时，currentSessionID 仍可能等于该会话；此时不能误抑制。
+let sameSessionInBackground = TaskNotificationPlanner.approval(
+    requestID: "req1", sessionID: "s1", title: "会话一",
+    settings: allOn, foregroundSessionID: "s1", appActive: false)
+expect(sameSessionInBackground != nil, "审批：后台同会话仍发")
 
 // 没有前台会话，应发。
 let noForeground = TaskNotificationPlanner.approval(
@@ -71,6 +78,28 @@ let approvalDisabled = TaskNotificationPlanner.approval(
     requestID: "req1", sessionID: "s1", title: "会话一",
     settings: approvalOff, foregroundSessionID: nil)
 expect(approvalDisabled == nil, "审批：开关关闭时不发")
+
+let clarify = TaskNotificationPlanner.clarify(
+    requestID: "clarify-1", sessionID: "s1", title: "会话一",
+    settings: allOn, foregroundSessionID: nil)
+expectEqual(clarify?.kind, .clarifyPending, "补充信息：独立通知类型")
+expectEqual(clarify?.stableID, "clarify.s1.clarify-1", "补充信息：稳定标识")
+expectEqual(TaskNotificationPlanner.requestIdentifier(
+    kind: "clarify", requestID: "clarify-1", sessionID: "s1",
+    instanceID: "", accountScope: ""), "clarify.s1.clarify-1",
+    "补充信息：解析后可精确删除")
+let clarifySame = TaskNotificationPlanner.clarify(
+    requestID: "clarify-1", sessionID: "s1", title: "会话一",
+    settings: allOn, foregroundSessionID: "s1")
+expect(clarifySame == nil, "补充信息：前台同会话抑制")
+let clarifyBackground = TaskNotificationPlanner.clarify(
+    requestID: "clarify-1", sessionID: "s1", title: "会话一",
+    settings: allOn, foregroundSessionID: "s1", appActive: false)
+expect(clarifyBackground != nil, "补充信息：后台同会话仍发")
+let clarifyDisabled = TaskNotificationPlanner.clarify(
+    requestID: "clarify-1", sessionID: "s1", title: "会话一",
+    settings: clarifyOff, foregroundSessionID: nil)
+expect(clarifyDisabled == nil, "补充信息：开关关闭时不发")
 
 // MARK: - 完成
 
