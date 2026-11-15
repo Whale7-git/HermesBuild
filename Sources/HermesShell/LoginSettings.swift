@@ -582,7 +582,12 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 8)
                 } header: { Text("关于") }
-                  footer: { Text("更新时直接覆盖安装，保留本地登录状态。") }
+                  footer: {
+                      VStack(alignment: .leading, spacing: 4) {
+                          Text("更新时直接覆盖安装，保留本地登录状态。")
+                          Text("稳定优先，一次构建。")
+                      }
+                  }
                 Section {
                     NavigationLink { settingsPage("连接与账号") { connectionSettings; accountSettings } }
                         label: { Label("连接与账号", systemImage: "server.rack") }
