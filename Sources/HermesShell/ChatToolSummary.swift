@@ -37,9 +37,13 @@ enum ChatToolSummary {
     static func title(_ items: [Item], allowsRunning: Bool = false) -> String {
         guard !items.isEmpty else { return "" }
         let failures = items.filter(\.isError).count
-        if failures > 0 { return "\(items.count) 项 · \(failures) 个失败" }
         let settled = items.filter { $0.done || $0.isError }.count
-        if allowsRunning, settled < items.count { return "工具进度 \(settled)/\(items.count)" }
+        if allowsRunning, settled < items.count {
+            // A failed earlier tool does not hide the currently running one.
+            let failuresLabel = failures > 0 ? " · \(failures) 个失败" : ""
+            return "工具进度 \(settled)/\(items.count)\(failuresLabel)"
+        }
+        if failures > 0 { return "\(items.count) 项 · \(failures) 个失败" }
         if items.contains(where: { !$0.done }) { return "\(items.count) 项 · 状态待核对" }
         return "已完成 \(items.count) 项操作"
     }
@@ -57,6 +61,11 @@ enum ChatExecutionPresentation {
             return "正在执行 · \(active.name)\(suffix)"
         }
         if failures > 0 { return "执行过程 · \(failures) 项失败" }
+        if toolItems.contains(where: { !$0.done }) {
+            // A disconnected run is neither visibly running nor verified as
+            // completed. Do not paint it as a green successful process.
+            return "执行过程 · 状态待核对"
+        }
         let steps = messageCount + toolItems.count
         return steps == 0 ? "执行过程" : "已执行 \(steps) 个步骤"
     }

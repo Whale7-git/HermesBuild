@@ -179,6 +179,16 @@ enum ChatTurnViewport {
 /// drawer. Extra instances deliberately scroll, rather than shrinking labels
 /// below a legible touch target.
 enum ChatDrawerRailLayout {
+    /// Keep short (numbered) hosts compact, but give descriptive names enough
+    /// width to remain readable. A long rail scrolls horizontally instead of
+    /// compressing every label to the same narrow width.
+    static func readableChipWidth(for label: String) -> Double {
+        let units = label.unicodeScalars.reduce(0) { partial, scalar in
+            partial + (scalar.value >= 0x2E80 ? 2 : 1)
+        }
+        return min(180, max(76, 34 + Double(units) * 7))
+    }
+
     static func chipWidth(availableWidth: Double, instanceCount: Int,
                           minimum: Double = 76, preferred: Double = 108,
                           gap: Double = 7, horizontalInsets: Double = 40) -> Double {
@@ -294,6 +304,16 @@ struct ChatTurnReadingState {
         lastContentBottom = 0
         targetOffset = 0
         anchorTop = 0
+    }
+}
+
+/// Round only the measurement width to physical pixels. A fractional SwiftUI
+/// proposal (e.g. during interactive keyboard/layout changes) must not trigger
+/// repeated font layout if it still maps to the same device pixel.
+enum ChatDraftWidthPolicy {
+    static func canonical(_ width: Double, scale: Double) -> Double {
+        guard width.isFinite, width > 0, scale.isFinite, scale > 0 else { return 0 }
+        return (width * scale).rounded(.toNearestOrAwayFromZero) / scale
     }
 }
 

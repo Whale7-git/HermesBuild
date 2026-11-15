@@ -409,7 +409,7 @@ struct SessionListPane: View {
                 // consumes an entire navigation row on a 340pt canvas.
                 if mode != .drawer || app.instances.count <= 1 {
                     Menu {
-                        ForEach(Array(app.instances.enumerated()), id: \.offset) { index, instance in
+                        ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
                             Button { app.switchTo(index) } label: {
                                 if index == app.activeIndex { Label(instance.name, systemImage: "checkmark") }
                                 else { Text(instance.name) }
@@ -499,13 +499,13 @@ struct SessionListPane: View {
 
     private var instanceStrip: some View {
         GeometryReader { geometry in
-            let chipWidth = CGFloat(ChatDrawerRailLayout.chipWidth(
-                availableWidth: Double(geometry.size.width),
-                instanceCount: app.instances.count))
+            let chipWidths = app.instances.map {
+                CGFloat(ChatDrawerRailLayout.readableChipWidth(for: compactInstanceName($0.name)))
+            }
             ScrollViewReader { reader in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
-                        ForEach(Array(app.instances.enumerated()), id: \.offset) { index, instance in
+                        ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
                             Button {
                                 guard index != app.activeIndex else { return }
                                 app.switchTo(index)
@@ -520,27 +520,27 @@ struct SessionListPane: View {
                                         .truncationMode(.middle)
                                 }
                                 .foregroundStyle(index == app.activeIndex ? AppTheme.onAction : Color.primary)
-                                .frame(width: chipWidth, height: 44)
+                                .frame(width: chipWidths[index], height: 44)
                                 .background(index == app.activeIndex ? AppTheme.action : AppTheme.surface,
                                             in: Capsule())
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
-                            .id(index)
+                            .id(instance.id)
                             .accessibilityLabel("Hermes 实例：\(instance.name)")
                             .accessibilityValue(index == app.activeIndex ? "当前实例" : "点击切换")
                         }
                     }
                     .padding(.horizontal, 20)
                 }
-                .onAppear { reader.scrollTo(app.activeIndex, anchor: .center) }
-                .onChange(of: app.activeIndex) { _, index in
+                .onAppear { reader.scrollTo(app.active.id, anchor: .center) }
+                .onChange(of: app.active.id) { _, id in
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        reader.scrollTo(index, anchor: .center)
+                        reader.scrollTo(id, anchor: .center)
                     }
                 }
                 .onChange(of: geometry.size.width) { _, _ in
-                    reader.scrollTo(app.activeIndex, anchor: .center)
+                    reader.scrollTo(app.active.id, anchor: .center)
                 }
             }
         }

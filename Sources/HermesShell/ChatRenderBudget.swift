@@ -33,6 +33,11 @@ enum ChatRenderBudget {
     static func victims(in entries: [Entry], keeping: Set<String>, limits: Limits) -> [String] {
         var count = entries.count
         var cost = entries.reduce(0) { $0 + max(0, $1.cost) }
+        // A normal viewport commit already fits the host limits. Do not
+        // allocate a filtered/sorted candidate list on every such frame.
+        guard count > max(0, limits.count) || cost > max(0, limits.cost) else {
+            return []
+        }
         var result: [String] = []
         for entry in entries.filter({ !keeping.contains($0.id) }).sorted(by: {
             $0.lastUse == $1.lastUse ? $0.id < $1.id : $0.lastUse < $1.lastUse

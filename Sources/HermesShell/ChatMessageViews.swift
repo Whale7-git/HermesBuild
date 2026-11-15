@@ -613,9 +613,9 @@ struct ChatToolGroup: View {
                 expanded.toggle()
             } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: failed ? "exclamationmark.circle" : (running ? "gearshape.2" : (unresolved ? "questionmark.circle" : "checkmark.circle")))
+                    Image(systemName: running ? "gearshape.2" : (failed ? "exclamationmark.circle" : (unresolved ? "questionmark.circle" : "checkmark.circle")))
                         .font(.footnote)
-                        .foregroundStyle(failed ? Color.orange : (running ? AppTheme.accent : (unresolved ? Color.secondary : AppTheme.success)))
+                        .foregroundStyle(running ? AppTheme.accent : (failed ? AppTheme.warning : (unresolved ? Color.secondary : AppTheme.success)))
                     VStack(alignment: .leading, spacing: 2) {
                         // 折叠行只占一行：标题 + 摘要合在一起。
                         //
@@ -694,6 +694,7 @@ struct ChatProcessRow: View {
         allowsRunning && group.tools.contains { !$0.done && !$0.isError }
     }
     private var failed: Bool { group.tools.contains(where: \.isError) }
+    private var unresolved: Bool { group.tools.contains { !$0.done && !$0.isError } }
     private var executionItems: [ChatToolSummary.Item] {
         group.tools.map { .init(name: $0.name, done: $0.done, isError: $0.isError) }
     }
@@ -706,11 +707,13 @@ struct ChatProcessRow: View {
         return VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: failed ? "exclamationmark.circle.fill"
-                          : (running ? "ellipsis.bubble.fill" : "checkmark.circle"))
+                    Image(systemName: running ? "ellipsis.bubble.fill"
+                          : (failed ? "exclamationmark.circle.fill"
+                             : (unresolved ? "questionmark.circle" : "checkmark.circle")))
                         .font(.footnote)
-                        .foregroundStyle(failed ? AppTheme.warning
-                                         : (running ? AppTheme.accent : AppTheme.success))
+                        .foregroundStyle(running ? AppTheme.accent
+                                         : (failed ? AppTheme.warning
+                                            : (unresolved ? Color.secondary : AppTheme.success)))
                         // 工具执行可能几十秒没有文字输出，静态图标让人怀疑卡死。
                         // 呼吸只在实际运行时生效，完成/失败自动停。
                         .symbolEffect(.pulse, options: .repeating, isActive: running && !reduceMotion)
@@ -718,7 +721,8 @@ struct ChatProcessRow: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
                             .font(.footnote.weight(.medium))
-                            .foregroundStyle(failed ? AppTheme.warning : Color.secondary)
+                            .foregroundStyle(running ? AppTheme.accent
+                                             : (failed ? AppTheme.warning : Color.secondary))
                             .lineLimit(1)
                         if !subtitle.isEmpty && (expanded || dynamicTypeSize.isAccessibilitySize) {
                             Text(subtitle)

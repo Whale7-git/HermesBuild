@@ -170,6 +170,23 @@ check(progressTitle.contains("正在执行") && progressTitle.contains("active-w
 check(ChatExecutionPresentation.detail(messageCount: 3, toolItems: syntheticTools,
                                       allowsRunning: true).contains("active-write"),
       "collapsed process retains the active tool name")
+check(ChatToolSummary.title(syntheticTools, allowsRunning: true).contains("工具进度")
+      && ChatToolSummary.title(syntheticTools, allowsRunning: true).contains("1 个失败"),
+      "running tool stays visible in summary despite an earlier failed tool")
+check(ChatToolSummary.summary(syntheticTools, allowsRunning: true) == "active-write",
+      "current tool name stays in collapsed 180-item summary")
+check(ChatExecutionPresentation.title(messageCount: 3, toolItems: syntheticTools,
+                                      allowsRunning: false).contains("失败"),
+      "finalized failed process does not claim success")
+let unresolvedProcess = [
+    ChatToolSummary.Item(name: "read_file", done: true, isError: false),
+    ChatToolSummary.Item(name: "waiting_tool", done: false, isError: false)
+]
+check(ChatExecutionPresentation.title(messageCount: 1, toolItems: unresolvedProcess,
+                                      allowsRunning: false).contains("待核对"),
+      "unconfirmed historical tool status is never displayed as completed")
+check(ChatToolSummary.title(unresolvedProcess, allowsRunning: false).contains("待核对"),
+      "tool group alone also refuses a false success status")
 var anchorProbe = ChatTranscript()
 anchorProbe.messages = [ChatMessage(id: "u1", role: "user", content: "问题", timestamp: 1)]
 try anchorProbe.apply(SSEFrame(event: "token", data: "{\"text\":\"回答正文\"}", id: "a1"))
