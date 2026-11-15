@@ -306,7 +306,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     // MARK: - 聊天轮次
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
-        let active = try await activeRun(sessionID: sessionID)
+        // Run-status lookup is a recovery hint, not a prerequisite for reading
+        // history. A transient /v1/runs failure must not prevent the user from
+        // loading the canonical transcript that can prove completion.
+        let active = try await activeRunForHistory(sessionID: sessionID)
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
@@ -357,10 +360,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
-    private func activeRun(sessionID: String) async throws -> String? {
+    private func activeRun(sessionID: String, allowBackoff: Bool = true) async throws -> String? {
         guard let runID = runStore.runID(for: sessionID) else { return nil }
         let now = Date().timeIntervalSince1970
-        if let retryAt = nextRunProbeAt[runID], now < retryAt {
+        if allowBackoff, let retryAt = nextRunProbeAt[runID], now < retryAt {
             throw GatewayDecodeError.malformed(
                 "后台任务状态仍待核对；已暂停频繁重试，不会清除运行记录或自动重发。")
         }
@@ -395,6 +398,55 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return nil
         default:
             return try unresolvedRun(runID: runID)
+        }
+    }
+
+    /// History is the completion authority; run status is only a recovery hint.
+    /// An unavailable status is unknown, not proof that execution is still live.
+    /// Return no active ID so completed history can reconcile, while the durable
+    /// run-store entry remains available for a later bounded probe. Authentication
+    /// and cancellation still abort.
+    private func activeRunForHistory(sessionID: String) async throws -> String? {
+        guard let runID = runStore.runID(for: sessionID) else { return nil }
+        if let retryAt = nextRunProbeAt[runID],
+           Date().timeIntervalSince1970 < retryAt {
+            return nil
+        }
+        let data: Data
+        do {
+            data = try await perform(requests.runStatus(runID: runID))
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 401 || code == 403 {
+                throw error
+            }
+            _ = recordProbeFailure(runID: runID)
+            return nil
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            _ = recordProbeFailure(runID: runID)
+            return nil
+        }
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              root["run_id"] as? String == runID,
+              let status = root["status"] as? String else {
+            _ = recordProbeFailure(runID: runID)
+            return nil
+        }
+        guard runStore.runID(for: sessionID) == runID else {
+            return nil
+        }
+        switch status {
+        case "queued", "running", "waiting_for_approval", "stopping":
+            clearFailedRunProbes(runID: runID)
+            return runID
+        case "completed", "failed", "cancelled", "interrupted":
+            clearFailedRunProbes(runID: runID)
+            runStore.finish(runID: runID)
+            return nil
+        default:
+            _ = recordProbeFailure(runID: runID)
+            return nil
         }
     }
 

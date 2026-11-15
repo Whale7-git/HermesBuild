@@ -65,6 +65,21 @@ extension ModelTests {
         func expect(_ condition: @autoclosure () -> Bool, _ label: String) {
             checks += 1; precondition(condition(), label)
         }
+        expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: true,
+            persistenceIssue: false, recoveryDegraded: true) == .verifyStatus,
+            "unresolved run must override degraded-recovery details")
+        expect(ChatNoticeAction.choose(hasPendingSend: true, uncertain: true,
+            persistenceIssue: false, recoveryDegraded: true) == .reconcilePending,
+            "pending POST requires strict history reconciliation")
+        expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: false,
+            persistenceIssue: false, recoveryDegraded: true) == .details,
+            "recovery-only notice opens details")
+        expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: true,
+            persistenceIssue: true, recoveryDegraded: true) == .details,
+            "persistence warning opens details")
+        expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: true,
+            persistenceIssue: false, recoveryDegraded: true).title == "核对状态",
+            "label must match the verification action")
         let service = ActivityRecoveryService()
         let model = NativeChatModel(sessionID: "activity", api: service)
         await model.load()

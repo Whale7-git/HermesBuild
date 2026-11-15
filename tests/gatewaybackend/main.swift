@@ -169,7 +169,8 @@ actor ConcurrencyProbe {
         check(waiting.activeStreamID == run, "approval-waiting run remains recoverable")
         transport.statusCode = 404
         let unknown = try await restarted.history(sessionID: "s", before: nil)
-        check(unknown.activeStreamID == run, "missing status is not claimed completed")
+        check(unknown.activeStreamID == nil,
+              "missing status is unknown, not a fabricated live stream")
         try await restarted.stopNativeTurn(streamID: run)
         let stopped = try await restarted.history(sessionID: "s", before: nil)
         check(stopped.activeStreamID == nil, "explicit stop settles missing run record")
@@ -192,25 +193,26 @@ actor ConcurrencyProbe {
         transport.statusCode = 500
         for _ in 0..<4 {
             let provisional = try await guarded.history(sessionID: "s", before: nil)
-            check(provisional.activeStreamID == run,
-                  "transient 5xx retains the active run for later verification")
+            check(provisional.activeStreamID == nil,
+                  "transient 5xx is unknown, not a fabricated live stream")
         }
-        do {
-            _ = try await guarded.history(sessionID: "s", before: nil)
-            preconditionFailure("five consecutive unverifiable statuses did not close the GET budget")
-        } catch {
-            check(GatewayRunStore(scope: failureScope, defaults: defaults)
-                      .runID(for: "s") == run,
-                  "run ID must remain durable when the state budget is exhausted")
-        }
+        let exhausted = try await guarded.history(sessionID: "s", before: nil)
+        check(exhausted.activeStreamID == nil,
+              "exhausted status budget lets history remain authoritative")
+        check(transport.requests.last?.url?.path.hasSuffix("/messages") == true,
+              "exhausted status budget still reads canonical history")
+        check(GatewayRunStore(scope: failureScope, defaults: defaults)
+                  .runID(for: "s") == run,
+              "run ID remains durable when the state budget is exhausted")
         let beforeCooldown = transport.requests.count
-        do {
-            _ = try await guarded.history(sessionID: "s", before: nil)
-            preconditionFailure("an exhausted run was probed repeatedly during backoff")
-        } catch {
-            check(transport.requests.count == beforeCooldown,
-                  "bounded backoff prevents request storms")
-        }
+        let historyDuringBackoff = try await guarded.history(sessionID: "s", before: nil)
+        check(historyDuringBackoff.activeStreamID == nil,
+              "run backoff is unknown rather than a fabricated live stream")
+        let requestsDuringBackoff = transport.requests.dropFirst(beforeCooldown)
+        check(!requestsDuringBackoff.contains { $0.url?.path.hasPrefix("/v1/runs/") == true },
+              "history backoff suppresses another run-status request")
+        check(requestsDuringBackoff.last?.url?.path.hasSuffix("/messages") == true,
+              "backoff suppresses the status probe while allowing transcript GET")
         transport.statusCode = 200
         transport.status = "completed"
         let terminalFromFreshReader = try await backend(scope: failureScope)
