@@ -29,6 +29,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// 附件上传 / 模型目录的回落通道。配置了 webuiBaseURL 才有。
     private let fallback: HermesAPI?
 
+    var supportsReasoningEffort: Bool { true }
+
     /// 网关容器里对应 WebUI `~/.hermes` 的路径，用于把上传返回的绝对路径
     /// 换成 agent 容器里真实存在的位置。空串表示不做映射。
     private let gatewayDataPath: String
@@ -493,8 +495,17 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// 这里只负责把它们拼进文本——网关的 `input` 是纯文本字段。
     func startNativeTurn(sessionID: String, text: String,
                          attachments: [ChatAttachmentPayload]) async throws -> String {
+        try await startNativeTurn(sessionID: sessionID, text: text,
+                                  attachments: attachments, reasoningEffort: nil)
+    }
+
+    func startNativeTurn(sessionID: String, text: String,
+                         attachments: [ChatAttachmentPayload],
+                         reasoningEffort: String?) async throws -> String {
         let body = inputText(text: text, attachments: attachments)
-        let data = try await perform(try requests.startRun(sessionID: sessionID, text: body))
+        let data = try await perform(try requests.startRun(
+            sessionID: sessionID, text: body, model: nil, provider: nil,
+            reasoningEffort: reasoningEffort))
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let runID = root["run_id"] as? String, !runID.isEmpty else {
             throw APIError.badResponse
