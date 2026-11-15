@@ -28,10 +28,10 @@ bash tests/run_container.sh
 
 正式发布只使用以下两个 workflow：
 
-1. `.github/workflows/hermesshell-single-build.yml` 在 pull request 上运行源码检查、完整 Swift 离线回归，并在 `macos-26` 编译一次 unsigned iPhoneOS arm64 IPA。候选包和来源信息作为不可变 Actions Artifact 保存 14 天。
-2. `.github/workflows/hermesshell-single-promote.yml` 在版本变化合入 main 后运行检查，选择已合入 PR 的同一个候选 Artifact，核对 tree、digest、manifest 与远端字节，然后发布；该流程不重新编译。
+1. `.github/workflows/hermesshell-single-build.yml` 在 pull request 上并行运行源码检查、完整 Swift 离线回归及 `macos-26` IPA 编译。只编译一次 unsigned iPhoneOS arm64 IPA，三个任务全部通过才可发布。候选包和来源信息作为不可变 Actions Artifact 保存 14 天。
+2. `.github/workflows/hermesshell-single-promote.yml` 在版本变化合入 main 后选择整个 CI 已通过的同一个 PR 候选 Artifact，核对 tree、digest、manifest 与远端字节，然后发布。不会重复编译或运行回归。
 
-普通维护提交只检查，不编译或发版。手动运行 single-build 会编译并保留候选 Artifact，但不会发布。正式版本使用 `release-<version>-build<build>` 标签；已发布 tag 和资产不可覆盖。候选 Artifact 包含 IPA、`build-info.json`、`validation.json`、`candidate-manifest.json` 和 `SHA256SUMS.txt`；正式 Release 发布前四项，`SHA256SUMS.txt` 留在候选 Artifact 内用于校验。
+普通维护提交合入 main 后只判断版本是否变化，不编译或发版。手动运行 single-build 会编译并保留候选 Artifact，但不会发布。正式版本使用 `release-<version>-build<build>` 标签；已发布 tag 和资产不可覆盖。候选 Artifact 包含 IPA、`build-info.json`、`validation.json`、`candidate-manifest.json` 和 `SHA256SUMS.txt`；正式 Release 发布前四项，`SHA256SUMS.txt` 留在候选 Artifact 内用于校验。
 
 候选编译还会在未被取消时单独上传 `hermes-candidate-diagnostics-<run>-<attempt>`，保留 7 天。它包含工具链记录、脱敏后的安装与编译日志、`build-report.json`，以及成功时复制进来的候选身份文件，用于成功与失败排障；它不是候选包，也不进入正式 Release。诊断上传失败不会把已验证候选误判为失败。
 

@@ -20,6 +20,7 @@ WORKFLOW = ".github/workflows/hermesshell-single-build.yml"
 class FakeGitHub:
     def __init__(self):
         self.repository = "Whale7-git/HermesBuild"
+        self.conclusion = "success"
         self.artifacts = [{
             "id": 99,
             "name": f"hermes-candidate-2.28.0-build170-tree{TREE}",
@@ -44,7 +45,7 @@ class FakeGitHub:
                 "id": 7,
                 "event": "pull_request",
                 "path": WORKFLOW,
-                "conclusion": "success",
+                "conclusion": self.conclusion,
                 "head_sha": HEAD,
                 "run_attempt": 1,
                 "created_at": "2026-11-15T07:00:00Z",
@@ -85,7 +86,15 @@ class SelectCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected one merged PR"):
             select_candidate_module.select_candidate(client, MAIN, self.root)
 
-    def test_rejects_failed_or_non_pr_run(self):
+    def test_rejects_artifact_from_unsuccessful_run(self):
+        for conclusion in ("failure", "cancelled", None):
+            with self.subTest(conclusion=conclusion):
+                client = FakeGitHub()
+                client.conclusion = conclusion
+                with self.assertRaisesRegex(ValueError, "no successful immutable candidate"):
+                    select_candidate_module.select_candidate(client, MAIN, self.root)
+
+    def test_rejects_non_pr_run(self):
         client = FakeGitHub()
         original = client.api
 
