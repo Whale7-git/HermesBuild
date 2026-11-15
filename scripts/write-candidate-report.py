@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 import time
 
@@ -46,13 +45,12 @@ REDACTIONS = (
         r"\1\2[REDACTED]",
     ),
     (
-        re.compile(r"(?<![A-Za-z0-9])/(?:Users|Volumes)/[^\s\"'<>]+"),
+        re.compile(r"/(?:Users|Volumes)/[^\s\"'<>]+"),
         "<runner-path>",
     ),
     (
         re.compile(
-            r"(?<![A-Za-z0-9])/(?:private/(?:var|tmp)|var/folders|tmp)/"
-            r"[^\s\"'<>]+"
+            r"/(?:private/(?:var|tmp)|var/folders|tmp)/[^\s\"'<>]+"
         ),
         "<runner-path>",
     ),
@@ -73,6 +71,11 @@ def export_sanitized_logs(diagnostics: Path, export: Path) -> None:
         except OSError:
             continue
         (export / path.name).write_text(sanitize_text(value), encoding="utf-8")
+
+
+def export_sanitized_json(source: Path, destination: Path) -> None:
+    value = source.read_text(encoding="utf-8")
+    destination.write_text(sanitize_text(value), encoding="utf-8")
 
 
 def load(path: Path) -> dict:
@@ -222,7 +225,7 @@ def main() -> int:
     ):
         source = candidate / name
         if source.is_file():
-            shutil.copyfile(source, export / name)
+            export_sanitized_json(source, export / name)
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:

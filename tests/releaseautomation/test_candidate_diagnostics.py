@@ -121,6 +121,10 @@ class CandidateReportTests(unittest.TestCase):
         (self.candidate / "validation.json").write_text(json.dumps({
             "ipa": "Hermes-2.28.0-build174-unsigned.ipa",
             "sha256": "f" * 64,
+            "container_path": "/Users/runner/work/_temp/candidate/Hermes.ipa",
+            "build_info": {
+                "path": "/Users/runner/work/_temp/candidate/build-info.json",
+            },
         }))
         (self.candidate / "candidate-manifest.json").write_text(json.dumps({
             "producer": {
@@ -185,6 +189,9 @@ class CandidateReportTests(unittest.TestCase):
             (self.export / "candidate-manifest.json").read_bytes(),
             (self.candidate / "candidate-manifest.json").read_bytes(),
         )
+        exported_validation = (self.export / "validation.json").read_text()
+        self.assertNotIn("/Users/runner", exported_validation)
+        self.assertIn("<runner-path>", exported_validation)
 
     def test_failure_report_is_written_when_candidate_files_are_absent(self):
         for path in self.candidate.iterdir():
@@ -241,6 +248,8 @@ class CandidateReportTests(unittest.TestCase):
             "error: Authorization: Bearer " + github_token + "\n"
             "api_key=super-secret-value\n"
             "workspace=/Users/runner/work/HermesBuild/HermesBuild\n"
+            "-I/Users/runner/work/_temp/DerivedData\n"
+            "-F/private/var/tmp/framework\n"
         )
         status = self.invoke({
             "HERMES_SETUP_RESULT": "success",
@@ -259,6 +268,7 @@ class CandidateReportTests(unittest.TestCase):
             self.assertNotIn(github_token, value)
             self.assertNotIn("super-secret-value", value)
             self.assertNotIn("/Users/runner", value)
+            self.assertNotIn("/private/var/tmp", value)
             self.assertIn("[REDACTED", value)
         self.assertIn(github_token, (self.diagnostics / "build.log").read_text())
 
