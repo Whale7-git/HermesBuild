@@ -361,7 +361,8 @@ extension ModelTests {
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must
         // remain fail-closed; manual read-only pagination may prove completion.
-        for scenario in ["complete", "background-notice", "second-user", "changed-tail", "still-running", "other-run"] {
+        for scenario in ["complete", "background-notice", "mislabelled-user",
+                         "second-user", "changed-tail", "still-running", "other-run"] {
             let longRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("HermesLongRun-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: longRoot) }
@@ -385,9 +386,15 @@ extension ModelTests {
                 service.rows.insert(["id": "extra-user", "role": "user", "content": "another submission"],
                                     at: 80)
             }
+            if scenario == "mislabelled-user" {
+                service.rows.insert(["id": "labelled-user", "role": "user",
+                                     "content": "genuine user question",
+                                     "display_kind": "internal_notification"], at: 80)
+            }
             service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
             if scenario == "background-notice" {
-                service.rows.append(["id": "background", "role": "user", "content": "notification",
+                service.rows.append(["id": "background", "role": "user",
+                                     "content": "[OUT-OF-BAND USER MESSAGE — notification]\\nStatus update\\n[/OUT-OF-BAND USER MESSAGE]",
                                      "display_kind": "internal_notification"])
             }
             service.appendHeadOnOlderPage = scenario == "changed-tail"
