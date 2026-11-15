@@ -257,6 +257,8 @@ extension ModelTests {
             await resumed.refresh()
             precondition(resumed.activeTurnRecovery != nil && !resumed.canSend,
                          "missing active stream with no reply is still inconclusive")
+            precondition(resumed.notice?.contains("无法确认") == true,
+                         "history GET must retain unresolved accepted-run explanation")
             recoveryService.rows.append([
                 "id": "fresh", "role": "user", "content": "accepted with attachment",
                 "attachments": [["path": attachment.path]]
