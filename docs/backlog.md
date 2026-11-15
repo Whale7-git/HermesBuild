@@ -1,4 +1,6 @@
-# 待办清单
+# 待办清单（历史快照，非当前 GPT 构建规范）
+
+> 本文依据 **2.7.1 / build136** 当时的代码和工具链整理。包括 Linux/xtool、自托管 Runner 的结论仅反映历史实现；当前 GPT 构建已改为 GitHub 托管 macOS + Xcode，详见 `docs/gpt-cloud-build.md`。本文不作为 2.28.0/build170 及以后版本的现行发布入口或状态依据。
 
 > **状态：2.7.1 / build136 复核。**
 >

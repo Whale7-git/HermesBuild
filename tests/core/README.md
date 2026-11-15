@@ -1,3 +1,7 @@
+# Historical manual SSH test instructions
+
+> This document describes an optional older remote test wrapper. GPT Cloud Build runs the core suite directly under `bash tests/run_container.sh` on GitHub's Ubuntu runner; it does not use SSH, `ios-build`, or `HERMES_TEST_TARGET`.
+
 # Pure Foundation chat core tests
 
 Run from the project root:

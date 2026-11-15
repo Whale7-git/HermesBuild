@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// 代码绘制的机器人头像。不依赖图片资源——xtool 把 AppIcon 当裸 PNG 放进 bundle，
-/// `Image("AppIcon60x60")` 在 asset catalog 里找不到，会渲染成空白。
+/// 代码绘制的机器人头像。避免依赖 AppIcon 资源查找路径；
+/// XcodeGen 项目将图标 PNG 作为 bundle 资源，而非统一 Asset Catalog。
 struct HermesAvatar: View {
     var size: CGFloat = 20
     /// 深色底 + 浅色五官；小尺寸时保证对比度。
@@ -57,7 +57,7 @@ struct HermesLogo: View {
         }
     }
 
-    /// bundle 根目录下的裸 PNG（xtool 的 resources 复制方式）。
+    /// 从应用 bundle 的实际 PNG 资源读取；缺失时使用代码绘制的头像。
     private static let bundledIcon: UIImage? = {
         for name in ["AppIcon60x60@3x", "AppIcon60x60@2x", "AppIcon60x60"] {
             if let path = Bundle.main.path(forResource: name, ofType: "png"),

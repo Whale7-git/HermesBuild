@@ -31,13 +31,12 @@ fi
 xcodegen generate --spec ios-ci-project.yml
 
 # SwiftPM-only source Info.plist is intentionally sparse. The Xcode app target
-# must supply the CFBundle* keys that xtool normally synthesizes. Do this only
-# in the runner temp directory, leaving the checked-in plist and release scope
-# untouched.
+# supplies CFBundle* metadata and embeds the exact source commit.
+# Generate it in runner temp; leave checked-in plist and release scope untouched.
 ci_plist="$RUNNER_TEMP/HermesCI-Info.plist"
-python3 - "$ci_plist" "$version" "$build" <<'PY'
+python3 - "$ci_plist" "$version" "$build" "$sha" <<'PY'
 import pathlib, plistlib, sys
-destination, version, build = sys.argv[1:]
+destination, version, build, source_sha = sys.argv[1:]
 with open("Resources/Info.plist", "rb") as source:
     info = plistlib.load(source)
 if info.get("CFBundleShortVersionString") != version or info.get("CFBundleVersion") != build:
@@ -48,6 +47,7 @@ info.update({
     "CFBundlePackageType": "APPL",
     "CFBundleInfoDictionaryVersion": "6.0",
     "MinimumOSVersion": "18.0",
+    "HermesGitSHA": source_sha,
 })
 with open(destination, "wb") as target:
     plistlib.dump(info, target, sort_keys=False)

@@ -25,11 +25,8 @@ IGNORED = {'.git', '.build', '.bsp', 'xtool', 'releases', 'release', 'DerivedDat
 # hardcoded fallback on purpose: a missing or malformed file must fail the gate
 # loudly instead of silently validating the previous release.
 RELEASE = 'release.json'
-# Patterns for "this script still carries its own copy of the release number".
-# They match a literal version/build pair, not the current values, so bumping
-# the release never weakens the check.
+# Reject hard-coded IPA version names in the current GitHub packaging path.
 HARDCODED_NAME = re.compile(r'Hermes-\d+\.\d+\.\d+-build\d+')
-HARDCODED_CONSTANT = re.compile(r"\$release(?:Version|Build)\s*=\s*'\d")
 
 
 def require(condition, message):
@@ -139,34 +136,19 @@ def verify(root):
     expected_readme_title = f'# Hermes {version} / build{build}'
     require(readme_title == expected_readme_title,
             f'README release mismatch: expected {expected_readme_title!r}, got {readme_title!r}')
-    require('bundleID: com.whale7.hermes' in (root / 'xtool.yml').read_text(), 'bundle ID changed')
-    # F-41: both scripts must take the release number from release.json instead
-    # of carrying their own literal. Asserting the literal again would recreate
-    # the four-copy problem this file exists to remove, so the gate checks the
-    # derivation instead: the file is read, and the names are built from the
-    # variables it fills. The "no literal" checks use a numeric pattern rather
-    # than the current version string, so they stay correct when the release
-    # number changes (a version like '1.3' would be a substring of '1.32.0').
-    release = (root / 'scripts/release-local.sh').read_text()
-    require(RELEASE in release, 'release-local.sh no longer reads release.json')
-    require('name="Hermes-$release_version-build$release_build-unsigned"' in release,
-            'IPA output name no longer derives from release.json')
-    require('xtool/HermesShell.ipa "$release_version" "$release_build"' in release,
-            'IPA verification target no longer derives from release.json')
-    require(not HARDCODED_NAME.search(release),
-            'release-local.sh still hardcodes the release number; read release.json')
-    build_script = (root / 'scripts/build-on-9.ps1').read_text()
-    require(RELEASE in build_script, 'build-on-9.ps1 no longer reads release.json')
-    require('$releaseData = Get-Content' in build_script
-            and '$releaseVersion = $releaseData.version' in build_script
-            and '$releaseBuild = $releaseData.build' in build_script,
-            'build script release constants no longer come from release.json')
-    require('HermesShell-$releaseVersion-build$releaseBuild-' in build_script,
-            'isolated build directory no longer derives from the release constants')
-    require('Hermes-$releaseVersion-build$releaseBuild-unsigned.ipa' in build_script,
-            'IPA name no longer derives from the release constants')
-    require(not HARDCODED_CONSTANT.search(build_script),
-            'build-on-9.ps1 still hardcodes the release number; read release.json')
+    # GPT compiles the XcodeGen app target, never a private SSH/xtool host.
+    # Legacy local and Windows scripts are not prerequisites of this gate.
+    project = (root / 'ios-ci-project.yml').read_text(encoding='utf-8')
+    require(re.search(r'(?m)^\s*PRODUCT_BUNDLE_IDENTIFIER:\s*com\.whale7\.hermes\s*$', project),
+            'XcodeGen bundle ID changed')
+    require('deploymentTarget: "18.0"' in project, 'XcodeGen deployment target changed')
+    builder = (root / 'scripts/github-build-ipa.sh').read_text(encoding='utf-8')
+    require(RELEASE in builder, 'GitHub IPA builder no longer reads release.json')
+    require('name="Hermes-${version}-build${build}-unsigned"' in builder,
+            'GitHub IPA name no longer derives from release.json')
+    require(not HARDCODED_NAME.search(builder), 'GitHub IPA builder hardcodes an IPA version')
+    gpt = (root / 'scripts/gpt-cloud-build.sh').read_text(encoding='utf-8')
+    require('bash scripts/github-build-ipa.sh' in gpt, 'GPT build no longer calls GitHub IPA builder')
     return {
         'source_gate': 'pass', 'version': version, 'build': build,
         'release_source': RELEASE,

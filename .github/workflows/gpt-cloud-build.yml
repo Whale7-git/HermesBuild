@@ -1,4 +1,4 @@
-name: GPT cloud branch IPA
+name: GPT cloud branch IPA v2
 
 on:
   push:
@@ -18,11 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Run source integrity, SwiftUI, and automation checks
+      - name: Verify current source and GPT branch contract
         run: bash scripts/gpt-cloud-build.sh source
 
   offline:
@@ -30,10 +30,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Run full offline regression
+      - name: Run complete Swift offline regression
         env:
           HERMES_TEST_JOBS: "4"
         run: bash scripts/gpt-cloud-build.sh offline
@@ -44,16 +44,39 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Install XcodeGen
-        run: command -v xcodegen >/dev/null || brew install xcodegen
-      - name: Build and verify one branch IPA
-        run: bash scripts/gpt-cloud-build.sh ipa
+      - name: Initialize GPT diagnostics
+        run: mkdir -p "$RUNNER_TEMP/gpt-cloud"
+      - name: Install and record XcodeGen
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          date +%s > "$RUNNER_TEMP/gpt-cloud/setup.started"
+          (command -v xcodegen >/dev/null || brew install xcodegen) 2>&1 | tee "$RUNNER_TEMP/gpt-cloud/setup.log"
+          xcodegen --version 2>&1 | tee -a "$RUNNER_TEMP/gpt-cloud/setup.log"
+          date +%s > "$RUNNER_TEMP/gpt-cloud/setup.finished"
+      - name: Build and validate exact branch IPA
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          date +%s > "$RUNNER_TEMP/gpt-cloud/build.started"
+          bash scripts/gpt-cloud-build.sh ipa 2>&1 | tee "$RUNNER_TEMP/gpt-cloud/build.log"
+          date +%s > "$RUNNER_TEMP/gpt-cloud/build.finished"
+      - name: Report success or failure with diagnostics
+        if: always()
+        env:
+          GPT_SETUP_RESULT: ${{ steps.setup.outcome }}
+          GPT_BUILD_RESULT: ${{ steps.build.outcome }}
+        run: python3 scripts/gpt-cloud-report.py
       - name: Upload verified candidate and provenance
-        uses: actions/upload-artifact@v4
+        if: success()
+        id: upload
+        uses: actions/upload-artifact@v7
         with:
           name: gpt-cloud-ipa-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -61,23 +84,25 @@ jobs:
             release/build-info.json
             release/validation.json
             release/SHA256SUMS.txt
+            release/gpt-cloud-report.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
-      - name: Upload compilation log (including on failure)
+      - name: Upload diagnostic logs even after failures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gpt-cloud-log-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/hermes-ios-release.log
+          path: |
+            ${{ runner.temp }}/gpt-cloud/*
+            ${{ runner.temp }}/hermes-ios-release.log
           if-no-files-found: warn
           retention-days: 7
-      - name: Record branch-only result
+      - name: Record uploaded branch-only artifact
+        if: success()
         run: |
           {
-            echo "### GPT branch candidate"
-            echo "- Commit: ${{ github.sha }}"
-            echo "- Branch: ${{ github.ref_name }}"
-            echo "- IPA: uploaded as a workflow artifact (not a GitHub Release)"
-            echo "- Signing: none; physical-device acceptance: not performed"
+            echo "- Candidate artifact ID: ${{ steps.upload.outputs.artifact-id }}"
+            echo "- Candidate: ${{ steps.upload.outputs.artifact-url }}"
+            echo "- No GitHub Release or device signing was performed."
           } >> "$GITHUB_STEP_SUMMARY"

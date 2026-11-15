@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run offline INSIDE ios-build. No SSH, credentials, API calls or production writes.
+# Run offline on a GitHub Ubuntu runner or local Swift host.
+# No SSH, credentials, live backend calls, or production writes.
 set -euo pipefail
 ulimit -c 0
 cd "$(dirname "$0")/.."
@@ -9,9 +10,9 @@ S=Sources/HermesShell
 
 # Two-phase runner: compile in parallel, then execute in order.
 #
-# Why: 44 suites each re-compile overlapping sources with a single `swiftc`
-# invocation (ChatCore.swift alone is pulled into ~20 of them). Serially that
-# was 154s of the ~5min release, on a 16-core host that sat mostly idle.
+# Historical timings on the former standalone host motivated parallel Swift
+# compilation. GPT GitHub builds now compile these suites locally with
+# HERMES_TEST_JOBS, without using that host.
 #
 # Compiling in parallel is safe because every suite writes its own binary and
 # reads only its own sources. Executing in parallel would not be: several

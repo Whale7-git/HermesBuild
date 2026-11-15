@@ -1,45 +1,39 @@
-# GPT Cloud Build contract
+# GPT Cloud Build v2 — authoritative branch contract
 
-This workflow is separate from the main release pipeline. It runs only for
-pushes to `gpt/**` branches; it never publishes a Release, moves
-a tag, accesses private build hosts, uses signing keys, or sends Bark messages.
+Scope: repository `Whale7-git/HermesBuild`, only `gpt/**` branch Push events. The only GPT workflow is `.github/workflows/gpt-cloud-build.yml`. No main writes, Release, tag, signing, Bark, 9th build host, SSH, remote Docker, or xtool. Cache design is outside this contract.
 
-## Commands
+## Exact pipeline
 
-- `bash scripts/gpt-cloud-build.sh source`: exact source inventory,
-  source-gate mutation regression, SwiftUI checks, release-automation unit tests.
-- `bash scripts/gpt-cloud-build.sh offline`: all offline Swift suites on Linux.
-- `bash scripts/gpt-cloud-build.sh ipa`: compile and validate an unsigned
-  iPhoneOS arm64 IPA on macOS with Xcode and XcodeGen.
+1. `source` on Ubuntu 24.04 verifies source inventory, negative mutation cases, SwiftUI checks and GPT build-contract tests.
+2. `offline` on Ubuntu 24.04 compiles and runs all locally runnable Swift suites; no live services.
+3. Once BOTH succeed, `ipa` on GitHub-hosted macOS 26 runs XcodeGen and Xcode to compile a real unsigned Release iPhoneOS arm64 app from the actual sources.
+4. `tests/verify_ipa.py` checks the app structure, required resources, binary architecture, lack of code signing, version and security invariants. `scripts/gpt-cloud-verify.py` independently checks exact SHA, embedded `HermesGitSHA`, version/build, checksum manifest and verification report.
+5. GitHub stores the verified IPA, `build-info.json`, `validation.json`, `SHA256SUMS.txt` and GPT build report together as an Actions Artifact; logs and error summary are uploaded even on failure.
 
-Every command refuses a non-GPT branch. GitHub execution additionally requires
-an exact `GITHUB_SHA` checkout and a push event from this repository.
-IPA compilation requires a clean committed tree. The source and offline jobs
-run in parallel; the macOS IPA job runs only if both pass.
+Each mode checks the exact push repository/ref/HEAD SHA in Actions. Local runs require a real `gpt/*` branch; IPA packaging additionally requires a clean committed working tree. Tool versions are recorded and checked for a compatible Xcode 26 and XcodeGen >= 2.42. Patch drift is visible, not silently described as a tested immutable toolchain.
 
-The candidate artifact contains the IPA, build-info.json, validation.json, and
-SHA256SUMS.txt. Build logs are a separate artifact even after failure.
-No DerivedData cache is shared or restored until measured to be safe and useful.
+## Entry points
 
-## Development / integration
+- `bash scripts/gpt-cloud-build.sh source`
+- `bash scripts/gpt-cloud-build.sh offline`
+- `bash scripts/gpt-cloud-build.sh ipa` (macOS only)
+- `python3 tests/gen_release_scope.py` (run once after file changes)
+- `python3 -m unittest discover -s tests/gptcloud -p 'test_*.py' -v`
 
-1. Branch from the current main into a short-lived `gpt/<topic>` branch.
-2. Make changes only on that branch; keep `com.whale7.hermes` and
-   current identity, session, Keychain, scrolling, and attachment invariants.
-3. Maintain the exact `tests/release-scope-build<build>.json` inventory
-   whenever tracked files change. Update `release.json`, Info.plist and
-   README together when preparing a new version, after agreeing on its identity.
-4. Push the branch. Review source, offline and macOS IPA results and download the
-   candidate from Actions; successful CI does not assert real-device acceptance.
-5. Submit a pull request to main. After review and approval to publish, merge
-   through the PR. The existing main workflow owns the official Release.
+The source gate validates the current XcodeGen app target and GitHub builder. It does **not** inspect the operation or version logic of legacy `scripts/build-on-9.ps1`, `scripts/release-local.sh` or `xtool.yml`.
 
-Note: a candidate that inherits main's version/build also inherits those app
-metadata values. It is an inspection artifact, not a separately versioned update.
-Do not mistake it for a new official Release.
+## New-version development
 
-The GPT wrapper calls `scripts/github-build-ipa.sh` only for isolated QA IPA
-builds. Official 2.28+ releases instead promote the PR candidate produced by
-`hermesshell-single-build.yml` using `scripts/github-build-ipa-main.sh`.
-A GPT push artifact is not eligible for official promotion. Opening a PR may
-produce a separate canonical candidate; do not relabel or forge producer IDs.
+1. Create a short-lived `gpt/<topic>` branch based on the current GPT integration branch, which must already contain the GPT workflow. A plain `main` branch may not contain this workflow.
+2. Change real app sources and add relevant tests. Keep Bundle ID, Keychain/instance identity, chat anchors, native sessions and attachments stable.
+3. When changing app version/build, edit `release.json` (the source of truth), `Resources/Info.plist` and the first line of README together. A build-chain-only change does not imply a new app version.
+4. Run the scope generator once; review the diff and tests before committing. Push the branch.
+5. Confirm the same exact Git SHA appears in the source/offline/macOS jobs, embedded app plist, build metadata and IPA verification. Download and sign the candidate yourself for real-device checks.
+
+A candidate is not a separately numbered official release merely because its SHA differs. It is not eligible for automatic promotion into `main`. Other `hermesshell-*.yml` files are different workflows and are not this build contract.
+
+## Failure diagnosis
+
+The macOS job uploads setup/build/toolchain logs, reports exact failed step outcomes, retains full Xcode build output, and writes an Actions job summary. Source/Swift test failures appear as their own Ubuntu jobs. Treat a missing IPA, failed provenance validation, or upload error as a failed build; do not report the artifact as delivered unless GitHub confirms upload success.
+
+Historical material: `docs/backlog.md`, `tests/manual-ios.md`, the old SSH-based test wrappers and `ci/` are not authoritative current build instructions. Their existence does not create a dependency on the old runner.

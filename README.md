@@ -1,40 +1,45 @@
 # Hermes 2.28.0 / build170
 
-本版用于验证 main 新版本合入后的完整自动发布链；应用功能与 build166 保持一致。
+HermesShell 是 Hermes 的原生 iOS 客户端，支持多实例、流式聊天、历史会话、附件和本地草稿恢复。这里的版本号是当前 GPT 分支继承的应用元数据，不代表这次仅改构建链的提交是新版本。
 
-HermesShell 是 Hermes 的原生 iOS 客户端，支持多实例、流式聊天、历史会话、附件和本地草稿恢复。
+## 当前 GPT 开发与 IPA 构建入口
+
+**在 `gpt/**` 分支，唯一自动构建入口是 `.github/workflows/gpt-cloud-build.yml`。**每次向该分支 Push 后，GitHub Actions：
+
+1. 在 Ubuntu 并行执行源码完整性、SwiftUI 检查和 Swift 离线回归；
+2. 两项通过后，在 GitHub 托管 macOS Runner 使用 XcodeGen + Xcode 真编译 Release / iPhoneOS arm64 / unsigned IPA；
+3. 检查 IPA 结构、版本、Bundle ID、未签名状态、源码 SHA、哈希和构建来源；
+4. 将候选 IPA、`build-info.json`、`validation.json`、`SHA256SUMS.txt`、构建摘要和诊断日志保存为 **Actions Artifacts**。
+
+**GPT 分支不会创建标签、GitHub Release、发送 Bark，也不需要 9 号机、SSH、xtool、Windows 远程构建环境或私有仓库。**构建通过不代表 iPhone 真机 UI 已验收；设备安装需要用户自行签名。
+
+GitHub Actions 入口：`https://github.com/Whale7-git/HermesBuild/actions/workflows/gpt-cloud-build.yml`。
+
+详细操作约定：`docs/gpt-cloud-build.md`；代理开发规则：`AGENTS.md`。
+
+### 开发新版本
+
+从已包含 GPT 构建工作流的 GPT 基线（当前为 `gpt/cloud-build-bootstrap`）创建 `gpt/<topic>`。修改应用代码和对应测试后，按版本需要同步更新 `release.json`、`Resources/Info.plist` 和本 README 首行，再执行一次 `python3 tests/gen_release_scope.py` 生成当前 build 的源码清单。Push 即触发完整 GitHub 云端验证和 IPA 交付；不需要操作旧 Runner。
+
+本仓库的其他 `hermesshell-*.yml` 工作流属于独立的正式发布体系，不能被当作 GPT 分支的默认构建入口。它们不因普通 `gpt/**` Push 触发；是否发布正式版本不属于当前 GPT 流程。
 
 ## 连接自己的服务
 
-首次启动不预设任何服务器。点击「配置连接」，在设置中添加自己的网关地址与 API 密钥，或添加 WebUI 实例。网关密钥保存在 iOS Keychain；源码不含服务凭据。
+首次启动不预设任何服务器。在设置中添加自己的 Hermes 网关地址/API 密钥或 WebUI 实例。网关凭据存储于 iOS Keychain。Bundle ID 保持 `com.whale7.hermes`，以保留覆盖更新兼容性。
 
-已有安装保留原来的实例和凭据。应用 bundle ID 仍为 `com.whale7.hermes`，以支持覆盖升级。
-
-## 源码与验证
-
-本仓库是清理后的公开源码快照，应用基于 2.26.1 / build167。未导入上游私有仓库的 Git 历史、内部交接文档、构建输出或测试日志。
+## 源码与离线验证
 
 ```sh
-python3 tests/verify_source.py
-python3 tests/check_swiftui_modifiers.py
-python3 tests/test_swiftui_modifiers.py
-bash tests/run_container.sh
+bash scripts/gpt-cloud-build.sh source
+bash scripts/gpt-cloud-build.sh offline
+# macOS + Xcode/XcodeGen 时可运行：
+bash scripts/gpt-cloud-build.sh ipa
 ```
 
-离线测试需要兼容项目的 Swift 工具链和 Python 3；GitHub Actions 使用 runner 预装的 Swift，记录实际版本并以完整回归结果验证兼容性。远程辅助入口需要自行设置 `HERMES_TEST_TARGET=user@build-host`；本地执行离线套件不需要 SSH、网关、密钥或真实会话。
+命令只接受 `gpt/*` 本地开发分支；GitHub Actions 中还校验仓库、Push 事件、完整分支 ref 和 Commit SHA。所有源码完整性验证基于当前 XcodeGen 构建入口，不依赖旧远程构建脚本。
 
-## 构建
-
-GitHub Actions 在 pull request 和 main 更新时并行执行源码检查与完整 Swift 离线回归。
-
-当 `release.json` 的 version/build 相比推送前的 main 发生变化，且 build 递增、版本不回退时，两项检查通过后自动启动 `macos-26` runner 的默认 Xcode（实际 macOS、Xcode、Swift 与 iPhoneOS SDK 版本写入构建来源信息），使用 Incremental `-O` 编译一次 unsigned iPhoneOS arm64 IPA。工作流在同一 runner 校验包与来源，直接上传草稿 Release，下载核对四项资产的 SHA256 后转为正式 Release，并再次核对。没有临时 Actions Artifact，也不依赖私有仓库或自托管机器。
-
-普通维护提交只检查，不编译或发版。`workflow_dispatch` 保留仅编译验证的入口，不创建 Release、不保存 Artifact；该模式的包随临时 runner 清理。正式版本使用 `release-<version>-build<build>` 标签；已有正式 Release / tag 不覆盖，失败留下的草稿只允许同一个工作流运行恢复上传，且已上传资产必须逐字节一致。同一 Job 对瞬时上传/API 故障最多重试三次；整个 Job 重跑后若产物改变，将拒绝混用草稿资产。Latest 由 GitHub 根据来源提交日期和版本自动选择，避免旧版本后完成时强制抢占。
-
-可在本仓库 Actions Secret 配置 `BARK_URL` 以接收发布成功链接或失败运行链接；缺失或通知失败会明确提示，不改变实际发布结果。设备安装仍需要自行签名。
-
-也可在安装 Xcode、XcodeGen 的 macOS 上运行 `scripts/github-build-ipa.sh`，或在自行配置的 xtool 环境运行 `scripts/release-local.sh`。Windows 远程构建脚本需要本地设置 `HERMES_BUILD_TARGET` 和 `HERMES_BUILD_PROJECTS`。
+历史文档中的 Linux/xtool、9 号机、自托管 Runner 和旧 Release 操作是当时的实现记录，**不是本分支的使用说明**。旧手动脚本保留以便历史追溯，但 GPT 工作流不调用它们。
 
 ## 第三方代码
 
-保留 `Vendor/Textual/LICENSE`、上游来源/补丁记录和 `Resources/THIRD_PARTY_NOTICES.txt`。第三方代码的许可证以各自声明为准。
+保留 `Vendor/Textual/LICENSE`、上游来源/补丁记录和 `Resources/THIRD_PARTY_NOTICES.txt`。第三方许可证以各自声明为准。

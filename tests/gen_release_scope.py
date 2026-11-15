@@ -12,14 +12,11 @@ rewriting it would erase the very drift the gate exists to catch.
 
 Usage:
     cd HermesBuild
-    python tests/gen_release_scope.py
-    python tests/gen_release_scope.py   # run twice: the first pass cannot see
-                                        # its own output file as "added"
+    python3 tests/gen_release_scope.py
 
-The second run is needed because the scope file itself is excluded from the hash
-set (a file cannot pin itself). On the first run the previous scope is absent, so
-the new scope appears as an undeclared addition; the second run has it in place
-and converges.
+One invocation suffices even when the build-specific scope file did not exist.
+The scope file is added to its own inventory by path but excluded from its
+content hashes, avoiding a self-referential checksum.
 """
 
 from __future__ import annotations
@@ -71,6 +68,9 @@ def main() -> int:
         if path.is_file():
             current[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
 
+    # New build IDs still declare the scope path on the first invocation.
+    # Its own bytes are excluded from the hash set below.
+    current.setdefault(scope_name, '')
     changed = sorted(n for n in baseline.keys() & current.keys()
                      if baseline[n] != current[n])
     added = sorted(current.keys() - baseline.keys())

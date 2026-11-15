@@ -7,8 +7,9 @@ import ImageIO
 import UIKit
 import Photos
 import PhotosUI
-// PhotosUI's SwiftUI overlay is a cross-import module. The Linux xtool
-// typecheck driver does not discover it from `import PhotosUI` alone.
+// Keep this explicit PhotosUI SwiftUI cross-import for compatibility.
+// The original need was a legacy typechecker limitation; do not remove it
+// without confirming compilation with the supported Xcode toolchain.
 import _PhotosUI_SwiftUI
 
 /// PhotosUI can export an asset as a temporary file. Copy it into our own
