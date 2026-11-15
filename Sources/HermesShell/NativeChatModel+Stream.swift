@@ -404,7 +404,7 @@ extension NativeChatModel {
                 return false
             }
         }
-        guard pages.last?.olderOffset ?? Int.max <= boundary else {
+        guard (pages.last?.olderOffset ?? Int.max) <= boundary else {
             notice = "本轮历史超过本次核对上限，无法安全确认；未重新发送消息。"
             return false
         }
