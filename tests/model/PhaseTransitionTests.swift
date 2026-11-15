@@ -179,27 +179,26 @@ extension ModelTests {
                             for uncertain in [false, true] {
                                 for userPaused in [false, true] {
                                     for recoveryPaused in [false, true] {
-                                    let action = ChatRuntimeCoordinator.terminalAction(
-                                        stopPending: stop, sameRun: sameRun,
-                                        terminalFrame: terminal, finalHistoryConfirmed: history,
-                                        successful: successful, uncertain: uncertain,
-                                        userPaused: userPaused, recoveryPaused: recoveryPaused)
-                                    let safe = !stop && sameRun && terminal && history && !uncertain
-                                    if stop {
-                                        expect(action == .verifyStop,
-                                               "STOP takes priority over all concurrent terminal facts")
-                                    } else if !safe {
-                                        expect(action == .keepLocked,
-                                               "incomplete evidence may not release a queued POST")
-                                    } else {
-                                        expect(action == ((successful && !userPaused && !recoveryPaused)
-                                               ? .finishAndDispatch : .finishWithoutDispatch),
-                                               "only a verified successful run may auto-dispatch the queue")
-                                    }
+                                        let action = ChatRuntimeCoordinator.terminalAction(
+                                            stopPending: stop, sameRun: sameRun,
+                                            terminalFrame: terminal, finalHistoryConfirmed: history,
+                                            successful: successful, uncertain: uncertain,
+                                            userPaused: userPaused, recoveryPaused: recoveryPaused)
+                                        let safe = !stop && sameRun && terminal && history && !uncertain
+                                        if stop {
+                                            expect(action == .verifyStop,
+                                                   "STOP outranks all concurrent terminal facts")
+                                        } else if !safe {
+                                            expect(action == .keepLocked,
+                                                   "incomplete evidence cannot release queued POST")
+                                        } else {
+                                            expect(action == ((successful && !userPaused && !recoveryPaused)
+                                                   ? .finishAndDispatch : .finishWithoutDispatch),
+                                                   "only verified success may auto-dispatch")
+                                        }
                                     }
                                 }
                             }
-                        }
                         }
                     }
                 }

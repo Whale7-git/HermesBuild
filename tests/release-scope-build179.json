@@ -620,7 +620,7 @@
     "tests/model/main.swift": "cf931f9d9a28b75ae8931ee736cedba097ab17b9929dbd0c2d9defb8270307be",
     "tests/model/PagingBudgetTests.swift": "509b4c3caef5602b879d065e5415f15d967e8ac2c6079c06a329b8399cbd7046",
     "tests/model/PendingRecoveryTests.swift": "5461f2b64ad5a87863c3ce4823335474b6dc234b06c3ac0505153337e240a850",
-    "tests/model/PhaseTransitionTests.swift": "e56f068712e69a6a5cad953e986eb52ec51544ddd4aa55ab1fd475dce32ee7b5",
+    "tests/model/PhaseTransitionTests.swift": "57eed4ad9f2a1f290e8165d98c1fa3795f62b55b9a39e0bb676222514435aa17",
     "tests/model/SendModeTests.swift": "dc39e0daeed4d6d2be443d8c6d5b1692227b3e67911351f950b392a4a8bd9f6a",
     "tests/model/SendSafetyTests.swift": "da1f4017dc94c7a73f167a3cae7c109f01a89f3e71ce47542032e51b6af6f720",
     "tests/model/WindowTrimTests.swift": "3b49bd938753f5e83bc2a8839c7f10af9080c339813981c0f1428cd5e63e0713",
