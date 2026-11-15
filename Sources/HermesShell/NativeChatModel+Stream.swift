@@ -597,7 +597,11 @@ extension NativeChatModel {
             while generation == revision && !Task.isCancelled {
                 do {
                     try await api.streamNativeTurn(streamID:active,lastEventID:lastEventID) { frame in
-                        guard generation == self.revision, !Task.isCancelled else { return true }
+                        // A late frame belongs to the exact run and immutable
+                        // model instance that installed this stream handler.
+                        // Generation alone cannot identify a resubscribed run.
+                        guard self.accepts(self.runContext(for: active, generation: generation)),
+                              !Task.isCancelled else { return true }
                         if !self.streamConnected {
                             RuntimeLogRecorder.shared.record(.info, "stream", "connected stream=\(active) resumed=\(self.lastEventID != nil)")
                         }
@@ -719,7 +723,8 @@ extension NativeChatModel {
                     var settled = false
                     do {
                         let snap = try await api.history(sessionID:sessionID,before:nil)
-                        guard generation == revision, !Task.isCancelled else { return }
+                        guard accepts(runContext(for: active, generation: generation)),
+                              !Task.isCancelled else { return }
                         let userPauseWasActive = queueUserPaused
                         let recoveryPauseWasActive = queueRecoveryPaused
                         try applySnapshot(snap, preserveLoadedOlder: true)
@@ -776,6 +781,13 @@ extension NativeChatModel {
                         finalHistoryConfirmed: settled && streamID == nil,
                         uncertain: uncertain,
                         userPaused: queueUserPaused, recoveryPaused: queueRecoveryPaused)
+                    if decision == .keepLocked {
+                        // An unmatched receipt or inconclusive final history
+                        // cannot be made safe merely by reaching idle.
+                        uncertain = true
+                        pauseQueueForRecovery()
+                        notice = notice ?? "本轮终态证据不完整；发送仍锁定，请核对状态。"
+                    }
                     if decision == .finishAndDispatch {
                         // 斜杠命令的兜底说明：命令已原样转发，但服务端没有任何
                         // 可见回应（既没报错也没产出正文）。这时必须讲清「客户端

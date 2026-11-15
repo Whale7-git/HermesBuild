@@ -263,6 +263,86 @@ import Foundation
         model.disconnect()
     }
 
+    // STOP and SSE completion can arrive in either order. An SSE terminal
+    // must never bypass the STOP-owned confirmation and queued-send lock.
+    do {
+        let service = SendSafetyService()
+        service.stopAcknowledgementOnly = true
+        let model = NativeChatModel(sessionID: "stop-sse-race", api: service)
+        model.stopStatusPollDelaysNanoseconds = [2_000_000_000]
+        await model.load()
+        model.draft = "first"; _ = await model.send()
+        model.sendMode = .queue
+        model.draft = "never auto-send"; _ = await model.send()
+        precondition(model.queuedTurns.count == 1)
+        await model.stop()
+        precondition(model.stopping && model.queueRecoveryPaused)
+        service.frames.append(SSEFrame(event: "stream_end", data: "{}", id: "finish-after-stop"))
+        try await ModelTests.eventually { model.buffer.terminal }
+        // Give the stream task a chance to finish its async terminal branch.
+        await Task.yield()
+        precondition(model.stopping && !model.canSend && service.startCalls == 1,
+                     "SSE terminal must preserve STOP lock and never dispatch the queued turn")
+        service.active = nil
+        await model.verifyPendingStop()
+        precondition(!model.stopping && service.startCalls == 1
+                     && model.queuedTurns.count == 1 && model.queueAutomaticDispatchPaused,
+                     "verified cancellation preserves unsent queue for explicit user action")
+        model.disconnect()
+    }
+
+    // A background/foreground transition cancels timers, not server STOP.
+    // Resuming performs only a scoped status + history GET.
+    do {
+        let service = SendSafetyService()
+        service.stopAcknowledgementOnly = true
+        let model = NativeChatModel(sessionID: "stop-resume", api: service)
+        model.stopStatusPollDelaysNanoseconds = [2_000_000_000]
+        await model.load()
+        model.draft = "one stop"; _ = await model.send()
+        await model.stop()
+        model.disconnect()
+        precondition(model.stopping && model.suspended)
+        service.active = nil
+        await model.resumeForeground()
+        precondition(!model.stopping && !model.suspended
+                     && service.startCalls == 1 && service.stopCalls == 1,
+                     "foreground resolves the original run using GET only, never a second POST")
+        model.disconnect()
+    }
+
+    // Explicit pause is scoped and durable independently from recovery pause,
+    // including when no queued turns remain.
+    do {
+        let suite = "HermesQueueUserPause-179-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ChatDraftStore(instanceID: "instance-a", accountScope: "account-a",
+                                   sessionID: "session-a", defaults: defaults)
+        let first = NativeChatModel(sessionID: "session-a",
+                                    api: SendSafetyService(), draftStore: store)
+        first.setQueueAutomaticDispatchPaused(true)
+        precondition(first.queueUserPaused && store.loadQueueUserPaused())
+        first.disconnect()
+        let reopened = NativeChatModel(sessionID: "session-a",
+                                       api: SendSafetyService(), draftStore: store)
+        precondition(reopened.queueUserPaused && reopened.queueAutomaticDispatchPaused,
+                     "manual pause survives relaunch even with empty queue")
+        let other = ChatDraftStore(instanceID: "instance-a", accountScope: "account-b",
+                                   sessionID: "session-a", defaults: defaults)
+        precondition(!other.loadQueueUserPaused(),
+                     "manual pause must not cross an account boundary")
+        reopened.setQueueAutomaticDispatchPaused(false)
+        precondition(!store.loadQueueUserPaused(),
+                     "explicit resume persists independently of recovery state")
+        let again = NativeChatModel(sessionID: "session-a",
+                                    api: SendSafetyService(), draftStore: store)
+        precondition(!again.queueUserPaused,
+                     "new controller reads the explicitly resumed preference")
+        again.disconnect()
+        reopened.disconnect()
+    }
+
     // Queueing appends complete turns instead of replacing the first payload.
     do {
         let service = SendSafetyService()

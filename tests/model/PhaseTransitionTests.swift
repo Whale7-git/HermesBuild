@@ -149,6 +149,60 @@ extension ModelTests {
         model.transition(to: .idle)
         expect(model.phase == .idle, "transition to the same phase is a no-op")
 
+        // build179: Run/Session/instance/generation must ALL agree.
+        let context = ChatRunContext(instanceScope: "host-a/account-a",
+                                     sessionID: "session-a", runID: "run-7", revision: 17)
+        expect(context.matches(instanceScope: "host-a/account-a", sessionID: "session-a",
+                               runID: "run-7", revision: 17, suspended: false),
+               "same run, session, instance and revision is current")
+        expect(!context.matches(instanceScope: "host-b/account-a", sessionID: "session-a",
+                                runID: "run-7", revision: 17, suspended: false),
+               "old instance callback cannot mutate a new instance")
+        expect(!context.matches(instanceScope: "host-a/account-a", sessionID: "session-b",
+                                runID: "run-7", revision: 17, suspended: false),
+               "old session callback cannot mutate a new session")
+        expect(!context.matches(instanceScope: "host-a/account-a", sessionID: "session-a",
+                                runID: "run-8", revision: 17, suspended: false),
+               "old run callback cannot mutate a newer run")
+        expect(!context.matches(instanceScope: "host-a/account-a", sessionID: "session-a",
+                                runID: "run-7", revision: 18, suspended: false),
+               "stale async generation is rejected")
+        expect(!context.matches(instanceScope: "host-a/account-a", sessionID: "session-a",
+                                runID: "run-7", revision: 17, suspended: true),
+               "suspended controller rejects callbacks")
+        // Exhaust the stop/identity/history/queue fact combinations.
+        for stop in [false, true] {
+            for sameRun in [false, true] {
+                for terminal in [false, true] {
+                    for history in [false, true] {
+                        for uncertain in [false, true] {
+                            for userPaused in [false, true] {
+                                for recoveryPaused in [false, true] {
+                                    let action = ChatRuntimeCoordinator.terminalAction(
+                                        stopPending: stop, sameRun: sameRun,
+                                        terminalFrame: terminal, finalHistoryConfirmed: history,
+                                        uncertain: uncertain, userPaused: userPaused,
+                                        recoveryPaused: recoveryPaused)
+                                    let safe = !stop && sameRun && terminal && history && !uncertain
+                                    if stop {
+                                        expect(action == .verifyStop,
+                                               "STOP takes priority over all concurrent terminal facts")
+                                    } else if !safe {
+                                        expect(action == .keepLocked,
+                                               "incomplete evidence may not release a queued POST")
+                                    } else {
+                                        expect(action == ((!userPaused && !recoveryPaused)
+                                               ? .finishAndDispatch : .finishWithoutDispatch),
+                                               "queue dispatch requires both safety and user consent")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         print("PHASE_PASS \(checks) assertions")
     }
 
