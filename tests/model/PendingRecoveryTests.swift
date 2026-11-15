@@ -363,7 +363,8 @@ extension ModelTests {
                                            sessionID: "test", fileStore: longFiles)
             let receipt = ActiveTurnRecovery(runID: "long-run", historyEnd: 0,
                 knownIDs: [], text: "long task", attachmentPaths: [])
-            precondition(longStore.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let encodedReceipt = try JSONEncoder().encode(receipt)
+            precondition(longStore.saveActiveRun(encodedReceipt).succeeded)
             let service = PendingRecoveryService()
             service.historyPageLimit = 60
             service.rows = [["id": "new-user", "role": "user", "content": "long task"]]
