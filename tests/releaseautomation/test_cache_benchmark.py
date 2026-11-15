@@ -148,6 +148,7 @@ class CacheIdentityTests(unittest.TestCase):
                 commands,
             ),
             mock.patch.object(identity.subprocess, "run"),
+            mock.patch.object(identity.shutil, "rmtree"),
             mock.patch.dict(os.environ, {}, clear=True),
         ):
             first = identity.identity(project)

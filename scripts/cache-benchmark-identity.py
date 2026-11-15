@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 
@@ -37,7 +38,14 @@ def safe_component(value: str) -> str:
 def identity(root: Path = ROOT) -> str:
     project_dir = root / "HermesShellCI.xcodeproj"
     xcodegen = ["xcodegen", "generate", "--spec", "ios-ci-project.yml"]
-    subprocess.run(xcodegen, cwd=root, check=True)
+    shutil.rmtree(project_dir, ignore_errors=True)
+    subprocess.run(
+        xcodegen,
+        cwd=root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     first = digest_paths(
         [
             project_dir / "project.pbxproj",
@@ -49,7 +57,14 @@ def identity(root: Path = ROOT) -> str:
         ],
         root,
     )
-    subprocess.run(xcodegen, cwd=root, check=True)
+    shutil.rmtree(project_dir)
+    subprocess.run(
+        xcodegen,
+        cwd=root,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     second = digest_paths(
         [
             project_dir / "project.pbxproj",
