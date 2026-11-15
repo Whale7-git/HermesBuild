@@ -184,6 +184,21 @@ struct ChatDraftStore {
         return result
     }
 
+    /// The explicit user pause is a preference, NOT a recovery error. Store
+    /// only a scoped Boolean, never message text or credentials, and keep it
+    /// independent from the queued-turn data so an empty queue retains intent.
+    func loadQueueUserPaused() -> Bool {
+        defaults.bool(forKey: key + ".queueUserPaused")
+    }
+
+    @discardableResult
+    func saveQueueUserPaused(_ paused: Bool) -> LocalStoreWriteResult {
+        let name = key + ".queueUserPaused"
+        if paused { defaults.set(true, forKey: name) }
+        else { defaults.removeObject(forKey: name) }
+        return defaults.bool(forKey: name) == paused ? .ok : .failed(.diskWrite)
+    }
+
     /// Remove both draft and queue for this session.
     func remove() {
         defaults.removeObject(forKey: key)
@@ -191,6 +206,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
         defaults.removeObject(forKey: key + ".attachments")
+        defaults.removeObject(forKey: key + ".queueUserPaused")
         if let legacy = legacyKey { defaults.removeObject(forKey: legacy) }
         _ = fileStore?.remove()
     }
@@ -238,6 +254,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
         defaults.removeObject(forKey: key + ".attachments")
+        defaults.removeObject(forKey: key + ".queueUserPaused")
         let fileStore = LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
                                            sessionID: sessionID, rootDirectory: fileRootDirectory)
         return fileStore.remove()

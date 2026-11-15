@@ -223,11 +223,16 @@ extension NativeChatModel {
     func stop() async {
         guard let active = streamID, !stopping, !submitting else { return }
         let generation = revision
+        stopAcknowledged = false
+        // STOP is an explicit cancellation boundary: preserve any user pause
+        // and prohibit ordinary terminal-event queue dispatch from now on.
+        pauseQueueForRecovery()
         transition(to: .stopping)
         do {
             try await api.stopNativeTurn(streamID: active)
             noteRunRecoveryState()
             guard generation == revision, streamID == active, !Task.isCancelled else { return }
+            stopAcknowledged = true
             notice = "停止请求已受理，正在核对后台任务是否真正结束。"
             await verifyPendingStop()
             if stopping { scheduleStopStatusPolling() }
@@ -248,10 +253,10 @@ extension NativeChatModel {
         stopStatusProbeInFlight = true
         defer { stopStatusProbeInFlight = false }
         let generation = revision
+        let context = runContext(for: active, generation: generation)
         do {
             let result = try await api.probeActiveRun(sessionID: sessionID, runID: active)
-            guard generation == revision, streamID == active,
-                  stopping, !Task.isCancelled else { return }
+            guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
                 notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
@@ -259,8 +264,7 @@ extension NativeChatModel {
                 notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
             case .terminal(let outcome):
                 let finalHistory = try await api.history(sessionID: sessionID, before: nil)
-                guard generation == revision, streamID == active,
-                      stopping, !Task.isCancelled else { return }
+                guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,
                       finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
                     uncertain = true
@@ -271,6 +275,7 @@ extension NativeChatModel {
                 stopStatusPollTask?.cancel()
                 stopStatusPollTask = nil
                 stopStatusPollTicket = nil
+                stopAcknowledged = false
                 revision &+= 1
                 streamTask?.cancel()
                 streamTask = nil
@@ -290,7 +295,7 @@ extension NativeChatModel {
                 notice = outcome.notice
             }
         } catch {
-            guard generation == revision, streamID == active, stopping else { return }
+            guard accepts(context), stopping else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
             uncertain = true
@@ -346,6 +351,7 @@ extension NativeChatModel {
         stopStatusPollTask?.cancel()
         stopStatusPollTask = nil
         stopStatusPollTicket = nil
+        stopAcknowledged = false
         buffer = ChatTranscript()
         confirmedHistory = nil
         confirmedHistoryEnd = nil

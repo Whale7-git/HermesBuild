@@ -161,7 +161,7 @@ extension NativeChatModel {
     /// completion can dispatch the next turn in order.
     @discardableResult
     func flushQueuedIfNeeded(completedStreamID: String? = nil) async -> Bool {
-        guard !running else { return false }
+        guard !running, !stopping, !suspended, !stopAcknowledged else { return false }
         // Removing a submitting entry is owned by the completion path. It
         // must never be dispatched again from a foreground/load callback.
         switch ChatQueueDispatchPlan.make(
@@ -398,6 +398,15 @@ extension NativeChatModel {
     }
 
     func setQueueAutomaticDispatchPaused(_ paused: Bool) {
+        // Persist intent before enabling automatic POST dispatch. A failed
+        // write must fail closed, not forget the user's pause on restart.
+        let saved = draftStore?.saveQueueUserPaused(paused) ?? .ok
+        guard saved.succeeded else {
+            recordLocalWrite(saved, kind: .queue)
+            pauseQueueForRecovery()
+            notice = "无法可靠保存队列暂停设置；已保持自动发送锁定。"
+            return
+        }
         queueUserPaused = paused
         if !paused && !uncertain && activeTurnRecovery == nil {
             queueRecoveryPaused = false

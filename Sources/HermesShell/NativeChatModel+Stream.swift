@@ -679,6 +679,13 @@ extension NativeChatModel {
                                 failure == nil ? .info : .error, "stream",
                                 "terminal event=\(frame.event)\(failure.map { " err=\($0)" } ?? "")")
                             self.flush()
+                            // A concurrent STOP owns terminal authorization.
+                            // Even an SSE done frame cannot unlock sending or
+                            // flush the queue until that exact run is verified.
+                            if self.stopping {
+                                self.notice = "已收到任务结束事件，仍需确认停止终态和最终历史。"
+                                return true
+                            }
                             // 终态已到：本轮结束。核对标志与相位正交，单独置起。
                             self.transition(to: .idle)
                             self.reconciling = true
@@ -696,6 +703,16 @@ extension NativeChatModel {
                 }
                 guard generation == revision, !Task.isCancelled else { return }
                 if buffer.terminal {
+                    if stopping {
+                        // The STOP POST might still be in flight. Its callback
+                        // will verify the run; do not settle via the ordinary
+                        // stream-completion path or auto-dispatch a queued turn.
+                        if stopAcknowledged {
+                            await verifyPendingStop()
+                            if stopping { scheduleStopStatusPolling() }
+                        }
+                        return
+                    }
                     let terminalFailure = buffer.failure
                     // 只有「干净收尾」才允许放行排队的那条：中断、核对失败、
                     // 结果不确定都必须把队列留着，让用户看见它还没发出去。
@@ -752,7 +769,14 @@ extension NativeChatModel {
                         uncertain = true
                         notice = "历史核对失败，发送保持锁定；请刷新确认后台状态。"
                     }
-                    if settled, !running, self.streamID == nil, !uncertain {
+                    let decision = ChatRuntimeCoordinator.terminalAction(
+                        stopPending: stopping || stopAcknowledged,
+                        sameRun: activeTurnRecovery == nil,
+                        terminalFrame: terminalEvent == "done" || terminalEvent == "stream_end",
+                        finalHistoryConfirmed: settled && streamID == nil,
+                        uncertain: uncertain,
+                        userPaused: queueUserPaused, recoveryPaused: queueRecoveryPaused)
+                    if decision == .finishAndDispatch {
                         // 斜杠命令的兜底说明：命令已原样转发，但服务端没有任何
                         // 可见回应（既没报错也没产出正文）。这时必须讲清「客户端
                         // 只能转发、语义由服务端决定」，否则用户会以为命令静默失败。
@@ -892,6 +916,14 @@ extension NativeChatModel {
 
 
     func resumeForeground() async {
+        // STOP remains STOP across background transitions. Only a read-only
+        // run probe may resolve it; a general refresh would erase its phase.
+        if stopping {
+            suspended = false
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
+            return
+        }
         // 前台已有流连接就不打断它；后台断开后仅 GET 恢复，绝不重发。
         if streamTask != nil { return }
         await refresh(silent: !transcript.messages.isEmpty, preserveLoadedOlder: true)
@@ -903,6 +935,14 @@ extension NativeChatModel {
     /// 否则这里一进来就把标志抹掉，连点「核对」会并发发起多个 GET 互相打断。
     func refresh(silent: Bool = false, preserveLoadedOlder: Bool = false,
                  resetReconciling: Bool = true) async {
+        if stopping {
+            // A manual status check must not convert STOP into an ordinary
+            // history load or accidentally reopen ordinary sending.
+            suspended = false
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
+            return
+        }
         if submitting { resumeRequested = true; return }
         guard !loading, !syncing else { return }
         publishTask?.cancel()
