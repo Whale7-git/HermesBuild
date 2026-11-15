@@ -65,7 +65,8 @@ extension NativeChatModel {
             RuntimeLogRecorder.shared.record(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
             try applySnapshot(snap, preserveLoadedOlder: preserveLoadedOlder)
-            if pendingSend == nil { notice = nil }
+            // Do not erase the unresolved accepted-run status after history GET.
+            if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
             if let active = snap.activeStreamID { attach(streamID:active) }
         } catch {
