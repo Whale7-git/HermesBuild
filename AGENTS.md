@@ -49,9 +49,14 @@ separate.
   immutable candidate Artifact. Main promotion downloads and verifies that exact
   Artifact without compiling again. `workflow_dispatch` on the candidate workflow
   builds and retains a candidate but never publishes.
-- Do not use host 9, xtool, local release scripts, the former adaptive workflow, or
-  remote SSH build/test wrappers. Do not claim device behavior was verified without
-  a real-device result.
+- Candidate diagnostics are a separate 7-day Artifact containing the captured
+  toolchain, redacted build logs, and `build-report.json`. They do not alter the
+  candidate file contract or Release assets. A diagnostic upload failure must
+  not hide a verified candidate.
+- Build, validate, and publish only through the two workflows and the existing
+  test entry points listed above. Historical manifests and backlog records are
+  audit evidence, not runnable instructions. Do not claim device behavior was
+  verified without a real-device result.
 
 ## Pull requests
 

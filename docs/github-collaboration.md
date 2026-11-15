@@ -22,6 +22,13 @@ contains the IPA, `build-info.json`, `validation.json`,
 four files; `SHA256SUMS.txt` remains inside the candidate Artifact for its own
 verification.
 
+A separate `hermes-candidate-diagnostics-<run>-<attempt>` Artifact is uploaded
+on success and failure, with a 7-day retention. Its explicit whitelist contains
+the captured toolchain, redacted setup and build logs, `build-report.json`, and
+candidate identity files when present. It is never promoted. Diagnostic upload is
+best-effort so a temporary logging failure cannot invalidate a verified
+candidate.
+
 `workflow_dispatch` on the candidate workflow builds and retains a candidate
 Artifact, but never publishes. Only a version-bearing merge to `main` can start
 promotion. A maintenance merge runs source and offline checks and plans no
@@ -35,5 +42,10 @@ validation and device acceptance remain separate from source tests.
 
 Do not print machine identities, proxy URLs, tokens, cookies, passwords, or
 notification keys in public logs. Update the current release scope only after
-reviewing the complete source change; preserve frozen baseline manifests and
-third-party notices.
+reviewing the complete source change; preserve frozen baseline manifests,
+historical release-scope manifests, and third-party notices.
+
+The only current build and publication workflows are
+`hermesshell-single-build.yml` and `hermesshell-single-promote.yml`. Historical
+manifests may mention removed external build and publication entry points as
+evidence; they are not instructions and must not be reintroduced.
