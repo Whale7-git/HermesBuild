@@ -280,6 +280,9 @@ final class NativeChatModel: ObservableObject {
     var stopStatusPollTask: Task<Void, Never>?
     var stopStatusPollTicket: UUID?
     var stopStatusProbeInFlight = false
+    /// Intent is orthogonal to SSE completion. Only a matching verified stop
+    /// terminal may release the STOP-owned send lock.
+    var stopAcknowledged = false
     var stopStatusPollDelaysNanoseconds: [UInt64] = [
         1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000
     ]
@@ -289,6 +292,16 @@ final class NativeChatModel: ObservableObject {
     var lastEventID: String?
     var revision:UInt = 0
     var resumeRequested = false
+
+    func runContext(for runID: String, generation: UInt) -> ChatRunContext {
+        ChatRunContext(instanceScope: displayScope, sessionID: sessionID,
+                       runID: runID, revision: generation)
+    }
+
+    func accepts(_ context: ChatRunContext) -> Bool {
+        context.matches(instanceScope: displayScope, sessionID: sessionID,
+                        runID: streamID, revision: revision, suspended: suspended)
+    }
     /// 运行中发送的语义；默认 steer，与 WebUI 的 `default_message_mode` 一致。
     @Published var sendMode: ChatSendMode = .steer
     /// Complete turns waiting behind the active response. A bounded list keeps
@@ -589,6 +602,8 @@ final class NativeChatModel: ObservableObject {
             localPersistenceIssue = LocalDataIssue(
                 kind: .runRecovery, failure: failure, observedAt: Date())
         }
+        queueUserPaused = draftStore?.loadQueueUserPaused() ?? false
+        updateQueuePause()
         let loadedQueue = draftStore?.loadQueuedResult()
         if let data = loadedQueue?.value {
             queuedTurns = ChatQueueOrdering.prioritize(ChatSendQueueCodec.decode(data) ?? [])

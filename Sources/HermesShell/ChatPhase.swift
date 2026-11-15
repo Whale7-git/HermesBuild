@@ -161,3 +161,47 @@ extension ChatPhase {
         }
     }
 }
+
+
+// MARK: - Single-run identity and completion policy (build179)
+
+/// Immutable scope captured before any awaited network operation. A callback
+/// cannot authorize a new send merely because its session still has a matching
+/// title or its HTTP request returned successfully.
+struct ChatRunContext: Equatable, Sendable {
+    let instanceScope: String
+    let sessionID: String
+    let runID: String
+    let revision: UInt
+
+    func matches(instanceScope: String, sessionID: String, runID: String?,
+                 revision: UInt, suspended: Bool) -> Bool {
+        !suspended && !self.runID.isEmpty
+            && self.instanceScope == instanceScope && self.sessionID == sessionID
+            && self.runID == runID && self.revision == revision
+    }
+}
+
+/// Every terminal handler and queued dispatch uses this one policy. STOP has
+/// priority over an in-flight SSE terminal, and a verified reply cannot reset
+/// a separately persisted user pause or a recovery safety pause.
+enum ChatRuntimeCoordinator {
+    enum TerminalAction: Equatable {
+        case verifyStop
+        case keepLocked
+        case finishWithoutDispatch
+        case finishAndDispatch
+    }
+
+    static func terminalAction(stopPending: Bool, sameRun: Bool,
+                               terminalFrame: Bool, finalHistoryConfirmed: Bool,
+                               successful: Bool, uncertain: Bool, userPaused: Bool,
+                               recoveryPaused: Bool) -> TerminalAction {
+        if stopPending { return .verifyStop }
+        guard sameRun, terminalFrame, finalHistoryConfirmed, !uncertain else {
+            return .keepLocked
+        }
+        return !successful || userPaused || recoveryPaused
+            ? .finishWithoutDispatch : .finishAndDispatch
+    }
+}
