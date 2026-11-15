@@ -969,6 +969,47 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
         precondition(!raceModel.sessionActionBusy && raceModel.sessionActionError == nil,"rejected write-back leaves no busy flag and no leaked error")
         HermesAPI.holdRenames = false
         HermesAPI.heldLists = []
+        // build182: creation is not a POST receipt. Verify the independent
+        // one-shot handoff, persisted draft and attachment-only navigation.
+        let homeApp = AppState(credentials: credentials)
+        let homeInstance = homeApp.historyInstanceID
+        let homeAccount = homeApp.historyAccountScope
+        let created = await homeApp.createSessionForHomeTurn("first safe message", model: nil)
+        precondition(created && homeApp.currentSessionID != nil,
+                     "home send first creates a session, not a chat POST")
+        let homeSID = homeApp.currentSessionID!
+        precondition(homeApp.sessions.contains(where: { $0.sessionId == homeSID }),
+                     "created Session is visible in drawer without an extra GET")
+        let persisted = ChatDraftStore(instanceID: homeInstance, accountScope: homeAccount,
+                                       sessionID: homeSID, fileStore: LocalDataFileStore(
+                instanceID: homeInstance, accountScope: homeAccount, sessionID: homeSID))
+        precondition(persisted.load() == "first safe message",
+                     "native Session draft must be persisted before handoff")
+        precondition(homeApp.consumeHomeTurn(for: homeSID) == "first safe message",
+                     "only the matching Session may claim first-turn text")
+        precondition(homeApp.consumeHomeTurn(for: homeSID) == nil,
+                     "chat page remount never submits the same first turn twice")
+        homeApp.closeSession()
+        let staged = await homeApp.createSessionForHomeTurn("text with image", model: nil,
+                                                            sendImmediately: false)
+        precondition(staged && homeApp.currentSessionID != nil,
+                     "home Plus creates attachment-capable Session")
+        let attachmentSID = homeApp.currentSessionID!
+        precondition(homeApp.consumeHomeTurn(for: attachmentSID) == nil,
+                     "attachment staging never issues a first-turn POST")
+        precondition(homeApp.consumeHomeAttachmentRequest(for: attachmentSID)
+                     && !homeApp.consumeHomeAttachmentRequest(for: attachmentSID),
+                     "native attachment chooser request is also consumed once")
+        precondition(ChatDraftStore(instanceID: homeInstance, accountScope: homeAccount,
+                                   sessionID: attachmentSID, fileStore: LocalDataFileStore(
+                    instanceID: homeInstance, accountScope: homeAccount,
+                    sessionID: attachmentSID)).load() == "text with image",
+                     "attachment transfer preserves typed text for manual send")
+        homeApp.closeSession()
+        precondition(!homeApp.consumeHomeAttachmentRequest(for: attachmentSID),
+                     "closing Session cancels any staged attachment chooser")
+        print("HOME_DELIVERY_PASS one-shot, draft, drawer and attachment staging")
+
         try await refreshTests()
         try await instanceDeletionCacheTests()
         try await sessionRefreshPolicyTests()
