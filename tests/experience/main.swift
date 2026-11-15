@@ -120,6 +120,6 @@ expect(ChatBackgroundEnvelope.userBody(ChatMessage(
        "partial OOB marker is ordinary user content")
 expect(ChatBackgroundEnvelope.userBody(ChatMessage(
     id: "server", role: "user", content: "hello", sourceIndex: 14,
-    displayKind: "internal_notification")) == "hello",
-       "explicit server label keeps a backend message collapsed")
+    displayKind: "internal_notification")) == nil,
+       "a mislabeled ordinary user message must stay a user bubble")
 print("EXPERIENCE_PASS \(count) assertions")
