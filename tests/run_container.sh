@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run offline INSIDE ios-build. No SSH, credentials, API calls or production writes.
+# Run the complete offline suite in CI or a compatible local Swift environment.
+# No SSH, credentials, API calls or production writes.
 set -euo pipefail
 ulimit -c 0
 cd "$(dirname "$0")/.."
@@ -24,7 +25,7 @@ S=Sources/HermesShell
 JOBS=${HERMES_TEST_JOBS:-}
 if [[ -z $JOBS ]]; then
   JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
-  # Cap at 32. Measured on the 16-core / 62 GB build host, same tree, only this
+  # Cap at 32. Measured on a 16-core / 62 GB CI runner, same tree, only this
   # value varying:
   #   JOBS=8   -> ~150s total, 49s compiling, load 2.7
   #   JOBS=16  -> ~89s  total, 49s compiling, load 4.8
@@ -169,7 +170,7 @@ bash tests/gatewaybackend/run.sh
 python3 tests/sourcegate/main.py
 # MANUAL ONLY (not run here): tests/integration/main.swift is the only real-HTTPS probe.
 # It needs a live WebUI base URL, a synthetic session id and a cookie on stdin, and it
-# performs GETs against a real gateway — so it cannot run offline in ios-build.
+# performs GETs against a real gateway, so it cannot run in the offline suite.
 # Smoke it by hand against a synthetic conversation:
 #   swiftc Sources/HermesShell/{AttachmentHistory,ChatCore,ChatRequests}.swift \
 #          tests/integration/main.swift -o /tmp/live-probe

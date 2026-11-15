@@ -49,9 +49,47 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("xcodegen", text)
         self.assertNotIn("xcodebuild", text)
 
-    def test_legacy_workflow_is_manual_only(self):
-        path = ROOT / ".github/workflows/hermesshell-adaptive-release.yml"
-        self.assertEqual(triggers(path.read_text()), {"workflow_dispatch"})
+    def test_removed_legacy_build_entries_stay_absent(self):
+        removed = (
+            ".github/workflows/hermesshell-adaptive-release.yml",
+            "scripts/build-on-9.ps1",
+            "scripts/release-local.sh",
+            "scripts/github-build-ipa.sh",
+            "scripts/publish-release.py",
+            "scripts/repro-check.sh",
+            "scripts/github-publish-release.sh",
+            "ci/ci-build.sh",
+            "ci/ci-verify.sh",
+            "ci/publish-direct-release.sh",
+            "tests/run_native.sh",
+            "tests/core/run.sh",
+            "tests/discovery/run.sh",
+            "tests/attachments/run.sh",
+            "xtool.yml",
+        )
+        for relative in removed:
+            with self.subTest(relative=relative):
+                self.assertFalse((ROOT / relative).exists())
+
+    def test_guidance_names_only_current_release_paths(self):
+        guidance = "\n".join(
+            (ROOT / path).read_text(encoding="utf-8")
+            for path in ("README.md", "AGENTS.md", "docs/github-collaboration.md")
+        )
+        for forbidden in (
+            "HERMES_TEST_TARGET",
+            "HERMES_BUILD_TARGET",
+            "HERMES_BUILD_PROJECTS",
+            "scripts/release-local.sh",
+            "scripts/build-on-9.ps1",
+            "scripts/github-build-ipa.sh",
+            "hermesshell-adaptive-release.yml",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, guidance)
+        self.assertIn("hermesshell-single-build.yml", guidance)
+        self.assertIn("hermesshell-single-promote.yml", guidance)
+        self.assertIn("without compiling again", guidance)
 
 
 if __name__ == "__main__":

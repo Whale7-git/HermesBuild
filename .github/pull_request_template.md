@@ -15,6 +15,16 @@ Describe the resulting behavior and the narrow scope of this pull request.
 
 Commands and evidence:
 
+- PR head SHA:
+- PR tree SHA:
+- Producer run ID and attempt:
+- Candidate Artifact ID, name, and digest:
+- Promotion run:
+- Release URL:
+
+Non-release maintenance PRs may mark the candidate, promotion, and Release
+fields as N/A. Release PRs must fill them after the matching run completes.
+
 ## Risk and rollback
 
 Call out layout, scrolling, streaming, attachment, selection, storage, or

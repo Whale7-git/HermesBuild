@@ -1,6 +1,6 @@
 # build160 · Chat viewport performance and behavior acceptance
 
-This is a repeatable **measurement plan**, not a claim of device testing. The developer may run it after the independent build pipeline is restored. Keep build159 and build160 IPA builds, device model, display setting, test data and network conditions identical.
+This is a repeatable **measurement plan**, not a claim of device testing. The developer may run it on IPAs produced by the current candidate workflow. Keep the compared builds, device model, display setting, test data and network conditions identical.
 
 ## Captures
 

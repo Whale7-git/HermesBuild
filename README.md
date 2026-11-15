@@ -1,7 +1,5 @@
 # Hermes 2.28.0 / build174
 
-本版用于验证 main 新版本合入后的完整自动发布链；应用功能与 build166 保持一致。
-
 HermesShell 是 Hermes 的原生 iOS 客户端，支持多实例、流式聊天、历史会话、附件和本地草稿恢复。
 
 ## 连接自己的服务
@@ -12,28 +10,32 @@ HermesShell 是 Hermes 的原生 iOS 客户端，支持多实例、流式聊天�
 
 ## 源码与验证
 
-本仓库是清理后的公开源码快照，应用基于 2.26.1 / build167。未导入上游私有仓库的 Git 历史、内部交接文档、构建输出或测试日志。
+本仓库是清理后的公开源码快照。未导入上游私有仓库的 Git 历史、内部交接文档、构建输出或测试日志。
 
 ```sh
+python3 tests/gen_release_scope.py
+python3 tests/gen_release_scope.py
 python3 tests/verify_source.py
 python3 tests/check_swiftui_modifiers.py
 python3 tests/test_swiftui_modifiers.py
+python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
 bash tests/run_container.sh
 ```
 
-离线测试需要兼容项目的 Swift 工具链和 Python 3；GitHub Actions 使用 runner 预装的 Swift，记录实际版本并以完整回归结果验证兼容性。远程辅助入口需要自行设置 `HERMES_TEST_TARGET=user@build-host`；本地执行离线套件不需要 SSH、网关、密钥或真实会话。
+离线测试需要兼容项目的 Swift 工具链和 Python 3；GitHub Actions 使用 runner 预装的 Swift，记录实际版本并以完整回归结果验证兼容性。完整离线套件不需要 SSH、网关、密钥或真实会话。
 
 ## 构建
 
-GitHub Actions 在 pull request 和 main 更新时并行执行源码检查与完整 Swift 离线回归。
+正式发布只使用以下两个 workflow：
 
-当 `release.json` 的 version/build 相比推送前的 main 发生变化，且 build 递增、版本不回退时，两项检查通过后自动启动 `macos-26` runner 的默认 Xcode（实际 macOS、Xcode、Swift 与 iPhoneOS SDK 版本写入构建来源信息），使用 Incremental `-O` 编译一次 unsigned iPhoneOS arm64 IPA。工作流在同一 runner 校验包与来源，直接上传草稿 Release，下载核对四项资产的 SHA256 后转为正式 Release，并再次核对。没有临时 Actions Artifact，也不依赖私有仓库或自托管机器。
+1. `.github/workflows/hermesshell-single-build.yml` 在 pull request 上运行源码检查、完整 Swift 离线回归，并在 `macos-26` 编译一次 unsigned iPhoneOS arm64 IPA。候选包和来源信息作为不可变 Actions Artifact 保存 14 天。
+2. `.github/workflows/hermesshell-single-promote.yml` 在版本变化合入 main 后运行检查，选择已合入 PR 的同一个候选 Artifact，核对 tree、digest、manifest 与远端字节，然后发布；该流程不重新编译。
 
-普通维护提交只检查，不编译或发版。`workflow_dispatch` 保留仅编译验证的入口，不创建 Release、不保存 Artifact；该模式的包随临时 runner 清理。正式版本使用 `release-<version>-build<build>` 标签；已有正式 Release / tag 不覆盖，失败留下的草稿只允许同一个工作流运行恢复上传，且已上传资产必须逐字节一致。同一 Job 对瞬时上传/API 故障最多重试三次；整个 Job 重跑后若产物改变，将拒绝混用草稿资产。Latest 由 GitHub 根据来源提交日期和版本自动选择，避免旧版本后完成时强制抢占。
+普通维护提交只检查，不编译或发版。手动运行 single-build 会编译并保留候选 Artifact，但不会发布。正式版本使用 `release-<version>-build<build>` 标签；已发布 tag 和资产不可覆盖。候选 Artifact 包含 IPA、`build-info.json`、`validation.json`、`candidate-manifest.json` 和 `SHA256SUMS.txt`；正式 Release 发布前四项，`SHA256SUMS.txt` 留在候选 Artifact 内用于校验。
+
+PR 的 `source`、`offline`、`candidate` 都必须在将要合入的精确 head 上通过。main 的 tree 必须与候选 manifest 中的 tree 一致。候选丢失、过期、tree 不符或发布失败时，该 build 已消耗，应递增 build 后重新走 PR；不得用本地或另一台构建机的包替代。
 
 可在本仓库 Actions Secret 配置 `BARK_URL` 以接收发布成功链接或失败运行链接；缺失或通知失败会明确提示，不改变实际发布结果。设备安装仍需要自行签名。
-
-也可在安装 Xcode、XcodeGen 的 macOS 上运行 `scripts/github-build-ipa.sh`，或在自行配置的 xtool 环境运行 `scripts/release-local.sh`。Windows 远程构建脚本需要本地设置 `HERMES_BUILD_TARGET` 和 `HERMES_BUILD_PROJECTS`。
 
 ## 第三方代码
 

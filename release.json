@@ -1,5 +1,5 @@
 {
-  "_note": "Single source of truth for the release number (F-41). Read by tests/verify_source.py, scripts/release-local.sh and scripts/build-on-9.ps1. Resources/Info.plist is a static file and cannot read this: after changing version/build here, also update CFBundleShortVersionString / CFBundleVersion there, or the source gate fails with 'Info.plist release mismatch'.",
+  "_note": "Single source of truth for the release identity. Resources/Info.plist must be synchronized manually. README.md's title and the release scope derive from this file.",
   "version": "2.28.0",
   "build": "174"
 }
