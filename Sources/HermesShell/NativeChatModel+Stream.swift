@@ -252,6 +252,7 @@ extension NativeChatModel {
 
     func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
+        latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
         var windowTrimmed = false
@@ -359,6 +360,85 @@ extension NativeChatModel {
         confirmedHistory = record
         historyStore?.schedule(record)
         flush()
+    }
+
+    /// Manual, bounded, read-only recovery for a long agent turn. The normal
+    /// history GET is only 60 raw rows, including many invisible tool records;
+    /// a valid accepted receipt may therefore precede the visible tail.
+    /// Never unlock on gaps, a changed session/run, or partial evidence.
+    func reconcileLongAcceptedRun() async -> Bool {
+        guard let receipt = activeTurnRecovery,
+              let boundary = receipt.historyEnd,
+              let latest = latestRecoverySnapshot,
+              latest.sessionID == sessionID, latest.activeStreamID == nil,
+              latest.olderOffset > boundary, !latest.readOnly,
+              !submitting, !loading, !syncing, !running, !reconciling,
+              !suspended else { return false }
+        let generation = revision
+        reconciling = true
+        defer { reconciling = false }
+        var pages = [latest]
+        // Hard request budget: at most 63 older GETs + one final head check.
+        // Never modify the source window or download the entire conversation.
+        for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
+            guard generation == revision, activeTurnRecovery == receipt,
+                  !Task.isCancelled, !suspended else { return false }
+            let cursor = pages[pages.count - 1].olderOffset
+            do {
+                let older = try await api.history(sessionID: sessionID, before: cursor)
+                guard generation == revision, activeTurnRecovery == receipt,
+                      !Task.isCancelled, !suspended else { return false }
+                guard older.sessionID == sessionID,
+                      older.activeStreamID == nil, !older.readOnly,
+                      older.rawMessageEndIndex == cursor,
+                      older.olderOffset < cursor else {
+                    notice = "历史分页发生变化或不连续；未解除发送锁定，请稍后核对。"
+                    return false
+                }
+                pages.append(older)
+            } catch {
+                guard generation == revision, !Task.isCancelled else { return false }
+                if handleAuthenticationFailure(error) { return false }
+                self.error = error.localizedDescription
+                notice = "回溯历史失败；发送仍保持锁定，未重新提交消息。"
+                return false
+            }
+        }
+        guard pages.last?.olderOffset ?? Int.max <= boundary else {
+            notice = "本轮历史超过本次核对上限，无法安全确认；未重新发送消息。"
+            return false
+        }
+        guard receipt.confirmsCompletion(in: pages) else {
+            notice = "已回溯本轮历史，但缺少唯一的原始提问与后续回复证据；发送仍保持锁定。"
+            return false
+        }
+        // Re-check the live tail after pagination: another client may have
+        // appended rows or restarted execution while we were reading pages.
+        do {
+            let current = try await api.history(sessionID: sessionID, before: nil)
+            guard generation == revision, activeTurnRecovery == receipt,
+                  !Task.isCancelled, !suspended else { return false }
+            guard current.sessionID == sessionID, current.activeStreamID == nil,
+                  !current.readOnly,
+                  current.rawMessageEndIndex == latest.rawMessageEndIndex,
+                  current.messages.last?.id == latest.messages.last?.id else {
+                notice = "核对期间服务端历史或运行状态发生变化，请重新核对；未解除发送锁定。"
+                return false
+            }
+        } catch {
+            guard generation == revision, !Task.isCancelled else { return false }
+            if handleAuthenticationFailure(error) { return false }
+            self.error = error.localizedDescription
+            notice = "核对最终状态失败；发送仍保持锁定。"
+            return false
+        }
+        guard clearAcceptedTurnRecovery() else { return false }
+        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
+        if !uncertain { notice = nil }
+        error = nil
+        RuntimeLogRecorder.shared.record(.info, "recovery",
+            "long-run history verified pages=\(pages.count) without POST")
+        return !uncertain
     }
 
     /// A missing active_stream_id is not terminal evidence. Probe the exact
