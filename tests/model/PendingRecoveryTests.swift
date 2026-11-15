@@ -394,7 +394,7 @@ extension ModelTests {
             service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
             if scenario == "background-notice" {
                 service.rows.append(["id": "background", "role": "user",
-                                     "content": "[OUT-OF-BAND USER MESSAGE — notification]\\nStatus update\\n[/OUT-OF-BAND USER MESSAGE]",
+                                     "content": "[OUT-OF-BAND USER MESSAGE — notification]\nStatus update\n[/OUT-OF-BAND USER MESSAGE]",
                                      "display_kind": "internal_notification"])
             }
             service.appendHeadOnOlderPage = scenario == "changed-tail"
