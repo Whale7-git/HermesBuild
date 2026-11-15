@@ -51,6 +51,18 @@ class FakeGitHub:
 
 
 class PublishCandidateTests(unittest.TestCase):
+    def test_selected_run_id_is_compared_as_manifest_string(self):
+        selected = dict(SELECTED, run_id=43697060376)
+        candidate = dict(
+            CANDIDATE,
+            version="2.28.0",
+            build="170",
+            producer_run_id="43697060376",
+            producer_run_attempt="1",
+            producer_event="pull_request",
+        )
+        self.assertEqual(candidate["producer_run_id"], str(selected["run_id"]))
+
     def test_matching_published_release_is_idempotent(self):
         release = {
             "id": 12,
