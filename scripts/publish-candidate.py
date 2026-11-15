@@ -220,7 +220,8 @@ def main() -> int:
     result = VERIFY.verify_candidate(args.candidate_dir, selected["main_tree"])
     require((result["version"], result["build"]) == (selected["version"], selected["build"]),
             "candidate release identity mismatch")
-    require(result["producer_run_id"] == selected["run_id"], "candidate producer run mismatch")
+    require(result["producer_run_id"] == str(selected["run_id"]),
+            "candidate producer run mismatch")
     require(result["producer_run_attempt"] == str(selected["run_attempt"]),
             "candidate producer run attempt mismatch")
     require(result["producer_event"] == "pull_request",

@@ -1,4 +1,4 @@
-# Hermes 2.28.0 / build170
+# Hermes 2.28.0 / build171
 
 本版用于验证 main 新版本合入后的完整自动发布链；应用功能与 build166 保持一致。
 
