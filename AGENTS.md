@@ -44,8 +44,8 @@ separate.
 - Source-gate regression: `python tests/sourcegate/main.py`
 - Core tests: included in `bash tests/run_container.sh`
 - Native tests: `bash tests/run_container.sh` (Swift 6.2); optional remote wrapper `tests/run_native.sh` requires local SSH configuration
-- iPhoneOS build and IPA: use the manual public workflow or a locally configured
-  Xcode / xtool environment. An IPA build does not create a Release. Do not claim device behavior was verified without a
+- iPhoneOS build and IPA: new version/build pushes to public main automatically build and publish after checks;
+  workflow_dispatch only builds/verifies. Use a locally configured Xcode / xtool environment for local work. Do not claim device behavior was verified without a
   real-device result.
 
 ## Pull requests

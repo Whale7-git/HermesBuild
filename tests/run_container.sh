@@ -167,6 +167,7 @@ bash tests/attachments/run_local.sh
 bash tests/selectionactivity/run.sh
 bash tests/gatewaybackend/run.sh
 python3 tests/sourcegate/main.py
+python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
 # MANUAL ONLY (not run here): tests/integration/main.swift is the only real-HTTPS probe.
 # It needs a live WebUI base URL, a synthetic session id and a cookie on stdin, and it
 # performs GETs against a real gateway — so it cannot run offline in ios-build.

@@ -19,7 +19,12 @@ build="$(python3 -c 'import json; print(json.load(open("release.json"))["build"]
 name="Hermes-${version}-build${build}-unsigned"
 sha="$(git rev-parse HEAD)"
 mkdir -p release
-python3 tests/verify_source.py
+if [[ -n "${HERMES_SOURCE_VERIFIED_SHA:-}" ]]; then
+  [[ "$HERMES_SOURCE_VERIFIED_SHA" == "$sha" ]] || { echo 'Source verification SHA mismatch' >&2; exit 1; }
+  echo "SOURCE_GATE_ALREADY_VERIFIED_SHA=$sha"
+else
+  python3 tests/verify_source.py
+fi
 
 # A SwiftPM library build is not a device .app. Generate an app target from the
 # exact existing iOS sources; do not replace HermesShellApp or copy sample code.

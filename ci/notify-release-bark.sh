@@ -7,11 +7,11 @@ if [[ -z "${BARK_URL:-}" ]]; then
 fi
 status="${1:-failure}"
 version="unknown"; build="unknown"
-if [[ -f src/release.json ]]; then
+if [[ -f release.json ]]; then
   readarray -t fields < <(python3 - <<'PY'
 import json
 try:
-    data=json.load(open("src/release.json",encoding="utf-8"))
+    data=json.load(open("release.json",encoding="utf-8"))
     print(data["version"]);print(data["build"])
 except (OSError,ValueError,KeyError,TypeError):
     print("unknown");print("unknown")
@@ -25,7 +25,7 @@ run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions
 if [[ "$status" == success ]]; then
   title="HermesShell 正式发布成功"
   body="v${version} build${build} IPA 已发布"
-  target="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/releases/tag/${tag}"
+  target="${HERMES_RELEASE_URL:?Verified release URL is required for success notification}"
 else
   title="HermesShell 构建或发布失败"
   body="v${version} build${build}，请查看 Actions 运行日志"
@@ -33,7 +33,7 @@ else
 fi
 response="$(mktemp)"
 trap 'rm -f "$response"' EXIT
-code="$(curl --silent --show-error --max-time 20 --retry 1 --request POST \
+code="$(curl --silent --max-time 20 --retry 1 --request POST \
   --data-urlencode "title=$title" \
   --data-urlencode "body=$body" \
   --data-urlencode "url=$target" \
