@@ -529,6 +529,11 @@ extension ChatScrollController {
         beginAnimatedJump()
         navigationTarget = nil
         navigationDetached = false
+        // Tapping the status bar is a deliberate reading gesture, just like
+        // dragging the transcript. Do not let the still-active streamed turn
+        // recapture the scroll offset on the next Markdown/tool measurement.
+        turnReading.userBeganReading()
+        policy.update(distanceFromBottom: ChatScrollState.detachThreshold + 1)
         current?.onUserScroll()
         hasInteracted = true
         markInteractionDirty()

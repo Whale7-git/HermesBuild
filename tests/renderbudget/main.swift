@@ -33,6 +33,13 @@ expect(Budget.victims(in: hosts, keeping: Set(hosts.map(\.id)), limits: .init(co
        "pressure never tears out protected text or a menu")
 expect(Budget.victims(in: [], keeping: [], limits: .init(count: 0, cost: 0)).isEmpty,
        "empty cache is safe under memory pressure")
+let underBudgetHosts = (0..<180).map { entry("idle-\($0)", 3, UInt64($0)) }
+expect(Budget.victims(in: underBudgetHosts, keeping: [],
+                      limits: .init(count: 200, cost: 600)).isEmpty,
+       "a long but under-budget viewport does not evict mounted text")
+expect(Budget.victims(in: underBudgetHosts, keeping: ["idle-0"],
+                      limits: .init(count: 179, cost: 600)) == ["idle-1"],
+       "crossing the host cap evicts the oldest unprotected row")
 
 // Visit 10,000 row identities, reverse direction, and refresh recency. Revisit
 // admission must prefer the local viewport and the working set stays bounded.

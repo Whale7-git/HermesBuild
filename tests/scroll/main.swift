@@ -329,6 +329,37 @@ for i in 0..<150 {
            "manual reading ignores stream growth, even after many tool updates")
 }
 
+// build180: status-bar-to-top is a manual reading action, not a new
+// streamed-growth focus command. Simulate 180 changing tool heights after it.
+var statusBarReading = ChatTurnReadingState()
+statusBarReading.focus(rowID: "m-user", rowTop: 300, contentBottom: 420, viewport: 600)
+statusBarReading.userBeganReading()
+for i in 0..<180 {
+    expect(statusBarReading.target(contentBottom: 800 + Double(i * 20),
+                                   rowTop: 300, viewport: 600) == nil,
+           "status-bar reading never gets pulled back to the streamed answer")
+}
+expect(statusBarReading.phase == .manualReading,
+       "status-bar navigation transfers offset ownership to the reader")
+
+// A sub-pixel keyboard/safe-area width wobble is a single TextKit layout.
+// A true pixel/rotation change must still trigger fresh measurement.
+expect(ChatDraftWidthPolicy.canonical(301.01, scale: 3)
+       == ChatDraftWidthPolicy.canonical(301.10, scale: 3),
+       "subpixel editor proposals use the same intrinsic height cache")
+expect(ChatDraftWidthPolicy.canonical(301.1, scale: 3)
+       != ChatDraftWidthPolicy.canonical(301.8, scale: 3),
+       "real width change recomputes wrapping")
+expect(ChatDraftWidthPolicy.canonical(.nan, scale: 3) == 0
+       && ChatDraftWidthPolicy.canonical(301, scale: 0) == 0,
+       "invalid input geometry never propagates nonfinite sizes")
+expect(ChatDrawerRailLayout.readableChipWidth(for: "1 号") == 76,
+       "short numbered instances retain a compact 44pt-touch chip")
+expect(ChatDrawerRailLayout.readableChipWidth(for: "My long Hermes server") > 108,
+       "descriptive host names are readable with horizontal overflow")
+expect(ChatDrawerRailLayout.readableChipWidth(for: String(repeating: "深圳", count: 30)) == 180,
+       "very long instance titles stay bounded and horizontally scroll")
+
 // build156: rail width derives from actual view width, not the 340pt max.
 let wideChip = ChatDrawerRailLayout.chipWidth(availableWidth: 340, instanceCount: 3)
 expect(wideChip > 90 && ChatDrawerRailLayout.totalWidth(

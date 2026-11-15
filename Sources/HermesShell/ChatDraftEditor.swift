@@ -87,9 +87,14 @@ struct ChatDraftEditor: UIViewRepresentable {
         init(_ parent: ChatDraftEditor) { self.parent = parent }
 
         func synchronizeFocus(_ view: ChatDraftTextView) {
+            // Most SwiftUI composer updates do not change keyboard intent.
+            // Avoid queueing a main-thread focus job for every keystroke and
+            // text-layout callback when UIKit is already in the requested state.
+            guard view.window != nil else { return }
+            let wantsFocus = parent.focused && parent.editable
+            guard view.isFirstResponder != wantsFocus, !focusScheduled else { return }
             // Becoming first responder can synchronously invoke UIKit delegates.
             // Hop out of SwiftUI's update pass and re-check the latest intention.
-            guard !focusScheduled else { return }
             focusScheduled = true
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self else { return }
@@ -282,31 +287,38 @@ final class ChatDraftTextView: UITextView {
         placeholder.frame = CGRect(x: 0, y: 0, width: bounds.width,
                                    height: ceil(font?.lineHeight ?? 22))
         placeholder.isHidden = !(text ?? "").isEmpty
-        if previousWidth != bounds.width {
-            previousWidth = bounds.width
+        let pixelWidth = CGFloat(ChatDraftWidthPolicy.canonical(
+            Double(bounds.width), scale: Double(traitCollection.displayScale)))
+        if previousWidth != pixelWidth {
+            previousWidth = pixelWidth
             invalidateIntrinsicContentSize()
         }
     }
 
     func fittingHeight(width: CGFloat) -> CGFloat {
         let line = ceil(font?.lineHeight ?? 22)
+        // Match UIKit/SwiftUI proposals at device-pixel precision, including
+        // the layoutSubviews width-change check. Never round upward by more
+        // than half a pixel when asking TextKit to wrap the same document.
+        let measuredWidth = CGFloat(ChatDraftWidthPolicy.canonical(
+            Double(width), scale: Double(traitCollection.displayScale)))
         // An unresolved intrinsic/proposed width is not usable for text
         // wrapping. Returning a one-line provisional height avoids the
         // early 1pt-width "100 lines" measurement and feedback cycle.
-        guard width.isFinite, width >= 44 else { return line }
+        guard measuredWidth >= 44 else { return line }
         let value = text ?? ""
         // Pure read: safe to call from layoutSubviews / sizeThatFits.
         let category = traitCollection.preferredContentSizeCategory
-        if measuredHeight > 0, measuredWidth == width, measuredText == value,
+        if measuredHeight > 0, self.measuredWidth == measuredWidth, measuredText == value,
            measuredFont == font, measuredCategory == category,
            let cached = measuredMetrics {
-            syncMetrics(cached, width: width)
+            syncMetrics(cached, width: measuredWidth)
             return measuredHeight
         }
         // Empty UITextView may report an old multiline height after a
         // UIKit/SwiftUI reuse pass. Ignore that stale size for blank drafts.
         let natural: CGFloat = value.isEmpty ? line :
-            super.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            super.sizeThatFits(CGSize(width: measuredWidth, height: .greatestFiniteMagnitude)).height
         // 6 行在 AX 字号下会吞掉整屏，按内容尺寸类别收紧可见行数。
         // 行数必须先取整到整数，再由它反推高度。
         //
@@ -325,12 +337,12 @@ final class ChatDraftTextView: UITextView {
         let metrics = ChatDraftMetrics(visibleLines: lines,
                                        isScrollable: natural > visible + 0.5)
         measuredHeight = height
-        measuredWidth = width
+        self.measuredWidth = measuredWidth
         measuredText = value
         measuredFont = font
         measuredCategory = category
         measuredMetrics = metrics
-        syncMetrics(metrics, width: width)
+        syncMetrics(metrics, width: measuredWidth)
         return height
     }
 
