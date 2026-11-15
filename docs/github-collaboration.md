@@ -7,13 +7,14 @@ outputs or local machine configuration.
 
 The release path has two workflows:
 
-- `.github/workflows/hermesshell-single-build.yml` runs source checks and the
-  full Swift offline suite, compiles one candidate on `macos-26`, validates the
-  IPA, and uploads the candidate Artifact for 14 days.
+- `.github/workflows/hermesshell-single-build.yml` runs source checks, the
+  full Swift offline suite, and the single `macos-26` candidate build in
+  parallel. The build validates the IPA and uploads it for 14 days. An upload
+  from an unsuccessful run is not eligible for promotion.
 - `.github/workflows/hermesshell-single-promote.yml` runs after a
-  version-bearing merge to `main`, reruns source and offline checks, selects the
-  exact merged-PR candidate, verifies its tree, manifest, Artifact digest, and
-  file checksums, then publishes the same bytes. It must not compile.
+  merge to `main`, checks whether the version changed, and selects the exact
+  candidate from the successful PR run. It verifies the candidate and publishes
+  the same bytes without compiling again or rerunning the PR checks.
 
 All PR checks must pass on the exact head and tree that will be merged. The
 resulting `main` tree must match the candidate manifest. The candidate Artifact
@@ -31,8 +32,7 @@ candidate.
 
 `workflow_dispatch` on the candidate workflow builds and retains a candidate
 Artifact, but never publishes. Only a version-bearing merge to `main` can start
-promotion. A maintenance merge runs source and offline checks and plans no
-release.
+promotion. A maintenance merge checks the version and plans no release.
 
 Published tags and assets are immutable. A missing, expired, mismatched, or
 invalid candidate consumes the merged build; increment the build and repeat the

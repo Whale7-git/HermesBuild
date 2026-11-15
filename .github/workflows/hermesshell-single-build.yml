@@ -44,11 +44,10 @@ jobs:
 
   candidate:
     name: Compile and upload one candidate IPA
-    needs: [source, offline]
+    # The whole run must succeed before promotion can select this artifact.
     if: >-
-      ${{ needs.source.result == 'success' && needs.offline.result == 'success' &&
-          (github.event_name == 'workflow_dispatch' ||
-          github.event.pull_request.head.repo.full_name == github.repository) }}
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:

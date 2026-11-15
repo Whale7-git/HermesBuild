@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  source:
-    name: Source and release plan
+  plan:
+    name: Check for a new release version
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -25,32 +25,11 @@ jobs:
           fetch-depth: 0
       - id: plan
         run: python3 scripts/release-plan.py
-      - run: python3 tests/verify_source.py
-      - run: |
-          python3 tests/check_swiftui_modifiers.py
-          python3 tests/test_swiftui_modifiers.py
-          python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
-
-  offline:
-    name: Swift offline regression
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - run: |
-          swift --version
-          bash tests/run_container.sh
-        env:
-          HERMES_TEST_JOBS: "4"
 
   promote:
     name: Download candidate and publish without recompiling
-    if: >-
-      ${{ needs.source.result == 'success' && needs.offline.result == 'success' &&
-          needs.source.outputs.release == 'true' }}
-    needs: [source, offline]
+    if: ${{ needs.plan.outputs.release == 'true' }}
+    needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -103,10 +82,9 @@ jobs:
   notify:
     name: Bark promotion result
     if: >-
-      ${{ always() && needs.source.outputs.release == 'true' &&
-          (needs.source.result == 'failure' || needs.offline.result == 'failure' ||
-           needs.promote.result == 'success' || needs.promote.result == 'failure') }}
-    needs: [source, offline, promote]
+      ${{ always() && needs.plan.outputs.release == 'true' &&
+          (needs.promote.result == 'success' || needs.promote.result == 'failure') }}
+    needs: [plan, promote]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

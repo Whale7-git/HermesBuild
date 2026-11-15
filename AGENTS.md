@@ -45,9 +45,10 @@ separate.
 - Core tests: included in `bash tests/run_container.sh`
 - Native tests: `bash tests/run_container.sh` (uses the runner’s preinstalled Swift in CI; its version is logged)
 - Release automation: `python -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v`
-- iPhoneOS candidate: the same-repository PR workflow compiles once and retains an
-  immutable candidate Artifact. Main promotion downloads and verifies that exact
-  Artifact without compiling again. `workflow_dispatch` on the candidate workflow
+- iPhoneOS candidate: the same-repository PR workflow runs all three jobs in
+  parallel, compiles once, and retains an immutable candidate Artifact. Main
+  promotion requires the successful PR run and verifies that exact Artifact
+  without compiling again or rerunning PR checks. `workflow_dispatch` on the candidate workflow
   builds and retains a candidate but never publishes.
 - Candidate diagnostics are a separate 7-day Artifact containing the captured
   toolchain, redacted build logs, and `build-report.json`. They do not alter the
