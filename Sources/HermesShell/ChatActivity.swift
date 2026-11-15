@@ -50,3 +50,27 @@ enum ChatActivity: Equatable {
         })
     }
 }
+
+
+/// A warning action and its label share one policy. An unresolved run takes
+/// precedence over a degraded recovery record without hiding real I/O errors.
+enum ChatNoticeAction: Equatable {
+    case details, reconcilePending, verifyStatus, retry
+
+    static func choose(hasPendingSend: Bool, uncertain: Bool,
+                       persistenceIssue: Bool, recoveryDegraded: Bool) -> ChatNoticeAction {
+        if persistenceIssue { return .details }
+        if hasPendingSend { return .reconcilePending }
+        if uncertain { return .verifyStatus }
+        if recoveryDegraded { return .details }
+        return .retry
+    }
+
+    var title: String {
+        switch self {
+        case .details: return "详情"
+        case .reconcilePending, .verifyStatus: return "核对状态"
+        case .retry: return "重试"
+        }
+    }
+}
