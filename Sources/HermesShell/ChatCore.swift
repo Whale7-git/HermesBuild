@@ -541,26 +541,39 @@ struct ActiveTurnRecovery: Codable, Equatable {
     let text: String
     let attachmentPaths: Set<String>
 
-    /// The missing active_stream_id alone cannot prove a run completed. Require
-    /// exactly one matching *new* user row and a following assistant answer.
-    /// Another client's interleaved turn is deliberately inconclusive.
+    /// A single GET can cover the entire turn, or only the newest 60 raw
+    /// records. Keep identical evidence rules for both cases.
     func confirmsCompletion(in snap: ChatSnapshot) -> Bool {
-        guard snap.activeStreamID == nil, !snap.readOnly,
-              let historyEnd, snap.olderOffset <= historyEnd else { return false }
-        let fresh = snap.messages.filter {
+        confirmsCompletion(in: [snap])
+    }
+
+    /// Read-only proof from a contiguous suffix, newest page first. Tool rows
+    /// occupy raw indexes but aren't rendered; never treat a gap as proof that
+    /// there was only one user submission after the accepted POST.
+    func confirmsCompletion(in pages: [ChatSnapshot]) -> Bool {
+        guard let newest = pages.first, let oldest = pages.last,
+              let historyEnd, newest.activeStreamID == nil, !newest.readOnly,
+              oldest.olderOffset <= historyEnd else { return false }
+        for index in pages.indices {
+            let page = pages[index]
+            guard page.sessionID == newest.sessionID,
+                  page.activeStreamID == nil, !page.readOnly else { return false }
+            if index > 0 {
+                let later = pages[index - 1]
+                guard page.rawMessageEndIndex == later.olderOffset,
+                      page.olderOffset < later.olderOffset else { return false }
+            }
+        }
+        let fresh = pages.reversed().flatMap { $0.messages }.filter {
             guard let index = $0.sourceIndex else { return false }
             return index >= historyEnd && !knownIDs.contains($0.id)
         }
         let newUsers = fresh.filter { $0.role == "user" }
-        guard newUsers.count == 1,
-              let sent = newUsers.first,
-              sent.content == text,
-              Set(sent.attachmentPaths) == attachmentPaths,
+        guard newUsers.count == 1, let sent = newUsers.first,
+              sent.content == text, Set(sent.attachmentPaths) == attachmentPaths,
               let sentIndex = sent.sourceIndex else { return false }
         guard let last = fresh.last, last.role == "assistant",
-              let replyIndex = last.sourceIndex, replyIndex > sentIndex else {
-            return false
-        }
+              let replyIndex = last.sourceIndex, replyIndex > sentIndex else { return false }
         return true
     }
 }
