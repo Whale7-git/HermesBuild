@@ -69,6 +69,8 @@ with open(destination, "wb") as target:
 PY
 
 derived="${HERMES_DERIVED_DATA:-$RUNNER_TEMP/hermes-main-ipa-derived}"
+xcode_log="${HERMES_XCODE_LOG:-$RUNNER_TEMP/hermes-main-ios-release.log}"
+mkdir -p "$(dirname "$xcode_log")"
 xcodebuild \
   "INFOPLIST_FILE=$ci_plist" \
   -project HermesShellCI.xcodeproj \
@@ -84,7 +86,7 @@ xcodebuild \
   COPY_PHASE_STRIP=NO \
   SWIFT_COMPILATION_MODE=incremental \
   SWIFT_OPTIMIZATION_LEVEL=-O \
-  build 2>&1 | tee "$RUNNER_TEMP/hermes-main-ios-release.log"
+  build 2>&1 | tee "$xcode_log"
 
 app="$derived/Build/Products/Release-iphoneos/HermesShell.app"
 if [[ ! -d "$app" || ! -f "$app/HermesShell" ]]; then

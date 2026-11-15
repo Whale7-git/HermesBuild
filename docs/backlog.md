@@ -1,8 +1,8 @@
 # 待办清单
 
-> **状态：2.7.1 / build136 复核。**
+> **历史复核记录：2.7.1 / build136。当前版本以 `release.json` 和 README 首行为准。**
 >
-> 上一版复核停在 1.37.0 / build117，中间隔了 9 个版本，导致本文长期与实际代码不符：
+> 该次复核停在 1.37.0 / build117，中间隔了 9 个版本，导致本文曾长期与实际代码不符：
 > 大量标着「仍未修」的条目其实早已关闭。本次逐条对着代码核实后重写。
 >
 > 现在本文只保留**真正未做的事**。已关闭的条目移到文末「关闭记录」，作为追溯，
@@ -52,7 +52,7 @@ IPA 结构审计全过。但收尾检查 IPA 内容时发现：
 
 Apple 需要 `appintentsmetadataprocessor` 在编译后扫描 `AppIntent` 声明、生成
 `Metadata.appintents`。该工具**只存在于 macOS 的 Xcode 里**。当时的 Linux +
-Swift 6.4.2 + xtool 构建链实测没有该工具；该旧构建链现已移除。
+历史 Linux 构建链实测没有该工具；该旧构建链现已移除。
 
 没有元数据，系统不知道 App 声明了任何 intent。**代码能编译，只是产物里没有那部分。**
 
@@ -76,17 +76,14 @@ SideStore 按 build 号比新旧，2.6.1 永远推不上去。
 3. **撤回类提交必须进 main，不能只停在发布分支。** 否则下一个从旧提交拉出来的版本
    会把它整个带回来，而且没人会发现——因为「删掉的东西」不会报错。
 
-### 如果将来要做
+### 当前构建路径
 
-需要 macOS 构建链，两条路：
+当前唯一候选构建入口是 `.github/workflows/hermesshell-single-build.yml`，
+由 GitHub 托管的 `macos-26` Runner 使用 Xcode 真编译 unsigned IPA；
+`.github/workflows/hermesshell-single-promote.yml` 只提升已核验的候选字节，
+不再编译。当前操作方式见 README 和 `docs/github-collaboration.md`。
 
-| 路径 | 成本 |
-|---|---|
-| GitHub Actions `macos-latest` | 私有仓库 macOS 计费 $0.062/分钟，按 Linux 的约 10 倍折算额度；Free plan 约 20 次/月。改 public 则免费但源码公开 |
-| 本地 Mac | 需一台 Mac |
-
-另需把构建从 SwiftPM 改成 `xcodebuild archive ... CODE_SIGNING_ALLOWED=NO`。
-**这条路未验证过**，不要当成「改个 workflow 就行」。
+以下内容是历史记录，不是当前执行指引，也不得用来恢复旧构建链。
 
 ### 零成本替代
 
@@ -145,7 +142,7 @@ POST 到网关的 `POST /v1/chat/completions`（实测 HTTP 200，`stream:false`
 |---|---|---|
 | 后台任务静默失效 | SideStore 用免费证书安装时改写 bundle ID，但不同步改写 `BGTaskSchedulerPermittedIdentifiers`（SideStore issue #1475 实测：`register()` 返回 true、`submit()` 不报错、handler 永不触发、无任何日志） | `BGAppRefreshTask`、`BGProcessingTask`、`BGContinuedProcessingTask`、`LongRunningIntent` 全部不可用 |
 | 通知仅前台 | 我们用的是 `trigger: nil` 立即投递，Apple 明确该方式要求 App 运行中创建 | App 被系统挂起或结束后收不到通知 |
-| **App Intents 元数据缺失** | 当时的 Linux + Swift 6.4.2 + xtool 构建链没有 Apple 的 `appintentsmetadataprocessor`（该工具只在 macOS Xcode 里）；旧构建链现已移除。实测 2.6.0 的 IPA 里 AppIntents 相关条目 **0 个** | 2.6.0 的「问 Hermes」「新建会话」两个 intent **编译通过但不出现在快捷指令里**。代码保留，等有 macOS 构建环境才生效 |
+| **App Intents 元数据历史记录** | 2.6.0 使用已移除的旧 Linux 构建链，缺少 Apple 的 `appintentsmetadataprocessor`；当前 GitHub macOS 构建已具备该工具，但本版不重新启用 App Intents | 历史 2.6.0 的 IPA 里 AppIntents 相关条目为 **0 个**；历史结论不适用于当前构建入口 |
 | Widget / Live Activity 受 App ID 限制 | 每个 extension 消耗一个 App ID，免费账号上限 10 个、7 天过期 | 加 extension 类功能前必须确认 ID 余额 |
 | APNs 不可用 | 需服务端改造 + 证书，交接文档明确禁止改服务端 | 无法做真正的远程推送 |
 
@@ -162,7 +159,7 @@ POST 到网关的 `POST /v1/chat/completions`（实测 HTTP 200，`stream:false`
 | F-76（前半） | `../`、绝对路径、NUL、`\`、`/`、百分号编码的 `..` 均已拦截，UUID 目录 + 符号链接检查有效 |
 | A-18 | 单例 `addObserver` 无反注册：进程级单例，不构成泄漏 |
 | F-69 | `AttachmentModels.swift` 已判 `CancellationError` 再决定是否 `batch.fail`，取消不再渲染成红色失败态 |
-| F-29（完全可重现构建） | 值得做但收益低于成本。旧的 `scripts/repro-check.sh` 已移除，需要时手工量化即可 |
+| F-29（完全可重现构建） | 值得做但收益低于成本。历史 `repro-check` 入口已移除；如重启该工作，应新建独立脚本和测试，不复用旧入口 |
 | F-55e | `ImageRatioStore` 保持静默，逐处加「可忽略」注释；不为纯展示引入埋点 |
 
 ---
@@ -196,7 +193,7 @@ POST 到网关的 `POST /v1/chat/completions`（实测 HTTP 200，`stream:false`
 | F-68 | 同一轮内同名工具 > 1 且结果行缺 `tool_call_id` 时**不认领**，单独成卡并标「未能关联」——宁可多一张卡也不挂错轮次 | 编译 + `tests/gatewaybackend`（6 条：歧义不认领、结果各归其位、对照组、显式 id 摘除） |
 | F-75 | `opaqueFilePath` 的 `..` 防护补 9 条断言：6 种必须拒绝（含 `%2e%2e%2f`、`..%5c..`、`//host`）、3 种必须通过（避免过度拦截） | `tests/attachments` |
 | F-64 | `THIRD_PARTY_NOTICES` 补 vendored Textual 上游 revision 与本地改动清单；`swiftui-math` 改 `upToNextMinor` 封上界（**patch 文件仍未建，见第一节**） | 编译 |
-| F-29 | 曾新增 `scripts/repro-check.sh`（手工量化工具，不入流水线）；该脚本已在构建入口清理时移除 | 历史记录 |
+| F-29 | 曾新增历史 `repro-check` 手工工具，不入流水线；该入口已在构建链清理时移除 | 历史记录，非当前指引 |
 | F-67 | 85 个 `evidence-*.txt` 移入 `outputs/evidence/`（保留目录结构），`outputs/` 已加入门禁忽略集 | 门禁 pass |
 | F-84 | 删除两个引用已移除 API 的孤儿测试目录；保留仍有效的 `tests/scroll` 与 `tests/markdownblocks` 覆盖 | 全量离线门禁 |
 | F-73 | 三个巨型文件 3948 → 1474 行：`NativeChatModel` 1345→492（+Send/+Stream/+Control）、`NativeChatView` 1321→448（+4 个）、`StableChatScrollView` 1282→534（+Geometry/+Coordinator） | 编译 + 全部离线套件 |
@@ -205,13 +202,15 @@ POST 到网关的 `POST /v1/chat/completions`（实测 HTTP 200，`stream:false`
 | F-76 残差 | 文件名做 `Cc`/`Cf` 过滤（含 U+202E）、按 UTF-8 字节截断到 255、Unicode 归一化 | `tests/attachments` |
 | A-17 | 网关 `login` 改为抛 501「使用 API Key，不支持密码登录」，不再静默成功；`sessionsForFiltering` 确认**非**协议要求（`SessionDiscoveryService` 只声明 `searchSessions`/`archivedSessions`），已删除、调用点改用 `sessions()`；`syncCookiesTo/FromWebKit` 是 `HermesBackend` 协议要求，保留并注明 | 编译 + `tests/gatewaybackend`（2 条：501、零请求） |
 | A-19 | README 历史段落加「当前版本见文首」；三份旧 manual 移入 `outputs/archive/` | 门禁 pass |
-| A-20 | 曾修正 `run_native.sh` 的远程目录并发冲突；该远程包装脚本已在构建入口清理时移除 | 历史记录 |
+| A-20 | 曾修正历史 `run_native` 远程目录并发冲突；该远程包装入口已在构建链清理时移除 | 历史记录，非当前指引 |
 
 ---
 
-## 六、当前规模（2.7.0 / build135）
+## 六、历史规模记录（2.7.0 / build135）
 
-| 项 | 值 |
+> 以下数字是历史快照，不是当前版本统计；当前源码与测试规模由门禁输出为准。
+
+| 项 | 历史值 |
 |---|---|
 | 生产源文件 | 139 个 `.swift` |
 | 离线套件 | 50 个 |

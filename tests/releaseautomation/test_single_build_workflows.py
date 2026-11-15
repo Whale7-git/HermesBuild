@@ -30,12 +30,61 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertEqual(triggers(text), {"pull_request", "workflow_dispatch"})
         self.assertEqual(jobs(text), ["source", "offline", "candidate"])
         self.assertEqual(text.count("bash scripts/github-build-ipa-main.sh"), 1)
-        self.assertEqual(text.count("actions/upload-artifact@"), 1)
+        self.assertEqual(text.count("actions/upload-artifact@"), 2)
+        self.assertEqual(text.count("name: hermes-candidate-diagnostics-"), 1)
         self.assertIn("HERMES_WORKFLOW_BLOB_SHA", text)
         self.assertIn("needs: [source, offline]", text)
         self.assertNotIn("publish-candidate.py", text)
         self.assertNotIn("BARK_URL", text)
         self.assertNotIn("contents: write", text)
+
+    def test_candidate_concurrency_cancels_stale_pr_builds(self):
+        text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        concurrency = re.search(
+            r"(?ms)^concurrency:\s*\n((?:  .*\n)+)",
+            text,
+        )
+        self.assertIsNotNone(concurrency)
+        block = concurrency.group(1)
+        self.assertIn("github.event.pull_request.number || github.run_id", block)
+        self.assertNotIn("github.sha", block)
+        self.assertIn(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}",
+            block,
+        )
+
+    def test_diagnostics_are_whitelisted_and_do_not_change_candidate_contract(self):
+        text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        diagnostics_report = text.split("Write candidate diagnostics report", 1)[1].split(
+            "Upload candidate diagnostics", 1
+        )[0]
+        diagnostics = text.split("Upload candidate diagnostics", 1)[1]
+        self.assertIn("HERMES_IDENTITY_RESULT", diagnostics_report)
+        self.assertIn("HERMES_ENFORCE_RESULT", diagnostics_report)
+        self.assertIn("HERMES_RECORD_RESULT", diagnostics_report)
+        self.assertIn("hermes-candidate-diagnostics-export/*", diagnostics)
+        self.assertNotIn("${{ runner.temp }}/hermes-candidate-diagnostics/*", diagnostics)
+        self.assertNotIn("${{ runner.temp }}/*", diagnostics)
+        candidate_upload = text.split("Upload immutable candidate", 1)[1].split(
+            "Record candidate result", 1
+        )[0]
+        self.assertNotIn("hermes-candidate-diagnostics", candidate_upload)
+        self.assertIn("${{ runner.temp }}/hermes-candidate-release/*", candidate_upload)
+        self.assertIn("continue-on-error: true", diagnostics)
+        self.assertIn("if: ${{ !cancelled() }}", diagnostics)
+        self.assertIn("overwrite: false", diagnostics)
+        self.assertIn("retention-days: 7", diagnostics)
+        self.assertIn("id: enforce", text)
+        self.assertIn("id: record", text)
+        self.assertGreater(
+            text.index("Record candidate result"),
+            text.index("Upload immutable candidate"),
+        )
+        self.assertGreater(
+            text.index("Write candidate diagnostics report"),
+            text.index("Record candidate result"),
+        )
+        self.assertNotIn("if: ${{ always() }}", text)
 
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
@@ -74,7 +123,12 @@ class SingleBuildWorkflowTests(unittest.TestCase):
     def test_guidance_names_only_current_release_paths(self):
         guidance = "\n".join(
             (ROOT / path).read_text(encoding="utf-8")
-            for path in ("README.md", "AGENTS.md", "docs/github-collaboration.md")
+            for path in (
+                "README.md",
+                "AGENTS.md",
+                "docs/github-collaboration.md",
+                "docs/backlog.md",
+            )
         )
         for forbidden in (
             "HERMES_TEST_TARGET",
@@ -90,6 +144,20 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertIn("hermesshell-single-build.yml", guidance)
         self.assertIn("hermesshell-single-promote.yml", guidance)
         self.assertIn("without compiling again", guidance)
+        self.assertIn("historical", guidance.lower())
+        self.assertIn("not instructions", guidance.lower())
+
+    def test_workflow_referenced_scripts_exist(self):
+        workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        for relative in re.findall(r"scripts/[A-Za-z0-9._/-]+", workflow):
+            with self.subTest(relative=relative):
+                self.assertTrue((ROOT / relative).is_file(), relative)
+
+    def test_job_env_does_not_use_runner_context(self):
+        workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        candidate = workflow.split("\n  candidate:\n", 1)[1]
+        before_steps = candidate.split("\n    steps:\n", 1)[0]
+        self.assertNotIn("${{ runner.", before_steps)
 
 
 if __name__ == "__main__":
