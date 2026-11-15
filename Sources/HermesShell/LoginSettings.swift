@@ -585,7 +585,7 @@ struct SettingsView: View {
                   footer: {
                       VStack(alignment: .leading, spacing: 4) {
                           Text("更新时直接覆盖安装，保留本地登录状态。")
-                          Text("稳定优先，一次构建。")
+                          Text("清晰、可靠、顺手。")
                       }
                   }
                 Section {
