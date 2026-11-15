@@ -38,6 +38,9 @@ output() {
 derived="$RUNNER_TEMP/hermes-ipa-derived"
 benchmark_dir="$RUNNER_TEMP/hermes-cache-benchmark"
 mkdir -p "$benchmark_dir"
+benchmark_started_ns="$(now)"
+phase_file="$benchmark_dir/github-build-phases.env"
+rm -f "$phase_file"
 
 version="$(python3 -c 'import json; print(json.load(open("release.json"))["version"])')"
 build="$(python3 -c 'import json; print(json.load(open("release.json"))["build"])')"
@@ -50,6 +53,7 @@ rm -rf release
 build_start="$(now)"
 env -u HERMES_SOURCE_VERIFIED_SHA \
   PR_HEAD_SHA="$actual_sha" \
+  HERMES_BUILD_PHASE_TIMINGS_FILE="$phase_file" \
   bash scripts/github-build-ipa.sh
 build_end="$(now)"
 build_seconds="$(elapsed "$build_start" "$build_end")"
@@ -58,14 +62,21 @@ ipa="release/${name}.ipa"
 validation="release/validation.json"
 test -f "$ipa"
 test -f "$validation"
+independent_verification_started_ns="$(now)"
 python3 tests/verify_ipa.py \
   "$ipa" "$version" "$build" release/build-info.json --label "$name.ipa" \
   > "$benchmark_dir/independent-validation.json"
+independent_verification_seconds="$(
+  elapsed "$independent_verification_started_ns" "$(now)"
+)"
 cmp release/validation.json "$benchmark_dir/independent-validation.json"
 
+payload_extract_started_ns="$(now)"
 payload="$benchmark_dir/payload"
 rm -rf "$payload"
 unzip -q "$ipa" -d "$payload"
+payload_extract_seconds="$(elapsed "$payload_extract_started_ns" "$(now)")"
+resource_hash_started_ns="$(now)"
 resource_sha="$(
   python3 - "$payload" "$benchmark_dir/resource-manifest.json" <<'PY'
 import hashlib
@@ -103,12 +114,77 @@ manifest_path.write_text(
 print(digest.hexdigest())
 PY
 )"
+resource_hash_seconds="$(elapsed "$resource_hash_started_ns" "$(now)")"
+
+metadata_started_ns="$(now)"
 ipa_sha="$(shasum -a 256 "$ipa" | awk '{print $1}')"
 ipa_bytes="$(stat -f %z "$ipa")"
 derived_kib="$(du -sk "$derived" | awk '{print $1}')"
 derived_bytes="$((derived_kib * 1024))"
 toolchain="$(xcodebuild -version | tr '\n' ' ')"
 sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+metadata_seconds="$(elapsed "$metadata_started_ns" "$(now)")"
+
+phase_json="$(
+  python3 - "$phase_file" \
+    "$build_seconds" \
+    "$independent_verification_seconds" \
+    "$payload_extract_seconds" \
+    "$resource_hash_seconds" \
+    "$metadata_seconds" \
+    "$benchmark_started_ns" <<'PY'
+import json
+import pathlib
+import sys
+import time
+
+(
+    phase_file,
+    build_seconds,
+    independent_verification_seconds,
+    payload_extract_seconds,
+    resource_hash_seconds,
+    metadata_seconds,
+    benchmark_started_ns,
+) = sys.argv[1:]
+
+phases = {}
+path = pathlib.Path(phase_file)
+if not path.is_file():
+    raise SystemExit(f"missing GitHub build phase timings: {phase_file}")
+for line in path.read_text(encoding="utf-8").splitlines():
+    if not line:
+        continue
+    name, raw = line.split("=", 1)
+    if name in phases:
+        raise SystemExit(f"duplicate build phase timing: {name}")
+    phases[name] = float(raw)
+
+phases["benchmark_build_wrapper"] = float(build_seconds)
+phases["independent_ipa_verification"] = float(independent_verification_seconds)
+phases["payload_extract"] = float(payload_extract_seconds)
+phases["resource_hash"] = float(resource_hash_seconds)
+phases["metadata"] = float(metadata_seconds)
+phases["benchmark_total"] = (
+    time.monotonic_ns() - int(benchmark_started_ns)
+) / 1e9
+print(json.dumps(phases, sort_keys=True, separators=(",", ":")))
+PY
+)"
+python3 - "$phase_json" <<'PY'
+import json
+import sys
+
+phases = json.loads(sys.argv[1])
+if not phases or any(
+    not isinstance(name, str)
+    or not name
+    or not isinstance(seconds, (int, float))
+    or seconds < 0
+    for name, seconds in phases.items()
+):
+    raise SystemExit("invalid phase timing map")
+PY
 
 cat > "$benchmark_dir/result.json" <<EOF
 {
@@ -119,6 +195,7 @@ cat > "$benchmark_dir/result.json" <<EOF
   "toolchain": "$toolchain",
   "iphoneos_sdk": "$sdk",
   "build_seconds": $build_seconds,
+  "phase_seconds": $phase_json,
   "ipa_sha256": "$ipa_sha",
   "payload_sha256": "$resource_sha",
   "ipa_bytes": $ipa_bytes,
@@ -136,6 +213,7 @@ output payload_sha "$resource_sha"
 output ipa_bytes "$ipa_bytes"
 output deriveddata_kib "$derived_kib"
 output deriveddata_bytes "$derived_bytes"
+output phases_json "$phase_json"
 
 {
   echo "### Cache benchmark: $mode"

@@ -7,6 +7,27 @@ import os
 import sys
 from pathlib import Path
 
+PHASE_LABELS = {
+    "workflow_setup": "Checkout, runner and XcodeGen setup",
+    "preflight": "Preflight checks",
+    "source_gate": "Source integrity gate",
+    "xcodegen": "Generate Xcode project",
+    "info_plist": "Prepare CI Info.plist",
+    "xcodebuild": "xcodebuild compile/link/dSYM",
+    "app_locate": "Locate built app",
+    "package_ipa": "Package unsigned IPA",
+    "build_info": "Write build metadata",
+    "ipa_verification": "Built-in IPA verification",
+    "checksums": "Write checksum manifest",
+    "github_build_total": "GitHub build script total",
+    "benchmark_build_wrapper": "Benchmark build wrapper total",
+    "independent_ipa_verification": "Independent IPA verification",
+    "payload_extract": "Unpack IPA payload",
+    "resource_hash": "Hash stable resources",
+    "metadata": "Collect benchmark metadata",
+    "benchmark_total": "Benchmark script total",
+}
+
 
 def load(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -53,12 +74,40 @@ def main() -> int:
         raise SystemExit("iPhoneOS SDK differs between cold and warm runs")
     if mode == "same" and cold["payload_sha256"] != warm["payload_sha256"]:
         raise SystemExit("same-commit bundled resources differ")
+    cold_phases = cold.get("phase_seconds")
+    warm_phases = warm.get("phase_seconds")
+    if not isinstance(cold_phases, dict) or not isinstance(warm_phases, dict):
+        raise SystemExit("cold and warm results must both include phase_seconds")
+    cold_phases = dict(cold_phases)
+    warm_phases = dict(warm_phases)
+    cold_setup = os.environ.get("COLD_SETUP_SECONDS")
+    warm_setup = os.environ.get("WARM_SETUP_SECONDS")
+    if cold_setup is not None or warm_setup is not None:
+        if cold_setup is None or warm_setup is None:
+            raise SystemExit("both cold and warm setup times are required")
+        cold_phases["workflow_setup"] = float(cold_setup)
+        warm_phases["workflow_setup"] = float(warm_setup)
+    if cold_phases.keys() != warm_phases.keys():
+        raise SystemExit("cold and warm phase names differ")
 
     cold_seconds = float(cold["build_seconds"])
     warm_seconds = float(warm["build_seconds"])
     net_seconds = cold_seconds - save_seconds - restore_seconds - warm_seconds
     ratio = warm_seconds / cold_seconds if cold_seconds else 0.0
     payload_matches = cold["payload_sha256"] == warm["payload_sha256"]
+
+    phase_order = list(PHASE_LABELS)
+    ordered_phases = [name for name in phase_order if name in cold_phases]
+    ordered_phases.extend(sorted(cold_phases.keys() - set(phase_order)))
+    phase_rows = []
+    for name in ordered_phases:
+        cold_phase = float(cold_phases[name])
+        warm_phase = float(warm_phases[name])
+        phase_rows.append(
+            f"| {PHASE_LABELS.get(name, name)} | "
+            f"{cold_phase:.3f}s | {warm_phase:.3f}s | "
+            f"{warm_phase - cold_phase:+.3f}s |"
+        )
 
     summary = [
         "### Cold/warm DerivedData benchmark",
@@ -77,6 +126,12 @@ def main() -> int:
         f"| Warm bundled resource SHA-256 | `{warm['payload_sha256']}` |",
         f"| Cold IPA SHA-256 | `{cold['ipa_sha256']}` |",
         f"| Warm IPA SHA-256 | `{warm['ipa_sha256']}` |",
+        "",
+        "#### Phase breakdown",
+        "",
+        "| Phase | Cold | Warm | Warm minus cold |",
+        "|---|---:|---:|---:|",
+        *phase_rows,
         "",
         (
             "This is one same-commit pilot on separate hosted runners."

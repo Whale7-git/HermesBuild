@@ -1,10 +1,12 @@
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +35,25 @@ class CacheBenchmarkTests(unittest.TestCase):
             "toolchain": "Xcode 26.6",
             "iphoneos_sdk": "26.2",
             "build_seconds": 180.0,
+            "phase_seconds": {
+                "preflight": 2.0,
+                "source_gate": 5.0,
+                "xcodegen": 1.0,
+                "info_plist": 0.1,
+                "xcodebuild": 140.0,
+                "app_locate": 0.1,
+                "package_ipa": 2.0,
+                "build_info": 0.1,
+                "ipa_verification": 8.0,
+                "checksums": 0.1,
+                "github_build_total": 158.4,
+                "benchmark_build_wrapper": 160.0,
+                "independent_ipa_verification": 8.0,
+                "payload_extract": 1.0,
+                "resource_hash": 2.0,
+                "metadata": 1.0,
+                "benchmark_total": 175.0,
+            },
             "ipa_sha256": "b" * 64,
             "payload_sha256": "c" * 64,
             "ipa_bytes": 1000,
@@ -60,6 +81,88 @@ class CacheBenchmarkTests(unittest.TestCase):
                 "20",
             ]
             self.assertEqual(compare.main(), 0)
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
+
+    def test_phase_breakdown_is_printed(self):
+        compare = module()
+        old_argv = sys.argv
+        old_environment = os.environ.copy()
+        try:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
+            sys.argv = [
+                "compare",
+                str(self.record("cold")),
+                str(
+                    self.record(
+                        "warm",
+                        build_seconds=110.0,
+                        phase_seconds={
+                            **json.loads(self.record("template").read_text())["phase_seconds"],
+                            "xcodebuild": 75.0,
+                        },
+                    )
+                ),
+                "1024000",
+                "10",
+                "20",
+            ]
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(compare.main(), 0)
+            self.assertIn("| xcodebuild compile/link/dSYM | 140.000s | 75.000s | -65.000s |", output.getvalue())
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
+
+    def test_missing_phase_breakdown_is_rejected(self):
+        compare = module()
+        old_argv = sys.argv
+        old_environment = os.environ.copy()
+        try:
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
+            warm = json.loads(self.record("warm").read_text())
+            warm.pop("phase_seconds")
+            warm_path = self.root / "warm-missing-phases.json"
+            warm_path.write_text(json.dumps(warm), encoding="utf-8")
+            sys.argv = [
+                "compare",
+                str(self.record("cold")),
+                str(warm_path),
+                "1024000",
+                "10",
+                "20",
+            ]
+            with self.assertRaises(SystemExit) as error:
+                compare.main()
+            self.assertIn("phase_seconds", str(error.exception))
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
+
+    def test_workflow_setup_requires_both_sides(self):
+        compare = module()
+        old_argv = sys.argv
+        old_environment = os.environ.copy()
+        try:
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
+            os.environ["COLD_SETUP_SECONDS"] = "7.5"
+            sys.argv = [
+                "compare",
+                str(self.record("cold")),
+                str(self.record("warm")),
+                "1024000",
+                "10",
+                "20",
+            ]
+            with self.assertRaises(SystemExit) as error:
+                compare.main()
+            self.assertIn("setup times", str(error.exception))
         finally:
             sys.argv = old_argv
             os.environ.clear()
@@ -247,6 +350,12 @@ class CacheWorkflowTests(unittest.TestCase):
         self.assertIn("ref: ${{ github.sha }}", workflow)
         self.assertIn('actual_sha="$(git rev-parse HEAD)"', workflow)
         self.assertIn("-adjacent-seed${expected_seed}-candidate${CANDIDATE_SHA}", workflow)
+        self.assertIn("phases_json: ${{ steps.benchmark.outputs.phases_json }}", workflow)
+        self.assertIn("COLD_PHASES_JSON: ${{ needs.cold.outputs.phases_json }}", workflow)
+        self.assertIn("COLD_SETUP_SECONDS: ${{ needs.cold.outputs.setup_seconds }}", workflow)
+        self.assertIn("WARM_SETUP_SECONDS: ${{ steps.runner_setup.outputs.seconds }}", workflow)
+        self.assertEqual(workflow.count("id: runner_setup"), 2)
+        self.assertIn("id: runner_setup", workflow)
 
         script = (ROOT / "scripts" / "cache-benchmark.sh").read_text(
             encoding="utf-8"
@@ -254,6 +363,16 @@ class CacheWorkflowTests(unittest.TestCase):
         self.assertIn("env -u HERMES_SOURCE_VERIFIED_SHA", script)
         self.assertIn('actual_sha="$(git rev-parse HEAD)"', script)
         self.assertIn('PR_HEAD_SHA="$actual_sha"', script)
+        self.assertIn('HERMES_BUILD_PHASE_TIMINGS_FILE="$phase_file"', script)
+        self.assertIn('"phase_seconds": $phase_json', script)
+        self.assertIn("invalid phase timing map", script)
+
+        build_script = (ROOT / "scripts" / "github-build-ipa.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('phase_file="${HERMES_BUILD_PHASE_TIMINGS_FILE:-}"', build_script)
+        self.assertIn('record_phase xcodebuild "$xcodebuild_started_ns"', build_script)
+        self.assertIn('record_phase ipa_verification "$ipa_verification_started_ns"', build_script)
 
 
 if __name__ == "__main__":
