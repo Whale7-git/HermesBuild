@@ -625,7 +625,7 @@
     "tests/experience/main.swift": "8f764e06ed4dd715cb2ce45bbb58a844893ad628b4520eb6da362a9a317eaf5b",
     "tests/gateway/main.swift": "801ceb8540d363240c86229df62de2021289a9ffc189474c5bfc65b424eac55f",
     "tests/gatewaybackend/main.swift": "2ca4a632adc5a4f2f8dc3c3aeeeb7d04ccb5faf1883d9ac09a09f4af9acfd887",
-    "tests/gatewaybackend/run.sh": "54f3c9be6c9a130ef24b01997b8493a24a95bdd59b16ba9e7d33249df36031f1",
+    "tests/gatewaybackend/run.sh": "de160cea15f30dac07aa143cafad892e7f39ec8a7cd01b58e40c950dc26a106d",
     "tests/gatewaybackend/Shims.swift": "89faac601e04575aa89fa164d90f962509e9fbb3c780bf467c4f7677546ece85",
     "tests/gen_release_scope.py": "b0094f8ce991cebede25253dc6624f7e43f3082338adc935fff31af0576baec1",
     "tests/historycache/main.swift": "669a768cdebd0841d4ddd398494a3dd9949afd261824f6ecc0bdb496f6ad5a7c",
