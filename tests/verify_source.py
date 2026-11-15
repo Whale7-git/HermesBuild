@@ -25,9 +25,6 @@ IGNORED = {'.git', '.build', '.bsp', 'releases', 'release', 'DerivedData', 'Herm
 # hardcoded fallback on purpose: a missing or malformed file must fail the gate
 # loudly instead of silently validating the previous release.
 RELEASE = 'release.json'
-# Patterns for "this script still carries its own copy of the release number".
-# They match a literal version/build pair, not the current values, so bumping
-# the release never weakens the check.
 
 
 def require(condition, message):
