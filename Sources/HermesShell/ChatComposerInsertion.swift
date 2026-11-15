@@ -5,6 +5,7 @@ import Foundation
 struct ChatComposerInsertion: Equatable {
     var token = 0
     var text = ""
+    var quote: ChatQuote.Reference? = nil
 }
 
 enum ChatComposerInsertionPlan {
