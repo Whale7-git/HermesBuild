@@ -354,11 +354,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            // Retire only this receipt, never a replacement run for the session.
             if runStore.runID(for: sessionID) == runID {
                 runStore.finish(runID: runID)
             }
-            return .terminal
+            guard let terminal = RunTerminalStatus(rawValue: status) else { return .unknown }
+            return .terminal(terminal)
         default:
             return recordProbeFailure(runID: runID)
         }
@@ -385,6 +385,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
+              root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
             return try unresolvedRun(runID: runID)
         }
@@ -433,6 +434,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
+              root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
             _ = recordProbeFailure(runID: runID)
             return nil

@@ -311,7 +311,9 @@ extension ModelTests {
         // Receipt exists, but the history snapshot temporarily omits
         // active_stream_id. A bounded run-status probe may attach only when the
         // exact run is alive; unknown status never unlocks a POST.
-        for result in [ActiveRunProbe.alive, .terminal, .unknown] {
+        for result in [ActiveRunProbe.alive, .terminal(.completed),
+                       .terminal(.failed), .terminal(.cancelled),
+                       .terminal(.interrupted), .unknown] {
             do {
                 let probeRoot = FileManager.default.temporaryDirectory
                     .appendingPathComponent("HermesRunProbe-" + UUID().uuidString)
@@ -337,11 +339,13 @@ extension ModelTests {
                     try await eventually { model.streamID == receipt.runID }
                     precondition(!model.canSend && model.uncertain == false,
                                  "a proven live receipt attaches without replaying the POST")
-                } else if result == .terminal {
+                } else if case .terminal(let outcome) = result {
                     try await eventually { model.activeTurnRecovery == nil }
                     precondition(!model.uncertain && model.canSend && model.streamID == nil
                                  && model.queueAutomaticDispatchPaused && probeStore.loadActiveRun().value == nil,
-                                 "a verified terminal run releases its lock even without a final reply")
+                                 "verified terminal run syncs history without replaying the POST")
+                    precondition(model.notice == outcome.notice,
+                                 "distinct terminal results retain their user-visible outcome")
                 } else {
                     precondition(model.uncertain && !model.canSend
                                  && model.streamID == nil && probeStore.loadActiveRun().value != nil,

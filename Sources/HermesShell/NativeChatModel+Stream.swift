@@ -502,15 +502,33 @@ extension NativeChatModel {
                     self.resumeQueueAfterRecovery()
                     self.notice = nil
                     self.attach(streamID: receipt.runID)
-                case .terminal:
+                case .terminal(let outcome):
                     guard self.streamID == nil, !self.running else { return }
-                    // Ending the run does not prove history has its final reply.
-                    // Keep the queue paused and leave other unresolved sends alone.
-                    guard self.clearAcceptedTurnRecovery() else { return }
+                    // A confirmed terminal status still requires a final read-only
+                    // history GET; do not replay the original accepted POST.
                     self.pauseQueueForRecovery()
-                    self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
-                        || self.activeRecoveryUnreadable
-                    if !self.uncertain { self.notice = nil }
+                    do {
+                        let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
+                        guard generation == self.revision, !Task.isCancelled, !self.suspended,
+                              self.activeTurnRecovery == receipt else { return }
+                        guard finalHistory.sessionID == self.sessionID,
+                              finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                            self.uncertain = true
+                            self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
+                            return
+                        }
+                        try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
+                        guard self.clearAcceptedTurnRecovery() else { return }
+                        self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
+                            || self.activeRecoveryUnreadable
+                        self.notice = outcome.notice
+                    } catch {
+                        guard generation == self.revision, !Task.isCancelled,
+                              self.activeTurnRecovery == receipt else { return }
+                        if self.handleAuthenticationFailure(error) { return }
+                        self.uncertain = true
+                        self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
+                    }
                 case .unknown:
                     self.uncertain = true
                     self.pauseQueueForRecovery()

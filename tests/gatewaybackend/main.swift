@@ -19,6 +19,7 @@ actor ConcurrencyProbe {
     var rows: [[String: Any]] = (0..<121).map { ["id": $0 + 1, "role": "user", "content": "row \($0)"] }
     var countHint = 121
     var status = "running"
+    var statusSessionID = "s"
     var statusCode = 200
     var failure: Error?
     var requests: [URLRequest] = []
@@ -40,7 +41,7 @@ actor ConcurrencyProbe {
         } else if url.path == "/v1/runs", request.httpMethod == "POST" {
             body = ["run_id": "run-fixture", "status": "queued"]
         } else if url.path == "/v1/runs/run-fixture" {
-            body = ["run_id": "run-fixture", "session_id": "s", "status": status]
+            body = ["run_id": "run-fixture", "session_id": statusSessionID, "status": status]
             code = statusCode
         } else if url.path.hasSuffix("/stop") {
             code = statusCode
@@ -165,6 +166,14 @@ actor ConcurrencyProbe {
         let other = try await backend(scope: "instance|other-account").history(sessionID: "s", before: nil)
         check(other.activeStreamID == nil, "recovery records isolated by account")
         transport.status = "waiting_for_approval"
+        transport.statusSessionID = "other-session"
+        let crossSession = try await restarted.history(sessionID: "s", before: nil)
+        check(crossSession.activeStreamID == nil
+              && GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == run,
+              "a cross-session status cannot attach or retire this run")
+        let mismatchedProbe = try await restarted.probeActiveRun(sessionID: "s", runID: run)
+        check(mismatchedProbe == .unknown, "cross-session status probe is unknown")
+        transport.statusSessionID = "s"
         let waiting = try await restarted.history(sessionID: "s", before: nil)
         check(waiting.activeStreamID == run, "approval-waiting run remains recoverable")
         transport.statusCode = 404
