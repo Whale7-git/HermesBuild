@@ -190,6 +190,47 @@ struct ChatTool: Identifiable, Equatable, Sendable {
     var afterMessageID: String? = nil
 }
 
+struct ChatStreamingTailSnapshot: Equatable {
+    let messages: [ChatMessage]
+    let tools: [ChatTool]
+    let notices: [ChatNotice]
+    let running: Bool
+    let toolsAreLive: Bool
+    let transcriptRevision: UInt64
+    let transcriptStructureRevision: UInt64
+}
+
+enum ChatStreamingTailProof {
+    /// Revision plus the unchanged structure generation proves every row before
+    /// the tail is unchanged. The remaining checks keep the tail replaceable
+    /// without rebuilding the full timeline.
+    static func canReplaceTail(from previous: ChatStreamingTailSnapshot,
+                               to next: ChatStreamingTailSnapshot) -> Bool {
+        guard next.transcriptRevision > previous.transcriptRevision,
+              next.transcriptStructureRevision == previous.transcriptStructureRevision,
+              previous.tools == next.tools,
+              previous.notices == next.notices,
+              previous.running == next.running,
+              previous.toolsAreLive == next.toolsAreLive,
+              previous.messages.count == next.messages.count,
+              previous.messages.count > 0,
+              let oldLast = previous.messages.last,
+              let newLast = next.messages.last,
+              oldLast.id == newLast.id,
+              oldLast.role == newLast.role,
+              oldLast.sourceIndex == newLast.sourceIndex,
+              oldLast.timestamp == newLast.timestamp,
+              oldLast.attachmentPaths == newLast.attachmentPaths,
+              oldLast.displayKind == newLast.displayKind,
+              oldLast.content != newLast.content || oldLast.delivery != newLast.delivery,
+              ChatRenderableText.hasVisibleContent(newLast.content)
+                || !newLast.attachmentPaths.isEmpty else {
+            return false
+        }
+        return true
+    }
+}
+
 enum ChatCoreError: Error, LocalizedError {
     case malformed(String)
     case server(String)
@@ -540,17 +581,108 @@ private func streamErrorDescription(_ data: String) -> String {
 /// A value represents exactly one stream. Create a fresh value for a new turn;
 /// retain the same value when reconnecting to that stream.
 struct ChatTranscript {
-    var messages: [ChatMessage] = []
-    var tools: [ChatTool] = []
+    /// Monotonic for this transcript value. Every array assignment or mutation
+    /// advances it; a replacement transcript resets to zero, so callers must
+    /// also require `next > previous`.
+    private(set) var transcriptRevision: UInt64 = 0
+    /// Changes whenever message/tool/notice structure changes. Tail content
+    /// updates deliberately do not advance it.
+    private(set) var transcriptStructureRevision: UInt64 = 0
+    var messages: [ChatMessage] {
+        get { storage.messages }
+        set {
+            storage.messages = newValue
+            if !updatingStreamingTail {
+                transcriptRevision &+= 1
+                transcriptStructureRevision &+= 1
+            }
+        }
+        _modify {
+            var value = storage.messages
+            storage.messages = []
+            yield &value
+            storage.messages = value
+            if !updatingStreamingTail {
+                transcriptRevision &+= 1
+                transcriptStructureRevision &+= 1
+            }
+        }
+    }
+    var tools: [ChatTool] {
+        get { storage.tools }
+        set {
+            storage.tools = newValue
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+        _modify {
+            var value = storage.tools
+            storage.tools = []
+            yield &value
+            storage.tools = value
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+    }
     /// 本轮收尾产生的通知行；`var` + 默认值不破坏既有 memberwise 调用。
-    var notices: [ChatNotice] = []
-    var usage: ChatUsage?
-    var contextStatus: String?
-    var reasoning: String = ""
-    var terminal: Bool = false
-    var failure: String?
-    var notice: String?
-    var lastEventID: String?
+    var notices: [ChatNotice] {
+        get { storage.notices }
+        set {
+            storage.notices = newValue
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+        _modify {
+            var value = storage.notices
+            storage.notices = []
+            yield &value
+            storage.notices = value
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+    }
+    var usage: ChatUsage? {
+        get { storage.usage }
+        set { storage.usage = newValue }
+    }
+    var contextStatus: String? {
+        get { storage.contextStatus }
+        set { storage.contextStatus = newValue }
+    }
+    var reasoning: String {
+        get { storage.reasoning }
+        set { storage.reasoning = newValue }
+    }
+    var terminal: Bool {
+        get { storage.terminal }
+        set { storage.terminal = newValue }
+    }
+    var failure: String? {
+        get { storage.failure }
+        set { storage.failure = newValue }
+    }
+    var notice: String? {
+        get { storage.notice }
+        set { storage.notice = newValue }
+    }
+    var lastEventID: String? {
+        get { storage.lastEventID }
+        set { storage.lastEventID = newValue }
+    }
+
+    private struct Storage {
+        var messages: [ChatMessage] = []
+        var tools: [ChatTool] = []
+        var notices: [ChatNotice] = []
+        var usage: ChatUsage?
+        var contextStatus: String?
+        var reasoning: String = ""
+        var terminal: Bool = false
+        var failure: String?
+        var notice: String?
+        var lastEventID: String?
+    }
+    private var storage = Storage()
     private var streamingMessageID: String?
     /// 流式消息在 `messages` 里的下标。每条 token 都做 `firstIndex(where:)` 是
     /// O(n) 线性查找，2000 行时每秒数万次字符串比较且跑在主线程。缓存下标后
@@ -561,8 +693,10 @@ struct ChatTranscript {
     private var pendingWhitespace = ""
     private var seenEventIDs: Set<String> = []
     private var approvalRequestID: String?
+    private var updatingStreamingTail = false
 
     mutating func apply(_ frame: SSEFrame) throws {
+        defer { transcriptRevision &+= 1 }
         if let id = frame.id, !id.isEmpty, seenEventIDs.contains(id) { return }
         if terminal {
             if let id = frame.id {
@@ -589,10 +723,10 @@ struct ChatTranscript {
                     // 优先用缓存下标；下标失效（数组被重建）时才回退线性查找。
                     if let cached = streamingMessageIndex, cached < messages.count,
                        messages[cached].id == id {
-                        messages[cached].content += text
+                        appendStreamingText(text, at: cached)
                     } else if let index = messages.firstIndex(where: { $0.id == id }) {
                         streamingMessageIndex = index
-                        messages[index].content += text
+                        appendStreamingText(text, at: index)
                     } else {
                         streamingMessageID = nil
                         streamingMessageIndex = nil
@@ -624,7 +758,13 @@ struct ChatTranscript {
             if let id = explicitID {
                 index = tools.firstIndex(where: { $0.id == id })
             } else if complete {
-                index = tools.lastIndex(where: { $0.name == name && !$0.done })
+                // Without an explicit id, a name is only safe when it identifies
+                // one unresolved call. Never guess the most recent same-name
+                // tool; completed and historical calls remain untouched.
+                let candidates = tools.indices.filter {
+                    tools[$0].name == name && !tools[$0].done
+                }
+                index = candidates.count == 1 ? candidates[0] : nil
             } else {
                 index = nil
             }
@@ -733,6 +873,12 @@ struct ChatTranscript {
         notices.append(ChatNotice(id: id ?? "notice-\(kind.rawValue)-\(UUID().uuidString)",
                                   kind: kind, message: message,
                                   timestamp: Date().timeIntervalSince1970))
+    }
+
+    private mutating func appendStreamingText(_ text: String, at index: Int) {
+        updatingStreamingTail = true
+        defer { updatingStreamingTail = false }
+        messages[index].content += text
     }
 
     /// 用户主动停止：不经 SSE 帧，由 `stop()` 直接调用。

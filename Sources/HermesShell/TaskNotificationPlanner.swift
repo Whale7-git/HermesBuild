@@ -10,13 +10,16 @@ enum TaskNotificationPlanner {
     /// 静音不会让它们变少，只会让人错过。
     struct Settings: Equatable, Sendable {
         var approvalEnabled: Bool
+        var clarifyEnabled: Bool
         var finishedEnabled: Bool
         var recoveryEnabled: Bool
 
         init(approvalEnabled: Bool = true,
+             clarifyEnabled: Bool? = nil,
              finishedEnabled: Bool = true,
              recoveryEnabled: Bool = true) {
             self.approvalEnabled = approvalEnabled
+            self.clarifyEnabled = clarifyEnabled ?? approvalEnabled
             self.finishedEnabled = finishedEnabled
             self.recoveryEnabled = recoveryEnabled
         }
@@ -36,11 +39,12 @@ enum TaskNotificationPlanner {
         title: String,
         settings: Settings,
         foregroundSessionID: String?,
+        appActive: Bool = true,
         instanceID: String = "",
         accountScope: String = ""
     ) -> TaskNotification? {
         guard settings.approvalEnabled else { return nil }
-        guard foregroundSessionID != sessionID else { return nil }
+        guard !appActive || foregroundSessionID != sessionID else { return nil }
         let stableID = scopedIdentifier("approval", instanceID: instanceID,
                                         accountScope: accountScope, sessionID: sessionID, detail: requestID)
         return TaskNotification(kind: .approvalPending,
@@ -49,6 +53,30 @@ enum TaskNotificationPlanner {
                                 sessionID: sessionID,
                                 sessionTitle: displayTitle(title),
                                 stableID: stableID)
+    }
+
+    /// 服务端挂起等补充信息。与审批共用开关，但使用独立类型和标识，
+    /// 这样两条通知不会互相替换，解决后也能分别撤回。
+    static func clarify(
+        requestID: String?,
+        sessionID: String,
+        title: String,
+        settings: Settings,
+        foregroundSessionID: String?,
+        appActive: Bool = true,
+        instanceID: String = "",
+        accountScope: String = ""
+    ) -> TaskNotification? {
+        guard settings.clarifyEnabled else { return nil }
+        guard !appActive || foregroundSessionID != sessionID else { return nil }
+        return TaskNotification(
+            kind: .clarifyPending,
+            instanceID: instanceID,
+            accountScope: accountScope,
+            sessionID: sessionID,
+            sessionTitle: displayTitle(title),
+            stableID: scopedIdentifier("clarify", instanceID: instanceID,
+                accountScope: accountScope, sessionID: sessionID, detail: requestID))
     }
 
     /// 后台那一轮结束了。
@@ -62,11 +90,12 @@ enum TaskNotificationPlanner {
         title: String,
         settings: Settings,
         foregroundSessionID: String?,
+        appActive: Bool = true,
         instanceID: String = "",
         accountScope: String = ""
     ) -> TaskNotification? {
         guard settings.finishedEnabled else { return nil }
-        guard foregroundSessionID != sessionID else { return nil }
+        guard !appActive || foregroundSessionID != sessionID else { return nil }
         let stableID = scopedIdentifier("finished", instanceID: instanceID,
                                         accountScope: accountScope, sessionID: sessionID, detail: runID)
         return TaskNotification(kind: .runFinished,
@@ -85,11 +114,12 @@ enum TaskNotificationPlanner {
         title: String,
         settings: Settings,
         foregroundSessionID: String?,
+        appActive: Bool = true,
         instanceID: String = "",
         accountScope: String = ""
     ) -> TaskNotification? {
         guard settings.recoveryEnabled else { return nil }
-        guard foregroundSessionID != sessionID else { return nil }
+        guard !appActive || foregroundSessionID != sessionID else { return nil }
         return TaskNotification(kind: .recoveryIssue,
                                 instanceID: instanceID,
                                 accountScope: accountScope,
@@ -120,6 +150,15 @@ enum TaskNotificationPlanner {
             return "scoped." + data.base64EncodedString()
         }
         return "scoped-len." + values.map { "\($0.utf8.count):\($0)" }.joined()
+    }
+
+    /// Deterministic identity exposed for exact removal when a server request
+    /// is resolved.
+    static func requestIdentifier(kind: String, requestID: String?,
+                                  sessionID: String, instanceID: String,
+                                  accountScope: String) -> String {
+        scopedIdentifier(kind, instanceID: instanceID, accountScope: accountScope,
+                         sessionID: sessionID, detail: requestID)
     }
 
     private static func displayTitle(_ title: String) -> String {

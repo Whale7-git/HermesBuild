@@ -1,13 +1,100 @@
 import Foundation
 
 extension NativeChatModel {
+    /// Upsert one server request without disturbing sibling requests from the
+    /// same run. Returns true only when this identity was newly inserted.
+    @discardableResult
+    func upsertPendingApproval(_ pending: ChatPendingApproval) -> Bool {
+        if let index = pendingApprovals.firstIndex(where: { $0.id == pending.id }) {
+            if pendingApprovals[index] != pending { pendingApprovals[index] = pending }
+            return false
+        }
+        pendingApprovals.append(pending)
+        return true
+    }
+
+    @discardableResult
+    func upsertPendingClarify(_ pending: ChatPendingClarify) -> Bool {
+        if let index = pendingClarifies.firstIndex(where: { $0.id == pending.id }) {
+            if pendingClarifies[index] != pending { pendingClarifies[index] = pending }
+            return false
+        }
+        pendingClarifies.append(pending)
+        return true
+    }
+
+    func removePendingApproval(id: String) {
+        guard let index = pendingApprovals.firstIndex(where: { $0.id == id }) else { return }
+        let removed = pendingApprovals.remove(at: index)
+        onApprovalResolved?(sessionID, removed.requestID)
+        if pendingApprovals.isEmpty { approving = false }
+    }
+
+    func removePendingClarify(id: String) {
+        guard let index = pendingClarifies.firstIndex(where: { $0.id == id }) else { return }
+        let removed = pendingClarifies.remove(at: index)
+        onClarifyResolved?(sessionID, removed.requestID)
+        if pendingClarifies.isEmpty { clarifying = false }
+    }
+
+    func removePendingApprovals(for runID: String?) {
+        // An authoritative snapshot names the run that is still alive. Requests
+        // from any other run are stale; a nil active run invalidates all cards.
+        let removed = pendingApprovals.filter { $0.runID != runID }
+        guard !removed.isEmpty else { return }
+        pendingApprovals.removeAll { $0.runID != runID }
+        for request in removed { onApprovalResolved?(sessionID, request.requestID) }
+        if pendingApprovals.isEmpty { approving = false }
+    }
+
+    func removePendingApproval(requestID: String, runID: String) {
+        guard let pending = pendingApprovals.first(where: {
+            $0.requestID == requestID && $0.runID == runID
+        }) else { return }
+        removePendingApproval(id: pending.id)
+    }
+
+    func removePendingClarifies(for runID: String?) {
+        let removed = pendingClarifies.filter { $0.runID != runID }
+        guard !removed.isEmpty else { return }
+        pendingClarifies.removeAll { $0.runID != runID }
+        for request in removed { onClarifyResolved?(sessionID, request.requestID) }
+        if pendingClarifies.isEmpty { clarifying = false }
+    }
+
+    func removePendingClarify(requestID: String) {
+        guard let pending = pendingClarifies.first(where: { $0.requestID == requestID }) else { return }
+        removePendingClarify(id: pending.id)
+    }
+
+    /// User answers may complete out of order. While one POST is in flight the
+    /// UI disables every request, so selecting another card must not silently
+    /// fall back to the newest slot and answer the wrong server prompt.
+    func canRespondToApproval(requestID: String, choice: String) -> Bool {
+        guard let pending = pendingApprovals.first(where: { $0.id == requestID }) else {
+            return false
+        }
+        return !approving && !suspended && pending.choices.contains(choice)
+            && streamID == pending.runID && !pending.runID.isEmpty
+    }
+
+    func canRespondToClarify(requestID: String) -> Bool {
+        guard let pending = pendingClarifies.first(where: { $0.id == requestID }) else {
+            return false
+        }
+        return !clarifying && !suspended && streamID == pending.runID
+            && !pending.runID.isEmpty
+    }
+
     /// 回传一次审批决定。
     ///
     /// 成功就撤卡片，让流继续往下跑——网关在收到答复前不会推进本轮。
     /// 失败分三类处理：服务端说这张票已失效（not_pending）就撤掉并说明；
     /// 说选项不合法（rejected）说明是版本不匹配；网络错误保留卡片让用户重试。
-    func respondToApproval(_ choice: String) async {
-        guard let pending = pendingApproval, !approving, !suspended,
+    func respondToApproval(_ choice: String, requestID: String? = nil) async {
+        let target = requestID.flatMap { id in pendingApprovals.first { $0.id == id } }
+            ?? pendingApproval
+        guard let pending = target, !approving, !suspended,
               pending.choices.contains(choice), streamID == pending.runID else { return }
         // runID 必须已知：没有它连往哪儿发都不知道，宁可不发也不猜。
         guard !pending.runID.isEmpty else {
@@ -25,25 +112,25 @@ extension NativeChatModel {
                                                           requestID: pending.requestID)
             noteRunRecoveryState()
             guard generation == revision, !suspended,
-                  pendingApproval == pending, !Task.isCancelled else { return }
+                  pendingApprovals.contains(pending), !Task.isCancelled else { return }
             switch outcome {
             case nil:
-                pendingApproval = nil
+                removePendingApproval(id: pending.id)
                 notice = nil
                 RuntimeLogRecorder.shared.record(.info, "approval", "choice=\(choice) accepted")
             case "unsupported":
-                pendingApproval = nil
+                removePendingApproval(id: pending.id)
                 notice = "当前后端不支持在 App 内审批，请在 WebUI 处理。"
             case "not_pending":
-                pendingApproval = nil
+                removePendingApproval(id: pending.id)
                 notice = "这条审批已经失效（超时或被别处处理），稍后会同步最新状态。"
             case let other?:
-                pendingApproval = nil
+                removePendingApproval(id: pending.id)
                 notice = "服务端拒绝了这次审批（\(other)）。"
             }
         } catch {
             guard generation == revision, !suspended,
-                  pendingApproval == pending, !Task.isCancelled else { return }
+                  pendingApprovals.contains(pending), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
             RuntimeLogRecorder.shared.record(.error, "approval",
@@ -52,7 +139,9 @@ extension NativeChatModel {
     }
 
     func clearApproval() {
-        pendingApproval = nil
+        let removed = pendingApprovals
+        pendingApprovals = []
+        for request in removed { onApprovalResolved?(sessionID, request.requestID) }
         approvalSubmission = UUID()
         approving = false
     }
@@ -66,8 +155,10 @@ extension NativeChatModel {
     ///
     /// 失败分类与审批一致：`not_pending` 撤卡片并说明；`rejected` 说明合同不匹配
     /// （多半是 generation 过期）；网络错误保留卡片让用户重试。
-    func respondToClarify(_ answer: String) async {
-        guard let pending = pendingClarify, !clarifying, !suspended,
+    func respondToClarify(_ answer: String, requestID: String? = nil) async {
+        let target = requestID.flatMap { id in pendingClarifies.first { $0.id == id } }
+            ?? pendingClarify
+        guard let pending = target, !clarifying, !suspended,
               streamID == pending.runID else { return }
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         // 开放式提问允许任意文本，但空串没有意义：服务端会当成空答案。
@@ -92,25 +183,25 @@ extension NativeChatModel {
                 executionGeneration: pending.executionGeneration)
             noteRunRecoveryState()
             guard generation == revision, !suspended,
-                  pendingClarify == pending, !Task.isCancelled else { return }
+                  pendingClarifies.contains(pending), !Task.isCancelled else { return }
             switch outcome {
             case nil:
-                pendingClarify = nil
+                removePendingClarify(id: pending.id)
                 notice = nil
                 RuntimeLogRecorder.shared.record(.info, "clarify", "answered chars=\(text.count)")
             case "unsupported":
-                pendingClarify = nil
+                removePendingClarify(id: pending.id)
                 notice = "当前后端不支持在 App 内回答补充信息，请在 WebUI 处理。"
             case "not_pending":
-                pendingClarify = nil
+                removePendingClarify(id: pending.id)
                 notice = "这条提问已经失效（超时或被别处处理），稍后会同步最新状态。"
             case let other?:
-                pendingClarify = nil
+                removePendingClarify(id: pending.id)
                 notice = "服务端拒绝了这次回答（\(other)）。"
             }
         } catch {
             guard generation == revision, !suspended,
-                  pendingClarify == pending, !Task.isCancelled else { return }
+                  pendingClarifies.contains(pending), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
             RuntimeLogRecorder.shared.record(.error, "clarify",
@@ -119,7 +210,9 @@ extension NativeChatModel {
     }
 
     func clearClarify() {
-        pendingClarify = nil
+        let removed = pendingClarifies
+        pendingClarifies = []
+        for request in removed { onClarifyResolved?(sessionID, request.requestID) }
         clarifySubmission = UUID()
         clarifying = false
     }
@@ -161,8 +254,8 @@ extension NativeChatModel {
             // 界面会一直停在「正在停止…」。
             transition(to: .idle)
             // run 已经停了，这张票永远投不出去，留着只会误导。
-            pendingApproval = nil
-            pendingClarify = nil
+            clearApproval()
+            clearClarify()
             notice = "服务器已确认停止。"
             // 停止是本轮的正常终态，要在对话流里留下可回看的记录（F-32）。
             buffer.appendStopNotice()
@@ -213,12 +306,8 @@ extension NativeChatModel {
         } else if localPersistenceIssue?.kind == .queue {
             localPersistenceIssue = nil
         }
-        pendingApproval = nil
-        approvalSubmission = UUID()
-        approving = false
-        pendingClarify = nil
-        clarifySubmission = UUID()
-        clarifying = false
+        clearApproval()
+        clearClarify()
         pendingAbsent = false
         self.error = error.localizedDescription
         notice = "登录状态已失效，请重新登录后读取历史。"

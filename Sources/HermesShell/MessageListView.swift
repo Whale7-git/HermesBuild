@@ -226,7 +226,7 @@ struct ChatStatusSnapshot: Equatable {
 /// 底部状态区：思考过程、正在执行、提示。随消息一起滚动，不压住正文。
 struct ChatStatusFooter: View {
     let state: ChatStatusSnapshot
-    let webURL: URL
+    let webURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -242,7 +242,8 @@ struct ChatStatusFooter: View {
             if let notice = state.notice {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(notice).font(.footnote).foregroundStyle(.secondary)
-                    if notice.contains("审批") || notice.contains("补充信息") {
+                    if let webURL,
+                       notice.contains("审批") || notice.contains("补充信息") {
                         Link("在浏览器处理", destination: webURL).font(.footnote)
                     }
                 }

@@ -177,8 +177,8 @@ struct AttachmentDraft: Identifiable, Sendable {
     let id: UUID
     let name: String
     let mime: String
-    /// 原始字节。上传成功后会释放（置空）以回收内存——**图片除外**，
-    /// 因为已上传图片仍可再编辑，编辑入口需要原始像素。
+    /// 原始字节。上传成功后会释放（置空）以回收内存。图片重新编辑时按需
+    /// 从服务端读取原图，不再让整批图片常驻到会话结束。
     /// `fileprivate(set)`：只有同文件的 `AttachmentBatch` 能清空它。
     fileprivate(set) var data: Data
     /// 字节数在构造时固定下来，释放 `data` 后容量核算与界面显示仍要它。
@@ -196,14 +196,42 @@ struct AttachmentDraft: Identifiable, Sendable {
         self.byteCount = declaredByteCount ?? data.count
     }
 
-    /// 上传成功后是否应该丢掉原始字节。
-    ///
-    /// 只有非图片丢：图片留着是为了「已上传的图片还能再编辑」这条既有路径，
-    /// 它需要原始像素（`beginEditing` 读 `draft.data`）。文档/视频之类
-    /// 上传完就没有再读字节的理由，40MB 总量上限常驻不值得。
-    var releasesBytesAfterUpload: Bool {
-        !AttachmentPreviewPolicy.rasterMIMEs.contains(mime.lowercased())
+    /// 服务端已有副本后，本地字节一律释放。图片编辑会通过
+    /// `AttachmentPreviewLoader` 重新取得原图；上传失败或排队时字节仍在。
+    var releasesBytesAfterUpload: Bool { true }
+
+    var canResumeUpload: Bool {
+        switch state {
+        case .queued, .failed: return !data.isEmpty
+        default: return false
+        }
     }
+}
+
+/// Durable composer state. It deliberately excludes cookies, bearer tokens,
+/// upload attempts and progress. Uploads restart from their original bytes
+/// after process recreation; completed uploads retain only the server reference.
+struct PersistedAttachmentDraft: Codable, Equatable, Sendable {
+    enum State: Codable, Equatable, Sendable {
+        case pending
+        case ready(UploadedAttachment)
+    }
+
+    let id: UUID
+    let name: String
+    let mime: String
+    let byteCount: Int
+    let data: Data
+    let state: State
+    let reuploading: Bool
+}
+
+struct PersistedAttachmentBatch: Codable, Equatable, Sendable {
+    let version: Int
+    let sessionID: String
+    let items: [PersistedAttachmentDraft]
+
+    static let currentVersion = 1
 }
 
 /// Value-state is independently tested; completion must match both chip and upload attempt.
@@ -235,6 +263,7 @@ struct AttachmentBatch: Sendable {
         case .queued, .failed: break
         default: throw AttachmentError.invalidMetadata
         }
+        guard !items[index].data.isEmpty else { throw AttachmentError.invalidMetadata }
         let attempt = UUID()
         items[index].attempt = attempt
         items[index].state = .uploading(0)
@@ -254,8 +283,8 @@ struct AttachmentBatch: Sendable {
     mutating func complete(_ id: UUID, attempt: UUID, attachment: UploadedAttachment) {
         guard let index = current(id, attempt:attempt) else { return }
         items[index].state = .ready(attachment)
-        // 服务端已有副本，本地不再需要原始字节。图片留着供再编辑，
-        // 其余立刻释放——否则 8 个 20MB 附件会常驻到会话结束。
+        // 服务端已有副本，本地不再需要原始字节。图片编辑时再按需下载，
+        // 否则 8 个 20MB 附件会常驻到会话结束。
         if items[index].releasesBytesAfterUpload { items[index].data = Data() }
     }
     mutating func fail(_ id: UUID, attempt: UUID, message: String) {
@@ -300,6 +329,67 @@ struct AttachmentBatch: Sendable {
             items.append(draft)
         }
     }
+
+    var persistedValue: PersistedAttachmentBatch {
+        PersistedAttachmentBatch(
+            version: PersistedAttachmentBatch.currentVersion,
+            sessionID: sessionID,
+            items: items.map { item in
+                let state: PersistedAttachmentDraft.State
+                switch item.state {
+                case .ready(let uploaded):
+                    state = .ready(uploaded)
+                case .queued, .uploading, .failed:
+                    // An interrupted process cannot own the old upload task.
+                    // Retain its verified local bytes and queue one new upload.
+                    state = .pending
+                }
+                return PersistedAttachmentDraft(
+                    id: item.id, name: item.name, mime: item.mime,
+                    byteCount: item.byteCount, data: item.data, state: state,
+                    reuploading: item.reuploading)
+            })
+    }
+
+    mutating func restorePersisted(_ value: PersistedAttachmentBatch) throws {
+        guard value.version == PersistedAttachmentBatch.currentVersion,
+              value.sessionID == sessionID,
+              value.items.count <= maxCount,
+              Set(value.items.map(\.id)).count == value.items.count else {
+            throw AttachmentError.invalidMetadata
+        }
+        var restored: [AttachmentDraft] = []
+        var totalBytes = 0
+        for persisted in value.items {
+            guard !persisted.name.isEmpty, !persisted.mime.isEmpty,
+                  persisted.byteCount >= 0,
+                  persisted.byteCount <= AttachmentMultipart.defaultMaxBytes,
+                  persisted.data.count <= persisted.byteCount,
+                  persisted.byteCount <= maxTotalBytes - totalBytes else {
+                throw AttachmentError.tooLarge
+            }
+            totalBytes += persisted.byteCount
+            var item = AttachmentDraft(
+                id: persisted.id, name: persisted.name, mime: persisted.mime,
+                data: persisted.data, declaredByteCount: persisted.byteCount)
+            item.reuploading = persisted.reuploading
+            switch persisted.state {
+            case .ready(let uploaded):
+                guard uploaded.name == persisted.name, uploaded.mime == persisted.mime,
+                      uploaded.size == persisted.byteCount else {
+                    throw AttachmentError.invalidMetadata
+                }
+                item.state = .ready(uploaded)
+                if item.releasesBytesAfterUpload { item.data = Data() }
+            case .pending:
+                guard !persisted.data.isEmpty else { throw AttachmentError.invalidMetadata }
+                item.state = .queued
+            }
+            restored.append(item)
+        }
+        items = restored
+    }
+
     func payload(for sessionID: String) throws -> [UploadedAttachment] {
         guard self.sessionID == sessionID, canSend else { throw AttachmentError.invalidMetadata }
         return items.compactMap { if case .ready(let attachment) = $0.state { return attachment }; return nil }
@@ -796,6 +886,10 @@ enum AttachmentFileImport {
     /// 见 `AttachmentBatch.restoreReady` 的语义说明。
     func restoreReady(_ payloads: [ChatAttachmentPayload]) {
         batch.restoreReady(payloads)
+        onChange?(batch)
+    }
+    func restorePersisted(_ value: PersistedAttachmentBatch) throws {
+        try batch.restorePersisted(value)
         onChange?(batch)
     }
 }

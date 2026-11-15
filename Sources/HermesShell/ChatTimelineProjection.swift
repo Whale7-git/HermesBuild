@@ -10,6 +10,22 @@ final class ChatTimelineProjection: ObservableObject {
         let notices: [ChatNotice]
         let running: Bool
         let toolsAreLive: Bool
+        let transcriptRevision: UInt64
+        let transcriptStructureRevision: UInt64
+
+        static func == (lhs: Source, rhs: Source) -> Bool {
+            lhs.messages == rhs.messages && lhs.tools == rhs.tools
+                && lhs.notices == rhs.notices && lhs.running == rhs.running
+                && lhs.toolsAreLive == rhs.toolsAreLive
+        }
+
+        var streamingTailSnapshot: ChatStreamingTailSnapshot {
+            ChatStreamingTailSnapshot(
+                messages: messages, tools: tools, notices: notices,
+                running: running, toolsAreLive: toolsAreLive,
+                transcriptRevision: transcriptRevision,
+                transcriptStructureRevision: transcriptStructureRevision)
+        }
     }
     @Published private(set) var items: [ChatRowItem] = [] {
         didSet { itemsVersion &+= 1 }
@@ -46,7 +62,9 @@ final class ChatTimelineProjection: ObservableObject {
                 Source(messages: transcript.messages, tools: transcript.tools,
                        notices: transcript.notices,
                        running: phase.isRunning && !transcript.terminal,
-                       toolsAreLive: toolsAreLive && !transcript.terminal)
+                       toolsAreLive: toolsAreLive && !transcript.terminal,
+                       transcriptRevision: transcript.transcriptRevision,
+                       transcriptStructureRevision: transcript.transcriptStructureRevision)
             }
             .sink { [weak self] source in
                 guard let self else { return }
@@ -114,23 +132,10 @@ final class ChatTimelineProjection: ObservableObject {
     /// the normal full projection path.
     private func fastStreamingUpdate(from previous: Source,
                                      to next: Source) -> [ChatRowItem]? {
-        guard previous.tools == next.tools,
-              previous.notices == next.notices,
-              previous.running == next.running,
-              previous.toolsAreLive == next.toolsAreLive,
-              previous.messages.count == next.messages.count,
-              previous.messages.count > 0,
-              previous.messages.dropLast() == next.messages.dropLast(),
-              let oldLast = previous.messages.last,
+        guard ChatStreamingTailProof.canReplaceTail(
+                from: previous.streamingTailSnapshot,
+                to: next.streamingTailSnapshot),
               let newLast = next.messages.last,
-              oldLast.id == newLast.id,
-              oldLast.role == newLast.role,
-              oldLast.sourceIndex == newLast.sourceIndex,
-              oldLast.timestamp == newLast.timestamp,
-              oldLast.attachmentPaths == newLast.attachmentPaths,
-              (oldLast.content != newLast.content || oldLast.delivery != newLast.delivery),
-              ChatRenderableText.hasVisibleContent(newLast.content)
-                || !newLast.attachmentPaths.isEmpty,
               let index = itemIndexByID["m-\(newLast.id)"],
               items.indices.contains(index),
               items[index].id == "m-\(newLast.id)" else {

@@ -493,6 +493,23 @@ check(processRows.compactMap { row -> [String]? in
     if case .process(let group) = row.kind { return group.messages.map(\.id) }
     return nil
 } == [["m901", "m902"]], "process row retains every intermediate assistant body")
+var finalAnchoredTool = processTools[1]
+finalAnchoredTool.id = "final-anchor"
+finalAnchoredTool.afterMessageID = "m903"
+let oneProcessRows = ChatTimeline.build(
+    messages: [msg(900, "user"), msg(901), msg(902), msg(903)],
+    tools: [processTools[0], finalAnchoredTool], completeTurnIDs: ["m900"])
+let oneProcessGroups = oneProcessRows.compactMap { row -> ChatProcessGroup? in
+    if case .process(let group) = row.kind { return group }
+    return nil
+}
+check(oneProcessGroups.count == 1, "one user turn emits one process summary")
+check(oneProcessGroups.first?.tools.map(\.id) == ["p1", "final-anchor"],
+      "the single process summary retains final-anchor tool details")
+check(!oneProcessRows.contains(where: {
+    if case .tools = $0.kind { return true }
+    return false
+}), "tool details are not duplicated outside the process summary")
 let blankProcessAnchor = ChatMessage(id: "blank-process", role: "assistant", content: "",
                                      timestamp: 1700000000, sourceIndex: 902)
 var blankAnchoredTool = processTools[1]

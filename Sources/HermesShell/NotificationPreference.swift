@@ -23,4 +23,9 @@ enum NotificationPreference {
     static var finished: Bool { flag(finishedKey, default: true) }
     static var recovery: Bool { flag(recoveryKey, default: true) }
     static var sound: Bool { flag(soundKey, default: false) }
+
+    /// Clarify is another blocking "reply needs you" event and shares the
+    /// approval toggle. Resolve the value explicitly so a new install gets the
+    /// promised default-on behavior even if another caller rewrites the store.
+    static var clarify: Bool { approval }
 }

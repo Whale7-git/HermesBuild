@@ -40,6 +40,25 @@ struct RootView: View {
                 }
             }
             .animation(nil, value: scenePhase)
+            .onChange(of: scenePhase) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onChange(of: sidebarOpen) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onChange(of: browserOpen) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onChange(of: app.showSettings) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onChange(of: app.needsLogin) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onChange(of: app.currentSessionID) { _, _ in
+                synchronizeConversationVisibility()
+            }
+            .onAppear { synchronizeConversationVisibility() }
     }
 
     private var content: some View {
@@ -323,6 +342,19 @@ struct RootView: View {
         sidebarOpen = true
     }
     private func closeSidebar() { sidebarOpen = false }
+
+    /// Planner suppression is only valid for an active app whose chat page is
+    /// unobscured. A backgrounded app keeps the same `currentSessionID`, but
+    /// that must not hide the notification the user needs when returning.
+    private func synchronizeConversationVisibility() {
+        let visible = scenePhase == .active
+            && !sidebarOpen && !browserOpen
+            && !app.showSettings && !app.needsLogin
+            && app.currentSessionID != nil
+        app.setPresentationVisibility(
+            appActive: scenePhase == .active,
+            conversationVisible: visible)
+    }
 
     /// Notification navigation is still scoped to the active backend. A stale
     /// or deleted target must not open an unrelated instance's conversation.

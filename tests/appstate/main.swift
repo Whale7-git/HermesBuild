@@ -30,6 +30,22 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
     }
     func remove(reference: String) throws { values.removeValue(forKey: reference) }
 }
+@MainActor final class RecordingTaskNotifier: TaskNotificationDelivering {
+    private(set) var delivered: [TaskNotification] = []
+    private(set) var removed: [String] = []
+    private(set) var authorizationRequests = 0
+    var status: TaskNotificationAuthorization = .authorized
+    func deliver(_ notification: TaskNotification, sound: Bool) async {
+        delivered.append(notification)
+    }
+    func authorizationStatus() async -> TaskNotificationAuthorization { status }
+    func requestAuthorization() async -> TaskNotificationAuthorization {
+        authorizationRequests += 1
+        status = .authorized
+        return status
+    }
+    func remove(identifier: String) async { removed.append(identifier) }
+}
 @MainActor final class HermesAPI {
     static var createEntered = false
     static var listEntered = false
@@ -699,9 +715,70 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
         print("TASK_SIGNAL_DEDUP_PASS empty and repeated signals publish zero assignments")
     }
 
+    @MainActor static func notificationRoutingTests() async throws {
+        let instance = HermesInstance(name: "Notify", baseURL: "https://notify-tasks.test")
+        try InstanceStore.save([instance], credentials: credentials)
+        InstanceStore.activeID = instance.id
+        let notifier = RecordingTaskNotifier()
+        let model = AppState(credentials: credentials, notifier: notifier)
+        model.sessions = [.placeholder(id: "visible"), .placeholder(id: "other")]
+
+        model.setPresentationVisibility(appActive: true, conversationVisible: true)
+        model.currentSessionID = "visible"
+        model.approvalArrived(sessionID: "visible", requestID: "a1")
+        await spin { notifier.delivered.isEmpty }
+        precondition(notifier.delivered.isEmpty, "active visible conversation suppresses its own approval")
+        precondition(model.sessionTaskObservations["visible"]?.signals
+                     == [.waitingForApproval],
+                     "notification suppression still records the task-center signal")
+
+        model.setPresentationVisibility(appActive: false, conversationVisible: false)
+        model.clarifyArrived(sessionID: "visible", requestID: "c1")
+        await spin { notifier.delivered.count == 1 }
+        precondition(notifier.delivered.first?.kind == .clarifyPending,
+                     "clarify uses a distinct notification kind")
+        let deliveredID = notifier.delivered[0].stableID
+        model.clarifyResolved(sessionID: "visible", requestID: "c1")
+        await spin { notifier.removed.contains(deliveredID) }
+        precondition(notifier.removed.contains(deliveredID),
+                     "resolved clarify removes the exact delivered identifier")
+        precondition(model.sessionTaskObservations["visible"]?.signals
+                     == [.waitingForApproval],
+                     "resolving clarify preserves the suppressed approval")
+
+        model.approvalArrived(sessionID: "other", requestID: "other-a")
+        await spin { notifier.delivered.count >= 2 }
+        model.approvalResolved(sessionID: "visible", requestID: "a1")
+        precondition(model.sessionTaskObservations["visible"] == nil,
+                     "resolving the last request in one session clears it")
+        precondition(model.sessionTaskObservations["other"]?.signals
+                     == [.waitingForApproval],
+                     "resolving one session does not clear another session's request")
+        model.approvalResolved(sessionID: "other", requestID: "other-a")
+
+        model.setPresentationVisibility(appActive: true, conversationVisible: false)
+        model.approvalArrived(sessionID: "visible", requestID: "a2")
+        model.clarifyArrived(sessionID: "visible", requestID: "c2")
+        await spin { notifier.delivered.count >= 4 }
+        precondition(Set(notifier.delivered.suffix(2).map(\.kind))
+                     == [.approvalPending, .clarifyPending],
+                     "active but obscured conversation delivers both sibling requests")
+        precondition(model.sessionTaskObservations["visible"]?.signals
+                     == [.waitingForApproval, .waitingForClarify],
+                     "sibling approval and clarify signals coexist")
+        model.approvalResolved(sessionID: "visible", requestID: "a2")
+        precondition(model.sessionTaskObservations["visible"]?.signals == [.waitingForClarify],
+                     "resolving approval preserves clarify task signal")
+        model.clarifyResolved(sessionID: "visible", requestID: "c2")
+        precondition(model.sessionTaskObservations["visible"] == nil,
+                     "resolving last blocking request clears task signal")
+        print("NOTIFICATION_ROUTING_PASS visibility, clarify identity and exact removal")
+    }
+
     @MainActor static func main() async throws {
         try await firstLaunchSetupTests()
         try taskSignalDedupTests()
+        try await notificationRoutingTests()
         try await taskCacheTests()
         let a = HermesInstance(name:"A",baseURL:"https://a.example")
         let b = HermesInstance(name:"B",baseURL:"https://b.example")

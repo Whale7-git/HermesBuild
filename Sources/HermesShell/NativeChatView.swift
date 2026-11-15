@@ -17,8 +17,8 @@ private struct ChatTaskSignalRecorder: ViewModifier {
             .onChange(of: model.running) { _, _ in onChange() }
             .onChange(of: model.submitting) { _, _ in onChange() }
             .onChange(of: model.reconnecting) { _, _ in onChange() }
-            .onChange(of: model.pendingApproval) { _, _ in onChange() }
-            .onChange(of: model.pendingClarify) { _, _ in onChange() }
+            .onChange(of: model.pendingApprovals) { _, _ in onChange() }
+            .onChange(of: model.pendingClarifies) { _, _ in onChange() }
             .onChange(of: model.stopping) { _, _ in onChange() }
             .onChange(of: model.uncertain) { _, _ in onChange() }
             .onChange(of: model.hasPendingSend) { _, _ in onChange() }
@@ -121,9 +121,10 @@ struct NativeChatView: View {
     /// 外部改写输入框的指令（发送成功清空、分支预填、模型回填）。
     @State var draftSync = ChatComposerDraftSync()
     /// 补充信息卡片的输入态：「其他」把选项按钮翻成输入框时置起，换提问时复位。
-    @State var clarifyTextMode = false
-    @State var clarifyDraft = ""
-    @State var clarifySelection: Set<Int> = []
+    @State var clarifyTextModes: Set<String> = []
+    @State var clarifyDrafts: [String: String] = [:]
+    @State var clarifySelections: [String: Set<Int>] = [:]
+    @State var expandedRequestID: String?
     /// Quote insertion is separate from model-owned draft rewrites so it cannot
     /// overwrite text the user typed while the action sheet was open.
     @State var composerInsertion = ChatComposerInsertion()
@@ -189,7 +190,13 @@ struct NativeChatView: View {
         self.webURL = api.webConsoleBaseURL
             .appendingPathComponent("session")
             .appendingPathComponent(sessionID)
-        _attachments = StateObject(wrappedValue: AttachmentComposerModel(api: api, sessionID: sessionID))
+        let attachmentDraftStore = ChatDraftStore(
+            instanceID: instanceID, accountScope: accountScope, sessionID: sessionID,
+            legacyBaseURL: api.webConsoleBaseURL.absoluteString,
+            fileStore: LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
+                                          sessionID: sessionID))
+        _attachments = StateObject(wrappedValue: AttachmentComposerModel(
+            api: api, sessionID: sessionID, draftStore: attachmentDraftStore))
         // 关键：只把「如何构造」放进 autoclosure，不在这里真的构造。
         // StateObject 只在视图身份首次出现时求值一次，宿主重建不再白造模型；
         // 草稿键编码、比例快照（ImageRatioStore 的锁 + 字典构建）与阅读位置
@@ -225,10 +232,10 @@ struct NativeChatView: View {
     private func recordTaskSignals() {
         var signals: Set<SessionTaskSignal> = []
         if model.running || model.submitting || model.reconnecting { signals.insert(.running) }
-        if model.pendingApproval != nil { signals.insert(.waitingForApproval) }
+        if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
         // clarify 同样让这一轮停住等用户，任务中心必须能看出「在等人」，
         // 否则用户会以为任务卡死。
-        if model.pendingClarify != nil { signals.insert(.waitingForClarify) }
+        if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
         if model.stopping { signals.insert(.stopping) }
         if model.uncertain || model.activeRecoveryUnreadable
             || (model.activeTurnRecovery != nil && !model.running)
@@ -252,8 +259,7 @@ struct NativeChatView: View {
             // 错误/本地历史钉在正文上方：上滚读历史时也不会丢失状态。
             if showsNoticeBar { noticeBar }
             thread
-            approvalCard
-            clarifyCard
+            pendingRequestsSection
             taskSummaryBar
             composerSection
         }
@@ -311,11 +317,21 @@ struct NativeChatView: View {
                       app.activeChangeToken == changeToken else { return }
                 app.approvalArrived(sessionID: sessionID, requestID: requestID)
             }
+            model.onApprovalResolved = { [weak app] sessionID, requestID in
+                guard let app, app.active.id == instance, app.historyAccountScope == account,
+                      app.activeChangeToken == changeToken else { return }
+                app.approvalResolved(sessionID: sessionID, requestID: requestID)
+            }
             // clarify 走同一套作用域校验与投递链路。
             model.onClarifyArrived = { [weak app] sessionID, requestID in
                 guard let app, app.active.id == instance, app.historyAccountScope == account,
                       app.activeChangeToken == changeToken else { return }
                 app.clarifyArrived(sessionID: sessionID, requestID: requestID)
+            }
+            model.onClarifyResolved = { [weak app] sessionID, requestID in
+                guard let app, app.active.id == instance, app.historyAccountScope == account,
+                      app.activeChangeToken == changeToken else { return }
+                app.clarifyResolved(sessionID: sessionID, requestID: requestID)
             }
             await model.load()
             guard !Task.isCancelled, visible, app.active.id == instance,
@@ -355,6 +371,7 @@ struct NativeChatView: View {
             controllerBox.value?.turnReading.reset()
             model.disconnect()
             recordTaskSignals()
+            app.resetRequestTaskSignalIndex()
             visible = false
             pendingPanel = nil; afterPanelAction = nil; activePanel = nil
             attachmentHighlightTask?.cancel()
@@ -388,6 +405,9 @@ struct NativeChatView: View {
         .onChange(of: model.uncertain) { _, value in if value { noticeBarDismissed = false } }
         .onChange(of: model.localPersistenceIssue) { _, value in if value != nil { noticeBarDismissed = false } }
         .onChange(of: model.queuePersistenceFailed) { _, value in if value { noticeBarDismissed = false } }
+        .onChange(of: attachments.errorMessage) { _, value in
+            if let value { showToast(value) }
+        }
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: true) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in

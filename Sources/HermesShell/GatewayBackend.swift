@@ -168,6 +168,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
 
     /// 会话页只有 WebUI 有；配了配套 WebUI 就指向它，否则退回网关地址。
     var webConsoleBaseURL: URL { webuiBaseURL ?? gatewayBaseURL }
+    var browserSessionURL: URL? { webuiBaseURL }
 
     /// 网关是只读转发层：没有归档列表、不能从指定消息处分支、不搜索正文、
     /// 用 API 密钥而不是密码。整会话复制仍然支持。
@@ -312,6 +313,50 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                                           activeRunID: active, requestedSessionID: sessionID)
     }
 
+    func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        let now = Date().timeIntervalSince1970
+        if let retryAt = nextRunProbeAt[runID], now < retryAt {
+            return .unknown
+        }
+        let data: Data
+        do {
+            data = try await perform(requests.runStatus(runID: runID))
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 401 || code == 403 {
+                throw error
+            }
+            return recordProbeFailure(runID: runID)
+        } catch {
+            if error is CancellationError { throw error }
+            return recordProbeFailure(runID: runID)
+        }
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              root["run_id"] as? String == runID,
+              let status = root["status"] as? String,
+              let returnedSessionID = root["session_id"] as? String,
+              returnedSessionID == sessionID else {
+            return recordProbeFailure(runID: runID)
+        }
+        switch status {
+        case "queued", "running", "waiting_for_approval", "stopping":
+            clearFailedRunProbes(runID: runID)
+            // The receipt can outlive a local run-store cleanup after a crash or
+            // account-scope repair. A status response that proves both the
+            // exact run ID and session ownership is sufficient to re-arm it.
+            if runStore.runID(for: sessionID) == nil {
+                runStore.remember(runID: runID, sessionID: sessionID)
+            } else if runStore.runID(for: sessionID) != runID {
+                return .unknown
+            }
+            return .alive
+        case "completed", "failed", "cancelled", "interrupted":
+            clearFailedRunProbes(runID: runID)
+            return .terminal
+        default:
+            return recordProbeFailure(runID: runID)
+        }
+    }
+
     private func activeRun(sessionID: String) async throws -> String? {
         guard let runID = runStore.runID(for: sessionID) else { return nil }
         let now = Date().timeIntervalSince1970
@@ -356,6 +401,17 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     private func clearFailedRunProbes(runID: String) {
         failedRunProbes.removeValue(forKey: runID)
         nextRunProbeAt.removeValue(forKey: runID)
+    }
+
+    private func recordProbeFailure(runID: String) -> ActiveRunProbe {
+        let failures = min(32, (failedRunProbes[runID] ?? 0) + 1)
+        failedRunProbes[runID] = failures
+        if failures >= Self.maxFailedRunProbes {
+            let exponent = min(5, failures - Self.maxFailedRunProbes)
+            nextRunProbeAt[runID] = Date().timeIntervalSince1970
+                + Double(min(60, 2 << exponent))
+        }
+        return .unknown
     }
 
     /// Never erase runStore for a guessed terminal state. Bounded exponential

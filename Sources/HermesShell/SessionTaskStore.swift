@@ -42,7 +42,6 @@ enum SessionTaskStore {
         }
         guard let data = try? JSONEncoder().encode(cleaned) else { return false }
         defaults.set(data, forKey: key)
-        _ = defaults.synchronize()
         return defaults.data(forKey: key) == data
     }
 

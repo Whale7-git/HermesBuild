@@ -1,5 +1,11 @@
 import Foundation
 
+enum ActiveRunProbe: Equatable, Sendable {
+    case alive
+    case terminal
+    case unknown
+}
+
 @MainActor
 protocol NativeChatService:AnyObject {
     func requiresAuthentication(after error: Error) -> Bool
@@ -7,6 +13,10 @@ protocol NativeChatService:AnyObject {
     /// duplicate POST but a relaunch may not know which run is active.
     var runRecoveryUnavailable: Bool { get }
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot
+    /// Bounded recovery-only status probe. A missing active_stream_id cannot
+    /// prove completion; this method lets a durable receipt verify its exact
+    /// run without replaying the original POST.
+    func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe
     func startNativeTurn(sessionID:String,text:String) async throws -> String
     /// 带附件发送。必须在协议 requirement 里声明：否则调用按静态类型派发，
     /// 只会命中 extension 的默认实现（旧实现会忽略附件），HermesAPI 的真实实现
@@ -30,6 +40,9 @@ protocol NativeChatService:AnyObject {
 extension NativeChatService {
     func requiresAuthentication(after error: Error) -> Bool { false }
     var runRecoveryUnavailable: Bool { false }
+    /// Unknown is fail-closed. A backend that cannot prove the exact run is
+    /// alive must never turn the receipt into permission to send again.
+    func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
     /// 未实现 steer 的服务按「不支持」处理，调用方会退回排队语义，不会静默丢弃。
     func steerNativeTurn(sessionID:String,text:String) async throws -> String? { "unsupported" }
     /// 没有审批通道的服务：明确回报「不支持」，让界面提示去对应终端处理，

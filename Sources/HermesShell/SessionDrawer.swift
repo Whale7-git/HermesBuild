@@ -126,6 +126,17 @@ struct SessionListPane: View {
                         .padding(.vertical, 8)
                         .accessibilityIdentifier("local-cleanup-warning")
                     }
+                    if let warning = app.sessionTaskPersistenceWarning {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "externaldrive.badge.exclamationmark")
+                            Text(warning)
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .padding(.vertical, 8)
+                        .accessibilityIdentifier("task-store-warning")
+                    }
                     if filtered.isEmpty {
                         if !app.hasLoadedSessions && app.errorText == nil {
                             HStack(spacing: 10) {

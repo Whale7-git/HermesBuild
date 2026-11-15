@@ -13,6 +13,9 @@ extension NativeChatModel {
         if running && streamTask != nil { return }
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         let generation = revision
         suspended = false
@@ -290,10 +293,10 @@ extension NativeChatModel {
         sessionModel = snap.model
         sessionProvider = snap.modelProvider
         streamID = snap.activeStreamID
-        if pendingApproval?.runID != snap.activeStreamID { clearApproval() }
+        removePendingApprovals(for: snap.activeStreamID)
         // clarify 同理：权威快照说这一轮已经不是那个 run 了，卡片就必须撤掉，
         // 否则会留一个发给已结束 run 的输入框。
-        if pendingClarify?.runID != snap.activeStreamID { clearClarify() }
+        removePendingClarifies(for: snap.activeStreamID)
         uncertain = false
         confirmedHistoryEnd = snap.rawMessageEndIndex
         bindPlaceholderCandidates(in: snap)
@@ -334,6 +337,7 @@ extension NativeChatModel {
                 uncertain = true
                 queueAutomaticDispatchPaused = true
                 notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                probeAcceptedRun(receipt)
             }
         }
         authenticationReported = false
@@ -354,6 +358,63 @@ extension NativeChatModel {
         confirmedHistory = record
         historyStore?.schedule(record)
         flush()
+    }
+
+    /// A missing active_stream_id is not terminal evidence. Probe the exact
+    /// durable receipt once; history remains the only authority that clears the
+    /// receipt, and unknown/error states stay fail-closed.
+    func probeAcceptedRun(_ receipt: ActiveTurnRecovery) {
+        guard activeRunProbeRunID != receipt.runID else { return }
+        // applySnapshot runs while `load` still owns the loading/syncing phase.
+        // The probe task starts only after the current MainActor job yields, and
+        // a later load cancels it, so the in-progress snapshot is the correct
+        // place to schedule the one bounded receipt check.
+        guard !suspended, !submitting else { return }
+        activeRunProbeTask?.cancel()
+        activeRunProbeRunID = receipt.runID
+        let generation = revision
+        activeRunProbeTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.activeRunProbeRunID == receipt.runID {
+                    self.activeRunProbeTask = nil
+                }
+            }
+            do {
+                let result = try await self.api.probeActiveRun(
+                    sessionID: self.sessionID, runID: receipt.runID)
+                guard generation == self.revision, !Task.isCancelled,
+                      !self.suspended,
+                      self.activeTurnRecovery == receipt else { return }
+                switch result {
+                case .alive:
+                    self.streamID = receipt.runID
+                    // The receipt proves the POST was accepted, so an older
+                    // pre-POST PendingSend is now resolved as delivered.
+                    if self.pendingSend != nil {
+                        self.pendingSend = nil
+                        self.pendingAbsent = false
+                    }
+                    self.uncertain = false
+                    self.queueAutomaticDispatchPaused = false
+                    self.notice = nil
+                    self.attach(streamID: receipt.runID)
+                case .terminal, .unknown:
+                    // Terminal status alone is not enough to clear the receipt:
+                    // authoritative history must prove this exact turn landed.
+                    self.uncertain = true
+                    self.queueAutomaticDispatchPaused = true
+                    self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                }
+            } catch {
+                guard generation == self.revision, !Task.isCancelled,
+                      self.activeTurnRecovery == receipt else { return }
+                if self.handleAuthenticationFailure(error) { return }
+                self.uncertain = true
+                self.queueAutomaticDispatchPaused = true
+                self.notice = "后台任务状态核对失败；消息不会重新发送，请稍后刷新。"
+            }
+        }
     }
 
     func flush() {
@@ -438,14 +499,12 @@ extension NativeChatModel {
                             // run 挂在服务端等这一票。能认出请求就出卡片；
                             // 认不出（老版本后端只给一句话）退回文字提示，别出空卡片。
                             let runID = self.streamID ?? active
-                            let wasClear = self.pendingApproval == nil
                             if let pending = ChatPendingApproval.make(from: frame, runID: runID) {
-                                if self.pendingApproval != pending { self.clearApproval() }
-                                self.pendingApproval = pending
+                                let isNew = self.upsertPendingApproval(pending)
                                 self.notice = nil
-                                // 只在审批从「无」变「有」时提醒一次；
+                                // 只在请求身份首次出现时提醒一次；
                                 // 同一请求重复推送不该重复打扰。
-                                if wasClear {
+                                if isNew {
                                     self.onApprovalArrived?(self.sessionID, pending.requestID)
                                 }
                             } else {
@@ -453,23 +512,20 @@ extension NativeChatModel {
                             }
                         } else if frame.event == "approval_resolved" {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
-                               let requestID = resolved["request_id"] as? String,
-                               let pending = self.pendingApproval,
-                               pending.runID == active, pending.requestID == requestID {
-                                self.clearApproval()
+                               let requestID = resolved["request_id"] as? String {
+                                let runID = self.streamID ?? active
+                                self.removePendingApproval(requestID: requestID, runID: runID)
                             }
                         } else if frame.event == "clarify" {
                             // agent 卡在这儿等服务端拿到答复。以前只写一句
                             // 「请在 WebUI 处理后刷新」——纯网关实例根本没有 WebUI
                             // 可去，任务会一直挂到超时。现在出可操作卡片。
                             let runID = self.streamID ?? active
-                            let wasClear = self.pendingClarify == nil
                             if let pending = ChatPendingClarify.make(from: frame, runID: runID) {
-                                if self.pendingClarify != pending { self.clearClarify() }
-                                self.pendingClarify = pending
+                                let isNew = self.upsertPendingClarify(pending)
                                 self.notice = nil
-                                // 与审批同一规则：只在「无 → 有」时提醒一次。
-                                if wasClear {
+                                // 与审批同一规则：只在身份首次出现时提醒一次。
+                                if isNew {
                                     self.onClarifyArrived?(self.sessionID, pending.requestID)
                                 }
                             } else {
@@ -479,10 +535,8 @@ extension NativeChatModel {
                             }
                         } else if frame.event == "clarify_resolved" {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
-                               let requestID = resolved["request_id"] as? String,
-                               let pending = self.pendingClarify,
-                               pending.requestID == requestID {
-                                self.clearClarify()
+                               let requestID = resolved["request_id"] as? String {
+                                self.removePendingClarify(requestID: requestID)
                             }
                         }
                         if frame.event == "approval_resolved" {
@@ -715,6 +769,9 @@ extension NativeChatModel {
         guard !loading, !syncing else { return }
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
@@ -733,6 +790,9 @@ extension NativeChatModel {
         resumeRequested = false
         publishTask?.cancel()
         publishTask = nil
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil

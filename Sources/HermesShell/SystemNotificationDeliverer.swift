@@ -19,6 +19,14 @@ protocol TaskNotificationDelivering: AnyObject {
     func authorizationStatus() async -> TaskNotificationAuthorization
     /// 首次真正要投递时才申请，不在启动时弹权限框。
     func requestAuthorization() async -> TaskNotificationAuthorization
+    /// Remove both delivered and still-pending copies with an exact stable ID.
+    func remove(identifier: String) async
+}
+
+extension TaskNotificationDelivering {
+    /// Keeps existing test doubles and alternate implementations source
+    /// compatible; production overrides this with the system implementation.
+    func remove(identifier: String) async {}
 }
 
 #if canImport(UserNotifications)
@@ -35,17 +43,15 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
     }
 
     func deliver(_ notification: TaskNotification, sound: Bool) async {
-        // P1：投递前先看授权。原来这里直接 add，`try?` 吞掉错误——
-        // 如果尚未授权，首次安装的用户
-        // 需要从设置页显式申请，不能仅依靠默认开启的通知类型。
-        //
-        // 不在这里自动弹权限框：那会在用户没打开开关时突然弹窗。
-        // 申请动作放在设置页开关被打开的那一刻（见 LoginSettings）。
-        let status = await authorizationStatus()
+        // Preferences default on. On the first real delivery, ask once here;
+        // requesting at launch would surprise users before a notification fact.
+        var status = await authorizationStatus()
+        if status == .notDetermined {
+            status = await requestAuthorization()
+        }
         guard status == .authorized || status == .provisional else {
-            await RuntimeLogRecorder.shared.record(
-                .info, "notify",
-                "skip delivery kind=\(notification.kind) reason=not-authorized")
+            await RuntimeLogRecorder.shared.record(.warning, "notify",
+                "skip delivery kind=\(notification.kind) status=\(status.rawValue)")
             return
         }
 
@@ -76,6 +82,13 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
         }
     }
 
+    func remove(identifier: String) async {
+        guard !identifier.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
     /// 通知携带的会话标识键。读取方在 `didReceive` 里取。
     static let sessionIDKey = "sessionID"
     static let instanceIDKey = "instanceID"
@@ -93,8 +106,13 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
     }
 
     func requestAuthorization() async -> TaskNotificationAuthorization {
-        _ = try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .badge, .sound])
+        do {
+            _ = try await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .badge, .sound])
+        } catch {
+            await RuntimeLogRecorder.shared.record(.error, "notify",
+                "authorization request failed err=\(error.localizedDescription)")
+        }
         return await authorizationStatus()
     }
 
@@ -135,6 +153,7 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
     private static func title(for kind: TaskNotification.Kind) -> String {
         switch kind {
         case .approvalPending: return "需要你确认"
+        case .clarifyPending: return "需要你补充信息"
         case .runFinished: return "处理完成"
         case .recoveryIssue: return "后台恢复需处理"
         }
@@ -145,6 +164,8 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
         switch notification.kind {
         case .approvalPending:
             return notification.sessionTitle + "：回复停在审批步骤"
+        case .clarifyPending:
+            return notification.sessionTitle + "：回复在等你补充信息"
         case .runFinished:
             return notification.sessionTitle + "：本轮已结束"
         case .recoveryIssue:
@@ -159,6 +180,7 @@ final class SystemNotificationDeliverer: NSObject, TaskNotificationDelivering,
 final class SystemNotificationDeliverer: TaskNotificationDelivering {
     static let shared = SystemNotificationDeliverer()
     private(set) var delivered: [TaskNotification] = []
+    private(set) var removedIdentifiers: [String] = []
 
     func install() {}
 
@@ -169,6 +191,8 @@ final class SystemNotificationDeliverer: TaskNotificationDelivering {
     func authorizationStatus() async -> TaskNotificationAuthorization { .authorized }
 
     func requestAuthorization() async -> TaskNotificationAuthorization { .authorized }
+
+    func remove(identifier: String) async { removedIdentifiers.append(identifier) }
 }
 
 #endif
