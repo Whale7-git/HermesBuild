@@ -539,5 +539,21 @@ test("unattributed_tools_do_not_move_to_latest_turn") {
     ]))
     expect(snapshot.tools.first?.afterMessageID == nil, "Unknown ownership must not be invented from the last user")
 }
+test("long_run_page_coverage") {
+    let latest = try snapshot(#"{"session_id":"test","_messages_offset":4,"messages":[{"id":"t4","role":"tool","content":"done"},{"id":"answer","role":"assistant","content":"complete"}]}"#)
+    let earlier = try snapshot(#"{"session_id":"test","_messages_offset":0,"messages":[{"id":"sent","role":"user","content":"original"},{"id":"t1","role":"tool","content":"done"},{"id":"t2","role":"tool","content":"done"},{"id":"t3","role":"tool","content":"done"}]}"#)
+    let gap = try snapshot(#"{"session_id":"test","_messages_offset":0,"messages":[{"id":"sent","role":"user","content":"original"},{"id":"t1","role":"tool","content":"done"},{"id":"t2","role":"tool","content":"done"}]}"#)
+    let receipt = ActiveTurnRecovery(runID: "run", historyEnd: 0,
+                                     knownIDs: [], text: "original", attachmentPaths: [])
+    expect(!receipt.confirmsCompletion(in: latest), "tail without original user must stay uncertain")
+    expect(receipt.confirmsCompletion(in: [latest, earlier]),
+           "contiguous raw windows can prove a long tool run finished")
+    expect(!receipt.confirmsCompletion(in: [latest, gap]),
+           "a missing raw index cannot prove unique submission")
+    let concurrent = try snapshot(#"{"session_id":"test","_messages_offset":0,"messages":[{"id":"sent","role":"user","content":"original"},{"id":"other","role":"user","content":"another"},{"id":"t2","role":"tool","content":"done"},{"id":"t3","role":"tool","content":"done"}]}"#)
+    expect(!receipt.confirmsCompletion(in: [latest, concurrent]),
+           "interleaved user submissions must remain ambiguous")
+}
+
 print("RESULT: \(assertions) assertions, \(failures) failures")
 if failures > 0 { exit(1) }
