@@ -602,15 +602,13 @@ struct ChatToolGroup: View {
     private var summaryItems: [ChatToolSummary.Item] {
         tools.map { ChatToolSummary.Item(name: $0.name, done: $0.done, isError: $0.isError) }
     }
-    private var title: String {
-        ChatToolSummary.title(summaryItems, allowsRunning: allowsRunning)
-    }
-    private var summary: String {
-        ChatToolSummary.summary(summaryItems, allowsRunning: allowsRunning)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // The header is updated for every live tool event. Map the complete
+        // tool array once, not independently for title and subtitle.
+        let items = summaryItems
+        let title = ChatToolSummary.title(items, allowsRunning: allowsRunning)
+        let summary = ChatToolSummary.summary(items, allowsRunning: allowsRunning)
+        return VStack(alignment: .leading, spacing: 0) {
             Button {
                 expanded.toggle()
             } label: {
@@ -699,17 +697,13 @@ struct ChatProcessRow: View {
     private var executionItems: [ChatToolSummary.Item] {
         group.tools.map { .init(name: $0.name, done: $0.done, isError: $0.isError) }
     }
-    private var title: String {
-        ChatExecutionPresentation.title(messageCount: group.messages.count,
-                                        toolItems: executionItems, allowsRunning: allowsRunning)
-    }
-    private var subtitle: String {
-        ChatExecutionPresentation.detail(messageCount: group.messages.count,
-                                         toolItems: executionItems, allowsRunning: allowsRunning)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let items = executionItems
+        let title = ChatExecutionPresentation.title(
+            messageCount: group.messages.count, toolItems: items, allowsRunning: allowsRunning)
+        let subtitle = ChatExecutionPresentation.detail(
+            messageCount: group.messages.count, toolItems: items, allowsRunning: allowsRunning)
+        return VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 9) {
                     Image(systemName: failed ? "exclamationmark.circle.fill"
