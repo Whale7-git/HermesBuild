@@ -15,6 +15,10 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
 @MainActor final class PendingRecoveryService: NativeChatService {
     var rows: [[String: Any]] = [["id": "old", "role": "user", "content": "same"]]
     var offset = 0
+    /// Simulate the backend's 60-raw-record history window.
+    var historyPageLimit: Int?
+    var historyPageCalls = 0
+    var appendHeadOnOlderPage = false
     var active: String?
     var readOnly = false
     var failHistory = false
@@ -28,8 +32,24 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         if failHistory { throw URLError(.notConnectedToInternet) }
+        var visibleRows = rows
+        var pageOffset = offset
+        if let limit = historyPageLimit {
+            let upper = min(before ?? (offset + rows.count), offset + rows.count)
+            let lower = max(offset, upper - limit)
+            visibleRows = Array(rows[(lower - offset)..<(upper - offset)])
+            pageOffset = lower
+            if before != nil {
+                historyPageCalls += 1
+                // Simulates a concurrent append during history lookback.
+                if appendHeadOnOlderPage {
+                    appendHeadOnOlderPage = false
+                    rows.append(["id": "concurrent", "role": "assistant", "content": "other reply"])
+                }
+            }
+        }
         let snapshot = try ChatSnapshot(data: JSONSerialization.data(withJSONObject: [
-            "session_id": sessionID, "messages": rows, "_messages_offset": offset,
+            "session_id": sessionID, "messages": visibleRows, "_messages_offset": pageOffset,
             "read_only": readOnly, "active_stream_id": active as Any? ?? NSNull()
         ]))
         if holdHistory { return try await withCheckedThrowingContinuation { historyWait = $0 } }
@@ -328,6 +348,55 @@ extension ModelTests {
             }
         }
         print("PENDING_PASS receipt-only run probe attaches alive and fails closed otherwise")
+
+        // Long-running agent: a single answer can be separated from its
+        // accepted user message by >60 invisible tool rows. A normal GET must
+        // remain fail-closed; manual read-only pagination may prove completion.
+        for scenario in ["complete", "second-user", "changed-tail"] {
+            let longRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HermesLongRun-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: longRoot) }
+            let longFiles = LocalDataFileStore(
+                instanceID: "long", accountScope: "account",
+                sessionID: "test", rootDirectory: longRoot)
+            let longStore = ChatDraftStore(instanceID: "long", accountScope: "account",
+                                           sessionID: "test", fileStore: longFiles)
+            let receipt = ActiveTurnRecovery(runID: "long-run", historyEnd: 0,
+                knownIDs: [], text: "long task", attachmentPaths: [])
+            precondition(longStore.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let service = PendingRecoveryService()
+            service.historyPageLimit = 60
+            service.rows = [["id": "new-user", "role": "user", "content": "long task"]]
+            service.rows += (0..<145).map { index in
+                ["id": "tool-\(index)", "role": "tool",
+                 "tool_call_id": "tool-\(index)", "content": "completed"]
+            }
+            if scenario == "second-user" {
+                service.rows.insert(["id": "extra-user", "role": "user", "content": "another submission"],
+                                    at: 80)
+            }
+            service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
+            service.appendHeadOnOlderPage = scenario == "changed-tail"
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: longStore)
+            await model.load()
+            if let probe = model.activeRunProbeTask { await probe.value }
+            precondition(model.uncertain && !model.canSend && service.startCalls == 0,
+                         "60-row tail must not prematurely release a long accepted run")
+            let verified = await model.reconcileLongAcceptedRun()
+            if scenario == "complete" {
+                precondition(verified && model.canSend
+                             && longStore.loadActiveRun().value == nil,
+                             "contiguous long history and stable tail must settle receipt")
+            } else {
+                precondition(!verified && !model.canSend
+                             && longStore.loadActiveRun().value != nil,
+                             "ambiguous/changed long history must remain fail-closed")
+            }
+            precondition(service.historyPageCalls >= 2 && service.startCalls == 0,
+                         "verification pages history without replaying a POST")
+            model.disconnect()
+        }
+        print("PENDING_PASS long-run history pagination, interleaved user and changed tail")
 
         let busyService = PendingRecoveryService()
         let busy = NativeChatModel(sessionID: "test", api: busyService)
