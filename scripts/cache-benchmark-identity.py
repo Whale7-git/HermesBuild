@@ -50,17 +50,20 @@ def identity(root: Path = ROOT) -> str:
             "prepared Xcode project is incomplete; run cache-benchmark-prepare.py first"
         )
     project_digest = digest_paths(project_files, root)
-    manifest_path = Path(
-        os.environ.get("RUNNER_TEMP", "")
-    ) / "hermes-cache-input-sha256.txt"
-    if not manifest_path.is_file():
+    runner_temp = Path(os.environ.get("RUNNER_TEMP", "")).resolve()
+    manifest_path = runner_temp / "hermes-cache-inputs.tsv"
+    digest_path = runner_temp / "hermes-cache-input-sha256.txt"
+    if not manifest_path.is_file() or not digest_path.is_file():
         raise SystemExit(
             "cache input manifest is absent; run cache-benchmark-prepare.py first"
         )
-    input_manifest = manifest_path.read_text(encoding="ascii").strip()
+    computed_manifest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    input_manifest = digest_path.read_text(encoding="ascii").strip()
+    if computed_manifest != input_manifest:
+        raise SystemExit("cache input manifest digest does not match its contents")
     if len(input_manifest) != 64:
         raise SystemExit("cache input manifest digest is malformed")
-    prepared_plist = Path(os.environ["RUNNER_TEMP"]) / "HermesCI-Info.plist"
+    prepared_plist = runner_temp / "HermesCI-Info.plist"
     if not prepared_plist.is_file():
         raise SystemExit("prepared CI Info.plist is absent")
     info = plistlib.loads(prepared_plist.read_bytes())

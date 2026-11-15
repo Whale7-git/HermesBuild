@@ -67,19 +67,25 @@ def write_plist(root: Path, destination: Path) -> None:
     destination.write_bytes(plistlib.dumps(info, sort_keys=False))
 
 
-def prepare(root: Path) -> tuple[list[Path], Path, str]:
+def prepare(root: Path, *, regenerate_project: bool = True) -> tuple[list[Path], Path, str]:
     runner_temp = Path(os.environ.get("RUNNER_TEMP", "")).resolve()
     if not runner_temp.is_dir():
         raise SystemExit("RUNNER_TEMP must name an existing directory")
     project = root / "HermesShellCI.xcodeproj"
     plist = runner_temp / "HermesCI-Info.plist"
 
-    subprocess.run(
-        ["xcodegen", "generate", "--spec", "ios-ci-project.yml"],
-        cwd=root,
-        check=True,
-    )
-    write_plist(root, plist)
+    if regenerate_project:
+        subprocess.run(
+            ["xcodegen", "generate", "--spec", "ios-ci-project.yml"],
+            cwd=root,
+            check=True,
+        )
+        write_plist(root, plist)
+    else:
+        if not (project / "project.pbxproj").is_file():
+            raise SystemExit(f"prepared Xcode project not found: {project}")
+        if not plist.is_file():
+            raise SystemExit(f"prepared CI Info.plist not found: {plist}")
 
     inputs = tracked_files(root)
     inputs.extend(prepared_project_files(project))
@@ -121,8 +127,17 @@ def prepare(root: Path) -> tuple[list[Path], Path, str]:
 
 
 def main() -> int:
-    root = Path(sys.argv[1]).resolve() if len(sys.argv) == 2 else Path.cwd()
-    _, manifest, digest = prepare(root)
+    arguments = sys.argv[1:]
+    regenerate = True
+    if arguments and arguments[0] == "--reuse-generated":
+        regenerate = False
+        arguments = arguments[1:]
+    if len(arguments) > 1:
+        raise SystemExit(
+            "usage: cache-benchmark-prepare.py [--reuse-generated] [ROOT]"
+        )
+    root = Path(arguments[0]).resolve() if arguments else Path.cwd()
+    _, manifest, digest = prepare(root, regenerate_project=regenerate)
     print(f"CACHE_INPUT_MANIFEST={manifest}")
     print(f"CACHE_INPUT_SHA256={digest}")
     return 0

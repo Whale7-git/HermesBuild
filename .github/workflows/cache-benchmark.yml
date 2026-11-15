@@ -79,12 +79,32 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: bash scripts/cache-benchmark.sh cold
+      - name: Validate cold baseline
+        shell: bash
+        env:
+          COLD_HERMES: ${{ steps.cold.outputs.compiled_hermes }}
+          COLD_TEXTUAL: ${{ steps.cold.outputs.compiled_textual }}
+          COLD_BASE_REGENERATED: ${{ steps.cold.outputs.base_directory_regenerated }}
+        run: |
+          set -euo pipefail
+          [[ "$COLD_BASE_REGENERATED" == 0 ]] || {
+            echo "cold build regenerated its base directory" >&2
+            exit 1
+          }
+          [[ "$COLD_HERMES" -gt 0 && "$COLD_TEXTUAL" -gt 0 ]] || {
+            echo "cold build compile counts are invalid" >&2
+            exit 1
+          }
       - name: Snapshot cold DerivedData
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/hermes-cache-snapshot"
           ditto "$RUNNER_TEMP/hermes-ipa-derived" "$RUNNER_TEMP/hermes-cache-snapshot"
+          ditto HermesShellCI.xcodeproj \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-project"
+          cp "$RUNNER_TEMP/HermesCI-Info.plist" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-ci-info.plist"
           cp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
              "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-inputs.tsv"
           cp "$RUNNER_TEMP/hermes-cache-input-sha256.txt" \
@@ -99,7 +119,7 @@ jobs:
               "$RUNNER_TEMP/hermes-ipa-derived/.benchmark-inputs.tsv"
       - name: Normalize the same inputs before same-runner build
         shell: bash
-        run: python3 scripts/cache-benchmark-prepare.py
+        run: python3 scripts/cache-benchmark-prepare.py --reuse-generated
       - name: Run same-runner warm build
         id: same
         shell: bash
@@ -159,11 +179,45 @@ jobs:
         id: save_start
         shell: bash
         run: echo "ns=$(python3 -c 'import time; print(time.monotonic_ns())')" >> "$GITHUB_OUTPUT"
+      - name: Ensure the exact cache key is new
+        id: cache_lookup
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hermes-cache-snapshot
+          key: ${{ steps.identity.outputs.key }}
+          lookup-only: true
+      - name: Require an unused cache key
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache_lookup.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          [[ "$CACHE_HIT" != "true" ]] || {
+            echo "exact cache key already exists" >&2
+            exit 1
+          }
       - name: Save only the frozen cold snapshot
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/hermes-cache-snapshot
           key: ${{ steps.identity.outputs.key }}
+      - name: Verify the exact cache was saved
+        id: cache_verify
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hermes-cache-snapshot
+          key: ${{ steps.identity.outputs.key }}
+          lookup-only: true
+      - name: Require the saved cache to be present
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.cache_verify.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          [[ "$CACHE_HIT" == "true" ]] || {
+            echo "exact cache key was not saved" >&2
+            exit 1
+          }
       - name: Record cache save time
         id: save_elapsed
         shell: bash
@@ -230,31 +284,6 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-build-version
       - name: Install XcodeGen
         run: command -v xcodegen >/dev/null || brew install xcodegen
-      - name: Prepare normalized inputs
-        shell: bash
-        run: python3 scripts/cache-benchmark-prepare.py
-      - name: Verify exact cache namespace
-        id: identity
-        shell: bash
-        env:
-          EXPECTED_CACHE_KEY: ${{ needs.producer.outputs.cache_key }}
-        run: |
-          set -euo pipefail
-          namespace="$(python3 scripts/cache-benchmark-identity.py)"
-          expected="${EXPECTED_CACHE_KEY%-sha*}"
-          actual_input="$(tr -d '\n' < "$RUNNER_TEMP/hermes-cache-input-sha256.txt")"
-          expected_input="${{ needs.producer.outputs.input_sha }}"
-          [[ "$actual_input" == "$expected_input" ]] || {
-            echo "input manifest differs: expected $expected_input, got $actual_input" >&2
-            exit 1
-          }
-          [[ "$namespace" == "$expected" ]] || {
-            echo "cache namespace differs: expected $expected, got $namespace" >&2
-            exit 1
-          }
-          worker_id="consumer-${RUNNER_NAME:-unknown}-${RUNNER_TRACKING_ID:-no-tracking}-$(hostname)"
-          printf 'worker_id=%s\n' "$worker_id" >> "$GITHUB_OUTPUT"
-          echo "consumer worker label: $worker_id"
       - name: Record cache restore start
         id: restore_start
         shell: bash
@@ -291,6 +320,46 @@ jobs:
             echo "restored snapshot input manifest differs" >&2
             exit 1
           }
+          rm -rf HermesShellCI.xcodeproj
+          ditto "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-project" \
+             HermesShellCI.xcodeproj
+          cp "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-ci-info.plist" \
+             "$RUNNER_TEMP/HermesCI-Info.plist"
+      - name: Prepare restored inputs
+        shell: bash
+        run: python3 scripts/cache-benchmark-prepare.py --reuse-generated
+      - name: Verify exact cache namespace
+        id: identity
+        shell: bash
+        env:
+          EXPECTED_CACHE_KEY: ${{ needs.producer.outputs.cache_key }}
+        run: |
+          set -euo pipefail
+          namespace="$(python3 scripts/cache-benchmark-identity.py)"
+          expected="${EXPECTED_CACHE_KEY%-sha*}"
+          actual_input="$(tr -d '\n' < "$RUNNER_TEMP/hermes-cache-input-sha256.txt")"
+          expected_input="${{ needs.producer.outputs.input_sha }}"
+          [[ "$actual_input" == "$expected_input" ]] || {
+            echo "input manifest differs: expected $expected_input, got $actual_input" >&2
+            exit 1
+          }
+          [[ "$namespace" == "$expected" ]] || {
+            echo "cache namespace differs: expected $expected, got $namespace" >&2
+            exit 1
+          }
+          worker_id="consumer-${RUNNER_NAME:-unknown}-${RUNNER_TRACKING_ID:-no-tracking}-$(hostname)"
+          printf 'worker_id=%s\n' "$worker_id" >> "$GITHUB_OUTPUT"
+          echo "consumer worker label: $worker_id"
+      - name: Compare producer and consumer manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-inputs.tsv" \
+              "$RUNNER_TEMP/hermes-cache-inputs.tsv"
+      - name: Restore DerivedData after input verification
+        shell: bash
+        run: |
+          set -euo pipefail
           rm -rf "$RUNNER_TEMP/hermes-ipa-derived"
           ditto "$RUNNER_TEMP/hermes-cache-snapshot" "$RUNNER_TEMP/hermes-ipa-derived"
       - name: Run restored-runner warm build
@@ -349,6 +418,7 @@ jobs:
               )
           PY
       - name: Report end-to-end cache value
+        id: cache_value
         shell: bash
         env:
           WARM_RESULT: ${{ steps.warm.outputs.result_path }}
@@ -384,6 +454,32 @@ jobs:
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
               stream.write(text)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"net_seconds={net:.3f}\n")
+          PY
+      - name: Validate restored-runner evidence
+        shell: bash
+        env:
+          PRODUCER_WORKER: ${{ needs.producer.outputs.worker_id }}
+          CONSUMER_WORKER: ${{ steps.identity.outputs.worker_id }}
+          COLD_HERMES: ${{ needs.producer.outputs.cold_compiled_hermes }}
+          COLD_TEXTUAL: ${{ needs.producer.outputs.cold_compiled_textual }}
+          NET_SECONDS: ${{ steps.cache_value.outputs.net_seconds }}
+        run: |
+          set -euo pipefail
+          [[ "$PRODUCER_WORKER" != "$CONSUMER_WORKER" ]] || {
+            echo "producer and consumer used the same worker identity" >&2
+            exit 1
+          }
+          [[ "$COLD_HERMES" -gt 0 && "$COLD_TEXTUAL" -gt 0 ]] || {
+            echo "cold build compile counts are invalid" >&2
+            exit 1
+          }
+          python3 - "$NET_SECONDS" <<'PY'
+          import sys
+
+          if float(sys.argv[1]) <= 0:
+              raise SystemExit(f"cache net saving is not positive: {sys.argv[1]}s")
           PY
       - name: Fail when restored cache reuse is absent
         if: ${{ inputs.require_reuse }}

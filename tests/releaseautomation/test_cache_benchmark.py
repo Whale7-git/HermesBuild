@@ -173,8 +173,10 @@ class CacheIdentityTests(unittest.TestCase):
                 }
             )
         )
+        (project / "hermes-cache-inputs.tsv").write_bytes(b"manifest\n")
+        digest = __import__("hashlib").sha256(b"manifest\n").hexdigest()
         (project / "hermes-cache-input-sha256.txt").write_text(
-            "c" * 64 + "\n", encoding="ascii"
+            digest + "\n", encoding="ascii"
         )
         commands = mock.Mock(
             side_effect=[
@@ -204,7 +206,7 @@ class CacheIdentityTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotIn(" ", first)
         self.assertIn("hermes-derived-v2", first)
-        self.assertIn("inputs" + "c" * 64, first)
+        self.assertIn("inputs" + digest, first)
         self.assertIn("mtime946684800000000000", first)
         self.assertIn("imageversion20261115.1", first)
 
@@ -225,6 +227,23 @@ class CacheWorkflowTests(unittest.TestCase):
         self.assertIn("hermes-cache-input-sha256.txt", workflow)
         self.assertIn("base_directory_regenerated", workflow)
         self.assertNotIn("HERMES_SOURCE_VERIFIED_SHA", workflow)
+        self.assertIn("lookup-only: true", workflow)
+        self.assertIn("Require an unused cache key", workflow)
+        self.assertIn("Require the saved cache to be present", workflow)
+        self.assertIn("--reuse-generated", workflow)
+        self.assertLess(
+            workflow.index("Restore exact producer cache"),
+            workflow.index("Prepare restored inputs"),
+        )
+        self.assertLess(
+            workflow.index("Prepare restored inputs"),
+            workflow.index("Compare producer and consumer manifests"),
+        )
+        self.assertIn("Validate cold baseline", workflow)
+        self.assertIn("Compare producer and consumer manifests", workflow)
+        self.assertIn("PRODUCER_WORKER", workflow)
+        self.assertIn("CONSUMER_WORKER", workflow)
+        self.assertIn("net_seconds", workflow)
 
     def test_benchmark_keeps_complete_verification_and_counts_compiles(self):
         script = (ROOT / "scripts" / "cache-benchmark.sh").read_text(encoding="utf-8")
@@ -256,6 +275,7 @@ class CacheWorkflowTests(unittest.TestCase):
         self.assertIn("stat.S_ISREG", script)
         self.assertIn("content_sha", script)
         self.assertIn("project.rglob(\"*\")", script)
+        self.assertIn("--reuse-generated", script)
 
 
 if __name__ == "__main__":
