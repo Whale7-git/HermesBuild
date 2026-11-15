@@ -721,6 +721,7 @@ extension NativeChatModel {
                     // 只有「干净收尾」才允许放行排队的那条：中断、核对失败、
                     // 结果不确定都必须把队列留着，让用户看见它还没发出去。
                     var settled = false
+                    var finalHistoryConfirmed = false
                     do {
                         let snap = try await api.history(sessionID:sessionID,before:nil)
                         guard accepts(runContext(for: active, generation: generation)),
@@ -762,8 +763,12 @@ extension NativeChatModel {
                             transition(to: .streaming(connected: false))
                         }
                         if let next = snap.activeStreamID { attach(streamID:next) }
-                        settled = (snap.activeStreamID == nil && terminalFailure == nil
-                            && (terminalEvent == "done" || terminalEvent == "stream_end"))
+                        // An explicit failed/cancelled terminal can safely
+                        // unlock a manual send after a consistent history GET,
+                        // but it must NEVER authorize automatic queued dispatch.
+                        finalHistoryConfirmed = snap.activeStreamID == nil
+                        settled = finalHistoryConfirmed && terminalFailure == nil
+                            && (terminalEvent == "done" || terminalEvent == "stream_end")
                     } catch {
                         guard generation == revision, !Task.isCancelled else { return }
                         if handleAuthenticationFailure(error) { return }
@@ -777,9 +782,9 @@ extension NativeChatModel {
                     let decision = ChatRuntimeCoordinator.terminalAction(
                         stopPending: stopping || stopAcknowledged,
                         sameRun: activeTurnRecovery == nil,
-                        terminalFrame: terminalEvent == "done" || terminalEvent == "stream_end",
-                        finalHistoryConfirmed: settled && streamID == nil,
-                        uncertain: uncertain,
+                        terminalFrame: terminalEvent != nil,
+                        finalHistoryConfirmed: finalHistoryConfirmed && streamID == nil,
+                        successful: settled, uncertain: uncertain,
                         userPaused: queueUserPaused, recoveryPaused: queueRecoveryPaused)
                     if decision == .keepLocked {
                         // An unmatched receipt or inconclusive final history

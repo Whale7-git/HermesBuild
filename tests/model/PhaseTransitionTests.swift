@@ -175,14 +175,15 @@ extension ModelTests {
             for sameRun in [false, true] {
                 for terminal in [false, true] {
                     for history in [false, true] {
-                        for uncertain in [false, true] {
-                            for userPaused in [false, true] {
-                                for recoveryPaused in [false, true] {
+                        for successful in [false, true] {
+                            for uncertain in [false, true] {
+                                for userPaused in [false, true] {
+                                    for recoveryPaused in [false, true] {
                                     let action = ChatRuntimeCoordinator.terminalAction(
                                         stopPending: stop, sameRun: sameRun,
                                         terminalFrame: terminal, finalHistoryConfirmed: history,
-                                        uncertain: uncertain, userPaused: userPaused,
-                                        recoveryPaused: recoveryPaused)
+                                        successful: successful, uncertain: uncertain,
+                                        userPaused: userPaused, recoveryPaused: recoveryPaused)
                                     let safe = !stop && sameRun && terminal && history && !uncertain
                                     if stop {
                                         expect(action == .verifyStop,
@@ -191,12 +192,14 @@ extension ModelTests {
                                         expect(action == .keepLocked,
                                                "incomplete evidence may not release a queued POST")
                                     } else {
-                                        expect(action == ((!userPaused && !recoveryPaused)
+                                        expect(action == ((successful && !userPaused && !recoveryPaused)
                                                ? .finishAndDispatch : .finishWithoutDispatch),
-                                               "queue dispatch requires both safety and user consent")
+                                               "only a verified successful run may auto-dispatch the queue")
+                                    }
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }

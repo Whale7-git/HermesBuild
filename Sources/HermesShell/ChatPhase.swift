@@ -195,12 +195,13 @@ enum ChatRuntimeCoordinator {
 
     static func terminalAction(stopPending: Bool, sameRun: Bool,
                                terminalFrame: Bool, finalHistoryConfirmed: Bool,
-                               uncertain: Bool, userPaused: Bool,
+                               successful: Bool, uncertain: Bool, userPaused: Bool,
                                recoveryPaused: Bool) -> TerminalAction {
         if stopPending { return .verifyStop }
         guard sameRun, terminalFrame, finalHistoryConfirmed, !uncertain else {
             return .keepLocked
         }
-        return userPaused || recoveryPaused ? .finishWithoutDispatch : .finishAndDispatch
+        return !successful || userPaused || recoveryPaused
+            ? .finishWithoutDispatch : .finishAndDispatch
     }
 }
