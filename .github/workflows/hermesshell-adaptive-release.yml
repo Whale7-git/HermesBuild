@@ -46,9 +46,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2.1"
+      - name: Report preinstalled Swift
+        run: |
+          command -v swift
+          swift --version
       - name: Run complete offline suite
         env:
           HERMES_TEST_JOBS: "4"

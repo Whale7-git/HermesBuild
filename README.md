@@ -21,7 +21,7 @@ python3 tests/test_swiftui_modifiers.py
 bash tests/run_container.sh
 ```
 
-离线测试需要 Swift 6.2 和 Python 3。远程辅助入口需要自行设置 `HERMES_TEST_TARGET=user@build-host`；本地执行离线套件不需要 SSH、网关、密钥或真实会话。
+离线测试需要兼容项目的 Swift 工具链和 Python 3；GitHub Actions 使用 runner 预装的 Swift，记录实际版本并以完整回归结果验证兼容性。远程辅助入口需要自行设置 `HERMES_TEST_TARGET=user@build-host`；本地执行离线套件不需要 SSH、网关、密钥或真实会话。
 
 ## 构建
 
