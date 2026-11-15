@@ -366,7 +366,10 @@ extension NativeChatView {
                 await model.refresh(silent: true, preserveLoadedOlder: true)
                 // Accepted-run recovery may schedule a separate bounded probe.
                 if let probe = model.activeRunProbeTask { await probe.value }
-                if model.error != nil {
+                let longHistoryVerified = await model.reconcileLongAcceptedRun()
+                if longHistoryVerified {
+                    showToast("已回溯本轮完整历史，确认回复完成")
+                } else if model.error != nil {
                     showToast("联网核对失败，发送仍保持锁定")
                 } else if model.activeTurnRecovery != nil && !model.running {
                     model.notice = "本次已核对历史，仍无法确认后台任务结束；不会重新发送消息。"
