@@ -144,6 +144,7 @@ struct NativeChatView: View {
     @State var toastTask: Task<Void, Never>?
     /// 顶部错误/只读钉住条：本次会话里点过关闭就不再出现。
     @State var noticeBarDismissed = false
+    @State var noticeChecking = false
     @State var visible = false
     @State var showAttachInfo = false
     @State var attachmentTarget: String?
