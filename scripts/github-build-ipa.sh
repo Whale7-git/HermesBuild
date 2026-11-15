@@ -85,14 +85,18 @@ cp -R "$app" "$stage/Payload/HermesShell.app"
 # The original project verifier inspects arm64, Mach-O signing, bundle ID,
 # version/build, resources, dependencies and the gateway SSE decoder symbol.
 python3 - "$version" "$build" "$sha" <<'PY'
-import datetime, json, os, pathlib, sys
+import datetime, json, os, pathlib, subprocess, sys
 version, build, commit = sys.argv[1:]
 info = {
     "version": version, "build": build, "working_tree": "clean",
     "head_commit": commit,
     "source_head_commit": os.environ.get("PR_HEAD_SHA", commit),
     "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    "builder": "github-actions-macos-15-xcode-26.3"
+    "builder": "github-actions-" + os.environ.get("RUNNER_OS", "macOS").lower() + "-default-xcode",
+    "macos_version": subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip(),
+    "xcode_version": subprocess.check_output(["xcodebuild", "-version"], text=True).strip(),
+    "swift_version": subprocess.check_output(["xcrun", "swift", "--version"], text=True).strip(),
+    "iphoneos_sdk_version": subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-version"], text=True).strip()
 }
 pathlib.Path("release/build-info.json").write_text(
     json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
