@@ -1970,10 +1970,14 @@ final class AppState: ObservableObject {
     ///
     /// A crashed client can recover that saved draft manually. It must not
     /// infer that the first POST was absent and silently retry it.
-    func createSessionForHomeTurn(_ text: String, model option: ModelOption?) async -> Bool {
-        guard HomeTurnPolicy.canSubmit(text: text, creating: creating,
-                                       needsSetup: needsInstanceSetup),
-              !clearingHistory, !needsLogin else { return false }
+    func createSessionForHomeTurn(_ text: String, model option: ModelOption?,
+                                  sendImmediately: Bool = true) async -> Bool {
+        let eligible = sendImmediately
+            ? HomeTurnPolicy.canSubmit(text: text, creating: creating,
+                                       needsSetup: needsInstanceSetup)
+            : HomeTurnPolicy.canStartAttachment(creating: creating,
+                                                needsSetup: needsInstanceSetup)
+        guard eligible, !clearingHistory, !needsLogin else { return false }
         if let option {
             let count = modelCatalog?.options.filter { $0.model == option.model }.count ?? 0
             guard HomeTurnPolicy.modelIsUnambiguous(option.model, matchingCount: count) else {
@@ -2003,8 +2007,14 @@ final class AppState: ObservableObject {
                 homeSendError = "会话已创建，但本地草稿保存失败；消息没有发送。请保留输入内容并检查设备存储。"
                 return false
             }
-            homeTurnClaim.arm(.init(instanceID: instanceID, accountScope: accountScope,
-                                    sessionID: sid, text: text))
+            if sendImmediately {
+                homeTurnClaim.arm(.init(instanceID: instanceID, accountScope: accountScope,
+                                        sessionID: sid, text: text))
+            } else {
+                // Attachment intent stages a draft in the new Session; it must
+                // NOT send it until the user has added attachments and taps Send.
+                homeTurnClaim.cancel()
+            }
             currentSessionID = sid
             return true
         } catch {

@@ -364,16 +364,16 @@ struct RootView: View {
                     draftStore: homeDraftStore,
                     modelLabel: homeSelectedModel?.label ?? "默认模型",
                     creating: app.creating, needsSetup: app.needsInstanceSetup,
-                    onSubmit: sendHomeMessage,
+                    onSubmit: { transferHomeDraft(sendImmediately: true) },
                     onChooseModel: {
                         homeFocused = false
                         homeModelPickerOpen = true
                     },
                     onAttach: {
-                        // Attachments need a server Session; create it only
-                        // when requested, never as a side effect of app launch.
-                        homeFocused = false
-                        Task { await app.createSession() }
+                        // Transfer any typed text WITHOUT posting it. The
+                        // normal composer in the new session then owns the
+                        // draft and attachment selection together.
+                        transferHomeDraft(sendImmediately: false)
                     }
                 )
                 .id(composerScope)
@@ -434,17 +434,21 @@ struct RootView: View {
         homeText = current.load()
     }
 
-    private func sendHomeMessage() {
+    private func transferHomeDraft(sendImmediately: Bool) {
         let text = homeText
         let model = homeSelectedModel
         let scope = homeScope
+        homeFocused = false
         Task {
-            let accepted = await app.createSessionForHomeTurn(text, model: model)
+            let accepted = await app.createSessionForHomeTurn(
+                text, model: model, sendImmediately: sendImmediately)
             guard accepted, scope == homeScope else { return }
-            // Clear before the composer unmounts so its onDisappear cannot
-            // restore already-transferred text to the home-scoped draft.
-            homeText = ""
-            _ = homeDraftStore.save("")
+            // Do not destroy text newly typed after the original submission.
+            // The matching text already lives in the created Session's draft.
+            if homeText == text {
+                homeText = ""
+                _ = homeDraftStore.save("")
+            }
         }
     }
 

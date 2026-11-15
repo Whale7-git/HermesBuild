@@ -41,6 +41,10 @@ enum HomeTurnPolicy {
     /// A creation API that accepts only the model name cannot disambiguate
     /// identical model IDs under different providers. Fail rather than silently
     /// using a different provider from the UI selection.
+    static func canStartAttachment(creating: Bool, needsSetup: Bool) -> Bool {
+        !creating && !needsSetup
+    }
+
     static func modelIsUnambiguous(_ model: String?, matchingCount: Int) -> Bool {
         model == nil || matchingCount == 1
     }

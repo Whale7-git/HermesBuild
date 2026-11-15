@@ -14,6 +14,12 @@ expect(!HomeTurnPolicy.canSubmit(text: "hello", creating: false, needsSetup: tru
        "unconfigured backend cannot start a chat")
 expect(HomeTurnPolicy.canSubmit(text: "你好", creating: false, needsSetup: false),
        "Unicode text is eligible for first-turn submission")
+expect(HomeTurnPolicy.canStartAttachment(creating: false, needsSetup: false),
+       "attachment can open a session without first sending blank content")
+expect(!HomeTurnPolicy.canStartAttachment(creating: true, needsSetup: false),
+       "attachment tap during session creation cannot race a second session")
+expect(!HomeTurnPolicy.canStartAttachment(creating: false, needsSetup: true),
+       "attachment cannot create an unconfigured remote session")
 expect(HomeTurnPolicy.modelIsUnambiguous(nil, matchingCount: 0),
        "server default requires no model catalog")
 expect(HomeTurnPolicy.modelIsUnambiguous("unique", matchingCount: 1),
