@@ -1,0 +1,414 @@
+name: macOS DerivedData cache benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_reuse:
+        description: Fail when warm builds compile at least half the cold sources
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-cache-benchmark-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  producer:
+    name: Cold and same-runner warm build
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      cache_key: ${{ steps.identity.outputs.key }}
+      input_sha: ${{ steps.cold.outputs.input_sha }}
+      cold_result: ${{ steps.cold.outputs.result_path }}
+      same_result: ${{ steps.same.outputs.result_path }}
+      cold_compiled_hermes: ${{ steps.cold.outputs.compiled_hermes }}
+      same_compiled_hermes: ${{ steps.same.outputs.compiled_hermes }}
+      cold_compiled_textual: ${{ steps.cold.outputs.compiled_textual }}
+      same_compiled_textual: ${{ steps.same.outputs.compiled_textual }}
+      cold_base_regenerated: ${{ steps.cold.outputs.base_directory_regenerated }}
+      same_base_regenerated: ${{ steps.same.outputs.base_directory_regenerated }}
+      save_seconds: ${{ steps.save_elapsed.outputs.seconds }}
+      cold_result_json: ${{ steps.results.outputs.cold_json }}
+      same_result_json: ${{ steps.results.outputs.same_json }}
+      worker_id: ${{ steps.identity.outputs.worker_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Report Apple toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-build-version
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Prepare normalized inputs
+        shell: bash
+        run: python3 scripts/cache-benchmark-prepare.py
+      - name: Compute exact cache key
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          namespace="$(python3 scripts/cache-benchmark-identity.py)"
+          key="${namespace}-sha${{ github.sha }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}"
+          worker_id="producer-${RUNNER_NAME:-unknown}-${RUNNER_TRACKING_ID:-no-tracking}-$(hostname)"
+          printf 'key=%s\n' "$key" >> "$GITHUB_OUTPUT"
+          printf 'worker_id=%s\n' "$worker_id" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Producer identity"
+            echo
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Tree: \`$(git rev-parse HEAD^{tree})\`"
+            echo "- Cache key: \`$key\`"
+            echo "- Workspace: \`$GITHUB_WORKSPACE\`"
+            echo "- Runner temp: \`$RUNNER_TEMP\`"
+            echo "- Worker label: \`$worker_id\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Run cold build
+        id: cold
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash scripts/cache-benchmark.sh cold
+      - name: Snapshot cold DerivedData
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/hermes-cache-snapshot"
+          ditto "$RUNNER_TEMP/hermes-ipa-derived" "$RUNNER_TEMP/hermes-cache-snapshot"
+          cp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-inputs.tsv"
+          cp "$RUNNER_TEMP/hermes-cache-input-sha256.txt" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-input-sha256.txt"
+      - name: Restore cold snapshot for same-runner build
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/hermes-ipa-derived"
+          ditto "$RUNNER_TEMP/hermes-cache-snapshot" "$RUNNER_TEMP/hermes-ipa-derived"
+          cmp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
+              "$RUNNER_TEMP/hermes-ipa-derived/.benchmark-inputs.tsv"
+      - name: Normalize the same inputs before same-runner build
+        shell: bash
+        run: python3 scripts/cache-benchmark-prepare.py
+      - name: Run same-runner warm build
+        id: same
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash scripts/cache-benchmark.sh same
+      - name: Compare same-runner reuse
+        shell: bash
+        env:
+          COLD_RESULT: ${{ steps.cold.outputs.result_path }}
+          SAME_RESULT: ${{ steps.same.outputs.result_path }}
+        run: python3 scripts/compare-cache-benchmark.py same "$COLD_RESULT" "$SAME_RESULT"
+      - name: Report same-runner compile reuse
+        shell: bash
+        env:
+          COLD_HERMES: ${{ steps.cold.outputs.compiled_hermes }}
+          SAME_HERMES: ${{ steps.same.outputs.compiled_hermes }}
+          COLD_TEXTUAL: ${{ steps.cold.outputs.compiled_textual }}
+          SAME_TEXTUAL: ${{ steps.same.outputs.compiled_textual }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+
+          for family in ("HERMES", "TEXTUAL"):
+              cold = int(os.environ[f"COLD_{family}"])
+              warm = int(os.environ[f"SAME_{family}"])
+              saved = cold - warm
+              percent = saved * 100 / cold if cold else 0
+              print(
+                  f"SAME_RUNNER_{family}_REUSE saved={saved}/{cold} "
+                  f"percent={percent:.1f}"
+              )
+          PY
+      - name: Store producer result records with the cache snapshot
+        shell: bash
+        id: results
+        env:
+          COLD_RESULT: ${{ steps.cold.outputs.result_path }}
+          SAME_RESULT: ${{ steps.same.outputs.result_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-results"
+          cp "$COLD_RESULT" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-results/cold.json"
+          cp "$SAME_RESULT" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-results/same.json"
+          python3 - "$COLD_RESULT" "$SAME_RESULT" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          for name, path in zip(("cold", "same"), sys.argv[1:]):
+              data = json.dumps(json.load(open(path)), separators=(",", ":"))
+              print(f"{name}_json={data}")
+          PY
+      - name: Record cache save start
+        id: save_start
+        shell: bash
+        run: echo "ns=$(python3 -c 'import time; print(time.monotonic_ns())')" >> "$GITHUB_OUTPUT"
+      - name: Save only the frozen cold snapshot
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hermes-cache-snapshot
+          key: ${{ steps.identity.outputs.key }}
+      - name: Record cache save time
+        id: save_elapsed
+        shell: bash
+        env:
+          START_NS: ${{ steps.save_start.outputs.ns }}
+        run: |
+          set -euo pipefail
+          python3 - "$START_NS" <<'PY'
+          import os
+          import sys
+          import time
+
+          seconds = (time.monotonic_ns() - int(sys.argv[1])) / 1e9
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"seconds={seconds:.3f}\n")
+          PY
+      - name: Fail when same-runner reuse is absent
+        if: ${{ inputs.require_reuse }}
+        shell: bash
+        env:
+          COLD_HERMES: ${{ steps.cold.outputs.compiled_hermes }}
+          SAME_HERMES: ${{ steps.same.outputs.compiled_hermes }}
+          COLD_TEXTUAL: ${{ steps.cold.outputs.compiled_textual }}
+          SAME_TEXTUAL: ${{ steps.same.outputs.compiled_textual }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+
+          for family in ("HERMES", "TEXTUAL"):
+              cold = int(os.environ[f"COLD_{family}"])
+              warm = int(os.environ[f"SAME_{family}"])
+              if cold and warm * 2 >= cold:
+                  raise SystemExit(
+                      f"same-runner reuse below 50% for {family.lower()}: "
+                      f"cold={cold} warm={warm}"
+                  )
+          PY
+
+  consumer:
+    name: Restored-runner warm build
+    needs: producer
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      worker_id: ${{ steps.identity.outputs.worker_id }}
+      input_sha: ${{ steps.warm.outputs.input_sha }}
+      warm_result: ${{ steps.warm.outputs.result_path }}
+      warm_compiled_hermes: ${{ steps.warm.outputs.compiled_hermes }}
+      warm_compiled_textual: ${{ steps.warm.outputs.compiled_textual }}
+      warm_base_regenerated: ${{ steps.warm.outputs.base_directory_regenerated }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Report Apple toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-build-version
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Prepare normalized inputs
+        shell: bash
+        run: python3 scripts/cache-benchmark-prepare.py
+      - name: Verify exact cache namespace
+        id: identity
+        shell: bash
+        env:
+          EXPECTED_CACHE_KEY: ${{ needs.producer.outputs.cache_key }}
+        run: |
+          set -euo pipefail
+          namespace="$(python3 scripts/cache-benchmark-identity.py)"
+          expected="${EXPECTED_CACHE_KEY%-sha*}"
+          actual_input="$(tr -d '\n' < "$RUNNER_TEMP/hermes-cache-input-sha256.txt")"
+          expected_input="${{ needs.producer.outputs.input_sha }}"
+          [[ "$actual_input" == "$expected_input" ]] || {
+            echo "input manifest differs: expected $expected_input, got $actual_input" >&2
+            exit 1
+          }
+          [[ "$namespace" == "$expected" ]] || {
+            echo "cache namespace differs: expected $expected, got $namespace" >&2
+            exit 1
+          }
+          worker_id="consumer-${RUNNER_NAME:-unknown}-${RUNNER_TRACKING_ID:-no-tracking}-$(hostname)"
+          printf 'worker_id=%s\n' "$worker_id" >> "$GITHUB_OUTPUT"
+          echo "consumer worker label: $worker_id"
+      - name: Record cache restore start
+        id: restore_start
+        shell: bash
+        run: echo "ns=$(python3 -c 'import time; print(time.monotonic_ns())')" >> "$GITHUB_OUTPUT"
+      - name: Restore exact producer cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hermes-cache-snapshot
+          key: ${{ needs.producer.outputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Record cache restore time
+        id: restore_elapsed
+        shell: bash
+        env:
+          START_NS: ${{ steps.restore_start.outputs.ns }}
+        run: |
+          set -euo pipefail
+          python3 - "$START_NS" <<'PY'
+          import os
+          import sys
+          import time
+
+          seconds = (time.monotonic_ns() - int(sys.argv[1])) / 1e9
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+              stream.write(f"seconds={seconds:.3f}\n")
+          PY
+      - name: Verify restored inputs and copy cache snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${{ needs.producer.outputs.input_sha }}"
+          restored="$(tr -d '\n' < "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-input-sha256.txt")"
+          [[ "$restored" == "$expected" ]] || {
+            echo "restored snapshot input manifest differs" >&2
+            exit 1
+          }
+          rm -rf "$RUNNER_TEMP/hermes-ipa-derived"
+          ditto "$RUNNER_TEMP/hermes-cache-snapshot" "$RUNNER_TEMP/hermes-ipa-derived"
+      - name: Run restored-runner warm build
+        id: warm
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash scripts/cache-benchmark.sh warm
+      - name: Compare restored-runner reuse
+        shell: bash
+        env:
+          COLD_RESULT_JSON: ${{ needs.producer.outputs.cold_result_json }}
+          SAME_RESULT_JSON: ${{ needs.producer.outputs.same_result_json }}
+          WARM_RESULT: ${{ steps.warm.outputs.result_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/producer-results"
+          python3 - "$RUNNER_TEMP/producer-results/cold.json" "$COLD_RESULT_JSON" <<'PY'
+          import pathlib
+          import sys
+
+          pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + "\n", encoding="utf-8")
+          PY
+          python3 - "$RUNNER_TEMP/producer-results/same.json" "$SAME_RESULT_JSON" <<'PY'
+          import pathlib
+          import sys
+
+          pathlib.Path(sys.argv[1]).write_text(sys.argv[2] + "\n", encoding="utf-8")
+          PY
+          python3 scripts/compare-cache-benchmark.py same \
+            "$RUNNER_TEMP/producer-results/cold.json" \
+            "$WARM_RESULT"
+          python3 scripts/compare-cache-benchmark.py same \
+            "$RUNNER_TEMP/producer-results/same.json" \
+            "$WARM_RESULT"
+      - name: Report restored-runner compile reuse
+        shell: bash
+        env:
+          COLD_HERMES: ${{ needs.producer.outputs.cold_compiled_hermes }}
+          WARM_HERMES: ${{ steps.warm.outputs.compiled_hermes }}
+          COLD_TEXTUAL: ${{ needs.producer.outputs.cold_compiled_textual }}
+          WARM_TEXTUAL: ${{ steps.warm.outputs.compiled_textual }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+
+          for family in ("HERMES", "TEXTUAL"):
+              cold = int(os.environ[f"COLD_{family}"])
+              warm = int(os.environ[f"WARM_{family}"])
+              saved = cold - warm
+              percent = saved * 100 / cold if cold else 0
+              print(
+                  f"RESTORED_RUNNER_{family}_REUSE saved={saved}/{cold} "
+                  f"percent={percent:.1f}"
+              )
+          PY
+      - name: Report end-to-end cache value
+        shell: bash
+        env:
+          WARM_RESULT: ${{ steps.warm.outputs.result_path }}
+          SAVE_SECONDS: ${{ needs.producer.outputs.save_seconds }}
+          RESTORE_SECONDS: ${{ steps.restore_elapsed.outputs.seconds }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          cold = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "producer-results", "cold.json").read_text()
+          )
+          same = json.loads(
+              Path(os.environ["RUNNER_TEMP"], "producer-results", "same.json").read_text()
+          )
+          warm_path = Path(os.environ["WARM_RESULT"])
+          warm = json.loads(warm_path.read_text())
+          save = float(os.environ["SAVE_SECONDS"])
+          restore = float(os.environ["RESTORE_SECONDS"])
+          net = cold["build_seconds"] - save - restore - warm["build_seconds"]
+          text = (
+              "### End-to-end cache value\n\n"
+              f"- Cold build: {cold['build_seconds']:.3f}s\n"
+              f"- Same-runner warm: {same['build_seconds']:.3f}s\n"
+              f"- Restored-runner warm: {warm['build_seconds']:.3f}s\n"
+              f"- Cache save: {save:.3f}s\n"
+              f"- Cache restore: {restore:.3f}s\n"
+              f"- Net saving for one restored build: **{net:+.3f}s**\n"
+          )
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write(text)
+          PY
+      - name: Fail when restored cache reuse is absent
+        if: ${{ inputs.require_reuse }}
+        shell: bash
+        env:
+          COLD_HERMES: ${{ needs.producer.outputs.cold_compiled_hermes }}
+          WARM_HERMES: ${{ steps.warm.outputs.compiled_hermes }}
+          COLD_TEXTUAL: ${{ needs.producer.outputs.cold_compiled_textual }}
+          WARM_TEXTUAL: ${{ steps.warm.outputs.compiled_textual }}
+          BASE_REGENERATED: ${{ steps.warm.outputs.base_directory_regenerated }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REGENERATED" == 0 ]] || {
+            echo "Xcode regenerated its build directory after cache restore" >&2
+            exit 1
+          }
+          python3 - <<'PY'
+          import os
+
+          for family in ("HERMES", "TEXTUAL"):
+              cold = int(os.environ[f"COLD_{family}"])
+              warm = int(os.environ[f"WARM_{family}"])
+              if cold and warm * 2 >= cold:
+                  raise SystemExit(
+                      f"restored-runner reuse below 50% for {family.lower()}: "
+                      f"cold={cold} warm={warm}"
+                  )
+          PY
