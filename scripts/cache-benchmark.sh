@@ -12,6 +12,13 @@ esac
 
 : "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set}"
+: "${EXPECTED_SHA:?EXPECTED_SHA must be set}"
+
+actual_sha="$(git rev-parse HEAD)"
+[[ "$actual_sha" == "$EXPECTED_SHA" ]] || {
+  echo "benchmark checkout is $actual_sha instead of expected $EXPECTED_SHA" >&2
+  exit 1
+}
 
 now() {
   python3 -c 'import time; print(time.monotonic_ns())'
@@ -41,7 +48,8 @@ name="Hermes-${version}-build${build}-unsigned"
 rm -rf release
 
 build_start="$(now)"
-PR_HEAD_SHA="${GITHUB_SHA:?GITHUB_SHA must be set}" \
+env -u HERMES_SOURCE_VERIFIED_SHA \
+  PR_HEAD_SHA="$actual_sha" \
   bash scripts/github-build-ipa.sh
 build_end="$(now)"
 build_seconds="$(elapsed "$build_start" "$build_end")"
@@ -105,7 +113,7 @@ sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
 cat > "$benchmark_dir/result.json" <<EOF
 {
   "mode": "$mode",
-  "source_sha": "$GITHUB_SHA",
+  "source_sha": "$actual_sha",
   "version": "$version",
   "build": "$build",
   "toolchain": "$toolchain",
@@ -120,7 +128,7 @@ cat > "$benchmark_dir/result.json" <<EOF
 EOF
 
 output build_seconds "$build_seconds"
-output source_sha "$GITHUB_SHA"
+output source_sha "$actual_sha"
 output toolchain "$toolchain"
 output iphoneos_sdk "$sdk"
 output ipa_sha "$ipa_sha"

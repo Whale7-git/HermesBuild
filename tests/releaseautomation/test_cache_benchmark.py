@@ -47,8 +47,10 @@ class CacheBenchmarkTests(unittest.TestCase):
     def test_safe_payload_identity_is_accepted(self):
         compare = module()
         old_argv = sys.argv
-        old_summary = os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        old_environment = os.environ.copy()
         try:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
             sys.argv = [
                 "compare",
                 str(self.record("cold")),
@@ -60,13 +62,15 @@ class CacheBenchmarkTests(unittest.TestCase):
             self.assertEqual(compare.main(), 0)
         finally:
             sys.argv = old_argv
-            if old_summary is not None:
-                os.environ["GITHUB_STEP_SUMMARY"] = old_summary
+            os.environ.clear()
+            os.environ.update(old_environment)
 
     def test_different_payload_is_rejected(self):
         compare = module()
         old_argv = sys.argv
+        old_environment = os.environ.copy()
         try:
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
             sys.argv = [
                 "compare",
                 str(self.record("cold")),
@@ -80,11 +84,15 @@ class CacheBenchmarkTests(unittest.TestCase):
             self.assertIn("resources differ", str(error.exception))
         finally:
             sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
 
     def test_toolchain_and_source_mismatches_are_rejected(self):
         compare = module()
         old_argv = sys.argv
+        old_environment = os.environ.copy()
         try:
+            os.environ["CACHE_BENCHMARK_MODE"] = "same"
             for changes, message in [
                 ({"source_sha": "d" * 40}, "source SHA differs"),
                 ({"toolchain": "Xcode 26.7"}, "toolchain differs"),
@@ -103,6 +111,70 @@ class CacheBenchmarkTests(unittest.TestCase):
                 self.assertIn(message, str(error.exception))
         finally:
             sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
+
+    def test_adjacent_mode_accepts_parent_and_child(self):
+        compare = module()
+        old_argv = sys.argv
+        old_environment = os.environ.copy()
+        try:
+            os.environ.update(
+                {
+                    "CACHE_BENCHMARK_MODE": "adjacent",
+                    "EXPECTED_COLD_SHA": "a" * 40,
+                    "EXPECTED_WARM_SHA": "b" * 40,
+                    "SEED_SHA": "a" * 40,
+                    "CANDIDATE_SHA": "b" * 40,
+                }
+            )
+            sys.argv = [
+                "compare",
+                str(self.record("cold")),
+                str(
+                    self.record(
+                        "warm",
+                        source_sha="b" * 40,
+                        payload_sha256="d" * 64,
+                    )
+                ),
+                "1024000",
+                "10",
+                "20",
+            ]
+            self.assertEqual(compare.main(), 0)
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
+
+    def test_adjacent_mode_rejects_swapped_shas(self):
+        compare = module()
+        old_argv = sys.argv
+        old_environment = os.environ.copy()
+        try:
+            os.environ.update(
+                {
+                    "CACHE_BENCHMARK_MODE": "adjacent",
+                    "SEED_SHA": "a" * 40,
+                    "CANDIDATE_SHA": "b" * 40,
+                }
+            )
+            sys.argv = [
+                "compare",
+                str(self.record("cold", source_sha="b" * 40)),
+                str(self.record("warm", source_sha="a" * 40)),
+                "1024000",
+                "10",
+                "20",
+            ]
+            with self.assertRaises(SystemExit) as error:
+                compare.main()
+            self.assertIn("adjacent SHAs", str(error.exception))
+        finally:
+            sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environment)
 
 
 class CacheIdentityTests(unittest.TestCase):
@@ -169,11 +241,19 @@ class CacheWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions: write", workflow)
         self.assertIn("run${{ github.run_id }}-attempt${{ github.run_attempt }}", workflow)
         self.assertNotIn("HERMES_SOURCE_VERIFIED_SHA", workflow)
+        self.assertIn("inputs.mode == 'same'", workflow)
+        self.assertIn("inputs.mode == 'adjacent'", workflow)
+        self.assertIn("ref: ${{ inputs.seed_sha }}", workflow)
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn('actual_sha="$(git rev-parse HEAD)"', workflow)
+        self.assertIn("-adjacent-seed${expected_seed}-candidate${CANDIDATE_SHA}", workflow)
 
         script = (ROOT / "scripts" / "cache-benchmark.sh").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("HERMES_SOURCE_VERIFIED_SHA", script)
+        self.assertIn("env -u HERMES_SOURCE_VERIFIED_SHA", script)
+        self.assertIn('actual_sha="$(git rev-parse HEAD)"', script)
+        self.assertIn('PR_HEAD_SHA="$actual_sha"', script)
 
 
 if __name__ == "__main__":

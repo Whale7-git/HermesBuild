@@ -24,14 +24,35 @@ def main() -> int:
     save_seconds = float(sys.argv[4])
     restore_seconds = float(sys.argv[5])
 
-    if cold["source_sha"] != warm["source_sha"]:
-        raise SystemExit("source SHA differs between cold and warm runs")
+    mode = os.environ.get("CACHE_BENCHMARK_MODE", "same")
+    if mode not in {"same", "adjacent"}:
+        raise SystemExit(f"unsupported cache benchmark mode: {mode}")
+    expected_cold = os.environ.get("EXPECTED_COLD_SHA")
+    expected_warm = os.environ.get("EXPECTED_WARM_SHA")
+    if expected_cold and cold["source_sha"] != expected_cold:
+        raise SystemExit("cold source SHA differs from the expected seed")
+    if expected_warm and warm["source_sha"] != expected_warm:
+        raise SystemExit("warm source SHA differs from the expected candidate")
+    if mode == "same":
+        if cold["source_sha"] != warm["source_sha"]:
+            raise SystemExit("source SHA differs between same-commit runs")
+        if expected_cold and expected_warm and expected_cold != expected_warm:
+            raise SystemExit("same mode requires identical expected SHAs")
+    else:
+        candidate = os.environ.get("CANDIDATE_SHA")
+        seed = os.environ.get("SEED_SHA")
+        if not candidate or not seed:
+            raise SystemExit("adjacent mode requires candidate and seed SHAs")
+        if cold["source_sha"] != seed or warm["source_sha"] != candidate:
+            raise SystemExit("adjacent SHAs do not match seed and candidate")
+        if cold["source_sha"] == warm["source_sha"]:
+            raise SystemExit("adjacent mode requires distinct source SHAs")
     if cold["toolchain"] != warm["toolchain"]:
         raise SystemExit("Xcode toolchain differs between cold and warm runs")
     if cold["iphoneos_sdk"] != warm["iphoneos_sdk"]:
         raise SystemExit("iPhoneOS SDK differs between cold and warm runs")
-    if cold["payload_sha256"] != warm["payload_sha256"]:
-        raise SystemExit("cold and warm bundled resources differ")
+    if mode == "same" and cold["payload_sha256"] != warm["payload_sha256"]:
+        raise SystemExit("same-commit bundled resources differ")
 
     cold_seconds = float(cold["build_seconds"])
     warm_seconds = float(warm["build_seconds"])
@@ -52,11 +73,16 @@ def main() -> int:
         f"| Warm/cold build ratio | {ratio:.3f} |",
         f"| Restored DerivedData source size | {source_bytes} bytes |",
         f"| Bundled resources identical | {'yes' if payload_matches else 'no'} |",
-        f"| Bundled resource SHA-256 | `{cold['payload_sha256']}` |",
+        f"| Cold bundled resource SHA-256 | `{cold['payload_sha256']}` |",
+        f"| Warm bundled resource SHA-256 | `{warm['payload_sha256']}` |",
         f"| Cold IPA SHA-256 | `{cold['ipa_sha256']}` |",
         f"| Warm IPA SHA-256 | `{warm['ipa_sha256']}` |",
         "",
-        "This is one same-commit pilot on separate hosted runners. It is not yet evidence that a later source commit benefits.",
+        (
+            "This is one same-commit pilot on separate hosted runners."
+            if mode == "same"
+            else "This is one direct-parent pilot on separate hosted runners."
+        ),
         "",
         "The warm run performed a complete build and independent IPA verification.",
     ]
