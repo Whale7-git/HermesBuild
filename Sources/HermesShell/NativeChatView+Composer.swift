@@ -67,7 +67,7 @@ extension NativeChatView {
             attachmentMenu: AnyView(
                 AttachmentComposerBar(model: attachments,
                     isLocked: model.submitting || model.reconciling || !model.canSend,
-                    showsItems: false)
+                    showsItems: false, launchPicker: attachmentPickerTrigger)
             ),
             readOnlyMessage: model.cachedHistoryDate != nil
                 ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil,

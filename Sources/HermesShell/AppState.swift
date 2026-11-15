@@ -192,6 +192,9 @@ final class AppState: ObservableObject {
     /// New-session first-turn intent lives in memory only. On process restart
     /// the persisted per-session draft is available, but the POST is never replayed.
     private var homeTurnClaim = HomeTurnClaim()
+    /// Exactly one pending first-open attachment request. Consumed only in
+    /// its own Session, never on another host or following a restart.
+    private var homeAttachmentSessionID: String?
     @Published private(set) var homeSendError: String?
 
     func forkMessage(_ plan: MessageForkPlan, from sessionID: String) async {
@@ -364,6 +367,7 @@ final class AppState: ObservableObject {
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
         homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
         openedSession = session
         currentSessionID = session.sessionId
         // 进入会话即视为已读，不再显示完成标记。
@@ -372,6 +376,7 @@ final class AppState: ObservableObject {
 
     func closeSession() {
         homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
         currentSessionID = nil
         openedSession = nil
     }
@@ -1453,6 +1458,7 @@ final class AppState: ObservableObject {
     private func switchTo(_ index: Int, snapshotDeparting: Bool) {
         guard instances.indices.contains(index) else { return }
         homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
         homeSendError = nil
         // Snapshot the departing scope before replacing the API. Local list
         // mutations (delete/archive/rename) must not be undone on return.
@@ -2008,12 +2014,19 @@ final class AppState: ObservableObject {
                 return false
             }
             if sendImmediately {
+                homeAttachmentSessionID = nil
                 homeTurnClaim.arm(.init(instanceID: instanceID, accountScope: accountScope,
                                         sessionID: sid, text: text))
             } else {
                 // Attachment intent stages a draft in the new Session; it must
                 // NOT send it until the user has added attachments and taps Send.
                 homeTurnClaim.cancel()
+                homeAttachmentSessionID = sid
+            }
+            // A new Session must be visible in the drawer immediately, even if
+            // the list GET lags behind the server-side create response.
+            if !sessions.contains(where: { $0.sessionId == sid }) {
+                sessions.insert(.placeholder(id: sid), at: 0)
             }
             currentSessionID = sid
             return true
@@ -2033,10 +2046,18 @@ final class AppState: ObservableObject {
                                   accountScope: historyAccountScope, sessionID: sessionID)
     }
 
+    func consumeHomeAttachmentRequest(for sessionID: String) -> Bool {
+        guard currentSessionID == sessionID,
+              homeAttachmentSessionID == sessionID else { return false }
+        homeAttachmentSessionID = nil
+        return true
+    }
+
     /// 新建失败明确报错，绝不退回网页或静默换会话。
     func createSession() async {
         guard !creating, !clearingHistory, !needsLogin else { return }
         homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
         let scope = actionScope
         let requestAPI = api
         let generation = UUID()
