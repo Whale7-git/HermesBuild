@@ -1,7 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// 代码绘制的机器人头像。不依赖图片资源——xtool 把 AppIcon 当裸 PNG 放进 bundle，
+/// 代码绘制的机器人头像。不依赖图片资源——xtool 把 AppIcon 当裸 PNG 放进 bundle；
+/// This comment-only edit is used by the isolated adjacent-cache benchmark.
 /// `Image("AppIcon60x60")` 在 asset catalog 里找不到，会渲染成空白。
 struct HermesAvatar: View {
     var size: CGFloat = 20
