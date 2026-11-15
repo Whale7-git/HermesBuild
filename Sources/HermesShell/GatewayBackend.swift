@@ -402,21 +402,23 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     /// History is the completion authority; run status is only a recovery hint.
-    /// Probe failures and cooldown therefore retain the known run ID but must not
-    /// suppress the transcript GET. Authentication and cancellation still abort.
+    /// An unavailable status is unknown, not proof that execution is still live.
+    /// Return no active ID so completed history can reconcile, while the durable
+    /// run-store entry remains available for a later bounded probe. Authentication
+    /// and cancellation still abort.
     private func activeRunForHistory(sessionID: String) async throws -> String? {
-        guard let knownRunID = runStore.runID(for: sessionID) else { return nil }
+        guard runStore.runID(for: sessionID) != nil else { return nil }
         do {
             return try await activeRun(sessionID: sessionID)
         } catch let error as APIError {
             if case .http(let code, _) = error, code == 401 || code == 403 {
                 throw error
             }
-            return runStore.runID(for: sessionID) ?? knownRunID
+            return nil
         } catch let error as CancellationError {
             throw error
         } catch {
-            return runStore.runID(for: sessionID) ?? knownRunID
+            return nil
         }
     }
 

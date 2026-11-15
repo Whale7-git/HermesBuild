@@ -192,12 +192,12 @@ actor ConcurrencyProbe {
         transport.statusCode = 500
         for _ in 0..<4 {
             let provisional = try await guarded.history(sessionID: "s", before: nil)
-            check(provisional.activeStreamID == run,
-                  "transient 5xx retains the active run for later verification")
+            check(provisional.activeStreamID == nil,
+                  "transient 5xx is unknown, not a fabricated live stream")
         }
         let exhausted = try await guarded.history(sessionID: "s", before: nil)
-        check(exhausted.activeStreamID == run,
-              "exhausted status budget retains the run as an unresolved hint")
+        check(exhausted.activeStreamID == nil,
+              "exhausted status budget lets history remain authoritative")
         check(transport.requests.last?.url?.path.hasSuffix("/messages") == true,
               "exhausted status budget still reads canonical history")
         check(GatewayRunStore(scope: failureScope, defaults: defaults)
@@ -205,8 +205,8 @@ actor ConcurrencyProbe {
               "run ID remains durable when the state budget is exhausted")
         let beforeCooldown = transport.requests.count
         let historyDuringBackoff = try await guarded.history(sessionID: "s", before: nil)
-        check(historyDuringBackoff.activeStreamID == run,
-              "run backoff retains the unresolved ID in the history snapshot")
+        check(historyDuringBackoff.activeStreamID == nil,
+              "run backoff is unknown rather than a fabricated live stream")
         let requestsDuringBackoff = transport.requests.dropFirst(beforeCooldown)
         check(!requestsDuringBackoff.contains { $0.url?.path.hasPrefix("/v1/runs/") == true },
               "history backoff suppresses another run-status request")
