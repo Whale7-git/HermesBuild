@@ -61,9 +61,7 @@ extension NativeChatModel {
                                   automaticAfterStreamID: streamID,
                                   historyEnd: confirmedHistoryEnd,
                                   knownIDs: Self.recoveryKnownIDs(in: buffer.messages))
-        if queuedTurns.isEmpty {
-            queueAutomaticDispatchPaused = false
-        }
+        // Enqueue never overrides an explicit user pause.
         let next = queuedTurns + [turn]
         // Serialization failure must never delete the previously persisted
         // queue. The new turn remains usable in memory and the UI says so.
@@ -400,8 +398,12 @@ extension NativeChatModel {
     }
 
     func setQueueAutomaticDispatchPaused(_ paused: Bool) {
-        queueAutomaticDispatchPaused = paused
-        if !paused {
+        queueUserPaused = paused
+        if !paused && !uncertain && activeTurnRecovery == nil {
+            queueRecoveryPaused = false
+        }
+        updateQueuePause()
+        if !queueAutomaticDispatchPaused {
             if running, let active = streamID, !queuedTurns.isEmpty {
                 // A restored queue has no stream gate. Once the user enables
                 // automatic dispatch during the active reply, bind the next
@@ -578,7 +580,7 @@ extension NativeChatModel {
                 pendingSend = nil
             } else {
                 uncertain = true
-                queueAutomaticDispatchPaused = true
+                pauseQueueForRecovery()
                 notice = "后台已受理消息，但本地运行记录写入失败；请勿重发，稍后核对。"
             }
             settledAttachmentPaths = attachments.map(\.path)

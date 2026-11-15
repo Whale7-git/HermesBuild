@@ -8,6 +8,7 @@ import Foundation
     var sent: [(String, [ChatAttachmentPayload])] = []
     var failHistory = false
     var failHistoryAfterStop = false
+    var stopAcknowledgementOnly = false
     var failStart = false
     var historyRows: [[String: Any]] = []
     var holdSteer = false
@@ -39,6 +40,7 @@ import Foundation
         return next
     }
     func stopNativeTurn(streamID: String) async throws {
+        if stopAcknowledgementOnly { return }
         active = nil
         if failHistoryAfterStop { failHistory = true; return }
         // Successful stop scenarios expose canonical terminal history. The
@@ -50,6 +52,9 @@ import Foundation
             historyRows.append(["id": "stopped-answer-\(streamID)", "role": "assistant",
                                 "content": "stopped"])
         }
+    }
+    func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        active == runID ? .alive : .terminal(.cancelled)
     }
     func steerNativeTurn(sessionID: String, text: String) async throws -> String? {
         steerCalls += 1
@@ -192,6 +197,48 @@ import Foundation
         precondition(repaired.succeeded && !model.queueSaveFailed
                      && model.localPersistenceIssue == nil,
                      "only a verified explicit retry clears the sticky queue failure")
+        model.disconnect()
+    }
+
+    // Recovery and enqueue must never silently override a user's pause.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "paused-queue", api: service)
+        await model.load()
+        model.setQueueAutomaticDispatchPaused(true)
+        model.draft = "initial"; _ = await model.send()
+        model.sendMode = .queue
+        model.draft = "queued"; _ = await model.send()
+        precondition(model.queueUserPaused && model.queueAutomaticDispatchPaused,
+                     "enqueue must preserve explicit pause")
+        model.pauseQueueForRecovery()
+        model.resumeQueueAfterRecovery()
+        precondition(model.queueUserPaused && model.queueAutomaticDispatchPaused,
+                     "recovery cannot override user pause")
+        model.setQueueAutomaticDispatchPaused(false)
+        precondition(!model.queueAutomaticDispatchPaused,
+                     "explicit resume clears user pause after safe recovery")
+        model.disconnect()
+    }
+
+    // Stop acknowledgement cannot release sending until a terminal status is
+    // observed, including when the history contains no final assistant reply.
+    do {
+        let service = SendSafetyService()
+        service.stopAcknowledgementOnly = true
+        let model = NativeChatModel(sessionID: "stop-pending", api: service)
+        await model.load()
+        model.draft = "work"; _ = await model.send()
+        await model.stop()
+        precondition(model.stopping && !model.canSend && service.startCalls == 1,
+                     "stop acknowledgement alone must keep sending locked")
+        await model.verifyPendingStop()
+        precondition(model.stopping && service.startCalls == 1,
+                     "a still-running run cannot be marked stopped")
+        service.active = nil
+        await model.verifyPendingStop()
+        precondition(!model.stopping && model.canSend && service.startCalls == 1,
+                     "exact terminal status plus history allows new turns without POST replay")
         model.disconnect()
     }
 

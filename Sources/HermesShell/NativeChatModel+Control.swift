@@ -217,56 +217,79 @@ extension NativeChatModel {
         clarifying = false
     }
 
+    /// A stop POST is an acknowledgement, not proof that the run has ended.
+    /// Keep the stream attached and ordinary sending disabled until the exact
+    /// run reaches a verified terminal status and the final history GET succeeds.
     func stop() async {
         guard let active = streamID, !stopping, !submitting else { return }
         let generation = revision
-        // 每次停止提交自己的身份。`defer` 只能收尾这一次提交：
-        // 离开页面再回来可能已经发起了第二笔停止，旧请求的收尾不能把新的
-        // `.stopping` 改成 `.idle`（那会解锁普通发送，而服务端并未确认停止）。
-        let submission = UUID()
-        stopSubmission = submission
         transition(to: .stopping)
-        // 退出时若仍停在 `.stopping`，落回静止态。停止失败的分支会先改成
-        // `.streaming(connected: false)`，那时这里不再覆盖。
-        //
-        // 三个条件缺一不可：仍是本次提交、相位仍停在 `.stopping`、且没有被
-        // 作用域轮换作废。后台失败那笔的 catch 因 generation 失配跳过，但
-        // 未确认停止同样不能无条件落 idle —— 那等于谎报本轮已结束。
-        defer {
-            if stopSubmission == submission, generation == revision,
-               case .stopping = phase {
-                transition(to: .idle)
-            }
-        }
         do {
-            try await api.stopNativeTurn(streamID:active)
+            try await api.stopNativeTurn(streamID: active)
             noteRunRecoveryState()
-            RuntimeLogRecorder.shared.record(.info, "stream", "stop ok")
-            guard generation == revision else { return }
-            publishTask?.cancel()
-            publishTask = nil
-            revision &+= 1
-            streamTask?.cancel()
-            streamTask = nil
-            streamID = nil
-            // 停止已确认：本轮结束。这里显式落回静止态，不依赖 defer——
-            // 后面还要 await load()，defer 要到函数末尾才跑，中间这段时间
-            // 界面会一直停在「正在停止…」。
-            transition(to: .idle)
-            // run 已经停了，这张票永远投不出去，留着只会误导。
-            clearApproval()
-            clearClarify()
-            notice = "服务器已确认停止。"
-            // 停止是本轮的正常终态，要在对话流里留下可回看的记录（F-32）。
-            buffer.appendStopNotice()
-            await load(silent: true, preserveLoadedOlder: true)
+            guard generation == revision, streamID == active, !Task.isCancelled else { return }
+            notice = "停止请求已受理，正在核对后台任务是否真正结束。"
+            await verifyPendingStop()
         } catch {
-            if generation == revision {
-                if handleAuthenticationFailure(error) { return }
-                self.error = error.localizedDescription
-                // 停止失败：本轮可能还在跑，退回「流式但未连上」比假装结束更诚实。
-                transition(to: .streaming(connected: false))
+            guard generation == revision, streamID == active else { return }
+            if handleAuthenticationFailure(error) { return }
+            self.error = error.localizedDescription
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "停止请求结果未确认；本轮发送仍锁定，请核对后台状态。"
+        }
+    }
+
+    /// Read-only verification, safe to invoke again from the visible notice.
+    /// Neither the status GET nor the history GET can replay the original POST.
+    func verifyPendingStop() async {
+        guard stopping, let active = streamID else { return }
+        let generation = revision
+        do {
+            let result = try await api.probeActiveRun(sessionID: sessionID, runID: active)
+            guard generation == revision, streamID == active,
+                  stopping, !Task.isCancelled else { return }
+            switch result {
+            case .alive:
+                notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
+            case .unknown:
+                notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+            case .terminal(let outcome):
+                let finalHistory = try await api.history(sessionID: sessionID, before: nil)
+                guard generation == revision, streamID == active,
+                      stopping, !Task.isCancelled else { return }
+                guard finalHistory.sessionID == sessionID,
+                      finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                    uncertain = true
+                    pauseQueueForRecovery()
+                    notice = "后台已结束，但最终历史尚未确认；请稍后核对。"
+                    return
+                }
+                revision &+= 1
+                streamTask?.cancel()
+                streamTask = nil
+                streamID = nil
+                clearApproval()
+                clearClarify()
+                if outcome == .cancelled || outcome == .interrupted {
+                    buffer.appendStopNotice()
+                }
+                try applySnapshot(finalHistory, preserveLoadedOlder: true)
+                if activeTurnRecovery?.runID == active {
+                    guard clearAcceptedTurnRecovery() else { return }
+                    uncertain = pendingSend != nil || pendingRecoveryUnreadable
+                        || activeRecoveryUnreadable
+                }
+                pauseQueueForRecovery()
+                notice = outcome.notice
             }
+        } catch {
+            guard generation == revision, streamID == active, stopping else { return }
+            if handleAuthenticationFailure(error) { return }
+            self.error = error.localizedDescription
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "停止请求已受理，但终态或历史同步失败；不会重复提交消息。"
         }
     }
 

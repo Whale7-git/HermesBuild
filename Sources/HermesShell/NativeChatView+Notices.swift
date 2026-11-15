@@ -293,7 +293,8 @@ extension NativeChatView {
 
     /// The action shown is the action actually executed.
     private var noticeAction: ChatNoticeAction {
-        ChatNoticeAction.choose(
+        if model.stopping { return .verifyStatus }
+        return ChatNoticeAction.choose(
             hasPendingSend: model.hasPendingSend,
             uncertain: model.uncertain,
             persistenceIssue: model.localPersistenceIssue != nil || model.queuePersistenceFailed,
@@ -321,7 +322,7 @@ extension NativeChatView {
             .foregroundStyle(AppTheme.warning)
             .frame(minHeight: 44)
             .disabled(noticeChecking || model.loading || model.syncing
-                      || model.submitting || model.reconciling || model.stopping
+                      || model.submitting || model.reconciling
                       || model.authenticationRequired)
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { noticeBarDismissed = true }
@@ -363,6 +364,11 @@ extension NativeChatView {
                 case .failed: showToast("尚不能确认发送结果，请稍后核对")
                 }
             case .verifyStatus, .retry:
+                if model.stopping {
+                    await model.verifyPendingStop()
+                    showToast(model.stopping ? "停止状态仍待确认，原因见提示" : "已确认任务终态，历史已同步")
+                    return
+                }
                 let hadAcceptedRun = model.activeTurnRecovery != nil
                 await model.refresh(silent: true, preserveLoadedOlder: true)
                 // Accepted-run recovery may schedule a separate bounded probe.

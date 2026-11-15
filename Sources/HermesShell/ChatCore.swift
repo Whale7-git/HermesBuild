@@ -135,9 +135,9 @@ enum ChatBackgroundEnvelope {
         // the original ChatMessage and its content for export and debugging.
         guard raw.hasPrefix("[OUT-OF-BAND USER MESSAGE —"),
               raw.hasSuffix(closingMarker),
-              let headerEnd = raw.range(of: "]\n") else { return raw }
+              let headerEnd = raw.range(of: "]\n") else { return nil }
         let end = raw.index(raw.endIndex, offsetBy: -closingMarker.count)
-        guard headerEnd.upperBound <= end else { return raw }
+        guard headerEnd.upperBound <= end else { return nil }
         return String(raw[headerEnd.upperBound..<end])
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }

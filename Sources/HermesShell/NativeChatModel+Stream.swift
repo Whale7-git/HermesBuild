@@ -337,7 +337,7 @@ extension NativeChatModel {
                 }
             } else {
                 uncertain = true
-                queueAutomaticDispatchPaused = true
+                pauseQueueForRecovery()
                 notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
                 probeAcceptedRun(receipt)
             }
@@ -499,21 +499,39 @@ extension NativeChatModel {
                         self.pendingAbsent = false
                     }
                     self.uncertain = false
-                    self.queueAutomaticDispatchPaused = false
+                    self.resumeQueueAfterRecovery()
                     self.notice = nil
                     self.attach(streamID: receipt.runID)
-                case .terminal:
+                case .terminal(let outcome):
                     guard self.streamID == nil, !self.running else { return }
-                    // Ending the run does not prove history has its final reply.
-                    // Keep the queue paused and leave other unresolved sends alone.
-                    guard self.clearAcceptedTurnRecovery() else { return }
-                    self.queueAutomaticDispatchPaused = true
-                    self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
-                        || self.activeRecoveryUnreadable
-                    if !self.uncertain { self.notice = nil }
+                    // A confirmed terminal status still requires a final read-only
+                    // history GET; do not replay the original accepted POST.
+                    self.pauseQueueForRecovery()
+                    do {
+                        let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
+                        guard generation == self.revision, !Task.isCancelled, !self.suspended,
+                              self.activeTurnRecovery == receipt else { return }
+                        guard finalHistory.sessionID == self.sessionID,
+                              finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                            self.uncertain = true
+                            self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
+                            return
+                        }
+                        try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
+                        guard self.clearAcceptedTurnRecovery() else { return }
+                        self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
+                            || self.activeRecoveryUnreadable
+                        self.notice = outcome.notice
+                    } catch {
+                        guard generation == self.revision, !Task.isCancelled,
+                              self.activeTurnRecovery == receipt else { return }
+                        if self.handleAuthenticationFailure(error) { return }
+                        self.uncertain = true
+                        self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
+                    }
                 case .unknown:
                     self.uncertain = true
-                    self.queueAutomaticDispatchPaused = true
+                    self.pauseQueueForRecovery()
                     self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
                 }
             } catch {
@@ -521,7 +539,7 @@ extension NativeChatModel {
                       self.activeTurnRecovery == receipt else { return }
                 if self.handleAuthenticationFailure(error) { return }
                 self.uncertain = true
-                self.queueAutomaticDispatchPaused = true
+                self.pauseQueueForRecovery()
                 self.notice = "后台任务状态核对失败；消息不会重新发送，请稍后刷新。"
             }
         }
@@ -585,7 +603,7 @@ extension NativeChatModel {
                         // 收到帧即「已连上」。若此前处于重连中，这一帧就结束了恢复期，
                         // 恢复提示与残留错误一并撤掉。
                         let wasReconnecting = self.reconnecting
-                        if self.phase != .streaming(connected: true) {
+                        if self.phase != .streaming(connected: true) && !self.stopping {
                             self.transition(to: .streaming(connected: true))
                         }
                         if wasReconnecting {
@@ -684,7 +702,8 @@ extension NativeChatModel {
                     do {
                         let snap = try await api.history(sessionID:sessionID,before:nil)
                         guard generation == revision, !Task.isCancelled else { return }
-                        let automaticDispatchWasPaused = queueAutomaticDispatchPaused
+                        let userPauseWasActive = queueUserPaused
+                        let recoveryPauseWasActive = queueRecoveryPaused
                         try applySnapshot(snap, preserveLoadedOlder: true)
                         error = terminalFailure
                         if pendingSend == nil {
@@ -702,7 +721,9 @@ extension NativeChatModel {
                                 // The matching terminal frame resolves the temporary
                                 // pause introduced by an incomplete history window.
                                 // Preserve any pause that existed before this GET.
-                                queueAutomaticDispatchPaused = automaticDispatchWasPaused
+                                queueUserPaused = userPauseWasActive
+                                queueRecoveryPaused = recoveryPauseWasActive
+                                updateQueuePause()
                             }
                         }
                         if snap.activeStreamID == nil && terminalFailure == nil,
@@ -743,6 +764,12 @@ extension NativeChatModel {
                         pendingSlashCommand = nil
                         await flushQueuedIfNeeded(completedStreamID: active)
                     }
+                    return
+                }
+                // A stop acknowledgement keeps the sending lock even if SSE
+                // disconnects; status verification owns its terminal decision.
+                if stopping {
+                    notice = "停止请求已受理，流连接已断开；请核对后台任务状态。"
                     return
                 }
                 // EOF and transport errors both recover via GET only. The

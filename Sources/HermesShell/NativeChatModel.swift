@@ -282,6 +282,23 @@ final class NativeChatModel: ObservableObject {
     /// Restored or explicitly paused queues never auto-dispatch until the user
     /// resumes them. This protects an unsent turn across relaunch/cancellation.
     @Published var queueAutomaticDispatchPaused = false
+    /// User intent and failure safety are separate; the effective UI flag is derived.
+    @Published var queueUserPaused = false
+    @Published var queueRecoveryPaused = false
+
+    func updateQueuePause() {
+        queueAutomaticDispatchPaused = queueUserPaused || queueRecoveryPaused
+    }
+
+    func pauseQueueForRecovery() {
+        queueRecoveryPaused = true
+        updateQueuePause()
+    }
+
+    func resumeQueueAfterRecovery() {
+        queueRecoveryPaused = false
+        updateQueuePause()
+    }
     /// First queued turn, retained for compatibility with the single-slot UI.
     var queuedText: String? { queuedTurns.first?.summary }
     /// A-11：排队内容序列化失败时置位。此时最新排队项只在内存里，
@@ -418,7 +435,7 @@ final class NativeChatModel: ObservableObject {
     func abandonAcceptedTurnRecovery() {
         guard !submitting, !loading, !syncing, !running, !reconciling else { return }
         guard clearAcceptedTurnRecovery() else { return }
-        queueAutomaticDispatchPaused = true
+        pauseQueueForRecovery()
         uncertain = true
         notice = "已放弃本地运行恢复标记；没有重发消息。请重新核对服务端历史后再继续。"
     }
@@ -428,7 +445,7 @@ final class NativeChatModel: ObservableObject {
         let result = draftStore?.saveActiveRun(nil) ?? .ok
         guard result.succeeded else { recordLocalWrite(result, kind: .runRecovery); return }
         activeRecoveryUnreadable = false
-        queueAutomaticDispatchPaused = true
+        pauseQueueForRecovery()
         uncertain = true
         notice = "已放弃损坏的运行记录；请先核对历史，不会自动重发或继续队列。"
     }
@@ -567,7 +584,8 @@ final class NativeChatModel: ObservableObject {
                 queuedTurns[index].delivery = .uncertain
                 queuedTurns[index].automaticAfterStreamID = nil
             }
-            queueAutomaticDispatchPaused = !queuedTurns.isEmpty
+            queueRecoveryPaused = !queuedTurns.isEmpty
+            updateQueuePause()
         }
         if let issue = loadedQueue?.result.failure {
             if localPersistenceIssue == nil {

@@ -311,7 +311,9 @@ extension ModelTests {
         // Receipt exists, but the history snapshot temporarily omits
         // active_stream_id. A bounded run-status probe may attach only when the
         // exact run is alive; unknown status never unlocks a POST.
-        for result in [ActiveRunProbe.alive, .terminal, .unknown] {
+        for result in [ActiveRunProbe.alive, .terminal(.completed),
+                       .terminal(.failed), .terminal(.cancelled),
+                       .terminal(.interrupted), .unknown] {
             do {
                 let probeRoot = FileManager.default.temporaryDirectory
                     .appendingPathComponent("HermesRunProbe-" + UUID().uuidString)
@@ -337,11 +339,13 @@ extension ModelTests {
                     try await eventually { model.streamID == receipt.runID }
                     precondition(!model.canSend && model.uncertain == false,
                                  "a proven live receipt attaches without replaying the POST")
-                } else if result == .terminal {
+                } else if case .terminal(let outcome) = result {
                     try await eventually { model.activeTurnRecovery == nil }
                     precondition(!model.uncertain && model.canSend && model.streamID == nil
                                  && model.queueAutomaticDispatchPaused && probeStore.loadActiveRun().value == nil,
-                                 "a verified terminal run releases its lock even without a final reply")
+                                 "verified terminal run syncs history without replaying the POST")
+                    precondition(model.notice == outcome.notice,
+                                 "distinct terminal results retain their user-visible outcome")
                 } else {
                     precondition(model.uncertain && !model.canSend
                                  && model.streamID == nil && probeStore.loadActiveRun().value != nil,
@@ -357,7 +361,8 @@ extension ModelTests {
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must
         // remain fail-closed; manual read-only pagination may prove completion.
-        for scenario in ["complete", "background-notice", "second-user", "changed-tail", "still-running", "other-run"] {
+        for scenario in ["complete", "background-notice", "mislabelled-user",
+                         "second-user", "changed-tail", "still-running", "other-run"] {
             let longRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("HermesLongRun-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: longRoot) }
@@ -381,9 +386,15 @@ extension ModelTests {
                 service.rows.insert(["id": "extra-user", "role": "user", "content": "another submission"],
                                     at: 80)
             }
+            if scenario == "mislabelled-user" {
+                service.rows.insert(["id": "labelled-user", "role": "user",
+                                     "content": "genuine user question",
+                                     "display_kind": "internal_notification"], at: 80)
+            }
             service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
             if scenario == "background-notice" {
-                service.rows.append(["id": "background", "role": "user", "content": "notification",
+                service.rows.append(["id": "background", "role": "user",
+                                     "content": "[OUT-OF-BAND USER MESSAGE — notification]\nStatus update\n[/OUT-OF-BAND USER MESSAGE]",
                                      "display_kind": "internal_notification"])
             }
             service.appendHeadOnOlderPage = scenario == "changed-tail"
