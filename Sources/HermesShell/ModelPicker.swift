@@ -11,6 +11,8 @@ struct ModelPickerView: View {
     let busy: Bool
     let onPick: (ModelOption?) -> Void
     let onReload: () async -> Void
+    /// Omitted on WebUI and other backends that have no request-scoped wire.
+    var reasoningEffort: Binding<String>? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
@@ -61,7 +63,43 @@ struct ModelPickerView: View {
                         .padding(.horizontal, 28)
                         .frame(maxHeight: .infinity)
                 } else {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("搜索模型", text: $query)
+                                .autocorrectionDisabled()
+                            if !query.isEmpty {
+                                Button {
+                                    query = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .accessibilityLabel("清除搜索")
+                            }
+                        }
+                        .padding(11)
+                        .background(AppTheme.softFill,
+                                    in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     List {
+                        if let reasoningEffort {
+                            Section {
+                                Picker("单轮推理强度", selection: reasoningEffort) {
+                                    Text("默认（服务端配置）").tag("")
+                                    ForEach(ReasoningEffortPolicy.levels, id: \.self) { level in
+                                        Text(level).tag(level)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            } header: {
+                                Text("推理强度")
+                            } footer: {
+                                Text("仅用于之后发出的 Gateway Run，不修改服务端会话或全局配置。每个模型/Provider 支持的档位不同，服务端可能拒绝；不会自动重发。")
+                            }
+                        }
                         if grouped.isEmpty {
                             Section {
                                 HermesEmptyState(symbol: "magnifyingglass",
@@ -86,7 +124,9 @@ struct ModelPickerView: View {
                                         ForEach(group.options) { option in
                                             Button {
                                                 onPick(option)
-                                                dismiss()
+                                                // Keep model settings open after selecting
+                                                // a model, so effort can be set in one visit.
+                                                if reasoningEffort == nil { dismiss() }
                                             } label: {
                                                 row(option)
                                             }
@@ -99,7 +139,7 @@ struct ModelPickerView: View {
                     }
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
-                    .searchable(text: $query, prompt: "搜索模型")
+                    }
                 }
             }
             // 横屏与未来 iPad：内容最多 640 并居中。
@@ -112,13 +152,16 @@ struct ModelPickerView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("关闭") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         Task { await onReload() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
                     .accessibilityLabel("重新读取模型目录")
+                    if reasoningEffort != nil {
+                        Button("完成") { dismiss() }
+                    }
                 }
             }
         }
@@ -138,10 +181,12 @@ struct ModelPickerView: View {
                 Text(option.label)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
-                Text(option.model)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if option.label != option.model {
+                    Text(option.model)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
             if isCurrent {
@@ -150,7 +195,7 @@ struct ModelPickerView: View {
                     .foregroundStyle(AppTheme.accent)
             }
         }
-        .frame(minHeight: 60)
+        .frame(minHeight: 44)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
