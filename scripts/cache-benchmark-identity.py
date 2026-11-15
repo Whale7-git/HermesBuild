@@ -110,16 +110,28 @@ def identity(root: Path = ROOT) -> str:
     xcodegen = command("xcodegen", "--version", root=root)
     image_os = os.environ.get("ImageOS", "unknown")
     image_version = os.environ.get("ImageVersion", "unknown")
-    namespace = (
-        f"hermes-derived-v2-macos{safe_component(macos)}"
-        f"-xcode{safe_component(xcode)}-sdk{safe_component(sdk)}"
-        f"-sdkbuild{safe_component(sdk_build)}-arch{safe_component(architecture)}"
-        f"-swift{safe_component(swift)}-xcodegen{safe_component(xcodegen)}"
-        f"-image{safe_component(image_os)}-imageversion{safe_component(image_version)}"
-        f"-Release-mtime{fixed_epoch_ns}"
-        f"-inputs{input_manifest}"
-        f"-project{project_digest}-deps{deps}"
+    material = "\n".join(
+        (
+            "format=2",
+            f"macos={macos}",
+            f"xcode={xcode}",
+            f"sdk={sdk}",
+            f"sdk_build={sdk_build}",
+            f"architecture={architecture}",
+            f"swift={swift}",
+            f"xcodegen={xcodegen}",
+            f"image_os={image_os}",
+            f"image_version={image_version}",
+            "configuration=Release",
+            f"mtime_ns={fixed_epoch_ns}",
+            f"inputs={input_manifest}",
+            f"project={project_digest}",
+            f"deps={deps}",
+            "",
+        )
     )
+    fingerprint = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    namespace = f"hermes-derived-v2-{fingerprint}"
     return namespace
 
 

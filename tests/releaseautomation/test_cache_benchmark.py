@@ -164,7 +164,9 @@ class CacheIdentityTests(unittest.TestCase):
                 }
             )
         )
-        (project / "HermesCI-Info.plist").write_bytes(
+        runner_temp = project / "runner-temp"
+        runner_temp.mkdir()
+        (runner_temp / "HermesCI-Info.plist").write_bytes(
             plistlib.dumps(
                 {
                     "CFBundleShortVersionString": "2.27.0",
@@ -173,9 +175,9 @@ class CacheIdentityTests(unittest.TestCase):
                 }
             )
         )
-        (project / "hermes-cache-inputs.tsv").write_bytes(b"manifest\n")
+        (runner_temp / "hermes-cache-inputs.tsv").write_bytes(b"manifest\n")
         digest = __import__("hashlib").sha256(b"manifest\n").hexdigest()
-        (project / "hermes-cache-input-sha256.txt").write_text(
+        (runner_temp / "hermes-cache-input-sha256.txt").write_text(
             digest + "\n", encoding="ascii"
         )
         commands = mock.Mock(
@@ -194,7 +196,7 @@ class CacheIdentityTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "RUNNER_TEMP": str(self.root),
+                    "RUNNER_TEMP": str(runner_temp),
                     "ImageOS": "macos26",
                     "ImageVersion": "20261115.1",
                 },
@@ -205,10 +207,32 @@ class CacheIdentityTests(unittest.TestCase):
             second = identity.identity(project)
         self.assertEqual(first, second)
         self.assertNotIn(" ", first)
-        self.assertIn("hermes-derived-v2", first)
-        self.assertIn("inputs" + digest, first)
-        self.assertIn("mtime946684800000000000", first)
-        self.assertIn("imageversion20261115.1", first)
+        self.assertRegex(first, r"^hermes-derived-v2-[0-9a-f]{64}$")
+        self.assertLessEqual(len(first), 512)
+
+        (runner_temp / "HermesCI-Info.plist").write_bytes(
+            plistlib.dumps(
+                {
+                    "CFBundleShortVersionString": "2.27.0",
+                    "CFBundleVersion": "170",
+                    "CFBundleIdentifier": "com.whale7.hermes",
+                }
+            )
+        )
+        with (
+            mock.patch.object(identity, "command", commands),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "RUNNER_TEMP": str(runner_temp),
+                    "ImageOS": "macos26",
+                    "ImageVersion": "20261115.1",
+                },
+                clear=True,
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            identity.identity(project)
 
 
 class CacheWorkflowTests(unittest.TestCase):
