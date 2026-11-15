@@ -73,6 +73,20 @@ jobs:
             echo "- Runner temp: \`$RUNNER_TEMP\`"
             echo "- Worker label: \`$worker_id\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Freeze prepared inputs before the cold build
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/hermes-cache-snapshot"
+          mkdir -p "$RUNNER_TEMP/hermes-cache-snapshot"
+          ditto HermesShellCI.xcodeproj \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-project"
+          cp "$RUNNER_TEMP/HermesCI-Info.plist" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-ci-info.plist"
+          cp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-inputs.tsv"
+          cp "$RUNNER_TEMP/hermes-cache-input-sha256.txt" \
+             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-input-sha256.txt"
       - name: Run cold build
         id: cold
         shell: bash
@@ -99,27 +113,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$RUNNER_TEMP/hermes-cache-snapshot"
           ditto "$RUNNER_TEMP/hermes-ipa-derived" "$RUNNER_TEMP/hermes-cache-snapshot"
-          ditto HermesShellCI.xcodeproj \
-             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-project"
-          cp "$RUNNER_TEMP/HermesCI-Info.plist" \
-             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-ci-info.plist"
-          cp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
-             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-inputs.tsv"
-          cp "$RUNNER_TEMP/hermes-cache-input-sha256.txt" \
-             "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-input-sha256.txt"
       - name: Restore cold snapshot for same-runner build
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/hermes-ipa-derived"
           ditto "$RUNNER_TEMP/hermes-cache-snapshot" "$RUNNER_TEMP/hermes-ipa-derived"
-          cmp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
-              "$RUNNER_TEMP/hermes-ipa-derived/.benchmark-inputs.tsv"
+          rm -rf HermesShellCI.xcodeproj
+          ditto "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-project" \
+             HermesShellCI.xcodeproj
+          cp "$RUNNER_TEMP/hermes-cache-snapshot/.benchmark-ci-info.plist" \
+             "$RUNNER_TEMP/HermesCI-Info.plist"
       - name: Normalize the same inputs before same-runner build
         shell: bash
         run: python3 scripts/cache-benchmark-prepare.py --reuse-generated
+      - name: Verify same-runner inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/hermes-cache-inputs.tsv" \
+              "$RUNNER_TEMP/hermes-ipa-derived/.benchmark-inputs.tsv"
+          cmp "$RUNNER_TEMP/hermes-cache-input-sha256.txt" \
+              "$RUNNER_TEMP/hermes-ipa-derived/.benchmark-input-sha256.txt"
       - name: Run same-runner warm build
         id: same
         shell: bash

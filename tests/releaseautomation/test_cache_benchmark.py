@@ -239,6 +239,14 @@ class CacheWorkflowTests(unittest.TestCase):
             workflow.index("Prepare restored inputs"),
             workflow.index("Compare producer and consumer manifests"),
         )
+        self.assertLess(
+            workflow.index("Normalize the same inputs before same-runner build"),
+            workflow.index("Verify same-runner inputs"),
+        )
+        self.assertLess(
+            workflow.index("Freeze prepared inputs before the cold build"),
+            workflow.index("Run cold build"),
+        )
         self.assertIn("Validate cold baseline", workflow)
         self.assertIn("Compare producer and consumer manifests", workflow)
         self.assertIn("PRODUCER_WORKER", workflow)
