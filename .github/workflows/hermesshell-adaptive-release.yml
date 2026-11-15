@@ -1,9 +1,6 @@
-name: HermesBuild iOS CI and Release
+name: HermesBuild legacy manual full build
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
