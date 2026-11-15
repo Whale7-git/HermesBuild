@@ -385,7 +385,7 @@ struct RootView: View {
                         .accessibilityIdentifier("home-send-error")
                 }
             }
-            Spacer(minSize: 12)
+            Spacer(minLength: 12)
         }
         .background(AppTheme.canvas)
         .onAppear(perform: restoreHomeDraft)
