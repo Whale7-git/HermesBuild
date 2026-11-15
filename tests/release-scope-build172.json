@@ -624,7 +624,7 @@
     "tests/iteration53/main.swift": "968dfeeff27823fab02a400da2858d78ec4f43c0c13e0236b7ea0cd06dc71c6d",
     "tests/manual-ios.md": "c548b6e883eba8766be09a9182dd39d1d69dea085b595edca535f0ee9890ed90",
     "tests/model/ActivityRecoveryTests.swift": "4c6e7dbb7b526e5fa2095a7bac3276efa44a535dd94dd4f62f256e2e83b6502f",
-    "tests/model/PendingRecoveryTests.swift": "f7ff33128cb2cb29b1a8f5f4e987d1f1dbfb9afe227ae807d748468e2b886104",
+    "tests/model/PendingRecoveryTests.swift": "3847fa434a2188c962f53661cbdb325c92be74c93f852045bd03390d3a4b685a",
     "tests/model/PhaseTransitionTests.swift": "8fcb1c03c76d24b6c45fcc5336663656b0a495467d499b8d5d5271f2bff8a6dd",
     "tests/model/SendModeTests.swift": "3b2eaa6f5f55c0d2784da5238ab531ab25f68ed0f7ddcbd2ef389f1726965fd3",
     "tests/model/SendSafetyTests.swift": "6f7a1ba6c0740999f0482574b4b3851b0c2d7f2fd83737b8251017024756ec21",
