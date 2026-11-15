@@ -14,7 +14,23 @@ struct RootView: View {
     // Full-page session browser has its own navigation gesture and a real
     // back destination; do not mistake this for opening the root drawer.
     @State private var browserOpen = false
+    @State private var browserSearchRequested = false
     @GestureState private var browserBackDrag: CGFloat = 0
+    @State private var homeText = ""
+    @State private var homeFocused = false
+    @State private var homeSelectedModel: ModelOption?
+    @State private var homeModelPickerOpen = false
+
+    private var homeScope: String { app.historyInstanceID + "|" + app.historyAccountScope }
+
+    private var homeDraftStore: ChatDraftStore {
+        let instanceID = app.historyInstanceID
+        let accountScope = app.historyAccountScope
+        let id = "__home-composer__"
+        return ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
+            sessionID: id, fileStore: LocalDataFileStore(
+                instanceID: instanceID, accountScope: accountScope, sessionID: id))
+    }
 
     /// Root-side interactive card reveal. Keep the chat mounted during gestures.
     private func drawerWidth(_ width: CGFloat) -> CGFloat { min(340, width * 0.86) }
@@ -94,6 +110,7 @@ struct RootView: View {
                     onClose: closeSidebar,
                     onBrowseAll: {
                         closeSidebar()
+                        browserSearchRequested = false
                         browserOpen = true
                     }
                 )
@@ -140,6 +157,7 @@ struct RootView: View {
                         SessionListPane(
                             mode: .page,
                             selectedID: app.currentSessionID,
+                            startSearching: browserSearchRequested,
                             onSelect: { session in
                                 browserOpen = false
                                 app.openSession(session)
@@ -260,81 +278,168 @@ struct RootView: View {
         }
     }
 
-    /// An empty workspace, not the session management screen. Creating a chat
-    /// remains an explicit user action: never create server sessions on launch.
+    /// The home screen is a draft workspace, never a server Session until
+    /// the user explicitly sends or requests an attachment-capable chat.
     private var emptyConversation: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button(action: openSidebar) {
-                    ChromeIcon(symbol: "line.3.horizontal")
-                }
-                .accessibilityLabel("打开会话侧栏")
-                HStack(spacing: 5) {
-                    Text("Hermes").font(.headline.weight(.semibold))
-                    Text(app.active.name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Button {
-                    startConversation()
+                Button(action: openSidebar) { ChromeIcon(symbol: "line.3.horizontal") }
+                    .accessibilityLabel("打开会话侧栏")
+                Text("Hermes")
+                    .font(.headline.weight(.semibold))
+                Menu {
+                    ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
+                        Button {
+                            guard index != app.activeIndex else { return }
+                            app.switchTo(index)
+                        } label: {
+                            if index == app.activeIndex {
+                                Label(instance.name, systemImage: "checkmark")
+                            } else { Text(instance.name) }
+                        }
+                    }
                 } label: {
-                    if app.creating { ProgressView().frame(width: 44, height: 44) }
-                    else { ChromeIcon(symbol: "square.and.pencil") }
+                    HStack(spacing: 4) {
+                        Text(app.active.name)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 154, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
-                .disabled(app.creating)
-                .accessibilityLabel(app.needsInstanceSetup ? "配置连接" : "新建对话")
+                .accessibilityLabel("切换 Hermes 实例，当前\(app.active.name)")
+                Spacer(minLength: 6)
+                Button {
+                    homeFocused = false
+                    browserSearchRequested = true
+                    browserOpen = true
+                } label: { ChromeIcon(symbol: "magnifyingglass") }
+                .accessibilityLabel("搜索会话")
+                Button {
+                    homeFocused = true
+                } label: { ChromeIcon(symbol: "square.and.pencil") }
+                .accessibilityLabel("输入新消息")
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .frame(height: 56)
 
             Spacer(minLength: 48)
-            VStack(spacing: 16) {
-                Image(systemName: "sparkle")
-                    .font(.system(size: 34, weight: .light))
-                    .foregroundStyle(.primary)
+            VStack(spacing: 13) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 36, weight: .light))
                 Text(app.needsInstanceSetup ? "连接你的 Hermes" : "有什么可以帮你？")
                     .font(.system(.title2, design: .rounded, weight: .semibold))
                     .multilineTextAlignment(.center)
-                Text(app.needsInstanceSetup ? "先在设置中添加自己的网关地址与密钥。" : "选择一个 Hermes 实例的会话，或开始新的对话。")
+                Text(app.needsInstanceSetup
+                     ? "先在设置中添加自己的网关地址与 API 密钥。"
+                     : "向当前 Hermes 实例发送消息，或从侧栏继续已有会话。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 16)
             }
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 330)
             Spacer(minLength: 48)
-            VStack(spacing: 10) {
-                Button {
-                    startConversation()
-                } label: {
-                    Label(app.needsInstanceSetup ? "配置连接" : (app.creating ? "正在创建…" : "开始新对话"),
-                          systemImage: app.needsInstanceSetup ? "gearshape" : "square.and.pencil")
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(AppTheme.action)
-                .disabled(app.creating)
 
-                Button(app.needsInstanceSetup ? "查看实例设置" : "查看历史会话") {
-                    if app.needsInstanceSetup { app.showSettings = true }
-                    else { openSidebar() }
+            if app.needsInstanceSetup {
+                Button("配置连接", systemImage: "gearshape") { app.showSettings = true }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AppTheme.action)
+                    .frame(minHeight: 48)
+                    .padding(.horizontal, 24)
+            } else {
+                HomeConversationComposer(
+                    text: $homeText, focused: $homeFocused,
+                    draftStore: homeDraftStore,
+                    modelLabel: homeSelectedModel?.label ?? "默认模型",
+                    creating: app.creating, needsSetup: app.needsInstanceSetup,
+                    onSubmit: sendHomeMessage,
+                    onChooseModel: {
+                        homeFocused = false
+                        homeModelPickerOpen = true
+                    },
+                    onAttach: {
+                        // Attachments need a server Session; create it only
+                        // when requested, never as a side effect of app launch.
+                        homeFocused = false
+                        Task { await app.createSession() }
+                    }
+                )
+                .id(homeScope)
+                if let error = app.homeSendError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.warning)
+                        .padding(.horizontal, 22)
+                        .accessibilityIdentifier("home-send-error")
                 }
-                    .font(.subheadline)
-                    .frame(minHeight: 44)
             }
-            .frame(maxWidth: 340)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
+            Spacer(minSize: 12)
         }
         .background(AppTheme.canvas)
+        .onAppear(perform: restoreHomeDraft)
+        .onChange(of: homeScope) { _, _ in restoreHomeDraft() }
+        .sheet(isPresented: $homeModelPickerOpen) {
+            Group {
+                if let catalog = app.modelCatalog {
+                    ModelPickerView(
+                        catalog: catalog,
+                        currentModel: homeSelectedModel?.model,
+                        currentProvider: homeSelectedModel?.providerID,
+                        busy: app.creating,
+                        onPick: { homeSelectedModel = $0 },
+                        onReload: { await app.loadModels(force: true) })
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView {
+                            Label("模型目录未就绪", systemImage: "cpu")
+                        } description: {
+                            Text(app.catalogLoading ? "正在读取模型…" : "尚未获取模型目录。")
+                        } actions: {
+                            Button("重新读取") { Task { await app.loadModels(force: true) } }
+                        }
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button("关闭") { homeModelPickerOpen = false }
+                            }
+                        }
+                    }
+                }
+            }
+            .task { await app.loadModels() }
+        }
+    }
+
+    private func restoreHomeDraft() {
+        homeFocused = false
+        homeSelectedModel = nil
+        homeText = homeDraftStore.load()
+    }
+
+    private func sendHomeMessage() {
+        let text = homeText
+        let model = homeSelectedModel
+        let scope = homeScope
+        Task {
+            let accepted = await app.createSessionForHomeTurn(text, model: model)
+            guard accepted, scope == homeScope else { return }
+            // Clear before the composer unmounts so its onDisappear cannot
+            // restore already-transferred text to the home-scoped draft.
+            homeText = ""
+            _ = homeDraftStore.save("")
+        }
     }
 
     private func startConversation() {
-        if app.needsInstanceSetup { app.showSettings = true }
-        else { Task { await app.createSession() } }
+        if app.needsInstanceSetup { app.showSettings = true; return }
+        // "New chat" navigates to a draft workspace. It must not create an
+        // empty remote session until the user sends or attaches a file.
+        app.closeSession()
+        homeFocused = true
     }
 
     private func openSidebar() {
