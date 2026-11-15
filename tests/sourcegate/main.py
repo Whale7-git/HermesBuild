@@ -16,6 +16,8 @@ with tempfile.TemporaryDirectory(prefix='hermes-sourcegate-') as temp:
         ('Package.swift', lambda data: data + b'\n// unreviewed change\n'),
         ('tests/baseline-1.20.2-build64.json', lambda data: data + b'\n'),
         ('tests/baseline-1.19.1-build62.json', lambda data: data + b'\n'),
+        ('Sources/HermesShell/LoginSettings.swift',
+         lambda data: data.replace('稳定优先，一次构建。'.encode(), b'', 1)),
         # 版本号必须从门禁自己的常量取：写死某一版的字面量，
         # 下次升版后 replace 匹配不到，文件其实没被改动，门禁照常通过，
         # 这个自检就会误报「门禁接受了篡改」。
@@ -65,4 +67,4 @@ with tempfile.TemporaryDirectory(prefix='hermes-sourcegate-') as temp:
         pass
     else:
         raise AssertionError('gate accepted unregistered source')
-print('SOURCE_GATE_REGRESSION_PASS 7 scenarios')
+print('SOURCE_GATE_REGRESSION_PASS 8 scenarios')

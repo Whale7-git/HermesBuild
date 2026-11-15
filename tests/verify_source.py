@@ -139,6 +139,9 @@ def verify(root):
     expected_readme_title = f'# Hermes {version} / build{build}'
     require(readme_title == expected_readme_title,
             f'README release mismatch: expected {expected_readme_title!r}, got {readme_title!r}')
+    settings_copy = (root / 'Sources/HermesShell/LoginSettings.swift').read_text(encoding='utf-8')
+    require(settings_copy.count('稳定优先，一次构建。') == 1,
+            'settings About line must exist exactly once')
     require('bundleID: com.whale7.hermes' in (root / 'xtool.yml').read_text(), 'bundle ID changed')
     # F-41: both scripts must take the release number from release.json instead
     # of carrying their own literal. Asserting the literal again would recreate
