@@ -140,7 +140,11 @@ extension NativeChatView {
                                 model.setConfirmedModel(option.model, provider: option.providerID)
                             }
                         },
-                        onReload: { await app.loadModels(force: true) }
+                        onReload: { await app.loadModels(force: true) },
+                        reasoningEffort: model.api.supportsReasoningEffort
+                            ? Binding(get: { model.requestedReasoningEffort ?? "" },
+                                      set: { model.chooseReasoningEffort($0.isEmpty ? nil : $0) })
+                            : nil
                     )
                 } else {
                     NavigationStack {
