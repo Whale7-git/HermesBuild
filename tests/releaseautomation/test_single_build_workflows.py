@@ -153,6 +153,12 @@ class SingleBuildWorkflowTests(unittest.TestCase):
             with self.subTest(relative=relative):
                 self.assertTrue((ROOT / relative).is_file(), relative)
 
+    def test_job_env_does_not_use_runner_context(self):
+        workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        candidate = workflow.split("\n  candidate:\n", 1)[1]
+        before_steps = candidate.split("\n    steps:\n", 1)[0]
+        self.assertNotIn("${{ runner.", before_steps)
+
 
 if __name__ == "__main__":
     unittest.main()

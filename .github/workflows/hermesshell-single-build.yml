@@ -51,9 +51,6 @@ jobs:
           github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      HERMES_DIAGNOSTICS_DIR: ${{ runner.temp }}/hermes-candidate-diagnostics
-      HERMES_DIAGNOSTICS_EXPORT_DIR: ${{ runner.temp }}/hermes-candidate-diagnostics-export
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,7 +58,12 @@ jobs:
           fetch-depth: 0
 
       - name: Initialize candidate diagnostics
-        run: mkdir -p "$HERMES_DIAGNOSTICS_DIR" "$HERMES_DIAGNOSTICS_EXPORT_DIR"
+        run: |
+          diagnostics="$RUNNER_TEMP/hermes-candidate-diagnostics"
+          export_dir="$RUNNER_TEMP/hermes-candidate-diagnostics-export"
+          mkdir -p "$diagnostics" "$export_dir"
+          echo "HERMES_DIAGNOSTICS_DIR=$diagnostics" >> "$GITHUB_ENV"
+          echo "HERMES_DIAGNOSTICS_EXPORT_DIR=$export_dir" >> "$GITHUB_ENV"
 
       - name: Install XcodeGen and capture setup timing
         id: setup
