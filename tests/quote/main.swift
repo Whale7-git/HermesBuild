@@ -35,6 +35,25 @@ check(ChatComposerInsertionPlan.append("> quote\n\n", to: "reply\n") == "reply\n
       "an existing single newline is normalized to one blank line")
 check(ChatComposerInsertionPlan.append("> quote\n\n", to: "reply\n\n") == "reply\n\n> quote\n\n",
       "existing blank spacing is not duplicated")
+let ref = ChatQuote.reference(for: assistant)!
+check(ref.author == "Hermes" && ref.preview == "第一段\n第二段",
+      "reference UI has clean display text, not Markdown control characters")
+let combined = ChatQuote.assemble(ref, reply: "这是我的回复")
+let decoded = ChatQuote.splitDraft(combined)
+check(decoded.reference == ref && decoded.reply == "这是我的回复",
+      "display draft is separate but the original wire survives save/reopen")
+check(ChatQuote.assemble(decoded.reference, reply: decoded.reply) == combined,
+      "round-trip never mutates the backend message")
+check(ChatQuote.splitDraft("普通正文").reference == nil
+      && ChatQuote.splitDraft("普通正文").reply == "普通正文",
+      "ordinary drafts are not incorrectly parsed as references")
+let clippedParsed = ChatQuote.splitDraft(clipped)
+check(clippedParsed.reference != nil && clippedParsed.reply.isEmpty
+      && clippedParsed.reference!.wire == clipped,
+      "truncated quote annotation stays with quote instead of leaking into typed reply")
+check(ChatQuote.assemble(nil, reply: "原始回复") == "原始回复",
+      "removing a quote sends only the user-authored reply")
+
 check(ChatComposerInsertionPlan.append("", to: "reply") == "reply",
       "an empty insertion is a no-op")
 
