@@ -189,6 +189,10 @@ final class AppState: ObservableObject {
     private var taskAckLoaded = false
     /// 仅一次领取：先落草稿，重生成才自动发送，切实例即作废。
     var pendingFork: (sessionID: String, plan: MessageForkPlan)?
+    /// New-session first-turn intent lives in memory only. On process restart
+    /// the persisted per-session draft is available, but the POST is never replayed.
+    private var homeTurnClaim = HomeTurnClaim()
+    @Published private(set) var homeSendError: String?
 
     func forkMessage(_ plan: MessageForkPlan, from sessionID: String) async {
         guard !sessionActionBusy else { return }
@@ -359,6 +363,7 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
+        homeTurnClaim.cancel()
         openedSession = session
         currentSessionID = session.sessionId
         // 进入会话即视为已读，不再显示完成标记。
@@ -366,6 +371,7 @@ final class AppState: ObservableObject {
     }
 
     func closeSession() {
+        homeTurnClaim.cancel()
         currentSessionID = nil
         openedSession = nil
     }
@@ -1446,6 +1452,8 @@ final class AppState: ObservableObject {
 
     private func switchTo(_ index: Int, snapshotDeparting: Bool) {
         guard instances.indices.contains(index) else { return }
+        homeTurnClaim.cancel()
+        homeSendError = nil
         // Snapshot the departing scope before replacing the API. Local list
         // mutations (delete/archive/rename) must not be undone on return.
         // Deleting an instance can shrink `instances` before calling switchTo.
@@ -1954,6 +1962,65 @@ final class AppState: ObservableObject {
         guard active.backend == .gateway, !Task.isCancelled else { return }
         retireHistoryAccount()
         await refresh()
+    }
+
+    /// First home message: create a server Session once, write its exact
+    /// per-instance/account draft before changing the route, and then let
+    /// NativeChatModel perform the ONLY chat POST after it has loaded.
+    ///
+    /// A crashed client can recover that saved draft manually. It must not
+    /// infer that the first POST was absent and silently retry it.
+    func createSessionForHomeTurn(_ text: String, model option: ModelOption?) async -> Bool {
+        guard HomeTurnPolicy.canSubmit(text: text, creating: creating,
+                                       needsSetup: needsInstanceSetup),
+              !clearingHistory, !needsLogin else { return false }
+        if let option {
+            let count = modelCatalog?.options.filter { $0.model == option.model }.count ?? 0
+            guard HomeTurnPolicy.modelIsUnambiguous(option.model, matchingCount: count) else {
+                homeSendError = "同名模型无法区分 provider；请先新建会话，再选择模型。"
+                return false
+            }
+        }
+        let scope = actionScope
+        let requestAPI = api
+        let instanceID = historyInstanceID
+        let accountScope = historyAccountScope
+        let generation = UUID()
+        createGeneration = generation
+        creating = true
+        homeSendError = nil
+        defer { if createGeneration == generation { creating = false } }
+        do {
+            let sid = try await requestAPI.createSession(title: nil, model: option?.model)
+            guard isCurrent(scope), createGeneration == generation,
+                  !Task.isCancelled else { return false }
+            let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
+                sessionID: sid, legacyBaseURL: requestAPI.webConsoleBaseURL.absoluteString,
+                fileStore: LocalDataFileStore(instanceID: instanceID,
+                    accountScope: accountScope, sessionID: sid))
+            let saved = store.save(text)
+            guard saved.succeeded else {
+                homeSendError = "会话已创建，但本地草稿保存失败；消息没有发送。请保留输入内容并检查设备存储。"
+                return false
+            }
+            homeTurnClaim.arm(.init(instanceID: instanceID, accountScope: accountScope,
+                                    sessionID: sid, text: text))
+            currentSessionID = sid
+            return true
+        } catch {
+            guard isCurrent(scope), createGeneration == generation else { return false }
+            // An uncertain session-creation HTTP response must not be retried
+            // automatically. Unlike a chat POST, an empty orphan session is
+            // harmless; retaining the user's text is the critical invariant.
+            homeSendError = "新建会话未确认，消息未发送：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func consumeHomeTurn(for sessionID: String) -> String? {
+        guard currentSessionID == sessionID else { return nil }
+        return homeTurnClaim.claim(instanceID: historyInstanceID,
+                                  accountScope: historyAccountScope, sessionID: sessionID)
     }
 
     /// 新建失败明确报错，绝不退回网页或静默换会话。
