@@ -251,6 +251,17 @@ final class NativeChatModel: ObservableObject {
     /// 会话当前模型（来自历史快照），用于输入栏显示真实标签。
     @Published var sessionModel: String?
     @Published var sessionProvider: String?
+    @Published private(set) var requestedReasoningEffort: String?
+    private var reasoningPreferenceKey: String {
+        ReasoningEffortPolicy.preferenceKey(scope: displayScope, sessionID: sessionID)
+    }
+    /// Persist a local per-session preference, not a global Hermes setting.
+    func chooseReasoningEffort(_ effort: String?) {
+        guard api.supportsReasoningEffort, ReasoningEffortPolicy.allowed(effort) else { return }
+        requestedReasoningEffort = effort
+        if let effort { UserDefaults.standard.set(effort, forKey: reasoningPreferenceKey) }
+        else { UserDefaults.standard.removeObject(forKey: reasoningPreferenceKey) }
+    }
     /// 本轮思考过程。单独存放，绝不拼进正文，避免污染 Markdown 与复制内容。
     @Published var reasoning: String = ""
     let sessionID: String
@@ -511,6 +522,9 @@ final class NativeChatModel: ObservableObject {
     /// Apply the exact identity acknowledged by a model-change request. A
     /// provider-only change does not change SessionSummary.model's string.
     func setConfirmedModel(_ model: String, provider: String?) {
+        if sessionModel != model || sessionProvider != provider {
+            chooseReasoningEffort(nil)
+        }
         sessionModel = model
         sessionProvider = provider
     }
@@ -554,6 +568,11 @@ final class NativeChatModel: ObservableObject {
         self.draftStore = draftStore
         self.historyStore = historyStore
         self.displayScope = displayScope
+        if api.supportsReasoningEffort {
+            requestedReasoningEffort = ReasoningEffortPolicy.validated(
+                UserDefaults.standard.string(forKey:
+                    ReasoningEffortPolicy.preferenceKey(scope: displayScope, sessionID: sessionID)))
+        }
         let loadedDraft = draftStore?.loadDraftResult()
         self.draft = loadedDraft?.value ?? ""
         if let issue = loadedDraft?.result.failure {

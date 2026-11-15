@@ -8,12 +8,13 @@ import FoundationNetworking
 /// 与 `ChatRequests` 的差别只在认证与路由：网关没有 WebUI 的登录 cookie，
 /// 每条请求都必须带 API key；会话/运行因此走另一套 `/api/sessions`、`/v1/runs`。
 enum GatewayRequestError: LocalizedError {
-    case invalidBaseURL, invalidID
+    case invalidBaseURL, invalidID, invalidReasoningEffort
 
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL: return "网关地址无效：仅支持 http/https，且不能带用户信息、查询或片段"
         case .invalidID: return "会话或运行标识无效"
+        case .invalidReasoningEffort: return "无效的推理强度，消息未提交"
         }
     }
 }
@@ -91,11 +92,18 @@ struct GatewayRequests {
         try startRun(sessionID: sessionID, text: text, model: nil, provider: nil)
     }
 
-    func startRun(sessionID: String, text: String, model: String?, provider: String?) throws -> URLRequest {
+    func startRun(sessionID: String, text: String, model: String?, provider: String?,
+                  reasoningEffort: String? = nil) throws -> URLRequest {
         let id = try Self.validatedID(sessionID)
         var body: [String: Any] = ["input": text, "session_id": id]
         if let model, !model.isEmpty { body["model"] = model }
         if let provider, !provider.isEmpty { body["provider"] = provider }
+        if let reasoningEffort {
+            guard ReasoningEffortPolicy.allowed(reasoningEffort) else {
+                throw GatewayRequestError.invalidReasoningEffort
+            }
+            body["model_options"] = ["reasoning_effort": reasoningEffort]
+        }
         return try make("v1/runs", body: body)
     }
 

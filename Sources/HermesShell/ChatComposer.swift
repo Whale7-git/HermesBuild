@@ -62,6 +62,11 @@ struct ChatComposer: View {
     var onShowContextUsage: () -> Void = {}
     var onInsertCompressCommand: () -> Void = {}
     @State private var text: String
+    @State private var quoteReference: ChatQuote.Reference?
+    @State private var quoteExpanded = false
+    private var persistedText: String {
+        ChatQuote.assemble(quoteReference, reply: text)
+    }
     @State private var sendTick = 0
     @State private var stopTick = 0
     @State private var composing = false
@@ -131,7 +136,9 @@ struct ChatComposer: View {
         self.contextPressure = contextPressure
         self.onShowContextUsage = onShowContextUsage
         self.onInsertCompressCommand = onInsertCompressCommand
-        _text = State(initialValue: initialDraft)
+        let decoded = ChatQuote.splitDraft(initialDraft)
+        _text = State(initialValue: decoded.reply)
+        _quoteReference = State(initialValue: decoded.reference)
     }
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -168,11 +175,11 @@ struct ChatComposer: View {
         .sensoryFeedback(.impact(weight: .light), trigger: stopTick)
         // 防抖落盘：继续输入会取消上一轮写入，停止输入 500ms 后才写一次。
         // 相比原先「逐字写 UserDefaults」，磁盘写入次数下降一个数量级。
-        .task(id: text) {
+        .task(id: persistedText) {
             guard let draftStore else { return }
             do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
             guard !Task.isCancelled else { return }
-            let result = draftStore.save(text)
+            let result = draftStore.save(persistedText)
             if result.succeeded {
                 onLocalWriteSuccess()
             } else {
@@ -189,7 +196,7 @@ struct ChatComposer: View {
             if let draftStore { report(draftStore.save(next)) }
         }
         .onDisappear {
-            if let draftStore { report(draftStore.save(text)) }
+            if let draftStore { report(draftStore.save(persistedText)) }
         }
         .onChange(of: readOnly) { _, value in
             if value { composing = false }
@@ -199,7 +206,7 @@ struct ChatComposer: View {
                 composing = false
                 // 失焦立刻落盘：防抖窗口只有 500ms，但用户「打完就切走」很常见，
                 // 这里补一次同步写入，保证进程被杀也不会丢草稿。
-                if let draftStore { report(draftStore.save(text)) }
+                if let draftStore { report(draftStore.save(persistedText)) }
             }
         }
     }
@@ -207,12 +214,15 @@ struct ChatComposer: View {
     /// 外部改写输入框（清空 / 分支预填 / 失败回填）。token 是唯一的触发条件，
     /// 因此父视图不必把输入内容纳入自己的状态。
     private func applyDraftSync() {
-        if let expected = draftSync.onlyIfCurrent, text != expected { return }
-        if draftSync.onlyIfEmpty, !text.isEmpty { return }
-        guard text != draftSync.text else { return }
-        text = draftSync.text
+        if let expected = draftSync.onlyIfCurrent, persistedText != expected { return }
+        if draftSync.onlyIfEmpty, !text.isEmpty || quoteReference != nil { return }
+        let parsed = ChatQuote.splitDraft(draftSync.text)
+        guard text != parsed.reply || quoteReference != parsed.reference else { return }
+        text = parsed.reply
+        quoteReference = parsed.reference
+        quoteExpanded = false
         // 立即落盘：避免「已清空」与「防抖写盘」之间的窗口把旧草稿写回磁盘。
-        if let draftStore { report(draftStore.save(text)) }
+        if let draftStore { report(draftStore.save(persistedText)) }
     }
 
     private func report(_ result: LocalStoreWriteResult) {
@@ -220,9 +230,16 @@ struct ChatComposer: View {
         else { onPersistenceResult(result) }
     }
 
-    /// A quote appends after the current text, keeping one blank line between
-    /// the draft and quoted block. The caret lands after the quoted block.
+    /// Quoting updates a compact, removable preview. The transmitted quote
+    /// remains in persistedText for recovery, but never enters UITextView.
     private func applyInsertion() {
+        if let reference = insertion.quote {
+            quoteReference = reference
+            quoteExpanded = false
+            if let draftStore { report(draftStore.save(persistedText)) }
+            focused = true
+            return
+        }
         guard !insertion.text.isEmpty else { return }
         let next = ChatComposerInsertionPlan.append(insertion.text, to: text)
         // Reuse the editor's document insertion path so the selection moves to
@@ -377,6 +394,40 @@ struct ChatComposer: View {
                 Rectangle().fill(AppTheme.hairline).frame(height: 0.5)
                     .padding(.horizontal, 12)
             }
+            if let quoteReference {
+                HStack(alignment: .top, spacing: 9) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(AppTheme.accent).frame(width: 3)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("引用 \(quoteReference.author)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(quoteReference.preview)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(quoteExpanded ? nil : 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture { quoteExpanded.toggle() }
+                    }
+                    Button {
+                        self.quoteReference = nil
+                        quoteExpanded = false
+                        if let draftStore { report(draftStore.save(persistedText)) }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.semibold))
+                            .frame(width: 32, height: 32)
+                    }
+                    .accessibilityLabel("移除引用")
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 11)
+                .padding(.top, 7)
+            }
             if !commandSuggestions.isEmpty {
                 slashCommandMenu
             }
@@ -405,7 +456,7 @@ struct ChatComposer: View {
             .padding(.bottom, 0)
 
             if !readOnly {
-                HStack(alignment: .center, spacing: 2) {
+                HStack(alignment: .center, spacing: 12) {
                     Group {
                         if let attachmentMenu { attachmentMenu }
                         else {
@@ -418,7 +469,7 @@ struct ChatComposer: View {
                         }
                     }
                     .frame(width: 44, height: 44)
-                    Spacer(minLength: 4)
+                    Spacer(minLength: 12)
                     Button(action: onChooseModel) {
                         HStack(spacing: 4) {
                             Text(modelLabel)
@@ -429,7 +480,8 @@ struct ChatComposer: View {
                         }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .frame(maxWidth: 148, minHeight: 44)
+                        .frame(maxWidth: 114, minHeight: 44)
+                        .fixedSize(horizontal: true, vertical: false)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -594,6 +646,6 @@ struct ChatComposer: View {
     private func submit() {
         guard sendEnabled else { return }
         sendTick += 1
-        onSend(text)
+        onSend(persistedText)
     }
 }

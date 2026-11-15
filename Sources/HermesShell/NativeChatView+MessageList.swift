@@ -253,12 +253,12 @@ extension NativeChatView {
 
     private func quote(_ message: ChatMessage) {
         guard model.canSend, !model.readOnly, !app.sessionActionBusy,
-              let insertion = ChatQuote.insertion(for: message) else {
+              let reference = ChatQuote.reference(for: message) else {
             showToast("这条消息没有可引用的文字")
             return
         }
         composerInsertion = ChatComposerInsertion(
-            token: composerInsertion.token &+ 1, text: insertion)
+            token: composerInsertion.token &+ 1, quote: reference)
     }
 
     /// Sharing is a local temporary file; no server write occurs. The existing

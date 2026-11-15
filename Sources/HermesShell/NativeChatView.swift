@@ -147,6 +147,7 @@ struct NativeChatView: View {
     @State var noticeChecking = false
     @State var visible = false
     @State var showAttachInfo = false
+    @State var attachmentPickerTrigger = 0
     @State var attachmentTarget: String?
     @State var attachmentHighlight: String?
     @State var attachmentHighlightTask: Task<Void, Never>?
@@ -338,15 +339,22 @@ struct NativeChatView: View {
             guard !Task.isCancelled, visible, app.active.id == instance,
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
                   app.currentSessionID == sessionID else { return }
+            if app.consumeHomeAttachmentRequest(for: sessionID) {
+                // An explicit Plus tap opens the real native Files/Photos
+                // source chooser in the destination Session; it NEVER posts.
+                attachmentPickerTrigger &+= 1
+            }
             if let firstText = app.consumeHomeTurn(for: sessionID) {
-                // One-shot claim occurs BEFORE the send await. If this view
-                // disappears or the process dies, the original POST is never
-                // retried; its exact text remains in the session's draft store.
+                // Claim BEFORE send. A failed/unknown POST cannot be replayed.
                 if model.canSend && !model.uncertain && model.draft == firstText {
                     syncedDraft = firstText
-                    _ = await model.send()
+                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    pendingUserTurnFocus = true
+                    let submitted = await model.send()
+                    if !submitted { pendingUserTurnFocus = false }
                 } else {
-                    model.notice = "新会话已建立，首条消息尚未发送；请核对状态后手动发送已保存的草稿。"
+                    pendingUserTurnFocus = false
+                    model.notice = "新会话已创建，但首条消息尚未提交。草稿已保存，请核对状态后手动发送。"
                 }
             }
             guard !Task.isCancelled, visible, app.active.id == instance,

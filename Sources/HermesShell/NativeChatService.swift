@@ -25,6 +25,8 @@ protocol NativeChatService:AnyObject {
     /// The latest run-recovery write failed, so this process can still avoid a
     /// duplicate POST but a relaunch may not know which run is active.
     var runRecoveryUnavailable: Bool { get }
+    /// Only an explicit Gateway implementation may opt into /v1/runs options.
+    var supportsReasoningEffort: Bool { get }
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot
     /// Bounded recovery-only status probe. A missing active_stream_id cannot
     /// prove completion; this method lets a durable receipt verify its exact
@@ -35,6 +37,10 @@ protocol NativeChatService:AnyObject {
     /// 只会命中 extension 的默认实现（旧实现会忽略附件），HermesAPI 的真实实现
     /// 永远不会被调到（protocol extension 静态派发的经典陷阱）。
     func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload]) async throws -> String
+    /// New requirement is dynamically dispatched. Non-Gateway implementations
+    /// refuse non-default effort, rather than silently dropping the option.
+    func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload],
+                         reasoningEffort:String?) async throws -> String
     func stopNativeTurn(streamID:String) async throws
     /// 运行中追加引导。nil 表示已受理；非 nil 是服务端的降级原因。
     /// 必须在协议里声明：否则调用按静态类型派发，只会命中 extension 的默认实现。
@@ -53,6 +59,7 @@ protocol NativeChatService:AnyObject {
 extension NativeChatService {
     func requiresAuthentication(after error: Error) -> Bool { false }
     var runRecoveryUnavailable: Bool { false }
+    var supportsReasoningEffort: Bool { false }
     /// Unknown is fail-closed. A backend that cannot prove the exact run is
     /// alive must never turn the receipt into permission to send again.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
@@ -70,11 +77,21 @@ extension NativeChatService {
         guard attachments.isEmpty else { throw NativeChatServiceError.attachmentsUnsupported }
         return try await startNativeTurn(sessionID:sessionID,text:text)
     }
+    func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload],
+                         reasoningEffort:String?) async throws -> String {
+        guard reasoningEffort == nil else { throw NativeChatServiceError.reasoningUnsupported }
+        return try await startNativeTurn(sessionID:sessionID,text:text,attachments:attachments)
+    }
 }
 
 enum NativeChatServiceError: LocalizedError {
-    case attachmentsUnsupported
-    var errorDescription: String? { "当前聊天服务未实现附件发送，附件未提交。" }
+    case attachmentsUnsupported, reasoningUnsupported
+    var errorDescription: String? {
+        switch self {
+        case .attachmentsUnsupported: return "当前聊天服务未实现附件发送，附件未提交。"
+        case .reasoningUnsupported: return "当前聊天后端不支持推理强度覆盖，消息未发送；请改用服务端默认。"
+        }
+    }
 }
 
 /// 历史附件是服务端已上传的引用（只有 path 字符串，没有本地 Data），

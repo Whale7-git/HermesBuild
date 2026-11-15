@@ -572,7 +572,9 @@ extension NativeChatModel {
         RuntimeLogRecorder.shared.record(.info, "send",
             "post start chars=\(text.count) attachments=\(attachments.count) origin=\(origin == .systemPlaceholder ? "placeholder" : "input")")
         do {
-            let active = try await api.startNativeTurn(sessionID:sessionID,text:text,attachments:attachments)
+            let active = try await api.startNativeTurn(sessionID:sessionID, text:text,
+                attachments:attachments,
+                reasoningEffort:api.supportsReasoningEffort ? requestedReasoningEffort : nil)
             noteRunRecoveryState()
             RuntimeLogRecorder.shared.record(.info, "send", "post ok stream=\(active)")
             // Persist a separate accepted-run receipt before discarding the

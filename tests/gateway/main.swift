@@ -11,6 +11,26 @@ func runGatewayTests() throws {
     gatewayAttachmentPathTests()
     try gatewayModelCatalogTests()
     try gatewayFilterTests()
+    try gatewayReasoningRequestTests()
+}
+
+// MARK: - Per-run Gateway reasoning options
+func gatewayReasoningRequestTests() throws {
+    let requests = GatewayRequests(baseURL: URL(string: "https://example.test")!, apiKey: "fixture")
+    let standard = try requests.startRun(sessionID: "s", text: "hi")
+    let defaultBody = try JSONSerialization.jsonObject(with: standard.httpBody!) as! [String: Any]
+    expect(defaultBody["model_options"] == nil, "server default emits no effort field")
+    let high = try requests.startRun(sessionID: "s", text: "hi",
+                                     model: nil, provider: nil, reasoningEffort: "high")
+    let selectedBody = try JSONSerialization.jsonObject(with: high.httpBody!) as! [String: Any]
+    expect((selectedBody["model_options"] as? [String: Any])?["reasoning_effort"] as? String == "high",
+           "non-default effort is nested in model_options for this Run only")
+    expect(selectedBody["input"] as? String == "hi" && selectedBody["session_id"] as? String == "s",
+           "reasoning override cannot affect Session identity or input")
+    expectThrows("invalid effort fails before POST") {
+        _ = try requests.startRun(sessionID: "s", text: "hi", model: nil,
+                                   provider: nil, reasoningEffort: "maximum")
+    }
 }
 
 // MARK: - 模型目录

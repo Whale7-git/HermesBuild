@@ -392,6 +392,8 @@ struct AttachmentComposerBar: View {
     var isLocked = false
     var showsPicker = true
     var showsItems = true
+    var launchPicker = 0
+    @State private var askAttachmentSource = false
     @State private var choosingFiles = false
     @State private var choosingPhotos = false
     @State private var choosingCamera = false
@@ -461,6 +463,20 @@ struct AttachmentComposerBar: View {
                     Button("关闭", systemImage:"xmark") { model.errorMessage = nil }.labelStyle(.iconOnly).frame(minWidth:44, minHeight:44)
                 }
             }
+        }
+        .onChange(of: launchPicker) { _, trigger in
+            if trigger > 0 && !isLocked { askAttachmentSource = true }
+        }
+        .confirmationDialog("添加附件", isPresented: $askAttachmentSource,
+                            titleVisibility: .visible) {
+            Button("从相册选择", systemImage: "photo.on.rectangle") {
+                choosingPhotos = true
+            }
+            if CameraPicker.isAvailable {
+                Button("拍照", systemImage: "camera") { openCamera() }
+            }
+            Button("选择文件", systemImage: "folder") { choosingFiles = true }
+            Button("取消", role: .cancel) {}
         }
         .fileImporter(isPresented:$choosingFiles, allowedContentTypes:[.item], allowsMultipleSelection:true) { result in
             // A picker opened before the send lock must not mutate a submitted draft.
