@@ -1,27 +1,17 @@
-# Historical manual SSH test instructions
+# Foundation chat core offline tests
 
-> This document describes an optional older remote test wrapper. GPT Cloud Build runs the core suite directly under `bash tests/run_container.sh` on GitHub's Ubuntu runner; it does not use SSH, `ios-build`, or `HERMES_TEST_TARGET`.
-
-# Pure Foundation chat core tests
-
-Run from the project root:
+Run the supported GPT regression from the repository root:
 
 ```sh
-HERMES_TEST_TARGET=user@build-host bash tests/core/run.sh final
+bash scripts/gpt-cloud-build.sh offline
+# Underlying Linux/macOS-compatible local runner:
+bash tests/run_container.sh
 ```
 
-This copies only ChatCore.swift, main.swift and the supplied synthetic live fixtures
-to `/work/hermes-chatcore-tests` inside `ios-build` on the SSH target supplied by `HERMES_TEST_TARGET`, then runs:
-
-```sh
-swiftc -warnings-as-errors Sources/HermesShell/ChatCore.swift tests/core/main.swift -o core-tests
-./core-tests all
-```
-
-No packages, application server, credentials or live API calls are used. The local
-runner records compiler/runtime stdout in `tests/core/evidence-<label>.txt`.
-Optional second argument selects a test name. A Swift compiler on another machine
-can execute the two commands directly from this project's root.
+This compiles and runs the Foundation chat core alongside the other Swift
+suites in the GitHub Ubuntu job, without SSH, remote Docker, credentials or
+production calls. Synthetic SSE/history fixtures are under
+`tests/core/fixtures/`; device acceptance remains a separate activity.
 
 ## TDD evidence
 

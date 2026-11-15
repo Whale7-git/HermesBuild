@@ -55,6 +55,29 @@ class GPTBuildContractTests(unittest.TestCase):
         self.assertNotIn("build-on-9.ps1", source_gate)
         self.assertNotIn("release-local.sh", source_gate)
 
+    def test_only_gpt_workflow_and_no_legacy_build_sources(self):
+        workflow_dir = ROOT / ".github/workflows"
+        self.assertEqual({p.name for p in workflow_dir.glob("*.yml")}, {"gpt-cloud-build.yml"})
+        for relative in (
+            "scripts/build-on-9.ps1", "scripts/release-local.sh",
+            "scripts/repro-check.sh", "scripts/github-build-ipa-main.sh",
+            "scripts/publish-candidate.py", "scripts/publish-release.py",
+            "scripts/release-plan.py", "scripts/select-candidate.py",
+            "scripts/verify-candidate.py", "scripts/github-publish-release.sh",
+            "tests/run_native.sh", "tests/core/run.sh", "tests/attachments/run.sh",
+            "tests/attachments/typecheck-ios.sh", "tests/discovery/run.sh",
+            "tests/discovery/typecheck.sh", "xtool.yml",
+        ):
+            self.assertFalse((ROOT / relative).exists(), relative)
+        self.assertFalse((ROOT / "ci").exists(), "legacy ci/ must be absent")
+        self.assertFalse((ROOT / "tests/releaseautomation").exists(),
+                         "legacy publication tests must be absent")
+
+    def test_ipa_verification_requires_provenance(self):
+        verifier = (ROOT / "tests/verify_ipa.py").read_text()
+        self.assertNotIn("no-build-info", verifier)
+        self.assertIn("check_build_info(build_info_path, version, build, info)", verifier)
+
 
 if __name__ == "__main__":
     unittest.main()

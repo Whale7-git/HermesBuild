@@ -26,10 +26,8 @@ This guide applies to `gpt/**` development and its independent GitHub cloud IPA 
 - Update `release.json`, `Resources/Info.plist` and README title together when changing a version. Run `python3 tests/gen_release_scope.py` **once** after any file changes. Never rewrite the frozen build64 baseline.
 - Report test, compile, IPA verification and device acceptance as separate claims. Do not assert real-device behavior from green CI.
 
-## Legacy entry points
+## Legacy isolation and history
 
-`scripts/build-on-9.ps1`, `scripts/release-local.sh`, `ci/`, `xtool.yml` and `tests/run_native.sh` (plus SSH-based helper scripts under tests) are archived/manual legacy utilities. They are not GPT build dependencies, are not called by the GPT workflow, and must not become required by the source gate. Keep them available for history unless separately authorized to remove them.
+Only `.github/workflows/gpt-cloud-build.yml` remains as a workflow in this GPT branch. Historical 9th-runner, xtool, SSH wrappers and official publication/candidate automation were removed **from this GPT branch only**. Never reintroduce or call them in GPT development. `main` was not changed by the deletions.
 
-`hermesshell-single-build.yml`, `hermesshell-single-promote.yml` and `hermesshell-adaptive-release.yml` are separate official/manual release workflows. They are not part of the GPT branch Push path.
-
-The authoritative build architecture for this branch is `docs/gpt-cloud-build.md`.
+Preserve real Swift offline suites, source integrity tests and IPA validation. Live backend probes remain optional manual checks, not CI dependencies. See `docs/gpt-cloud-legacy-cleanup.md` for the removed inventory and `docs/gpt-cloud-build.md` for the build contract.

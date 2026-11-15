@@ -10,7 +10,7 @@ Describe the resulting behavior and the narrow scope of this pull request.
 
 - [ ] Source checks
 - [ ] Relevant offline tests
-- [ ] Release build or IPA inspection when applicable
+- [ ] GPT hosted macOS IPA build and artifact validation when applicable
 - [ ] Physical-device checks are listed separately and marked as pending when not run
 
 Commands and evidence:
@@ -26,5 +26,5 @@ compatibility risks. Explain how to roll back.
 - [ ] Unrelated files and refactors are excluded.
 - [ ] The change preserves bundle ID, paging, scroll-following, tool-call
   collapsing, expansion state, and session-list navigation.
-- [ ] The description distinguishes offline tests, Release compilation, IPA
-  inspection, and real-device acceptance.
+- [ ] The description distinguishes source/offline tests, unsigned IPA
+  compilation, artifact inspection and separately reported real-device acceptance.

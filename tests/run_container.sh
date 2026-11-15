@@ -35,7 +35,7 @@ if [[ -z $JOBS ]]; then
   # nothing: the queue runs dry, not the cores. Compiling is now 40s of an 83s
   # run; the remaining time is the deliberately serial execute phase. Memory is
   # not the constraint here (49.5 GB available at peak), so 32 is safe and
-  # leaves the release build afterwards plenty of room.
+  # was measured on a historical host, not the current GitHub runner.
   JOBS=$(( JOBS > 32 ? 32 : JOBS ))
 fi
 
@@ -170,7 +170,7 @@ bash tests/gatewaybackend/run.sh
 python3 tests/sourcegate/main.py
 # MANUAL ONLY (not run here): tests/integration/main.swift is the only real-HTTPS probe.
 # It needs a live WebUI base URL, a synthetic session id and a cookie on stdin, and it
-# performs GETs against a real gateway — so it cannot run offline in ios-build.
+# performs GETs against a real gateway — so it cannot run in offline CI.
 # Smoke it by hand against a synthetic conversation:
 #   swiftc Sources/HermesShell/{AttachmentHistory,ChatCore,ChatRequests}.swift \
 #          tests/integration/main.swift -o /tmp/live-probe

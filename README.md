@@ -21,7 +21,7 @@ GitHub Actions 入口：`https://github.com/Whale7-git/HermesBuild/actions/workf
 
 从已包含 GPT 构建工作流的 GPT 基线（当前为 `gpt/cloud-build-bootstrap`）创建 `gpt/<topic>`。修改应用代码和对应测试后，按版本需要同步更新 `release.json`、`Resources/Info.plist` 和本 README 首行，再执行一次 `python3 tests/gen_release_scope.py` 生成当前 build 的源码清单。Push 即触发完整 GitHub 云端验证和 IPA 交付；不需要操作旧 Runner。
 
-本仓库的其他 `hermesshell-*.yml` 工作流属于独立的正式发布体系，不能被当作 GPT 分支的默认构建入口。它们不因普通 `gpt/**` Push 触发；是否发布正式版本不属于当前 GPT 流程。
+本 GPT 分支只保留 `.github/workflows/gpt-cloud-build.yml` 一条构建工作流；旧正式发布、候选包工作流和 9 号机脚本已从本分支移除。`main` 分支的发布体系不受本次清理影响。
 
 ## 连接自己的服务
 
@@ -38,7 +38,7 @@ bash scripts/gpt-cloud-build.sh ipa
 
 命令只接受 `gpt/*` 本地开发分支；GitHub Actions 中还校验仓库、Push 事件、完整分支 ref 和 Commit SHA。所有源码完整性验证基于当前 XcodeGen 构建入口，不依赖旧远程构建脚本。
 
-历史文档中的 Linux/xtool、9 号机、自托管 Runner 和旧 Release 操作是当时的实现记录，**不是本分支的使用说明**。旧手动脚本保留以便历史追溯，但 GPT 工作流不调用它们。
+历史文档中的 Linux/xtool、9 号机、自托管 Runner 和旧 Release 操作属于历史记录，**不是本分支的使用说明**；相应旧入口已从 GPT 分支移除。删除详情见 `docs/gpt-cloud-legacy-cleanup.md`，旧实现可通过 Git 历史查询。
 
 ## 第三方代码
 

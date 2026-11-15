@@ -20,7 +20,7 @@ Each mode checks the exact push repository/ref/HEAD SHA in Actions. Local runs r
 - `python3 tests/gen_release_scope.py` (run once after file changes)
 - `python3 -m unittest discover -s tests/gptcloud -p 'test_*.py' -v`
 
-The source gate validates the current XcodeGen app target and GitHub builder. It does **not** inspect the operation or version logic of legacy `scripts/build-on-9.ps1`, `scripts/release-local.sh` or `xtool.yml`.
+The source gate validates the current XcodeGen app target and GitHub builder. Former 9th-runner/xtool scripts and remote wrappers have been removed from this GPT branch; they are not a fallback or implicit dependency.
 
 ## New-version development
 
@@ -30,10 +30,10 @@ The source gate validates the current XcodeGen app target and GitHub builder. It
 4. Run the scope generator once; review the diff and tests before committing. Push the branch.
 5. Confirm the same exact Git SHA appears in the source/offline/macOS jobs, embedded app plist, build metadata and IPA verification. Download and sign the candidate yourself for real-device checks.
 
-A candidate is not a separately numbered official release merely because its SHA differs. It is not eligible for automatic promotion into `main`. Other `hermesshell-*.yml` files are different workflows and are not this build contract.
+A candidate is not a separately numbered official release merely because its SHA differs. It is not eligible for automatic promotion into `main`. This GPT branch contains no separate candidate-promotion or Release workflow; the original `main` workflows are outside this branch.
 
 ## Failure diagnosis
 
 The macOS job uploads setup/build/toolchain logs, reports exact failed step outcomes, retains full Xcode build output, and writes an Actions job summary. Source/Swift test failures appear as their own Ubuntu jobs. Treat a missing IPA, failed provenance validation, or upload error as a failed build; do not report the artifact as delivered unless GitHub confirms upload success.
 
-Historical material: `docs/backlog.md`, `tests/manual-ios.md`, the old SSH-based test wrappers and `ci/` are not authoritative current build instructions. Their existence does not create a dependency on the old runner.
+Historical material: `docs/backlog.md` and `tests/manual-ios.md` are not authoritative current build instructions. The former SSH wrappers and `ci/` scripts have been deleted from the GPT tree, without modifying `main`. See `docs/gpt-cloud-legacy-cleanup.md`.

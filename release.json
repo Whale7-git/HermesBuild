@@ -1,5 +1,5 @@
 {
-  "_note": "Version/build source of truth for GPT Cloud Build. Used by tests/verify_source.py and scripts/github-build-ipa.sh. Update Resources/Info.plist and the README first line when bumping; run tests/gen_release_scope.py once. Legacy SSH/xtool scripts are not GPT build dependencies.",
+  "_note": "Single source of truth for app version/build in GPT Cloud Build. Read by tests/verify_source.py and scripts/github-build-ipa.sh. When changing either value update Resources/Info.plist and the README first line, then regenerate the build-specific scope once. Historical 9th-runner/xtool and Release publishing scripts have been removed from this GPT branch, without modifying main.",
   "version": "2.28.0",
   "build": "170"
 }

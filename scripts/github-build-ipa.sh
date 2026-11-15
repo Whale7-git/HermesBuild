@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CI: create a real iphoneos application and package a SideStore-compatible unsigned IPA.
-# This is intentionally separate from the Linux xtool build chain.
+# Sole hosted macOS/XcodeGen IPA packager for GPT branches; no legacy hosts.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
