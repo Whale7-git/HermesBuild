@@ -62,7 +62,7 @@ jobs:
           (github.event_name == 'workflow_dispatch' ||
            (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.source.outputs.release == 'true')) }}
     needs: [source, offline]
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     concurrency:
       group: ${{ github.event_name == 'push' && format('hermes-release-{0}', needs.source.outputs.tag) || format('hermes-build-{0}', github.run_id) }}
@@ -80,11 +80,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/github-publish-release.sh --preflight
-      - name: Select required Xcode 26.3
+      - name: Report default Apple toolchain
         run: |
-          test -d /Applications/Xcode_26.3.app || { echo '::error::Xcode 26.3 is required'; exit 1; }
-          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          sw_vers
+          xcode-select -p
           xcodebuild -version
+          xcrun swift --version
+          xcrun --sdk iphoneos --show-sdk-version
       - name: Install XcodeGen
         run: command -v xcodegen >/dev/null || brew install xcodegen
       - name: Compile once and validate the checked-out source
