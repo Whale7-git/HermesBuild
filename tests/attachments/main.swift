@@ -162,7 +162,7 @@ rejects("aggregate import memory cap") { _ = try small.append(name:"a", mime:"te
 // MARK: - 上传完成后释放原始字节（S1-2）
 //
 // 40MB 总量上限的字节此前会常驻到会话结束：服务端已有副本，本地不再需要。
-// 图片是例外——已上传的图片仍可再编辑，编辑入口读 draft.data。
+// 图片也按需从服务端重新读取再编辑，避免整批原图常驻内存。
 
 do {
     var b = AttachmentBatch(sessionID:"release")
@@ -175,11 +175,13 @@ do {
 }
 
 do {
-    var b = AttachmentBatch(sessionID:"keep")
+    var b = AttachmentBatch(sessionID:"image")
     let imgID = try b.append(name:"a.png", mime:"image/png", data:bytes)
     let imgAttempt = try b.begin(imgID)
     b.complete(imgID, attempt:imgAttempt, attachment:attachment)
-    check(b.items[0].data == bytes, "an image keeps its bytes so it can still be re-edited")
+    check(b.items[0].data.isEmpty, "an uploaded image drops its bytes and reloads them only when editing")
+    check(b.items[0].byteCount == bytes.count && b.canSend,
+          "an uploaded image keeps its displayed size and remains sendable after releasing bytes")
 }
 
 do {

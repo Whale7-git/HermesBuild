@@ -177,8 +177,8 @@ struct AttachmentDraft: Identifiable, Sendable {
     let id: UUID
     let name: String
     let mime: String
-    /// 原始字节。上传成功后会释放（置空）以回收内存——**图片除外**，
-    /// 因为已上传图片仍可再编辑，编辑入口需要原始像素。
+    /// 原始字节。上传成功后会释放（置空）以回收内存。图片重新编辑时按需
+    /// 从服务端读取原图，不再让整批图片常驻到会话结束。
     /// `fileprivate(set)`：只有同文件的 `AttachmentBatch` 能清空它。
     fileprivate(set) var data: Data
     /// 字节数在构造时固定下来，释放 `data` 后容量核算与界面显示仍要它。
@@ -196,14 +196,9 @@ struct AttachmentDraft: Identifiable, Sendable {
         self.byteCount = declaredByteCount ?? data.count
     }
 
-    /// 上传成功后是否应该丢掉原始字节。
-    ///
-    /// 只有非图片丢：图片留着是为了「已上传的图片还能再编辑」这条既有路径，
-    /// 它需要原始像素（`beginEditing` 读 `draft.data`）。文档/视频之类
-    /// 上传完就没有再读字节的理由，40MB 总量上限常驻不值得。
-    var releasesBytesAfterUpload: Bool {
-        !AttachmentPreviewPolicy.rasterMIMEs.contains(mime.lowercased())
-    }
+    /// 服务端已有副本后，本地字节一律释放。图片编辑会通过
+    /// `AttachmentPreviewLoader` 重新取得原图；上传失败或排队时字节仍在。
+    var releasesBytesAfterUpload: Bool { true }
 }
 
 /// Value-state is independently tested; completion must match both chip and upload attempt.
@@ -254,8 +249,8 @@ struct AttachmentBatch: Sendable {
     mutating func complete(_ id: UUID, attempt: UUID, attachment: UploadedAttachment) {
         guard let index = current(id, attempt:attempt) else { return }
         items[index].state = .ready(attachment)
-        // 服务端已有副本，本地不再需要原始字节。图片留着供再编辑，
-        // 其余立刻释放——否则 8 个 20MB 附件会常驻到会话结束。
+        // 服务端已有副本，本地不再需要原始字节。图片编辑时再按需下载，
+        // 否则 8 个 20MB 附件会常驻到会话结束。
         if items[index].releasesBytesAfterUpload { items[index].data = Data() }
     }
     mutating func fail(_ id: UUID, attempt: UUID, message: String) {

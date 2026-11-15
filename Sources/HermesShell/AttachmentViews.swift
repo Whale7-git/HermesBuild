@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreTransferable
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -6,6 +7,39 @@ import ImageIO
 import UIKit
 import Photos
 import PhotosUI
+// PhotosUI's SwiftUI overlay is a cross-import module. The Linux xtool
+// typecheck driver does not discover it from `import PhotosUI` alone.
+import _PhotosUI_SwiftUI
+
+/// PhotosUI can export an asset as a temporary file. Copy it into our own
+/// temporary directory before the provider's security scope ends, then inspect
+/// only the image header and stream the bytes into the attachment batch.
+private struct AttachmentPickerFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .image) { file in
+            SentTransferredFile(file.url)
+        } importing: { received in
+            let source = received.file
+            let suffix = source.pathExtension.isEmpty ? "img" : source.pathExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HermesPicker-\(UUID().uuidString)")
+                .appendingPathExtension(suffix)
+            do {
+                try FileManager.default.copyItem(at: source, to: destination)
+                return Self(url: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+        }
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
 
 /// Adapter only: core chat/service files are deliberately not changed by this feature.
 @MainActor final class AttachmentComposerModel: ObservableObject {
@@ -141,12 +175,31 @@ import PhotosUI
                     guard item.supportedContentTypes.contains(where: { $0.conforms(to: .image) }) else {
                         throw AttachmentPhotoImportError.notImage
                     }
-                    guard let data = try await item.loadTransferable(type: Data.self), !data.isEmpty else { continue }
-                    // 与预览降采样同一 100MP 阈值：只解析图头像素尺寸，绝不整幅解码。
-                    let oversized = await Task.detached(priority: .userInitiated) {
-                        AttachmentComposerModel.exceedsPixelLimit(data)
-                    }.value
-                    guard !oversized else { throw AttachmentPhotoImportError.dimensionsTooLarge }
+                    // PhotosUI can hand us a temporary file. Inspect that file's
+                    // image header before reading its full bytes into memory.
+                    // The Data fallback remains for providers that do not export
+                    // a file representation.
+                    let picked = try? await item.loadTransferable(type: AttachmentPickerFile.self)
+                    let data: Data
+                    if let picked {
+                        defer { picked.remove() }
+                        let oversized = await Task.detached(priority: .userInitiated) {
+                            AttachmentComposerModel.exceedsPixelLimit(at: picked.url)
+                        }.value
+                        guard !oversized else { throw AttachmentPhotoImportError.dimensionsTooLarge }
+                        data = try await Task.detached(priority: .userInitiated) {
+                            try AttachmentFileImport.read(picked.url)
+                        }.value
+                    } else {
+                        guard let loaded = try await item.loadTransferable(type: Data.self),
+                              !loaded.isEmpty else { continue }
+                        let oversized = await Task.detached(priority: .userInitiated) {
+                            AttachmentComposerModel.exceedsPixelLimit(loaded)
+                        }.value
+                        guard !oversized else { throw AttachmentPhotoImportError.dimensionsTooLarge }
+                        data = loaded
+                    }
+                    guard !data.isEmpty else { continue }
                     try Task.checkCancellation()
                     guard let self, self.importGeneration == generation, self.batch.sessionID == sessionID else { return }
                     let type = item.supportedContentTypes.first
@@ -197,22 +250,54 @@ import PhotosUI
         return width.doubleValue * height.doubleValue > 100_000_000
     }
 
+    /// Inspect a picker's temporary file without materializing its full Data.
+    nonisolated static func exceedsPixelLimit(at url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL,
+              [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              width.doubleValue > 0, height.doubleValue > 0 else { return false }
+        return width.doubleValue * height.doubleValue > 100_000_000
+    }
+
     func retry(_ id: UUID) {
         do { try coordinator.retry(id) } catch { errorMessage = error.localizedDescription }
     }
     func remove(_ id: UUID) { coordinator.remove(id) }
 
-    func beginEditing(_ id: UUID) -> AttachmentEditSelection? {
+    func beginEditing(_ id: UUID) async -> AttachmentEditSelection? {
         guard !isEditing, !isImporting,
               let draft = batch.items.first(where: { $0.id == id }),
               AttachmentPreviewPolicy.rasterMIMEs.contains(draft.mime.lowercased()) else { return nil }
-        guard !Self.exceedsPixelLimit(draft.data) else {
+        editingID = id
+        defer { editingID = nil }
+
+        var data = draft.data
+        if data.isEmpty {
+            guard let previewLoader,
+                  case .ready(let uploaded) = draft.state else {
+                errorMessage = "原图暂时不可用，无法继续编辑。"
+                return nil
+            }
+            do {
+                data = try await previewLoader.imageData(sessionID: batch.sessionID,
+                                                         attachment: uploaded)
+            } catch {
+                errorMessage = "读取原图失败：\(error.localizedDescription)"
+                return nil
+            }
+        }
+        guard !data.isEmpty else {
+            errorMessage = "原图暂时不可用，无法继续编辑。"
+            return nil
+        }
+        guard !Self.exceedsPixelLimit(data) else {
             errorMessage = AttachmentPhotoImportError.dimensionsTooLarge.localizedDescription
             return nil
         }
-        editingID = id
         return AttachmentEditSelection(id: id, sessionID: batch.sessionID,
-            generation: importGeneration, name: draft.name, data: draft.data)
+            generation: importGeneration, name: draft.name, data: data)
     }
 
     func saveEdit(_ selection: AttachmentEditSelection, data: Data) throws {
@@ -294,7 +379,11 @@ struct AttachmentComposerBar: View {
                         ForEach(model.batch.items) { draft in
                             AttachmentChip(draft:draft, isLocked:isLocked,
                                 remove:{ model.remove(draft.id) }, retry:{ model.retry(draft.id) },
-                                edit: { editing = model.beginEditing(draft.id) },
+                                edit: {
+                                    Task {
+                                        editing = await model.beginEditing(draft.id)
+                                    }
+                                },
                                 preview:{ attachment in
                                     // 预览地址校验失败（previewLoader 为 nil）时不给入口，
                                     // 否则会打开一个永远读不到图的页面。
