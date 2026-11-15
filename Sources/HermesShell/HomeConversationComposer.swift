@@ -33,8 +33,8 @@ struct HomeConversationComposer: View {
                                 onSubmit: submit, onComposition: { composing = $0 })
                     .frame(maxWidth: .infinity, minHeight: 30, alignment: .center)
                     .padding(.horizontal, 15)
-                    .padding(.top, 12)
-                    .padding(.bottom, 3)
+                    .padding(.top, 7)
+                    .padding(.bottom, 1)
 
                 HStack(spacing: 4) {
                     Button(action: onAttach) {
@@ -42,8 +42,9 @@ struct HomeConversationComposer: View {
                             .font(.body.weight(.medium))
                             .frame(width: 44, height: 44)
                     }
+                    .foregroundStyle(.primary)
                     .disabled(creating || needsSetup)
-                    .accessibilityLabel("添加附件（先建立新会话）")
+                    .accessibilityLabel("添加附件")
 
                     Spacer(minLength: 8)
                     Button(action: onChooseModel) {

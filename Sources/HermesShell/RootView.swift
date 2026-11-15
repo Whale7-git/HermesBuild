@@ -288,8 +288,8 @@ struct RootView: View {
             HStack(spacing: 8) {
                 Button(action: openSidebar) { ChromeIcon(symbol: "line.3.horizontal") }
                     .accessibilityLabel("打开会话侧栏")
-                Text("Hermes")
-                    .font(.headline.weight(.semibold))
+                // One compact title/instance control instead of two
+                // competing headings across the top navigation bar.
                 Menu {
                     ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
                         Button {
@@ -302,15 +302,17 @@ struct RootView: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 4) {
-                        Text(app.active.name)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                    HStack(spacing: 5) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Hermes").font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(app.active.name).font(.caption2)
+                                .foregroundStyle(.secondary).lineLimit(1)
+                        }
                         Image(systemName: "chevron.down").font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: 154, minHeight: 44)
+                    .frame(maxWidth: 156, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel("切换 Hermes 实例，当前\(app.active.name)")
@@ -330,23 +332,21 @@ struct RootView: View {
             .padding(.horizontal, 12)
             .frame(height: 56)
 
-            Spacer(minLength: 48)
-            VStack(spacing: 13) {
+            Spacer(minLength: 24)
+            VStack(spacing: 12) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 36, weight: .light))
-                Text(app.needsInstanceSetup ? "连接你的 Hermes" : "有什么可以帮你？")
-                    .font(.system(.title2, design: .rounded, weight: .semibold))
+                    .font(.system(size: 29, weight: .light))
+                Text(app.needsInstanceSetup ? "连接 Hermes" : "有什么可以帮你？")
+                    .font(.system(.title3, design: .rounded, weight: .semibold))
                     .multilineTextAlignment(.center)
-                Text(app.needsInstanceSetup
-                     ? "先在设置中添加自己的网关地址与 API 密钥。"
-                     : "向当前 Hermes 实例发送消息，或从侧栏继续已有会话。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
+                if app.needsInstanceSetup {
+                    Text("请先在设置中配置网关或 WebUI 连接。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .frame(maxWidth: 330)
-            Spacer(minLength: 48)
+            Spacer(minLength: 24)
 
             if app.needsInstanceSetup {
                 Button("配置连接", systemImage: "gearshape") { app.showSettings = true }
@@ -385,8 +385,12 @@ struct RootView: View {
                         .accessibilityIdentifier("home-send-error")
                 }
             }
-            Spacer(minLength: 12)
+            // This MUST NOT be a Spacer. A third flexible Spacer below
+            // the composer was consuming a large portion of screen height,
+            // placing the input card hundreds of points above the home edge.
         }
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.canvas)
         .onAppear(perform: restoreHomeDraft)
         .onChange(of: homeScope) { _, _ in restoreHomeDraft() }
