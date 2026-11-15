@@ -291,6 +291,15 @@ extension NativeChatView {
         Task { await model.respondToClarify(answer, requestID: pending.id) }
     }
 
+    /// The action shown is the action actually executed.
+    private var noticeAction: ChatNoticeAction {
+        ChatNoticeAction.choose(
+            hasPendingSend: model.hasPendingSend,
+            uncertain: model.uncertain,
+            persistenceIssue: model.localPersistenceIssue != nil || model.queuePersistenceFailed,
+            recoveryDegraded: model.runRecoveryNoticeShown)
+    }
+
     var noticeBar: some View {
         HStack(spacing: 8) {
             Image(systemName: model.error != nil ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
@@ -302,30 +311,18 @@ extension NativeChatView {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
-            Button(model.localPersistenceIssue != nil || model.queuePersistenceFailed
-                   || model.runRecoveryNoticeShown && !model.hasPendingSend && !model.uncertain
-                   ? "详情"
-                   : (model.hasPendingSend || model.uncertain ? "核对状态" : "重试")) {
-                if model.localPersistenceIssue != nil || model.queuePersistenceFailed
-                    || model.runRecoveryNoticeShown {
-                    composerFocused = false
-                    showRecoveryCenter = true
-                } else {
-                    Task {
-                        if model.hasPendingSend {
-                            // A pending POST needs the strict history-boundary
-                            // reconciliation path, never a generic refresh.
-                            _ = await model.reconcilePending()
-                        } else {
-                            await model.refresh(silent: true, preserveLoadedOlder: true)
-                        }
-                    }
+            Button { performNoticeAction(noticeAction) } label: {
+                HStack(spacing: 4) {
+                    if noticeChecking { ProgressView().controlSize(.mini) }
+                    Text(noticeChecking ? "核对中…" : noticeAction.title)
                 }
             }
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.warning)
-                .frame(minHeight: 44)
-                .disabled(model.loading || model.syncing || model.submitting || model.reconciling || model.stopping || model.authenticationRequired)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(AppTheme.warning)
+            .frame(minHeight: 44)
+            .disabled(noticeChecking || model.loading || model.syncing
+                      || model.submitting || model.reconciling || model.stopping
+                      || model.authenticationRequired)
             Button {
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { noticeBarDismissed = true }
             } label: {
@@ -344,6 +341,48 @@ extension NativeChatView {
         .background(AppTheme.warning.opacity(0.12))
         .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.hairline).frame(height: 0.5) }
         .accessibilityElement(children: .contain)
+    }
+
+    private func performNoticeAction(_ action: ChatNoticeAction) {
+        if action == .details {
+            composerFocused = false
+            showRecoveryCenter = true
+            return
+        }
+        guard !noticeChecking else { return }
+        noticeChecking = true
+        Task { @MainActor in
+            defer { noticeChecking = false }
+            switch action {
+            case .reconcilePending:
+                // GET only; never replay the uncertain original POST.
+                let result = await model.reconcilePending()
+                switch result {
+                case .delivered: showToast("历史已确认送达，没有重复发送")
+                case .absent: showToast("历史未发现该消息，可选择重发或放弃")
+                case .failed: showToast("尚不能确认发送结果，请稍后核对")
+                }
+            case .verifyStatus, .retry:
+                await model.refresh(silent: true, preserveLoadedOlder: true)
+                // Accepted-run recovery may schedule a separate bounded probe.
+                if let probe = model.activeRunProbeTask { await probe.value }
+                if model.error != nil {
+                    showToast("联网核对失败，发送仍保持锁定")
+                } else if model.activeTurnRecovery != nil && !model.running {
+                    model.notice = "本次已核对历史，仍无法确认后台任务结束；不会重新发送消息。"
+                    showToast("已核对，后台任务状态仍待确认")
+                } else if model.uncertain {
+                    model.notice = model.notice ?? "本次核对仍无法确认后台状态；不会自动重发。"
+                    showToast("已核对，后台状态仍不确定")
+                } else if model.running {
+                    showToast("已核对，后台任务仍在运行")
+                } else {
+                    showToast("已核对服务端历史，状态已更新")
+                }
+            case .details:
+                break
+            }
+        }
     }
 
     private var noticeBarText: String {
