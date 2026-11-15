@@ -169,7 +169,7 @@ extension NativeChatView {
                     }
                     Spacer(minLength: 0)
                 }
-                if pending.isOpenEnded || clarifyTextMode.contains(pending.id) {
+                if pending.isOpenEnded || clarifyTextModes.contains(pending.id) {
                     clarifyInput(pending)
                 } else {
                     clarifyChoices(pending)
