@@ -1,5 +1,17 @@
 import Foundation
 
+private final class AtomicReadBackCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        value += 1
+        return value
+    }
+}
+
 @MainActor final class PendingRecoveryService: NativeChatService {
     var rows: [[String: Any]] = [["id": "old", "role": "user", "content": "same"]]
     var offset = 0
@@ -66,12 +78,11 @@ extension ModelTests {
         let rollbackRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("hermes-atomic-rollback-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: rollbackRoot) }
+        let readBackCounter = AtomicReadBackCounter()
         let rollbackStore = LocalDataFileStore(
             instanceID: "rollback", accountScope: "account", sessionID: "session",
             rootDirectory: rollbackRoot,
-            destinationReadBackVerifier: { _, expected in
-                !String(decoding: expected, as: UTF8.self).contains("second-pending")
-            })
+            destinationReadBackVerifier: { _, _ in readBackCounter.next() != 2 })
         precondition(rollbackStore.savePending(first).succeeded)
         precondition(rollbackStore.savePending(second).failure
             == LocalStoreWriteFailure.diskWrite)

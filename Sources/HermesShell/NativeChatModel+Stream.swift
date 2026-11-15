@@ -365,7 +365,11 @@ extension NativeChatModel {
     /// receipt, and unknown/error states stay fail-closed.
     func probeAcceptedRun(_ receipt: ActiveTurnRecovery) {
         guard activeRunProbeRunID != receipt.runID else { return }
-        guard !suspended, !submitting, !syncing, !loading else { return }
+        // applySnapshot runs while `load` still owns the loading/syncing phase.
+        // The probe task starts only after the current MainActor job yields, and
+        // a later load cancels it, so the in-progress snapshot is the correct
+        // place to schedule the one bounded receipt check.
+        guard !suspended, !submitting else { return }
         activeRunProbeTask?.cancel()
         activeRunProbeRunID = receipt.runID
         let generation = revision

@@ -81,7 +81,10 @@ extension NativeChatView {
                     .environment(\.colorScheme, colorScheme))
                 },
                 footer: {
-                    AnyView(ChatStatusFooter(state: statusSnapshot, webURL: webURL)
+                    AnyView(ChatStatusFooter(
+                        state: statusSnapshot,
+                        webURL: app.api.browserSessionURL?.appendingPathComponent("session")
+                            .appendingPathComponent(sessionID))
                     .tint(AppTheme.accent)
                     .environment(\.dynamicTypeSize, dynamicTypeSize)
                     .environment(\.colorScheme, colorScheme))

@@ -168,6 +168,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
 
     /// 会话页只有 WebUI 有；配了配套 WebUI 就指向它，否则退回网关地址。
     var webConsoleBaseURL: URL { webuiBaseURL ?? gatewayBaseURL }
+    var browserSessionURL: URL? { webuiBaseURL }
 
     /// 网关是只读转发层：没有归档列表、不能从指定消息处分支、不搜索正文、
     /// 用 API 密钥而不是密码。整会话复制仍然支持。

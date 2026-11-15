@@ -394,6 +394,13 @@ final class AppState: ObservableObject {
         appIsActive && conversationIsVisible
     }
 
+    /// The exact session currently on screen. `conversationVisible` describes
+    /// page presentation, not notification scope; using it alone would suppress
+    /// alerts from a different session while this page is active.
+    private var visibleNotificationSessionID: String? {
+        canSuppressNotificationForVisibleConversation ? currentSessionID : nil
+    }
+
     // MARK: - 模型目录
 
     func loadModels(force: Bool = false) async {
@@ -1054,7 +1061,7 @@ final class AppState: ObservableObject {
         guard !previous.isEmpty else { return }
         var streamingBefore: [String: Bool] = [:]
         for item in previous { streamingBefore[item.sessionId] = item.isStreaming == true }
-        let open = visibleSessionID
+        let open = visibleNotificationSessionID
         var changed = false
         for item in next where item.sessionId != open
             && streamingBefore[item.sessionId] == true
@@ -1079,7 +1086,7 @@ final class AppState: ObservableObject {
             recoveryEnabled: NotificationPreference.recovery)
         guard let notification = TaskNotificationPlanner.finished(
             runID: nil, sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: visibleSessionID,
+            settings: settings, foregroundSessionID: visibleNotificationSessionID,
             appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         let sound = NotificationPreference.sound
@@ -1096,7 +1103,7 @@ final class AppState: ObservableObject {
             recoveryEnabled: NotificationPreference.recovery)
         guard let notification = TaskNotificationPlanner.recovery(
             sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: visibleSessionID,
+            settings: settings, foregroundSessionID: visibleNotificationSessionID,
             appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         let sound = NotificationPreference.sound
@@ -1121,7 +1128,7 @@ final class AppState: ObservableObject {
         let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
         guard let notification = TaskNotificationPlanner.approval(
             requestID: requestID, sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: visibleSessionID,
+            settings: settings, foregroundSessionID: visibleNotificationSessionID,
             appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         rememberPendingRequestNotification(notification, kind: "approval",
@@ -1146,7 +1153,7 @@ final class AppState: ObservableObject {
         let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
         guard let notification = TaskNotificationPlanner.clarify(
             requestID: requestID, sessionID: sessionID, title: title,
-            settings: settings, foregroundSessionID: visibleSessionID,
+            settings: settings, foregroundSessionID: visibleNotificationSessionID,
             appActive: canSuppressNotificationForVisibleConversation,
             instanceID: historyInstanceID, accountScope: historyAccountScope) else { return }
         rememberPendingRequestNotification(notification, kind: "clarify",
@@ -1292,7 +1299,7 @@ final class AppState: ObservableObject {
         // history does not mean the server's sessions have disappeared.
         resetScopeView()
         ImageRatioStore.shared.remove(scope: scope)
-        ChatAttachmentPlaceholderStore.shared.removeScope(scope: scope)
+        ChatAttachmentPlaceholderStore.shared.removeScope(scope)
         RecentModelStore.shared.remove(scope: scope)
         sessionRefreshClock.remove(scope: scope)
         // 草稿/阅读位置/折叠状态不在 ChatHistoryStore 里，必须单独按账号清理，

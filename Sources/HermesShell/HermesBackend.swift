@@ -31,6 +31,9 @@ protocol HermesBackend: NativeChatService, SessionService {
     /// 「浏览器打开这个会话」的基地址。WebUI 实例指向自己；
     /// 网关实例优先用配套 WebUI（会话页只有那边有），没有再退回网关地址。
     var webConsoleBaseURL: URL { get }
+    /// A real browser session page exists only on WebUI or when a gateway has
+    /// an explicitly configured companion WebUI.
+    var browserSessionURL: URL? { get }
 
     func authStatus() async throws -> AuthStatus
     func login(password: String) async throws
@@ -51,6 +54,7 @@ extension HermesBackend {
     /// 网关覆盖这两个，其他 conformer（含测试替身）不必跟着改。
     var attachmentUploadRoute: String { "api/upload" }
     var attachmentAuthorization: AttachmentAuthorization { .cookieOnly }
+    var browserSessionURL: URL? { webConsoleBaseURL }
 
     /// 预览/下载用的认证方式。
     ///

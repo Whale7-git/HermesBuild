@@ -8,6 +8,7 @@ import SwiftUI
     var capabilities: BackendCapabilities { .webUI }
     var attachmentBaseURL: URL { chatRequests.baseURL }
     var webConsoleBaseURL: URL { chatRequests.baseURL }
+    var browserSessionURL: URL? { webConsoleBaseURL }
 
     func authStatus() async throws -> AuthStatus { throw URLError(.notConnectedToInternet) }
     func login(password: String) async throws {}

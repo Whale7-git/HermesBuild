@@ -38,6 +38,8 @@ extension NativeChatModel {
     }
 
     func removePendingApprovals(for runID: String?) {
+        // An authoritative snapshot names the run that is still alive. Requests
+        // from any other run are stale; a nil active run invalidates all cards.
         let removed = pendingApprovals.filter { $0.runID != runID }
         guard !removed.isEmpty else { return }
         pendingApprovals.removeAll { $0.runID != runID }

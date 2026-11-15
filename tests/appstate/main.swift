@@ -759,10 +759,10 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
         model.setPresentationVisibility(appActive: true, conversationVisible: false)
         model.approvalArrived(sessionID: "visible", requestID: "a2")
         model.clarifyArrived(sessionID: "visible", requestID: "c2")
-        await spin { notifier.delivered.count >= 3 }
-        precondition(notifier.delivered.last?.kind == .approvalPending,
-                     "active but obscured conversation does not suppress")
         await spin { notifier.delivered.count >= 4 }
+        precondition(Set(notifier.delivered.suffix(2).map(\.kind))
+                     == [.approvalPending, .clarifyPending],
+                     "active but obscured conversation delivers both sibling requests")
         precondition(model.sessionTaskObservations["visible"]?.signals
                      == [.waitingForApproval, .waitingForClarify],
                      "sibling approval and clarify signals coexist")

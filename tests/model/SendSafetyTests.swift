@@ -726,6 +726,19 @@ import Foundation
                      "resolving one approval must preserve sibling requests")
         precondition(!model.canRespondToApproval(requestID: "missing", choice: "once"),
                      "a missing request ID must never fall back to another approval")
+        let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
+                                      detail: "", command: nil, choices: ["once"])
+        let current = ChatPendingApproval(id: "current", runID: "current-run",
+                                          requestID: "current", detail: "",
+                                          command: nil, choices: ["once"])
+        model.pendingApprovals = [old, current]
+        model.removePendingApprovals(for: "current-run")
+        precondition(model.pendingApprovals.map(\.id) == ["current"],
+                     "snapshot reconciliation preserves the live run and removes stale requests")
+        model.pendingApprovals = [old, current]
+        model.removePendingApprovals(for: nil)
+        precondition(model.pendingApprovals.isEmpty,
+                     "a nil active run invalidates every pending approval")
         model.disconnect()
     }
     // clarify：到达要能出卡片，答复要带对三件套（含 execution_generation），

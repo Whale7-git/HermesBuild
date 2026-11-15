@@ -16,17 +16,76 @@ extension NativeChatView {
             || model.localPersistenceIssue != nil || model.queuePersistenceFailed
     }
 
-    /// 待审批卡片。出现在输入栏正上方：网关此时把 run 挂在 `waiting_for_approval`，
-    /// 不回答本轮就不会继续，所以它必须比任何提示都显眼，且带着可点的选项。
+    /// One interactive request stays fully visible. Sibling approvals/clarifies
+    /// collapse into a compact queue so many server prompts cannot consume the
+    /// transcript viewport or form stacked warning bands.
     @ViewBuilder
-    var approvalCard: some View {
-        if !model.pendingApprovals.isEmpty {
-            VStack(spacing: 8) {
-                ForEach(model.pendingApprovals) { pending in
-                    approvalCard(pending)
+    var pendingRequestsSection: some View {
+        let requests = pendingRequestIDs
+        if !requests.isEmpty {
+            let selected = expandedRequestID.flatMap { id in
+                requests.contains(where: { $0.id == id }) ? id : nil
+            } ?? requests[0].id
+            VStack(spacing: 0) {
+                if let approval = model.pendingApprovals.first(where: { $0.id == selected }) {
+                    approvalCard(approval)
+                } else if let clarify = model.pendingClarifies.first(where: { $0.id == selected }) {
+                    clarifyCard(clarify)
+                }
+                if requests.count > 1 {
+                    Menu {
+                        ForEach(requests) { request in
+                            Button {
+                                expandedRequestID = request.id
+                            } label: {
+                                Label(
+                                    "\(request.kind) · \(request.title)",
+                                    systemImage: request.id == selected
+                                        ? "checkmark.circle.fill" : request.symbol
+                                )
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "tray.full")
+                            Text("另有 \(requests.count - 1) 个待处理请求")
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("待处理请求 \(requests.count) 个，当前显示 \(requests[0].kind)")
                 }
             }
-            .accessibilityElement(children: .contain)
+            .background(AppTheme.surface)
+            .overlay(alignment: .top) {
+                Rectangle().fill(AppTheme.hairline).frame(height: 0.5)
+            }
+        }
+    }
+
+    private struct PendingRequestSummary: Identifiable {
+        let id: String
+        let kind: String
+        let title: String
+        let symbol: String
+    }
+
+    private var pendingRequestIDs: [PendingRequestSummary] {
+        model.pendingApprovals.map {
+            PendingRequestSummary(
+                id: $0.id, kind: "审批",
+                title: $0.command ?? $0.detail, symbol: "hand.raised.fill")
+        } + model.pendingClarifies.map {
+            PendingRequestSummary(
+                id: $0.id, kind: "补充信息",
+                title: $0.question, symbol: "questionmark.bubble.fill")
         }
     }
 
@@ -79,8 +138,7 @@ extension NativeChatView {
             }
             .padding(.horizontal, AppTheme.pagePadding)
             .padding(.vertical, 10)
-            .background(AppTheme.warning.opacity(0.12))
-            .overlay(alignment: .top) { Rectangle().fill(AppTheme.hairline).frame(height: 0.5) }
+            .background(AppTheme.warning.opacity(0.10))
             .accessibilityElement(children: .contain)
     }
 
@@ -93,25 +151,6 @@ extension NativeChatView {
         case "always": return "总是允许"
         case "deny": return "拒绝"
         default: return choice
-        }
-    }
-
-    /// 补充信息卡片。agent 停在这儿等答复，不回答就一直等到超时，
-    /// 所以它和审批卡片一样必须可操作，且位置同样在输入栏正上方。
-    ///
-    /// 交互照各平台适配器的一致做法：有选项时给按钮，另加一个「其他」把卡片
-    /// 翻成输入框（服务端此时才接受任意文本）；无选项时直接就是输入框。
-    /// 按钮标签用完整选项文字——iOS 没有 Telegram 那种 64 字节回调预算，
-    /// 不需要退化成编号，而编号反而要用户自己去对照正文。
-    @ViewBuilder
-    var clarifyCard: some View {
-        if !model.pendingClarifies.isEmpty {
-            VStack(spacing: 8) {
-                ForEach(model.pendingClarifies) { pending in
-                    clarifyCard(pending)
-                }
-            }
-            .accessibilityElement(children: .contain)
         }
     }
 
@@ -144,8 +183,7 @@ extension NativeChatView {
             }
             .padding(.horizontal, AppTheme.pagePadding)
             .padding(.vertical, 10)
-            .background(AppTheme.accent.opacity(0.10))
-            .overlay(alignment: .top) { Rectangle().fill(AppTheme.hairline).frame(height: 0.5) }
+            .background(AppTheme.accent.opacity(0.08))
             .accessibilityElement(children: .contain)
             .onChange(of: model.pendingClarifies.map(\.id)) { _, ids in
                 if !ids.contains(pending.id) {

@@ -206,11 +206,12 @@ enum ChatProcessPlan {
         }
         flushGroup()
 
-        let resolvedAnchorByToolID = Dictionary(
-            toolsByAnchor.flatMap { anchor, group in
-                group.map { ($0.id, anchor) }
-            },
-            uniquingKeysWith: { first, _ in first })
+        var resolvedAnchorByToolID: [String: String] = [:]
+        for (anchor, group) in toolsByAnchor ?? [:] {
+            for tool in group where resolvedAnchorByToolID[tool.id] == nil {
+                resolvedAnchorByToolID[tool.id] = anchor
+            }
+        }
         let eligibleTurnIDs = completedTurns.union(
             running ? Set([turnIDs[visible.last?.id ?? ""]].compactMap { $0 }) : [])
         for turnID in eligibleTurnIDs {

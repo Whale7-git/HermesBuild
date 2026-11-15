@@ -326,15 +326,21 @@ struct LocalDataFileStore: Sendable {
             }
             let hadExistingValue = manager.fileExists(atPath: url.path)
             if hadExistingValue { previousEncoded = try Data(contentsOf: url) }
-            if let previousEncoded {
+            if let existing = previousEncoded {
                 // Keep a verified same-directory copy until the new destination
                 // has passed read-back. If rollback itself fails, retain the
-                // backup for recovery rather than deleting the last good copy.
-                try manager.copyItem(at: url, to: backup)
-                guard let backupReadBack = try? Data(contentsOf: backup),
-                      backupReadBack == previousEncoded,
-                      Self.readEnvelope(backup, maxBytes: maxBytes)?.scopeHash == scopeHash else {
-                    return .failed(.diskWrite)
+                // backup rather than deleting the last good copy. A malformed
+                // destination has no good value to roll back to; allowing the
+                // verified replacement to repair it is the recovery path.
+                if Self.readEnvelope(url, maxBytes: maxBytes)?.scopeHash == scopeHash {
+                    try manager.copyItem(at: url, to: backup)
+                    guard let backupReadBack = try? Data(contentsOf: backup),
+                          backupReadBack == existing,
+                          Self.readEnvelope(backup, maxBytes: maxBytes)?.scopeHash == scopeHash else {
+                        return .failed(.diskWrite)
+                    }
+                } else {
+                    previousEncoded = nil
                 }
             }
             #if os(Linux)
@@ -352,10 +358,11 @@ struct LocalDataFileStore: Sendable {
             }
             #endif
             // The guarantee is "persisted and readable", not "write() returned".
+            let committedData = try? Data(contentsOf: url)
             let committedEnvelope = Self.readEnvelope(url, maxBytes: maxBytes)
-            guard let committedEnvelope, committedEnvelope.scopeHash == scopeHash,
-                  destinationReadBackVerifier(
-                    url, try JSONEncoder().encode(committedEnvelope)) else {
+            guard let committedData, let committedEnvelope,
+                  committedEnvelope.scopeHash == scopeHash,
+                  destinationReadBackVerifier(url, committedData) else {
                 if let previousEncoded {
                     if !Self.restoreCommittedValue(
                         previousEncoded, to: url, directory: directory) {

@@ -64,18 +64,7 @@ extension NativeChatView {
 
             // One navigation row. A fixed 44pt slot prevents model/run state
             // transitions from resizing the transcript viewport mid-stream.
-            HStack(spacing: 6) {
-                titleSwitchButton
-                if model.activity.showsProgress {
-                    ProgressView().controlSize(.mini)
-                        .accessibilityLabel(statusLine)
-                } else if model.activity != .ready {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.warning)
-                        .accessibilityLabel(statusLine)
-                }
-            }
+            titleSwitchButton
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
 
             // ChatGPT-style light chrome: chat actions are a single menu;
@@ -208,13 +197,38 @@ extension NativeChatView {
         .background(AppTheme.canvas)
     }
 
-    /// Model selection is in the composer. The title has no stale model copy.
+    /// Keep the conversation identity primary and the live activity secondary.
+    /// Both occupy the existing fixed 44pt header slot, so streaming status
+    /// transitions cannot resize the transcript viewport.
     private var titleSwitchButton: some View {
-        Text("Hermes")
-            .font(.headline.weight(.semibold))
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-            .accessibilityAddTraits(.isHeader)
+        VStack(spacing: 2) {
+            Text(currentTitle)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityAddTraits(.isHeader)
+            HStack(spacing: 5) {
+                if model.activity.showsProgress {
+                    ProgressView().controlSize(.mini)
+                } else if model.activity != .ready {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(AppTheme.warning)
+                } else {
+                    Circle()
+                        .fill(AppTheme.success)
+                        .frame(width: 5, height: 5)
+                }
+                Text(statusLine)
+                    .font(.caption2)
+                    .foregroundStyle(model.activity == .ready ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
+        .accessibilityElement(children: .combine)
     }
 
     private var recoveryMenuTitle: String {

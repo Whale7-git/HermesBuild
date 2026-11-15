@@ -124,6 +124,7 @@ struct NativeChatView: View {
     @State var clarifyTextModes: Set<String> = []
     @State var clarifyDrafts: [String: String] = [:]
     @State var clarifySelections: [String: Set<Int>] = [:]
+    @State var expandedRequestID: String?
     /// Quote insertion is separate from model-owned draft rewrites so it cannot
     /// overwrite text the user typed while the action sheet was open.
     @State var composerInsertion = ChatComposerInsertion()
@@ -231,10 +232,10 @@ struct NativeChatView: View {
     private func recordTaskSignals() {
         var signals: Set<SessionTaskSignal> = []
         if model.running || model.submitting || model.reconnecting { signals.insert(.running) }
-        if model.pendingApproval != nil { signals.insert(.waitingForApproval) }
+        if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
         // clarify 同样让这一轮停住等用户，任务中心必须能看出「在等人」，
         // 否则用户会以为任务卡死。
-        if model.pendingClarify != nil { signals.insert(.waitingForClarify) }
+        if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
         if model.stopping { signals.insert(.stopping) }
         if model.uncertain || model.activeRecoveryUnreadable
             || (model.activeTurnRecovery != nil && !model.running)
@@ -258,8 +259,7 @@ struct NativeChatView: View {
             // 错误/本地历史钉在正文上方：上滚读历史时也不会丢失状态。
             if showsNoticeBar { noticeBar }
             thread
-            approvalCard
-            clarifyCard
+            pendingRequestsSection
             taskSummaryBar
             composerSection
         }
@@ -318,7 +318,9 @@ struct NativeChatView: View {
                 app.approvalArrived(sessionID: sessionID, requestID: requestID)
             }
             model.onApprovalResolved = { [weak app] sessionID, requestID in
-                app?.approvalResolved(sessionID: sessionID, requestID: requestID)
+                guard let app, app.active.id == instance, app.historyAccountScope == account,
+                      app.activeChangeToken == changeToken else { return }
+                app.approvalResolved(sessionID: sessionID, requestID: requestID)
             }
             // clarify 走同一套作用域校验与投递链路。
             model.onClarifyArrived = { [weak app] sessionID, requestID in
@@ -327,7 +329,9 @@ struct NativeChatView: View {
                 app.clarifyArrived(sessionID: sessionID, requestID: requestID)
             }
             model.onClarifyResolved = { [weak app] sessionID, requestID in
-                app?.clarifyResolved(sessionID: sessionID, requestID: requestID)
+                guard let app, app.active.id == instance, app.historyAccountScope == account,
+                      app.activeChangeToken == changeToken else { return }
+                app.clarifyResolved(sessionID: sessionID, requestID: requestID)
             }
             await model.load()
             guard !Task.isCancelled, visible, app.active.id == instance,

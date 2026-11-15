@@ -258,19 +258,24 @@ test("transcript_tool_ambiguity") {
 
 test("transcript_streaming_revision") {
     var t = ChatTranscript()
-    t.messages = [ChatMessage(id: "u", role: "user", content: "question"),
-                  ChatMessage(id: "a", role: "assistant", content: "a")]
+    t.messages = [ChatMessage(id: "u", role: "user", content: "question")]
+    try t.apply(frame("token", #"{"text":"a"}"#, "first"))
     let before = ChatStreamingTailSnapshot(
         messages: t.messages, tools: t.tools, notices: t.notices,
         running: true, toolsAreLive: true,
         transcriptRevision: t.transcriptRevision,
         transcriptStructureRevision: t.transcriptStructureRevision)
-    try t.apply(frame("token", #"{"text":"b"}"#, "1"))
+    try t.apply(frame("token", #"{"text":"b"}"#, "second"))
     let after = ChatStreamingTailSnapshot(
         messages: t.messages, tools: t.tools, notices: t.notices,
         running: true, toolsAreLive: true,
         transcriptRevision: t.transcriptRevision,
         transcriptStructureRevision: t.transcriptStructureRevision)
+    expect(after.transcriptRevision > before.transcriptRevision,
+           "token frame advances the transcript revision")
+    expect(after.transcriptStructureRevision == before.transcriptStructureRevision,
+           "token-only tail update does not advance structure revision")
+    expect(after.messages.last?.content == "ab", "token frame updates the assistant tail")
     expect(ChatStreamingTailProof.canReplaceTail(from: before, to: after),
            "tail-only revision accepts the streaming fast path")
 

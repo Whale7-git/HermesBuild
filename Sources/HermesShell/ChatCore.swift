@@ -581,31 +581,108 @@ private func streamErrorDescription(_ data: String) -> String {
 /// A value represents exactly one stream. Create a fresh value for a new turn;
 /// retain the same value when reconnecting to that stream.
 struct ChatTranscript {
-    /// Monotonic for this transcript value. A replacement transcript resets to
-    /// zero, so callers must also require `next > previous`.
+    /// Monotonic for this transcript value. Every array assignment or mutation
+    /// advances it; a replacement transcript resets to zero, so callers must
+    /// also require `next > previous`.
     private(set) var transcriptRevision: UInt64 = 0
     /// Changes whenever message/tool/notice structure changes. Tail content
     /// updates deliberately do not advance it.
     private(set) var transcriptStructureRevision: UInt64 = 0
-    var messages: [ChatMessage] = [] {
-        didSet {
-            if !updatingStreamingTail { transcriptStructureRevision &+= 1 }
+    var messages: [ChatMessage] {
+        get { storage.messages }
+        set {
+            storage.messages = newValue
+            if !updatingStreamingTail {
+                transcriptRevision &+= 1
+                transcriptStructureRevision &+= 1
+            }
+        }
+        _modify {
+            var value = storage.messages
+            storage.messages = []
+            yield &value
+            storage.messages = value
+            if !updatingStreamingTail {
+                transcriptRevision &+= 1
+                transcriptStructureRevision &+= 1
+            }
         }
     }
-    var tools: [ChatTool] = [] {
-        didSet { transcriptStructureRevision &+= 1 }
+    var tools: [ChatTool] {
+        get { storage.tools }
+        set {
+            storage.tools = newValue
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+        _modify {
+            var value = storage.tools
+            storage.tools = []
+            yield &value
+            storage.tools = value
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
     }
     /// 本轮收尾产生的通知行；`var` + 默认值不破坏既有 memberwise 调用。
-    var notices: [ChatNotice] = [] {
-        didSet { transcriptStructureRevision &+= 1 }
+    var notices: [ChatNotice] {
+        get { storage.notices }
+        set {
+            storage.notices = newValue
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
+        _modify {
+            var value = storage.notices
+            storage.notices = []
+            yield &value
+            storage.notices = value
+            transcriptRevision &+= 1
+            transcriptStructureRevision &+= 1
+        }
     }
-    var usage: ChatUsage?
-    var contextStatus: String?
-    var reasoning: String = ""
-    var terminal: Bool = false
-    var failure: String?
-    var notice: String?
-    var lastEventID: String?
+    var usage: ChatUsage? {
+        get { storage.usage }
+        set { storage.usage = newValue }
+    }
+    var contextStatus: String? {
+        get { storage.contextStatus }
+        set { storage.contextStatus = newValue }
+    }
+    var reasoning: String {
+        get { storage.reasoning }
+        set { storage.reasoning = newValue }
+    }
+    var terminal: Bool {
+        get { storage.terminal }
+        set { storage.terminal = newValue }
+    }
+    var failure: String? {
+        get { storage.failure }
+        set { storage.failure = newValue }
+    }
+    var notice: String? {
+        get { storage.notice }
+        set { storage.notice = newValue }
+    }
+    var lastEventID: String? {
+        get { storage.lastEventID }
+        set { storage.lastEventID = newValue }
+    }
+
+    private struct Storage {
+        var messages: [ChatMessage] = []
+        var tools: [ChatTool] = []
+        var notices: [ChatNotice] = []
+        var usage: ChatUsage?
+        var contextStatus: String?
+        var reasoning: String = ""
+        var terminal: Bool = false
+        var failure: String?
+        var notice: String?
+        var lastEventID: String?
+    }
+    private var storage = Storage()
     private var streamingMessageID: String?
     /// 流式消息在 `messages` 里的下标。每条 token 都做 `firstIndex(where:)` 是
     /// O(n) 线性查找，2000 行时每秒数万次字符串比较且跑在主线程。缓存下标后
@@ -619,7 +696,7 @@ struct ChatTranscript {
     private var updatingStreamingTail = false
 
     mutating func apply(_ frame: SSEFrame) throws {
-        transcriptRevision &+= 1
+        defer { transcriptRevision &+= 1 }
         if let id = frame.id, !id.isEmpty, seenEventIDs.contains(id) { return }
         if terminal {
             if let id = frame.id {
@@ -800,8 +877,8 @@ struct ChatTranscript {
 
     private mutating func appendStreamingText(_ text: String, at index: Int) {
         updatingStreamingTail = true
+        defer { updatingStreamingTail = false }
         messages[index].content += text
-        updatingStreamingTail = false
     }
 
     /// 用户主动停止：不经 SSE 帧，由 `stop()` 直接调用。
