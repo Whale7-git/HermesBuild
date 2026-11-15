@@ -169,7 +169,8 @@ actor ConcurrencyProbe {
         check(waiting.activeStreamID == run, "approval-waiting run remains recoverable")
         transport.statusCode = 404
         let unknown = try await restarted.history(sessionID: "s", before: nil)
-        check(unknown.activeStreamID == run, "missing status is not claimed completed")
+        check(unknown.activeStreamID == nil,
+              "missing status is unknown, not a fabricated live stream")
         try await restarted.stopNativeTurn(streamID: run)
         let stopped = try await restarted.history(sessionID: "s", before: nil)
         check(stopped.activeStreamID == nil, "explicit stop settles missing run record")
