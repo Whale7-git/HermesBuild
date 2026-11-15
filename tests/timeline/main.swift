@@ -156,6 +156,20 @@ check(repeatedID.tools.first?.afterMessageID == nil,
 // 流式工具必须锚在本轮 user 消息上，不能锚在已经落地的回答正文上。
 // 否则一轮写完时时间线顺序会变成「回答 → 工具行」，底部多出一条
 // 「已完成 N 项操作」，读起来像回复的尾巴。
+// Long tool histories stay summarized, preserving the active tool even if a
+// previous tool failed; every row remains available after expansion.
+let syntheticTools = (0..<180).map { index in
+    ChatToolSummary.Item(name: index == 179 ? "active-write" : "read_file",
+                         done: index != 179, isError: index == 10)
+}
+let progressTitle = ChatExecutionPresentation.title(
+    messageCount: 3, toolItems: syntheticTools, allowsRunning: true)
+check(progressTitle.contains("正在执行") && progressTitle.contains("active-write")
+      && progressTitle.contains("1 项失败"),
+      "collapsed 180-tool process exposes current step and prior failure")
+check(ChatExecutionPresentation.detail(messageCount: 3, toolItems: syntheticTools,
+                                      allowsRunning: true).contains("active-write"),
+      "collapsed process retains the active tool name")
 var anchorProbe = ChatTranscript()
 anchorProbe.messages = [ChatMessage(id: "u1", role: "user", content: "问题", timestamp: 1)]
 try anchorProbe.apply(SSEFrame(event: "token", data: "{\"text\":\"回答正文\"}", id: "a1"))

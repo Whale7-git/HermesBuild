@@ -87,14 +87,15 @@ extension NativeChatModel {
     }
 
     func loadOlder() async {
-        guard cachedHistoryDate == nil, olderOffset > 0, !olderLimitReached, !loadingOlder,
-              !running, !submitting, !loading, !syncing, !reconciling, !uncertain else { return }
+        guard canLoadOlderHistory else { return }
         let generation = revision
+        let requestedOffset = olderOffset
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            let snap = try await api.history(sessionID:sessionID,before:olderOffset)
-            guard generation == revision else { return }
+            let snap = try await api.history(sessionID:sessionID,before:requestedOffset)
+            guard generation == revision, olderOffset == requestedOffset,
+                  !Task.isCancelled, !suspended else { return }
             guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
             let oldIDs = Set(buffer.messages.map(\.id))
             let newMessages = snap.messages.filter { !oldIDs.contains($0.id) }
@@ -933,6 +934,9 @@ extension NativeChatModel {
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
+        stopStatusPollTask?.cancel()
+        stopStatusPollTask = nil
+        stopStatusPollTicket = nil
         // 离开会话页：连接暂停。`suspended` 是与相位正交的独立事实，表达
         // 「这台设备不再接收帧」；相位按「这一步在等什么」分别落定：
         //

@@ -230,6 +230,7 @@ extension NativeChatModel {
             guard generation == revision, streamID == active, !Task.isCancelled else { return }
             notice = "停止请求已受理，正在核对后台任务是否真正结束。"
             await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
         } catch {
             guard generation == revision, streamID == active else { return }
             if handleAuthenticationFailure(error) { return }
@@ -243,7 +244,9 @@ extension NativeChatModel {
     /// Read-only verification, safe to invoke again from the visible notice.
     /// Neither the status GET nor the history GET can replay the original POST.
     func verifyPendingStop() async {
-        guard stopping, let active = streamID else { return }
+        guard stopping, let active = streamID, !stopStatusProbeInFlight else { return }
+        stopStatusProbeInFlight = true
+        defer { stopStatusProbeInFlight = false }
         let generation = revision
         do {
             let result = try await api.probeActiveRun(sessionID: sessionID, runID: active)
@@ -265,6 +268,9 @@ extension NativeChatModel {
                     notice = "后台已结束，但最终历史尚未确认；请稍后核对。"
                     return
                 }
+                stopStatusPollTask?.cancel()
+                stopStatusPollTask = nil
+                stopStatusPollTicket = nil
                 revision &+= 1
                 streamTask?.cancel()
                 streamTask = nil
@@ -293,6 +299,39 @@ extension NativeChatModel {
         }
     }
 
+    /// Only a few status GETs are permitted after an acknowledged STOP.
+    /// A still-running/unknown run stays locked; polling never changes queue
+    /// preferences or grants permission to dispatch the next turn.
+    func scheduleStopStatusPolling() {
+        guard stopStatusPollTask == nil, stopping, let active = streamID,
+              !suspended else { return }
+        let generation = revision
+        let ticket = UUID()
+        stopStatusPollTicket = ticket
+        let delays = stopStatusPollDelaysNanoseconds
+        stopStatusPollTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.stopStatusPollTicket == ticket {
+                    self.stopStatusPollTask = nil
+                    self.stopStatusPollTicket = nil
+                }
+            }
+            for delay in delays {
+                do { try await Task.sleep(nanoseconds: delay) }
+                catch { return }
+                guard !Task.isCancelled, generation == self.revision,
+                      self.streamID == active, self.stopping, !self.suspended else { return }
+                await self.verifyPendingStop()
+                guard !Task.isCancelled, generation == self.revision,
+                      self.streamID == active, self.stopping, !self.suspended else { return }
+            }
+            if generation == self.revision, self.streamID == active, self.stopping {
+                self.notice = "后台终态仍待确认，已停止自动核对；可手动核对，不会重复发送消息。"
+            }
+        }
+    }
+
     /// Authentication failures retire the view's account namespace in AppState.
     /// Do not leave another account's cached text visible behind a login sheet,
     /// and do not spend the reconnect budget on an unauthenticated stream.
@@ -304,6 +343,9 @@ extension NativeChatModel {
         publishTask = nil
         streamTask?.cancel()
         streamTask = nil
+        stopStatusPollTask?.cancel()
+        stopStatusPollTask = nil
+        stopStatusPollTicket = nil
         buffer = ChatTranscript()
         confirmedHistory = nil
         confirmedHistoryEnd = nil
@@ -321,7 +363,9 @@ extension NativeChatModel {
         // 换账号后既不能保留上一账号的待核对正文，也不能凭它的附件引用重发。
         pendingSend = nil
         queuedTurns = []
-        queueAutomaticDispatchPaused = false
+        queueUserPaused = false
+        queueRecoveryPaused = false
+        updateQueuePause()
         queueSaveFailed = false
         let clearResult = draftStore?.saveQueued(nil)
         if let clearResult, !clearResult.succeeded {

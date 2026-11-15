@@ -304,6 +304,31 @@ turnReading.reset()
 expect(turnReading.phase == .idle && turnReading.rowID == nil,
        "session change or navigation clears stale reading state")
 
+// build178: 1000 incremental history/keyboard updates cannot invent reply
+// growth or steal a focus from manual reading.
+var longTurn = ChatTurnReadingState()
+longTurn.focus(rowID: "m-user-1000", rowTop: 240, contentBottom: 350, viewport: 780)
+for page in 1...20 {
+    let displacement = Double(page * 60)
+    let anchored = longTurn.target(contentBottom: 350 + displacement,
+                                   rowTop: 240 + displacement, viewport: 780,
+                                   allowGrowth: false)
+    expect(anchored == 240 + displacement,
+           "older-page prepend maintains the focused user's screen coordinate")
+}
+for index in 0..<1000 {
+    let viewport = index.isMultiple(of: 2) ? 390.0 : 780.0
+    let offset = longTurn.target(contentBottom: 1550, rowTop: 1440,
+                                 viewport: viewport, allowGrowth: false)
+    expect(offset == 1440, "keyboard/width reflows must not drift 1000 times")
+}
+longTurn.userBeganReading()
+for i in 0..<150 {
+    expect(longTurn.target(contentBottom: Double(2000 + i),
+                           rowTop: 1440, viewport: 390) == nil,
+           "manual reading ignores stream growth, even after many tool updates")
+}
+
 // build156: rail width derives from actual view width, not the 340pt max.
 let wideChip = ChatDrawerRailLayout.chipWidth(availableWidth: 340, instanceCount: 3)
 expect(wideChip > 90 && ChatDrawerRailLayout.totalWidth(
