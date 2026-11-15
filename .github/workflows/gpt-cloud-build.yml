@@ -1,0 +1,83 @@
+name: GPT cloud branch IPA
+
+on:
+  push:
+    branches:
+      - 'gpt/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpt-cloud-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: GPT source gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Run source integrity, SwiftUI, and automation checks
+        run: bash scripts/gpt-cloud-build.sh source
+
+  offline:
+    name: GPT Swift offline regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run full offline regression
+        env:
+          HERMES_TEST_JOBS: "4"
+        run: bash scripts/gpt-cloud-build.sh offline
+
+  ipa:
+    name: GPT unsigned iPhoneOS arm64 IPA
+    needs: [source, offline]
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install XcodeGen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+      - name: Build and verify one branch IPA
+        run: bash scripts/gpt-cloud-build.sh ipa
+      - name: Upload verified candidate and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-cloud-ipa-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release/*.ipa
+            release/build-info.json
+            release/validation.json
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload compilation log (including on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-cloud-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hermes-ios-release.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Record branch-only result
+        run: |
+          {
+            echo "### GPT branch candidate"
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Branch: ${{ github.ref_name }}"
+            echo "- IPA: uploaded as a workflow artifact (not a GitHub Release)"
+            echo "- Signing: none; physical-device acceptance: not performed"
+          } >> "$GITHUB_STEP_SUMMARY"
