@@ -195,22 +195,22 @@ actor ConcurrencyProbe {
             check(provisional.activeStreamID == run,
                   "transient 5xx retains the active run for later verification")
         }
-        do {
-            _ = try await guarded.history(sessionID: "s", before: nil)
-            preconditionFailure("five consecutive unverifiable statuses did not close the GET budget")
-        } catch {
-            check(GatewayRunStore(scope: failureScope, defaults: defaults)
-                      .runID(for: "s") == run,
-                  "run ID must remain durable when the state budget is exhausted")
-        }
+        let exhausted = try await guarded.history(sessionID: "s", before: nil)
+        check(exhausted.activeStreamID == run,
+              "exhausted status budget retains the run as an unresolved hint")
+        check(transport.requests.last?.url?.path.hasSuffix("/messages") == true,
+              "exhausted status budget still reads canonical history")
+        check(GatewayRunStore(scope: failureScope, defaults: defaults)
+                  .runID(for: "s") == run,
+              "run ID remains durable when the state budget is exhausted")
         let beforeCooldown = transport.requests.count
         let historyDuringBackoff = try await guarded.history(sessionID: "s", before: nil)
         check(historyDuringBackoff.activeStreamID == run,
               "run backoff retains the unresolved ID in the history snapshot")
-        check(transport.requests.count == beforeCooldown + 1,
-              "history remains readable without a second status request during backoff")
-        let pathDuringBackoff = transport.requests.last?.url?.path
-        check(pathDuringBackoff?.hasSuffix("/messages") == true,
+        let requestsDuringBackoff = transport.requests.dropFirst(beforeCooldown)
+        check(!requestsDuringBackoff.contains { $0.url?.path.hasPrefix("/v1/runs/") == true },
+              "history backoff suppresses another run-status request")
+        check(requestsDuringBackoff.last?.url?.path.hasSuffix("/messages") == true,
               "backoff suppresses the status probe while allowing transcript GET")
         transport.statusCode = 200
         transport.status = "completed"

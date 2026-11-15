@@ -309,7 +309,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // Run-status lookup is a recovery hint, not a prerequisite for reading
         // history. A transient /v1/runs failure must not prevent the user from
         // loading the canonical transcript that can prove completion.
-        let active = try await activeRun(sessionID: sessionID, allowBackoff: false)
+        let active = try await activeRunForHistory(sessionID: sessionID)
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
@@ -398,6 +398,25 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return nil
         default:
             return try unresolvedRun(runID: runID)
+        }
+    }
+
+    /// History is the completion authority; run status is only a recovery hint.
+    /// Probe failures and cooldown therefore retain the known run ID but must not
+    /// suppress the transcript GET. Authentication and cancellation still abort.
+    private func activeRunForHistory(sessionID: String) async throws -> String? {
+        guard let knownRunID = runStore.runID(for: sessionID) else { return nil }
+        do {
+            return try await activeRun(sessionID: sessionID)
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 401 || code == 403 {
+                throw error
+            }
+            return runStore.runID(for: sessionID) ?? knownRunID
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            return runStore.runID(for: sessionID) ?? knownRunID
         }
     }
 

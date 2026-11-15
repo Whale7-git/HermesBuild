@@ -395,12 +395,11 @@ extension ModelTests {
                              && longStore.loadActiveRun().value != nil,
                              "ambiguous/changed long history must remain fail-closed")
             }
-            if scenario == "other-run" {
-                precondition(service.historyPageCalls == 0,
-                             "a competing live run prevents lookback")
+            if scenario == "still-running" || scenario == "other-run" {
+                precondition(service.historyPageCalls == 0 && service.startCalls == 0,
+                             "a live current or competing run prevents lookback")
             } else {
-                precondition(service.historyPageCalls >= (scenario == "still-running" ? 1 : 2)
-                             && service.startCalls == 0,
+                precondition(service.historyPageCalls >= 2 && service.startCalls == 0,
                              "verification pages history without replaying a POST")
             }
             model.disconnect()
