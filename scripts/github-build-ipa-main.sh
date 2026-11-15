@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build one immutable HermesBuild candidate without touching the legacy
-# github-build-ipa.sh used by the macOS cache benchmark.
+# Build one immutable HermesBuild candidate for PR verification.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

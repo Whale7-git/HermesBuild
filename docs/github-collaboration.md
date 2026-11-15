@@ -1,9 +1,39 @@
 # GitHub collaboration
 
-Work from main on a short-lived feature branch and submit a pull request. Preserve the iOS client scope, existing instance identities, Keychain isolation and chat behavior. Do not commit generated outputs or local machine configuration.
+Work from the latest `main` on a short-lived feature branch and submit a
+same-repository pull request. Preserve the iOS client scope, existing instance
+identities, Keychain isolation, and chat behavior. Do not commit generated
+outputs or local machine configuration.
 
-The public workflow runs exact source checks and Swift offline regressions in parallel for pull requests and main. A main push that changes version/build (with increasing build and non-decreasing version) automatically builds once with the preinstalled default Xcode on `macos-26` (actual macOS, Xcode, Swift and iPhoneOS SDK versions are recorded in build-info.json), validates and publishes directly from the same macOS runner. Assets are downloaded and SHA256-checked while the Release is a draft, then the official Release and tag are verified again. No Actions Artifact relay is used. Published versions are immutable; only an owned draft from the same source/run can resume with identical bytes. Transient upload/API failures retry up to three times in the same job. A fresh job producing different bytes fails closed rather than mixing packages. GitHub determines Latest using legacy automatic commit-date/version ordering; publication does not force an older completion to Latest.
+The release path has two workflows:
 
-Maintenance pushes run checks only. workflow_dispatch is build-and-verify only, with no Release or retained Artifact. BARK_URL is an optional repository Secret used by a separate best-effort notification job. Package validation and device acceptance are separate from source tests.
+- `.github/workflows/hermesshell-single-build.yml` runs source checks and the
+  full Swift offline suite, compiles one candidate on `macos-26`, validates the
+  IPA, and uploads the candidate Artifact for 14 days.
+- `.github/workflows/hermesshell-single-promote.yml` runs after a
+  version-bearing merge to `main`, reruns source and offline checks, selects the
+  exact merged-PR candidate, verifies its tree, manifest, Artifact digest, and
+  file checksums, then publishes the same bytes. It must not compile.
 
-Provide remote build targets and directory paths through local environment variables. Do not print machine identities, proxy URLs, tokens or notification keys in public logs. Update the current release scope only after reviewing the complete source change; preserve frozen baseline manifests and third-party notices.
+All PR checks must pass on the exact head and tree that will be merged. The
+resulting `main` tree must match the candidate manifest. The candidate Artifact
+contains the IPA, `build-info.json`, `validation.json`,
+`candidate-manifest.json`, and `SHA256SUMS.txt`. A Release publishes the first
+four files; `SHA256SUMS.txt` remains inside the candidate Artifact for its own
+verification.
+
+`workflow_dispatch` on the candidate workflow builds and retains a candidate
+Artifact, but never publishes. Only a version-bearing merge to `main` can start
+promotion. A maintenance merge runs source and offline checks and plans no
+release.
+
+Published tags and assets are immutable. A missing, expired, mismatched, or
+invalid candidate consumes the merged build; increment the build and repeat the
+PR flow instead of substituting a local package. `BARK_URL` is an optional
+repository Secret used by a separate best-effort notification job. Package
+validation and device acceptance remain separate from source tests.
+
+Do not print machine identities, proxy URLs, tokens, cookies, passwords, or
+notification keys in public logs. Update the current release scope only after
+reviewing the complete source change; preserve frozen baseline manifests and
+third-party notices.

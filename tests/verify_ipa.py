@@ -33,13 +33,10 @@ Checks:
     "clean", version/build must match, and Info.plist HermesGitSHA (when the
     plist carries it) must equal build-info.json head_commit.
 
-build-info.json is mandatory. It is written by build-on-9.ps1 only after a
-successful build, so a manual re-check of a delivery directory always finds it
-and a package that never completed a clean build cannot pass. The one exception
-is the in-container step, which runs before the artifact is downloaded and
-before build-info.json exists; that step passes --no-build-info explicitly, and
-build-on-9.ps1 then enforces the same three provenance assertions on the
-downloaded copy.
+build-info.json is mandatory. It is written by the candidate builder only after
+a successful build. The promotion workflow then verifies the downloaded
+candidate manifest and the same provenance assertions on the exact bytes it
+publishes.
 """
 import hashlib
 import json
@@ -68,8 +65,8 @@ take both values from release.json at the repository root and pass them in, e.g.
 Options:
   --delivery PATH   compare the delivered copy against the built one
   --label NAME      name used in the report
-  --no-build-info   skip build-info.json (in-container step only, before the
-                    artifact is downloaded; build-on-9.ps1 re-checks it after)
+  --no-build-info   skip build-info.json only for a pre-package inspection;
+                    candidate and promotion verification must not use it
 '''
 SECRET_MARKERS = (b'API_SERVER_KEY', b'hermes_session=', b'"password"', b'BEGIN PRIVATE KEY')
 ARM64_MAGIC = 0xFEEDFACF

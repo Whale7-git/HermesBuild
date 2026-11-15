@@ -30,7 +30,7 @@ and server deployment outside this repository.
   Never hardcode tokens or forward Bearer-protected uploads to other origins.
 - Treat files under `Vendor/` as third-party code. Prefer a narrow, documented
   patch over broad rewrites.
-- Do not commit `.build/`, `.bsp/`, `xtool/`, `releases/`, IPA files, SDKs,
+- Do not commit `.build/`, `.bsp/`, `releases/`, IPA files, SDKs,
   caches, private keys, tokens, cookies, or local machine configuration.
 
 ## Validation
@@ -43,10 +43,15 @@ separate.
 - Source verification: `python tests/verify_source.py`
 - Source-gate regression: `python tests/sourcegate/main.py`
 - Core tests: included in `bash tests/run_container.sh`
-- Native tests: `bash tests/run_container.sh` (uses the runner’s preinstalled Swift in CI; its version is logged); optional remote wrapper `tests/run_native.sh` requires local SSH configuration
-- iPhoneOS build and IPA: new version/build pushes to public main automatically build and publish after checks;
-  workflow_dispatch only builds/verifies. Use a locally configured Xcode / xtool environment for local work. Do not claim device behavior was verified without a
-  real-device result.
+- Native tests: `bash tests/run_container.sh` (uses the runner’s preinstalled Swift in CI; its version is logged)
+- Release automation: `python -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v`
+- iPhoneOS candidate: the same-repository PR workflow compiles once and retains an
+  immutable candidate Artifact. Main promotion downloads and verifies that exact
+  Artifact without compiling again. `workflow_dispatch` on the candidate workflow
+  builds and retains a candidate but never publishes.
+- Do not use host 9, xtool, local release scripts, the former adaptive workflow, or
+  remote SSH build/test wrappers. Do not claim device behavior was verified without
+  a real-device result.
 
 ## Pull requests
 

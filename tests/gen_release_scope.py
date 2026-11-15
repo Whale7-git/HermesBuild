@@ -31,7 +31,7 @@ from pathlib import Path
 
 # Never walk into build output, caches, or delivery directories: they are large
 # and none of them are source the gate should pin.
-IGNORED = {'.git', '.build', '.bsp', 'xtool', 'releases', 'release', 'DerivedData', 'HermesShellCI.xcodeproj', 'outputs', '__pycache__'}
+IGNORED = {'.git', '.build', '.bsp', 'releases', 'release', 'DerivedData', 'HermesShellCI.xcodeproj', 'outputs', '__pycache__'}
 
 BASELINE_NAME = 'tests/baseline-1.20.2-build64.json'
 RELEASE_NAME = 'release.json'
