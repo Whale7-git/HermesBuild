@@ -5,6 +5,7 @@ import Foundation
     private let initial: ChatSnapshot
     private let pages: [Int: ChatSnapshot]
     var failure: Error?
+    var holdStream = false
     private(set) var calls: [Int?] = []
 
     init(initial: ChatSnapshot, pages: [Int: ChatSnapshot]) {
@@ -21,7 +22,11 @@ import Foundation
     }
 
     func startNativeTurn(sessionID: String, text: String) async throws -> String { "stream" }
-    func streamNativeTurn(streamID: String, lastEventID: String?, onFrame: (SSEFrame) async throws -> Bool) async throws {}
+    func streamNativeTurn(streamID: String, lastEventID: String?, onFrame: (SSEFrame) async throws -> Bool) async throws {
+        while holdStream && !Task.isCancelled {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
     func stopNativeTurn(streamID: String) async throws {}
 }
 
@@ -143,5 +148,29 @@ func runPagingBudgetTests() async throws {
         print("PAGING_PASS anchored tool kept with its page")
     }
 
-    print("PAGING_BUDGET_PASS 6 scenarios")
+    // 7. A long-running agent must not block reading older immutable rows.
+    // The older GET must not detach/restart the active run or replay its POST.
+    do {
+        let sessionID = "paging-during-run"
+        let initial = try pagedSnapshot(sessionID, rows: 1000..<1100, offset: 1000)
+        let page = try pagedSnapshot(sessionID, rows: 900..<1000, offset: 900)
+        let service = PagedHistoryService(initial: initial, pages: [1000: page])
+        service.holdStream = true
+        let model = NativeChatModel(sessionID: sessionID, api: service)
+        await model.load()
+        model.draft = "do a long analysis"
+        let started = await model.send()
+        precondition(started && model.running && model.canLoadOlderHistory,
+                     "live assistant must allow historical paging")
+        await model.loadOlder()
+        precondition(model.olderOffset == 900 && model.running && model.streamID == "stream",
+                     "older GET preserves stream identity and advances only the history cursor")
+        precondition(model.transcript.messages.first?.id == "row-900",
+                     "history is prepended while the assistant keeps running")
+        precondition(service.calls.filter { $0 == 1000 }.count == 1,
+                     "one request is issued for the old cursor")
+        model.disconnect()
+    }
+
+    print("PAGING_BUDGET_PASS 7 scenarios")
 }

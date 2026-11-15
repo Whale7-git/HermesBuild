@@ -9,6 +9,7 @@ import Foundation
     var failHistory = false
     var failHistoryAfterStop = false
     var stopAcknowledgementOnly = false
+    var stopCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
     var holdSteer = false
@@ -40,6 +41,7 @@ import Foundation
         return next
     }
     func stopNativeTurn(streamID: String) async throws {
+        stopCalls += 1
         if stopAcknowledgementOnly { return }
         active = nil
         if failHistoryAfterStop { failHistory = true; return }
@@ -227,6 +229,7 @@ import Foundation
         let service = SendSafetyService()
         service.stopAcknowledgementOnly = true
         let model = NativeChatModel(sessionID: "stop-pending", api: service)
+        model.stopStatusPollDelaysNanoseconds = [15_000_000, 20_000_000, 30_000_000]
         await model.load()
         model.draft = "work"; _ = await model.send()
         await model.stop()
@@ -236,9 +239,27 @@ import Foundation
         precondition(model.stopping && service.startCalls == 1,
                      "a still-running run cannot be marked stopped")
         service.active = nil
-        await model.verifyPendingStop()
-        precondition(!model.stopping && model.canSend && service.startCalls == 1,
-                     "exact terminal status plus history allows new turns without POST replay")
+        try await ModelTests.eventually { !model.stopping }
+        precondition(model.canSend && service.startCalls == 1 && service.stopCalls == 1,
+                     "bounded GET-only polling resolves terminal without repeating either POST")
+        model.disconnect()
+    }
+
+    // A run that remains alive must exhaust its polling budget and stay locked.
+    do {
+        let service = SendSafetyService()
+        service.stopAcknowledgementOnly = true
+        let model = NativeChatModel(sessionID: "stop-never-terminal", api: service)
+        model.stopStatusPollDelaysNanoseconds = [10_000_000, 10_000_000]
+        await model.load()
+        model.draft = "still running"; _ = await model.send()
+        await model.stop()
+        try await ModelTests.eventually { model.stopStatusPollTask == nil }
+        precondition(model.stopping && !model.canSend && service.startCalls == 1
+                     && service.stopCalls == 1,
+                     "exhausted polling must not unlock, dispatch or issue another STOP")
+        precondition(model.notice?.contains("已停止自动核对") == true,
+                     "poll budget exhaustion is visible, not an indefinite spinner")
         model.disconnect()
     }
 

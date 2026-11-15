@@ -52,10 +52,11 @@ enum ChatExecutionPresentation {
     static func title(messageCount: Int, toolItems: [ChatToolSummary.Item],
                       allowsRunning: Bool) -> String {
         let failures = toolItems.filter(\.isError).count
-        if failures > 0 { return "执行过程 · \(failures) 项失败" }
         if allowsRunning, let active = toolItems.last(where: { !$0.done && !$0.isError }) {
-            return "正在执行 · \(active.name)"
+            let suffix = failures > 0 ? " · \(failures) 项失败" : ""
+            return "正在执行 · \(active.name)\(suffix)"
         }
+        if failures > 0 { return "执行过程 · \(failures) 项失败" }
         let steps = messageCount + toolItems.count
         return steps == 0 ? "执行过程" : "已执行 \(steps) 个步骤"
     }

@@ -186,6 +186,13 @@ final class NativeChatModel: ObservableObject {
     /// True once a whole older page no longer fits the data budget. The cursor
     /// stays put, so the range is never skipped; UI explains how to read it.
     @Published var olderLimitReached = false
+    /// Older immutable history can load while the agent is streaming. Only
+    /// conflicting submission, reconciliation, or ambiguous delivery locks it.
+    var canLoadOlderHistory: Bool {
+        cachedHistoryDate == nil && olderOffset > 0 && !olderLimitReached && !loadingOlder
+            && !loading && !syncing && !submitting && !stopping
+            && !reconciling && !uncertain && !suspended
+    }
     @Published var error: String?
     @Published var notice: String?
     /// 本轮是以斜杠命令发起的（`/compress` 等）。
@@ -268,6 +275,14 @@ final class NativeChatModel: ObservableObject {
     /// disconnect or a newer load, and only `.alive` can attach the run.
     var activeRunProbeTask: Task<Void,Never>?
     var activeRunProbeRunID: String?
+    /// A bounded read-only follow-up after STOP acknowledgement. Never sends a
+    /// second STOP or replays a chat POST.
+    var stopStatusPollTask: Task<Void, Never>?
+    var stopStatusPollTicket: UUID?
+    var stopStatusProbeInFlight = false
+    var stopStatusPollDelaysNanoseconds: [UInt64] = [
+        1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000
+    ]
     var buffer = ChatTranscript()
     var publishTask:Task<Void,Never>?
     var loadingOlder = false

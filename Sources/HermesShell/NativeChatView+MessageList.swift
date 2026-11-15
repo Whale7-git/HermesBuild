@@ -13,8 +13,7 @@ extension NativeChatView {
                     capabilities: app.api.capabilities,
                     status: statusSnapshot, olderOffset: model.olderOffset,
                     loadingOlder: isLoadingOlder,
-                    canLoadOlder: !model.loading && !model.running && !isLoadingOlder && model.cachedHistoryDate == nil
-                        && !model.olderLimitReached,
+                    canLoadOlder: model.canLoadOlderHistory && !isLoadingOlder,
                     olderLimitReached: model.olderLimitReached,
                     dynamicTypeSize: dynamicTypeSize, colorScheme: colorScheme,
                     focusedRowID: activeFindRowID ?? attachmentHighlight,
@@ -169,8 +168,7 @@ extension NativeChatView {
 
     /// 顶部距离触发分页；UIKit 对本次加载统一保位。
     private func loadOlderIfNeeded() {
-        guard !restoringReading, !isLoadingOlder, model.olderOffset > 0, !model.loading, !model.running,
-              model.cachedHistoryDate == nil else { return }
+        guard !restoringReading, !isLoadingOlder, model.canLoadOlderHistory else { return }
         isLoadingOlder = true
         controllerBox.value?.notePaginationBegan()
         Task {
@@ -347,8 +345,7 @@ extension NativeChatView {
                 navigate(to: position.rowID, offset: position.offsetInRow)
                 return
             }
-            guard page < 12, model.olderOffset > 0, !model.running, !model.syncing,
-                  model.cachedHistoryDate == nil else { break }
+            guard page < 12, model.canLoadOlderHistory else { break }
             let before = model.olderOffset
             await model.loadOlder()
             if model.olderOffset >= before { break }
