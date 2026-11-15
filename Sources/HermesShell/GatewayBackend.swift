@@ -407,17 +407,45 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// run-store entry remains available for a later bounded probe. Authentication
     /// and cancellation still abort.
     private func activeRunForHistory(sessionID: String) async throws -> String? {
-        guard runStore.runID(for: sessionID) != nil else { return nil }
+        guard let runID = runStore.runID(for: sessionID) else { return nil }
+        if let retryAt = nextRunProbeAt[runID],
+           Date().timeIntervalSince1970 < retryAt {
+            return nil
+        }
+        let data: Data
         do {
-            return try await activeRun(sessionID: sessionID)
+            data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
             if case .http(let code, _) = error, code == 401 || code == 403 {
                 throw error
             }
+            _ = recordProbeFailure(runID: runID)
             return nil
         } catch let error as CancellationError {
             throw error
         } catch {
+            _ = recordProbeFailure(runID: runID)
+            return nil
+        }
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              root["run_id"] as? String == runID,
+              let status = root["status"] as? String else {
+            _ = recordProbeFailure(runID: runID)
+            return nil
+        }
+        guard runStore.runID(for: sessionID) == runID else {
+            return nil
+        }
+        switch status {
+        case "queued", "running", "waiting_for_approval", "stopping":
+            clearFailedRunProbes(runID: runID)
+            return runID
+        case "completed", "failed", "cancelled", "interrupted":
+            clearFailedRunProbes(runID: runID)
+            runStore.finish(runID: runID)
+            return nil
+        default:
+            _ = recordProbeFailure(runID: runID)
             return nil
         }
     }

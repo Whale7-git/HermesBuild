@@ -509,7 +509,7 @@
     "Sources/HermesShell/ChatWorkspacePanels.swift": "e5d1ccebcf6b3920b168b6525ecb2f6ba779571d8786fd7168ca725675796af6",
     "Sources/HermesShell/DesignComponents.swift": "9f2d19c1593c4d14604aa190dd7a9c73e3c9cd13987aa8c8a021982dd4b7a1ad",
     "Sources/HermesShell/ExperiencePresentation.swift": "6cb023b28744555bd5e8d567aa329eb39c4d17b841ed562012ff5230a649fdfa",
-    "Sources/HermesShell/GatewayBackend.swift": "a5d723989c95a32bdb6c75343ac15ce9372a352e615dff3430f882b8431fca14",
+    "Sources/HermesShell/GatewayBackend.swift": "d67bbda8f38cc3d8681c7457f09b35992ce10019b9564de03c873b67f5cb89db",
     "Sources/HermesShell/GatewayDecode.swift": "8c05890c47beb1d0905db05244b2147df3ed1cf5bdb1bfbed8229fa50ed465c8",
     "Sources/HermesShell/GatewayEventMap.swift": "d98830368feb91c3657ae3a93ca5e021fa3c6b757cbdbaa1019a0d1aaf08d3b7",
     "Sources/HermesShell/GatewayHistoryReader.swift": "ebec747a1475c9dcab7d3cffeda12fa1c03f6307a54418b64bdb88e7097ca149",
