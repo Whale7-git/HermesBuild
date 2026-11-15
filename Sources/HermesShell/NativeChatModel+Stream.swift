@@ -368,16 +368,24 @@ extension NativeChatModel {
     /// Never unlock on gaps, a changed session/run, or partial evidence.
     func reconcileLongAcceptedRun() async -> Bool {
         guard let receipt = activeTurnRecovery,
-              let boundary = receipt.historyEnd,
+              error == nil,
               let latest = latestRecoverySnapshot,
               latest.sessionID == sessionID, !latest.readOnly,
               !submitting, !loading, !syncing, !running, !reconciling,
               !suspended else { return false }
+        guard let boundary = receipt.historyEnd else {
+            notice = "缺少本轮发送前的历史位置，无法仅凭历史确认结束。"
+            return false
+        }
         if latest.activeStreamID == receipt.runID {
             notice = "后台任务仍在运行；本轮结束前不会解除发送锁定。"
             return false
         }
-        guard latest.activeStreamID == nil, latest.olderOffset > boundary else {
+        guard latest.activeStreamID == nil else {
+            notice = "服务端还有后台任务在运行，暂不能通过历史确认本轮结束。"
+            return false
+        }
+        guard latest.olderOffset > boundary else {
             notice = "最新历史已经覆盖本轮起点，但尚不足以确认结束；发送仍保持锁定。"
             return false
         }
@@ -455,9 +463,9 @@ extension NativeChatModel {
         return !uncertain
     }
 
-    /// A missing active_stream_id is not terminal evidence. Probe the exact
-    /// durable receipt once; history remains the only authority that clears the
-    /// receipt, and unknown/error states stay fail-closed.
+    /// A missing active_stream_id is not terminal evidence. Query the exact
+    /// accepted run; only an explicit terminal result can settle it without a
+    /// matching reply in history.
     func probeAcceptedRun(_ receipt: ActiveTurnRecovery) {
         guard activeRunProbeRunID != receipt.runID else { return }
         // applySnapshot runs while `load` still owns the loading/syncing phase.
@@ -494,9 +502,16 @@ extension NativeChatModel {
                     self.queueAutomaticDispatchPaused = false
                     self.notice = nil
                     self.attach(streamID: receipt.runID)
-                case .terminal, .unknown:
-                    // Terminal status alone is not enough to clear the receipt:
-                    // authoritative history must prove this exact turn landed.
+                case .terminal:
+                    guard self.streamID == nil, !self.running else { return }
+                    // Ending the run does not prove history has its final reply.
+                    // Keep the queue paused and leave other unresolved sends alone.
+                    guard self.clearAcceptedTurnRecovery() else { return }
+                    self.queueAutomaticDispatchPaused = true
+                    self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
+                        || self.activeRecoveryUnreadable
+                    if !self.uncertain { self.notice = nil }
+                case .unknown:
                     self.uncertain = true
                     self.queueAutomaticDispatchPaused = true
                     self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"

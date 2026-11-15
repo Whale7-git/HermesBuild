@@ -310,7 +310,7 @@ extension ModelTests {
 
         // Receipt exists, but the history snapshot temporarily omits
         // active_stream_id. A bounded run-status probe may attach only when the
-        // exact run is alive; unknown/terminal status never unlocks a POST.
+        // exact run is alive; unknown status never unlocks a POST.
         for result in [ActiveRunProbe.alive, .terminal, .unknown] {
             do {
                 let probeRoot = FileManager.default.temporaryDirectory
@@ -337,10 +337,15 @@ extension ModelTests {
                     try await eventually { model.streamID == receipt.runID }
                     precondition(!model.canSend && model.uncertain == false,
                                  "a proven live receipt attaches without replaying the POST")
+                } else if result == .terminal {
+                    try await eventually { model.activeTurnRecovery == nil }
+                    precondition(!model.uncertain && model.canSend && model.streamID == nil
+                                 && model.queueAutomaticDispatchPaused && probeStore.loadActiveRun().value == nil,
+                                 "a verified terminal run releases its lock even without a final reply")
                 } else {
                     precondition(model.uncertain && !model.canSend
                                  && model.streamID == nil && probeStore.loadActiveRun().value != nil,
-                                 "terminal/unknown status is fail-closed until history proves completion")
+                                 "unknown status remains locked until history proves completion")
                 }
                 precondition(service.startCalls == 0,
                              "run-status probing must never replay the original POST")
@@ -352,7 +357,7 @@ extension ModelTests {
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must
         // remain fail-closed; manual read-only pagination may prove completion.
-        for scenario in ["complete", "second-user", "changed-tail", "still-running", "other-run"] {
+        for scenario in ["complete", "background-notice", "second-user", "changed-tail", "still-running", "other-run"] {
             let longRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("HermesLongRun-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: longRoot) }
@@ -377,6 +382,10 @@ extension ModelTests {
                                     at: 80)
             }
             service.rows.append(["id": "last-answer", "role": "assistant", "content": "completed"])
+            if scenario == "background-notice" {
+                service.rows.append(["id": "background", "role": "user", "content": "notification",
+                                     "display_kind": "internal_notification"])
+            }
             service.appendHeadOnOlderPage = scenario == "changed-tail"
             if scenario == "still-running" { service.active = "long-run" }
             if scenario == "other-run" { service.active = "newer-run" }
@@ -386,7 +395,7 @@ extension ModelTests {
             precondition(!model.canSend && service.startCalls == 0,
                          "60-row tail must not release the send lock or replay a POST")
             let verified = await model.reconcileLongAcceptedRun()
-            if scenario == "complete" {
+            if scenario == "complete" || scenario == "background-notice" {
                 precondition(verified && model.canSend
                              && longStore.loadActiveRun().value == nil,
                              "contiguous long history and stable tail must settle receipt")

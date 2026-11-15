@@ -354,6 +354,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
+            // Retire only this receipt, never a replacement run for the session.
+            if runStore.runID(for: sessionID) == runID {
+                runStore.finish(runID: runID)
+            }
             return .terminal
         default:
             return recordProbeFailure(runID: runID)

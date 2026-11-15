@@ -567,6 +567,7 @@ struct ActiveTurnRecovery: Codable, Equatable {
         let fresh = pages.reversed().flatMap { $0.messages }.filter {
             guard let index = $0.sourceIndex else { return false }
             return index >= historyEnd && !knownIDs.contains($0.id)
+                && ChatBackgroundEnvelope.userBody($0) == nil
         }
         let newUsers = fresh.filter { $0.role == "user" }
         guard newUsers.count == 1, let sent = newUsers.first,
