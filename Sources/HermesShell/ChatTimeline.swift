@@ -252,6 +252,79 @@ enum ChatProcessPlan {
     }
 }
 
+/// Current-turn tool summary for the task panel. This is presentation-only:
+/// terminal truth continues to come from the Run/Session verification model.
+enum ChatTaskToolFilter: String, CaseIterable, Identifiable {
+    case all, failed, active, unresolved
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .failed: return "失败"
+        case .active: return "执行中"
+        case .unresolved: return "待核对"
+        }
+    }
+}
+
+enum ChatTaskToolInspector {
+    struct Counts: Equatable {
+        let total: Int
+        let finished: Int
+        let failed: Int
+        let active: Int
+        let unresolved: Int
+    }
+
+    static func currentTurn(messages: [ChatMessage], tools: [ChatTool]) -> [ChatTool] {
+        let start = messages.lastIndex(where: { $0.role == "user" }) ?? messages.startIndex
+        let anchors = Set(messages[start...].map(\.id))
+        return tools.filter { tool in
+            tool.afterMessageID.map(anchors.contains) == true
+        }
+    }
+
+    static func counts(_ tools: [ChatTool], activeIDs: Set<String>, running: Bool) -> Counts {
+        var finished = 0, failed = 0, active = 0, unresolved = 0
+        for tool in tools {
+            if tool.isError { failed += 1 }
+            else if tool.done { finished += 1 }
+            else if running && activeIDs.contains(tool.id) { active += 1 }
+            else { unresolved += 1 }
+        }
+        return Counts(total: tools.count, finished: finished, failed: failed,
+                      active: active, unresolved: unresolved)
+    }
+
+    static func filtered(_ tools: [ChatTool], by filter: ChatTaskToolFilter,
+                         activeIDs: Set<String>, running: Bool) -> [ChatTool] {
+        tools.filter { tool in
+            switch filter {
+            case .all: return true
+            case .failed: return tool.isError
+            case .active: return !tool.done && !tool.isError && running && activeIDs.contains(tool.id)
+            case .unresolved: return !tool.done && !tool.isError
+                && (!running || !activeIDs.contains(tool.id))
+            }
+        }
+    }
+
+    /// Resolve against the ACTUAL visible projection, never synthesize a row
+    /// identifier from a tool id: collapsed process rows own multiple tools.
+    static func rowID(for toolID: String, in items: [ChatRowItem]) -> String? {
+        for item in items {
+            switch item.row.kind {
+            case .tools(let tools):
+                if tools.contains(where: { $0.id == toolID }) { return item.id }
+            case .process(let group):
+                if group.tools.contains(where: { $0.id == toolID }) { return item.id }
+            default: break
+            }
+        }
+        return nil
+    }
+}
+
 enum ChatTimeline {
     /// Resolve the complete assistant reply that owns a message row. This is
     /// intentionally separate from `replyText`: a continuation segment still

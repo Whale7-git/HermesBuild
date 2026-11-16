@@ -215,6 +215,33 @@ import Foundation
         await sessionStore.flush()
         let deletedSession = await sessionStore.load()
         precondition(deletedSession == nil)
+        // A newly reopened session with the very same ID must recover its
+        // cache; the old session object may never write after retirement.
+        let reopened = ChatHistoryStore(instanceID: namespace, sessionID: "delete",
+            accountScope: "account-b", rootDirectory: directory)
+        reopened.schedule(deleteRecord)
+        await reopened.flush()
+        let firstReopen = await reopened.load()
+        precondition(firstReopen != nil,
+                     "a newly created store can cache a reused session ID")
+        sessionStore.schedule(deleteRecord)
+        await sessionStore.flush()
+        let survivesLateWrites = await reopened.load()
+        precondition(survivesLateWrites != nil,
+                     "late writes from the retired controller cannot erase the new cache")
+        // A second delete invalidates the reopened owner and grants only the
+        // store constructed after the second completed deletion.
+        await reopened.remove()
+        reopened.schedule(deleteRecord)
+        await reopened.flush()
+        let third = ChatHistoryStore(instanceID: namespace, sessionID: "delete",
+            accountScope: "account-b", rootDirectory: directory)
+        third.schedule(deleteRecord)
+        await third.flush()
+        let freshThird = await third.load()
+        let retiredSecond = await reopened.load()
+        precondition(freshThird != nil && retiredSecond == nil,
+                     "session generations reject obsolete writers across repeated deletes")
         tupleA.schedule(tupleRecord)
         await ChatHistoryStore.clearAll(rootDirectory: directory)
         tupleA.schedule(tupleRecord)

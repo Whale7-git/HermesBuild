@@ -45,6 +45,47 @@ reordered.reverse()
 expect(Set(reordered.map(\.id)) == ["m-a1", "day-a1"], "reorder keeps the same id set so diff sees moves only")
 
 
+
+let taskMessages = [
+    ChatMessage(id: "user", role: "user", content: "任务", timestamp: 1),
+    ChatMessage(id: "reply", role: "assistant", content: "执行中", timestamp: 2)
+]
+let taskTools = [
+    ChatTool(id: "tool-ok", name: "read", args: "", result: "ok",
+             done: true, isError: false, afterMessageID: "reply"),
+    ChatTool(id: "tool-fail", name: "terminal", args: "", result: "error",
+             done: true, isError: true, afterMessageID: "reply"),
+    ChatTool(id: "tool-live", name: "terminal", args: "", result: "",
+             done: false, isError: false, afterMessageID: "reply"),
+    ChatTool(id: "tool-unknown", name: "write", args: "", result: "",
+             done: false, isError: false, afterMessageID: "reply")
+]
+let inspected = ChatTaskToolInspector.currentTurn(messages: taskMessages, tools: taskTools)
+let activeToolIDs: Set<String> = ["tool-live"]
+let taskCounts = ChatTaskToolInspector.counts(
+    inspected, activeIDs: activeToolIDs, running: true)
+expect(taskCounts.total == 4 && taskCounts.finished == 1 &&
+       taskCounts.failed == 1 && taskCounts.active == 1 && taskCounts.unresolved == 1,
+       "task panel counts exact tool outcomes without assuming unknown completion")
+expect(ChatTaskToolInspector.filtered(inspected, by: .failed,
+       activeIDs: activeToolIDs, running: true).map(\.id) == ["tool-fail"],
+       "failed filter shows only server-labelled failures")
+expect(ChatTaskToolInspector.filtered(inspected, by: .active,
+       activeIDs: activeToolIDs, running: false).isEmpty,
+       "disconnected tasks are never shown as actively executing")
+expect(ChatTaskToolInspector.filtered(inspected, by: .unresolved,
+       activeIDs: activeToolIDs, running: false).map(\.id) == ["tool-live", "tool-unknown"],
+       "disconnected incomplete tools remain unverified")
+let taskProcessRow = ChatRowItem(
+    row: ChatRow(id: "process-reply",
+                 kind: .process(ChatProcessGroup(messages: [taskMessages[1]],
+                                                 tools: taskTools))),
+    isStreaming: true)
+expect(ChatTaskToolInspector.rowID(for: "tool-fail", in: [taskProcessRow]) == "process-reply",
+       "tool drill-down resolves the real collapsed process row, not a synthetic id")
+expect(ChatTaskToolInspector.rowID(for: "not-loaded", in: [taskProcessRow]) == nil,
+       "unloaded tool cannot fabricate a scroll target")
+
 let complete = [ChatToolSummary.Item(name: "terminal", done: true, isError: false),
                 .init(name: "read_file", done: true, isError: false)]
 expect(ChatExecutionPresentation.title(messageCount: 2, toolItems: complete,

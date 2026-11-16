@@ -52,13 +52,15 @@ actor ChatMarkdownWorker {
     private var parts: [Part] = []
     private var prefix = AttributedString()
     private var lastSource = ""
+    private var lastPlan: MarkdownBlockPlan.Plan?
     private var semanticFallback = false
 
     func render(_ source: String, finished: Bool) throws -> MarkdownRenderSnapshot {
         try Task.checkCancellation()
         if !source.hasPrefix(lastSource) { semanticFallback = false }
+        let plan = MarkdownBlockPlan.makeAppending(source, after: lastSource, plan: lastPlan)
         lastSource = source
-        let plan = MarkdownBlockPlan.make(source)
+        lastPlan = plan
         var metrics = MarkdownRenderMetrics()
         metrics.activeBytes = plan.tail.utf8.count
         guard !finished, !semanticFallback, let style = Self.joinStyle, !plan.requiresWholeDocument else {

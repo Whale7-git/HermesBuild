@@ -94,10 +94,35 @@ extension NativeChatView {
         case .newSession: Task { await app.createSession() }
         case .select(let session): app.openSession(session)
         case .export(let fullHistory): exportTranscript(fullHistory: fullHistory)
+        case .locateTool(let id): locateTaskTool(id)
         case .find:
             restoreCancelled = true; restoringReading = false; showFind = true
             scheduleFind(.queryChanged, jump: false)
         }
+    }
+
+    /// Resolve the tool against the current projection after the task sheet
+    /// dismisses, so navigation never captures a stale row from an old window.
+    func locateTaskTool(_ toolID: String) {
+        guard let rowID = ChatTaskToolInspector.rowID(for: toolID, in: items),
+              let item = items.first(where: { $0.id == rowID }) else {
+            showToast("工具记录不在当前已加载的历史中，请刷新后重试")
+            return
+        }
+        var state = cellStates[rowID] ?? ChatCellState()
+        state.collapsed = false
+        switch item.row.kind {
+        case .tools:
+            state.toolsExpanded = true
+        case .process:
+            state.processExpanded = true
+            state.toolsExpanded = true
+        default: break
+        }
+        state.expandedToolIDs.insert(toolID)
+        cellStates[rowID] = state
+        composerFocused = false
+        navigate(to: rowID)
     }
 
     @ViewBuilder
@@ -209,7 +234,9 @@ extension NativeChatView {
         case .share(let file):
             ShareSheet(items: [file.url], lifetime: file.lifetime) { setPanel(.share(file), shown: false) }
         case .task:
-            ChatTaskPanel(model: model, onQueue: { showPanel(.queue) }, onRecovery: { showPanel(.recovery) })
+            ChatTaskPanel(model: model, onQueue: { showPanel(.queue) },
+                          onRecovery: { showPanel(.recovery) },
+                          onLocateTool: { dismissPanel(then: .locateTool($0)) })
                 .presentationDetents([.medium, .large])
         case .info:
             ChatConversationInfo(model: model, title: currentTitle, instance: app.active.name,
