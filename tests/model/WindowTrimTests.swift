@@ -24,10 +24,12 @@ import Foundation
 /// `offset` 是窗口起点（`_messages_offset`），决定 olderOffset。
 /// 每个消息带一条锚定到自身的工具，用于观察裁剪对工具的影响。
 private func trimSnapshot(_ sessionID: String, rows: Range<Int>, offset: Int,
-                          withTools: Bool = true) throws -> ChatSnapshot {
+                          withTools: Bool = true, bodyBytes: Int = 0) throws -> ChatSnapshot {
     var messages: [[String: Any]] = []
+    let body = bodyBytes > 0 ? String(repeating: "x", count: bodyBytes) : nil
     for index in rows {
-        var row: [String: Any] = ["id": "row-\(index)", "role": "assistant", "content": "m\(index)"]
+        var row: [String: Any] = ["id": "row-\(index)", "role": "assistant",
+                                  "content": body ?? "m\(index)"]
         if withTools {
             row["tool_calls"] = [["id": "tool-\(index)", "name": "grep", "args": "a", "result": "ok"]]
         }
@@ -82,6 +84,69 @@ func runWindowTrimTests() async throws {
         // 每条保留的消息都有对应工具：清理只丢锚点失效的，不误删有效的。
         check(model.transcript.tools.count == model.transcript.messages.count,
               "tools follow their messages one-to-one (tools=\(model.transcript.tools.count))")
+        model.disconnect()
+    }
+
+    // Byte budget must also apply to a snapshot below the 2000-row count cap.
+    // The historical implementation retained all 48 x 384-KiB messages.
+    do {
+        let sid = "trim-bytes"
+        let snapshot = try trimSnapshot(sid, rows: 0..<48, offset: 0,
+                                        withTools: false, bodyBytes: 384 * 1024)
+        let service = TrimScriptedService()
+        service.snapshots = [snapshot]
+        let model = NativeChatModel(sessionID: sid, api: service)
+        await model.load()
+        let visible = model.transcript.messages
+        let estimatedBytes = visible.reduce(0) { sum, row in
+            sum + 160 + row.id.utf8.count + row.content.utf8.count
+        }
+        check(visible.count < 48 && estimatedBytes <= NativeChatModel.maxLoadedBytes,
+              "byte-heavy snapshots respect the 16-MiB memory window")
+        check(visible.last?.id == "row-47" &&
+              model.olderOffset == visible.first?.sourceIndex,
+              "trimming retains the newest complete message and an accessible older cursor")
+        model.disconnect()
+    }
+
+    // A complete tool result can dwarf its parent row. The byte budget counts
+    // tool payloads and prunes records whose message anchor is no longer loaded.
+    do {
+        let sid = "trim-tool-bytes"
+        let hugeResult = String(repeating: "r", count: 2 * 1024 * 1024)
+        var rows: [[String: Any]] = []
+        for index in 0..<10 {
+            rows.append([
+                "id": "tool-row-\(index)", "role": "assistant", "content": "done",
+                "tool_calls": [[
+                    "id": "tool-heavy-\(index)", "name": "read", "args": "{}",
+                    "result": hugeResult
+                ]]
+            ])
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "session": ["session_id": sid, "messages": rows,
+                        "_messages_offset": 0, "read_only": false]
+        ])
+        let service = TrimScriptedService()
+        service.snapshots = [try ChatSnapshot(data: data)]
+        let model = NativeChatModel(sessionID: sid, api: service)
+        await model.load()
+        let visible = model.transcript.messages
+        let toolBytes = model.transcript.tools.reduce(0) { sum, tool in
+            sum + 160 + tool.id.utf8.count + tool.name.utf8.count +
+                tool.args.utf8.count + tool.result.utf8.count +
+                (tool.afterMessageID?.utf8.count ?? 0)
+        }
+        let messageBytes = visible.reduce(0) { sum, row in
+            sum + 160 + row.id.utf8.count + row.content.utf8.count
+        }
+        check(visible.count < 10 && toolBytes + messageBytes <= NativeChatModel.maxLoadedBytes,
+              "tool-heavy snapshots obey the same byte cap")
+        let visibleIDs = Set(visible.map(\.id))
+        check(model.transcript.tools.allSatisfy {
+            $0.afterMessageID.map(visibleIDs.contains) ?? true
+        }, "byte trimming never strands a tool under a missing message anchor")
         model.disconnect()
     }
 
