@@ -10,7 +10,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sidebarOpen = false
-    @GestureState private var sidebarDrag: CGFloat = 0
+    @GestureState private var sidebarGesture = ChatDrawerGestureState()
     // Full-page session browser has its own navigation gesture and a real
     // back destination; do not mistake this for opening the root drawer.
     @State private var browserOpen = false
@@ -50,7 +50,7 @@ struct RootView: View {
 
     private func reveal(width: CGFloat) -> CGFloat {
         CGFloat(ChatDrawerInteraction.reveal(width: Double(drawerWidth(width)),
-                                              open: sidebarOpen, translation: Double(sidebarDrag)))
+                                              open: sidebarOpen, translation: sidebarGesture.translation))
     }
 
     var body: some View {
@@ -165,8 +165,10 @@ struct RootView: View {
                 .frame(width: width, height: fullHeight)
                 .background(AppTheme.softFill)
                 .offset(x: CGFloat(style.drawerParallax))
-                .opacity(exposed > 0 ? 1 : 0)
-                .allowsHitTesting(sidebarOpen || exposed > 0)
+                // Keep the drawer mounted behind the fully opaque chat canvas.
+                // Flipping opacity/hit-testing at exposed == 0 introduced a
+                // compositing and gesture hit-map discontinuity on left return.
+                .allowsHitTesting(sidebarOpen)
                 .accessibilityHidden(!sidebarOpen)
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
@@ -183,25 +185,17 @@ struct RootView: View {
             // retains exclusive control of its own horizontal gestures.
             .simultaneousGesture(
                 DragGesture(minimumDistance: 14)
-                    .updating($sidebarDrag) { value, state, _ in
+                    .updating($sidebarGesture) { value, state, _ in
                         guard !browserOpen else { return }
-                        guard ChatDrawerInteraction.shouldTrack(
+                        state.update(
                             startX: Double(value.startLocation.x),
-                            translationX: Double(value.translation.width),
-                            translationY: Double(value.translation.height),
+                            horizontal: Double(value.translation.width),
+                            vertical: Double(value.translation.height),
                             open: sidebarOpen, width: Double(width),
-                            allowFullCard: true) else { return }
-                        state = sidebarOpen ? min(0, value.translation.width)
-                                            : max(0, value.translation.width)
+                            allowFullCard: true)
                     }
                     .onEnded { value in
-                        guard !browserOpen else { return }
-                        guard ChatDrawerInteraction.shouldTrack(
-                            startX: Double(value.startLocation.x),
-                            translationX: Double(value.translation.width),
-                            translationY: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width),
-                            allowFullCard: true) else { return }
+                        guard !browserOpen, sidebarGesture.claimed else { return }
                         let shouldOpen = ChatDrawerInteraction.finishOpen(
                             width: Double(width), wasOpen: sidebarOpen,
                             predictedTranslation: Double(value.predictedEndTranslation.width))
@@ -285,7 +279,7 @@ struct RootView: View {
         reduceMotion: reduceMotion,
         showsDismissSurface: sidebarOpen && !browserSessionOpen,
         suppressVerticalScroll: browserSessionOpen
-            ? sessionBackDrag > 0 : (!browserOpen && sidebarDrag > 0),
+            ? sessionBackDrag > 0 : (!browserOpen && sidebarGesture.claimed),
         onDismiss: closeSidebar
     ) {
         Group {
