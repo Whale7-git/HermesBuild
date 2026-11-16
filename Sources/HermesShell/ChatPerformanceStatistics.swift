@@ -31,6 +31,8 @@ struct ChatPerformanceStatistics {
         // build160: end-to-end cost of the MainActor timeline projection;
         // separate from UIKit reconcile/geometry and device callback cadence.
         case timelineProjection = "时间线投影"
+        /// Disk-to-model warmup only, not time until UIKit first paint.
+        case historyWarmup = "本地历史预热"
         // Source compatibility for the older sizeThatFits instrumentation.
         static var measure: Metric { .rowMeasure }
     }

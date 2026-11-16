@@ -338,6 +338,25 @@ struct NativeChatView: View {
                       app.activeChangeToken == changeToken else { return }
                 app.clarifyResolved(sessionID: sessionID, requestID: requestID)
             }
+            // Paint the bounded confirmed local window before the network
+            // wait. Never infer an unloaded reading anchor or page offline.
+            let warmupSample = ChatPerformanceRecorder.shared.begin()
+            await model.warmupCachedHistory()
+            ChatPerformanceRecorder.shared.finish(.historyWarmup, warmupSample)
+            guard !Task.isCancelled, visible, app.active.id == instance,
+                  app.historyAccountScope == account, app.activeChangeToken == changeToken,
+                  app.currentSessionID == sessionID else { return }
+            restoreCollapsedCells()
+            if model.cachedHistoryDate != nil {
+                prepareResumeHint()
+                if let position = initialReadingPosition, !position.following,
+                   items.contains(where: { $0.id == position.rowID }) {
+                    await restoreReadingPosition(position)
+                }
+            }
+            guard !Task.isCancelled, visible, app.active.id == instance,
+                  app.historyAccountScope == account, app.activeChangeToken == changeToken,
+                  app.currentSessionID == sessionID else { return }
             await model.load()
             guard !Task.isCancelled, visible, app.active.id == instance,
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
