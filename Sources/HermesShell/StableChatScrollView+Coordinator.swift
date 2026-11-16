@@ -484,6 +484,13 @@ extension ChatScrollController {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        let velocity = scrollView.panGestureRecognizer.velocity(in: scrollView)
+        horizontalBackPan = ChatBackAxisPolicy.claimsReturn(
+            horizontal: Double(velocity.x), vertical: Double(velocity.y))
+        // Horizontal card navigation is not a user request to read history.
+        // It must not detach the current streaming turn, rebuild visible
+        // hosts, or persist a shifted reading anchor.
+        if horizontalBackPan { return }
         // 用户按下即打断程序化动画：统一走 endAnimatedJump，顺带取消兜底计时器。
         endAnimatedJump()
         navigationTarget = nil
@@ -496,7 +503,7 @@ extension ChatScrollController {
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !applying else { return }
+        guard !applying, !horizontalBackPan else { return }
         // No measurement, timeline rebuild, or content-geometry changes here.
         updateWindow()
         let distance = max(0, scrollView.contentSize.height - scrollView.bounds.height - scrollView.contentOffset.y)
@@ -506,11 +513,16 @@ extension ChatScrollController {
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if horizontalBackPan {
+            horizontalBackPan = false
+            return
+        }
         markInteractionDirty()
         if !decelerate { scheduleFlush(); persistReadingPosition() }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        horizontalBackPan = false
         markInteractionDirty()
         scheduleFlush(); persistReadingPosition()
     }

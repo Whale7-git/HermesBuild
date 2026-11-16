@@ -172,14 +172,15 @@ struct RootView: View {
             // horizontal navigation. The open drawer's host picker also
             // retains exclusive control of its own horizontal gestures.
             .simultaneousGesture(
-                DragGesture(minimumDistance: 18)
+                DragGesture(minimumDistance: 14)
                     .updating($sidebarDrag) { value, state, _ in
                         guard !browserOpen else { return }
                         guard ChatDrawerInteraction.shouldTrack(
                             startX: Double(value.startLocation.x),
                             translationX: Double(value.translation.width),
                             translationY: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width)) else { return }
+                            open: sidebarOpen, width: Double(width),
+                            allowFullCard: true) else { return }
                         state = sidebarOpen ? min(0, value.translation.width)
                                             : max(0, value.translation.width)
                     }
@@ -189,7 +190,8 @@ struct RootView: View {
                             startX: Double(value.startLocation.x),
                             translationX: Double(value.translation.width),
                             translationY: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width)) else { return }
+                            open: sidebarOpen, width: Double(width),
+                            allowFullCard: true) else { return }
                         let shouldOpen = ChatDrawerInteraction.finishOpen(
                             width: Double(width), wasOpen: sidebarOpen,
                             predictedTranslation: Double(value.predictedEndTranslation.width))
@@ -272,6 +274,8 @@ struct RootView: View {
         translation: browserSessionOpen ? sessionBackDrag : exposed,
         reduceMotion: reduceMotion,
         showsDismissSurface: sidebarOpen && !browserSessionOpen,
+        suppressVerticalScroll: browserSessionOpen
+            ? sessionBackDrag > 0 : (!browserOpen && sidebarDrag > 0),
         onDismiss: closeSidebar
     ) {
         Group {
@@ -341,6 +345,7 @@ struct RootView: View {
             progress: backProgress, translation: browserBackDrag,
             reduceMotion: reduceMotion,
             showsDismissSurface: false,
+            suppressVerticalScroll: browserBackDrag > 0,
             onDismiss: {}
         ) {
             if browserAllInstances {

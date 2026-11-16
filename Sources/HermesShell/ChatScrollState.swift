@@ -109,6 +109,17 @@ enum ChatOffsetCommitPolicy {
     }
 }
 
+/// A consistent axis-owner contract for all primary navigation cards.
+/// Rightward dominant drags own card return; vertical scrolling keeps
+/// ownership otherwise. Use the SAME ratio for SwiftUI card gestures and
+/// the UIKit transcript scroll controller.
+enum ChatBackAxisPolicy {
+    static func claimsReturn(horizontal: Double, vertical: Double) -> Bool {
+        guard horizontal.isFinite, vertical.isFinite else { return false }
+        return horizontal > 0 && horizontal > abs(vertical) * 1.65
+    }
+}
+
 /// Pure gesture contract for the chat-card/sidebar interactive transition.
 /// UIKit/SwiftUI owns animation; these functions own thresholds, cancellation,
 /// and boundary clamps so they can be regression-tested without an iOS SDK.
@@ -120,13 +131,19 @@ enum ChatDrawerInteraction {
     }
 
     static func shouldTrack(startX: Double, translationX: Double,
-                            translationY: Double, open: Bool, width: Double) -> Bool {
+                            translationY: Double, open: Bool, width: Double,
+                            allowFullCard: Bool = false) -> Bool {
         guard startX.isFinite, translationX.isFinite, translationY.isFinite,
-              width.isFinite, width > 0 else { return false }
-        // The visible chat card owns swipe-to-close. The drawer itself
-        // contains a horizontally scrolling instance switcher.
-        let validOrigin = open ? startX >= width - 12 : startX < 24
-        return abs(translationX) > abs(translationY) * 1.35 && validOrigin
+              width.isFinite, width > 0, startX >= 0 else { return false }
+        // Only the exposed chat card, not the drawer's horizontal host rail,
+        // owns a drag-to-close. A closed chat card accepts back from ANY x.
+        let validOrigin = open ? startX >= width - 12 :
+            (allowFullCard || startX < 24)
+        let validDirection = open
+            ? translationX < 0 && -translationX > abs(translationY) * 1.65
+            : ChatBackAxisPolicy.claimsReturn(
+                horizontal: translationX, vertical: translationY)
+        return validOrigin && validDirection
     }
 
     static func finishOpen(width: Double, wasOpen: Bool, predictedTranslation: Double) -> Bool {
@@ -167,8 +184,8 @@ enum ChatPageBackInteraction {
     static func shouldTrack(startX: Double, horizontal: Double, vertical: Double,
                             allowFullCard: Bool = false) -> Bool {
         guard startX.isFinite, horizontal.isFinite, vertical.isFinite else { return false }
-        let horizontalEnough = horizontal > 0 && horizontal > abs(vertical) * 1.65
-        return startX >= 0 && (allowFullCard || startX < 32) && horizontalEnough
+        return startX >= 0 && (allowFullCard || startX < 32)
+            && ChatBackAxisPolicy.claimsReturn(horizontal: horizontal, vertical: vertical)
     }
     static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
         guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }

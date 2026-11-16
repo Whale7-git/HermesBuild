@@ -15,13 +15,14 @@ struct ChatCardContainer<Content: View>: View {
     let translation: CGFloat
     let reduceMotion: Bool
     let showsDismissSurface: Bool
+    var suppressVerticalScroll: Bool = false
     let onDismiss: () -> Void
     let content: Content
 
     init(size: CGSize, topInset: CGFloat, bottomInset: CGFloat,
          progress: CGFloat, translation: CGFloat, reduceMotion: Bool,
-         showsDismissSurface: Bool, onDismiss: @escaping () -> Void,
-         @ViewBuilder content: () -> Content) {
+         showsDismissSurface: Bool, suppressVerticalScroll: Bool = false,
+         onDismiss: @escaping () -> Void, @ViewBuilder content: () -> Content) {
         self.size = size
         self.topInset = topInset
         self.bottomInset = bottomInset
@@ -29,6 +30,7 @@ struct ChatCardContainer<Content: View>: View {
         self.translation = translation
         self.reduceMotion = reduceMotion
         self.showsDismissSurface = showsDismissSurface
+        self.suppressVerticalScroll = suppressVerticalScroll
         self.onDismiss = onDismiss
         self.content = content()
     }
@@ -40,6 +42,10 @@ struct ChatCardContainer<Content: View>: View {
 
     var body: some View {
         content
+            // Once the horizontal return gesture wins, the underlying
+            // SwiftUI lists must not scroll vertically at the same time.
+            // UIKit-based chat scrolling observes this same environment.
+            .scrollDisabled(suppressVerticalScroll)
             .frame(width: size.width, height: size.height)
             .padding(.top, topInset)
             .padding(.bottom, bottomInset)
