@@ -182,6 +182,18 @@ enum ChatPageBackInteraction {
 /// When a session is pushed from the browser, the browser stays mounted behind
 /// the chat, but must not suppress foreground conversation notifications.
 enum UnifiedBrowserPresentation {
+    /// The selected chat is above the mounted browser: its hamburger must
+    /// still work. A bare browser page cannot bypass its own back route.
+    static func canOpenSidebar(browserOpen: Bool, browserSessionOpen: Bool) -> Bool {
+        !browserOpen || browserSessionOpen
+    }
+
+    static func shouldRetireBrowserForNewDraft(browserOpen: Bool,
+                                               browserSessionOpen: Bool,
+                                               currentSessionID: String?) -> Bool {
+        browserOpen && browserSessionOpen && currentSessionID == nil
+    }
+
     static func conversationVisible(active: Bool, sidebarOpen: Bool,
                                     browserOpen: Bool, browserSessionOpen: Bool,
                                     modalOpen: Bool, hasSession: Bool) -> Bool {

@@ -86,7 +86,18 @@ struct RootView: View {
             .onChange(of: app.needsLogin) { _, _ in
                 synchronizeConversationVisibility()
             }
-            .onChange(of: app.currentSessionID) { _, _ in
+            .onChange(of: app.currentSessionID) { _, current in
+                // A chat opened from the browser can create a new draft via
+                // its own toolbar. Closing the session must also retire the
+                // browser route; otherwise the empty composer inherits an
+                // unrelated old session-list back stack.
+                if UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
+                    browserOpen: browserOpen, browserSessionOpen: browserSessionOpen,
+                    currentSessionID: current) {
+                    browserSessionOpen = false
+                    browserOpen = false
+                    browserRoute = []
+                }
                 synchronizeConversationVisibility()
             }
             .onAppear { synchronizeConversationVisibility() }
@@ -314,6 +325,8 @@ struct RootView: View {
             singleInstanceBrowser
         }
         .zIndex(1)
+        .allowsHitTesting(!browserSessionOpen)
+        .accessibilityHidden(browserSessionOpen)
     }
     }
 
@@ -384,6 +397,8 @@ struct RootView: View {
                 }
         )
         .zIndex(2)
+        .allowsHitTesting(!browserSessionOpen)
+        .accessibilityHidden(browserSessionOpen)
     }
     }
 
@@ -423,6 +438,7 @@ struct RootView: View {
                 app.showSettings = true
             },
             onClose: backFromBrowser,
+            backToDrawer: browserSource == .drawer && browserRoute.count == 1,
             onBrowseAllInstances: {
                 if browserRoute.last != .all { browserRoute.append(.all) }
             },
@@ -616,7 +632,16 @@ struct RootView: View {
     }
 
     private func openSidebar() {
-        guard !browserOpen else { return }
+        guard UnifiedBrowserPresentation.canOpenSidebar(
+            browserOpen: browserOpen, browserSessionOpen: browserSessionOpen) else { return }
+        // The toolbar hamburger is a direct drawer action, not another
+        // browser back-swipe. Retire that route while keeping the selected
+        // Hermes Session and its draft unchanged.
+        if browserSessionOpen {
+            browserSessionOpen = false
+            browserOpen = false
+            browserRoute = []
+        }
         sidebarOpen = true
     }
     private func closeSidebar() { sidebarOpen = false }
