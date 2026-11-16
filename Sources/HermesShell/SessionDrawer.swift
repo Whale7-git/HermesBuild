@@ -138,6 +138,20 @@ struct SessionListPane: View {
                         .padding(.vertical, 8)
                         .accessibilityIdentifier("task-store-warning")
                     }
+                    if app.hasDamagedTaskStore {
+                        Button("清除损坏的任务状态记录") {
+                            app.clearDamagedTaskStore()
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .accessibilityIdentifier("clear-corrupt-task-record")
+                    }
+                    if let warning = app.taskAcknowledgementWarning {
+                        Label(warning, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, AppTheme.pagePadding)
+                    }
                     if filtered.isEmpty {
                         if !app.hasLoadedSessions && app.errorText == nil {
                             HStack(spacing: 10) {
