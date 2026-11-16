@@ -224,6 +224,8 @@ expect(ChatCardPresentation.style(progress: 0.5, reduceMotion: true).drawerParal
 
 expect(ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 120, vertical: 3),
        "child page right edge swipe enters interactive back transition")
+expect(ChatPageBackInteraction.shouldTrack(startX: 28, horizontal: 120, vertical: 3),
+       "browser back edge includes a practical 32pt touch area")
 expect(!ChatPageBackInteraction.shouldTrack(startX: 90, horizontal: 120, vertical: 3),
        "child page does not steal arbitrary horizontal text selection")
 expect(!ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 12, vertical: 55),

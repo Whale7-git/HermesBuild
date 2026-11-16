@@ -143,7 +143,7 @@ import Foundation
 
     let retry = Task { await model.retry(source: source, query: "") }
     await spin { fixture.waiting[identity.instanceID] != nil }
-    expect(model.loading == [identity], "retry sets only the failed host loading flag")
+    expect(model.loading == Set([identity]), "retry sets only the failed host loading flag")
     fixture.waiting.removeValue(forKey: identity.instanceID)!
         .resume(returning: [try row("recovered")])
     await retry.value
