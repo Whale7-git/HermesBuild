@@ -179,6 +179,29 @@ extension ModelTests {
         expect(toolModel.transcript.messages.isEmpty && toolModel.completedReplies == 0, "authentication retirement clears old account content without completion")
         toolModel.disconnect()
 
+        // A page transition must not infer stop/complete from a disconnected
+        // long agent transcript. The navigation layer is not a STOP endpoint.
+        let many = ActivityRecoveryService()
+        many.tools = (0..<150).map { i in
+            ChatTool(id: "tool-\(i)", name: "read", args: "", result: "ok",
+                     done: true, isError: false, afterMessageID: "recent")
+        }
+        let longSession = NativeChatModel(sessionID: "activity", api: many)
+        await longSession.load()
+        expect(longSession.transcript.tools.count == 150,
+               "150 historical tool records are retained on initial Session load")
+        longSession.draft = "draft survives navigation"
+        longSession.disconnect()
+        expect(many.postCalls == 0 && many.stopCalls == 0,
+               "page detachment with 150 tools never submits or stops")
+        await longSession.resumeForeground()
+        expect(many.postCalls == 0 && many.stopCalls == 0
+               && longSession.draft == "draft survives navigation",
+               "foreground return with 150 tools keeps draft and issues GET only")
+        expect(longSession.transcript.tools.count == 150,
+               "long Session tool history survives a read-only resume")
+        longSession.disconnect()
+
         let old = ChatTool(id: "old", name: "old", args: "", result: "", done: false, isError: false, afterMessageID: "u1")
         let fresh = ChatTool(id: "new", name: "new", args: "", result: "", done: false, isError: false, afterMessageID: "u2")
         let messages = [ChatMessage(id: "u1", role: "user", content: "old"), ChatMessage(id: "u2", role: "user", content: "new")]

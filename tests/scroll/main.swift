@@ -251,6 +251,22 @@ expect(UnifiedBrowserBackNavigation.destination(route: [.all],
 expect(UnifiedBrowserBackNavigation.destination(route: [.single],
        source: .drawer) == .drawer,
        "drawer->single returns to drawer")
+expect(UnifiedBrowserPresentation.conversationVisible(
+       active: true, sidebarOpen: false, browserOpen: true,
+       browserSessionOpen: true, modalOpen: false, hasSession: true),
+       "selected conversation remains foreground even when browser stays mounted")
+expect(!UnifiedBrowserPresentation.conversationVisible(
+       active: true, sidebarOpen: true, browserOpen: true,
+       browserSessionOpen: false, modalOpen: false, hasSession: true),
+       "drawer browser never presents the chat as foreground")
+expect(!UnifiedBrowserPresentation.conversationVisible(
+       active: true, sidebarOpen: false, browserOpen: true,
+       browserSessionOpen: false, modalOpen: false, hasSession: true),
+       "browser top page suppresses conversation presentation")
+expect(!UnifiedBrowserPresentation.conversationVisible(
+       active: false, sidebarOpen: false, browserOpen: true,
+       browserSessionOpen: true, modalOpen: false, hasSession: true),
+       "backgrounded app cannot present a foreground conversation")
 expect(ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: 100,
        vertical: 3, allowFullCard: true),
        "full-card right-swipe may begin from middle")
