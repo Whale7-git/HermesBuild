@@ -46,7 +46,24 @@ enum GatewaySessionPaging {
 }
 
 enum GatewaySessionReader {
-    /// The deployed API clamps limit to 200 and backfills pinned rows outside the page.
+    /// A validated, actor-independent page. Foundation JSON decoding and
+    /// SessionSummary mapping never require access to UIKit or AppState.
+    struct DecodedPage: Sendable {
+        let rows: [SessionSummary]
+        let rawCount: Int
+        let hasMore: Bool
+    }
+
+    static func decodePage(_ data: Data, size: Int) throws -> DecodedPage {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = root["data"] as? [Any] else { throw APIError.badResponse }
+        return DecodedPage(
+            rows: try GatewayDecode.sessions(root: root),
+            rawCount: raw.count,
+            hasMore: root["has_more"] as? Bool ?? (raw.count >= size))
+    }
+
+    /// The deployed API clamps limit to 200 and backfills pinned rows outside the page. 
     @MainActor
     static func all(requests: GatewayRequests, load: (URLRequest) async throws -> Data) async throws -> [SessionSummary] {
         var result: [SessionSummary] = []
@@ -79,12 +96,16 @@ enum GatewaySessionReader {
             page += 1
             let data = try await load(request)
 
-            guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let raw = root["data"] as? [Any] else { throw APIError.badResponse }
-            let rows = try GatewayDecode.sessions(root: root)
+            // Actor hop: decode raw JSON and map every session entirely off
+            // MainActor. Only bounded paging state and results return here.
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                try GatewaySessionReader.decodePage(data, size: size)
+            }.value
+            try Task.checkCancellation()
+            let rows = decoded.rows
             let new = rows.filter { seen.insert($0.sessionId).inserted }
             result.append(contentsOf: new)
-            let hasMore = root["has_more"] as? Bool ?? (raw.count >= size)
+            let hasMore = decoded.hasMore
             // 已经拿到完整列表就先返回：正好卡在上限上的完整列表不该被判成超限。
             if !hasMore { return result }
             // 条数上限与请求上限是两个维度：请求没超但内存先撑不住时，同样必须
@@ -103,7 +124,7 @@ enum GatewaySessionReader {
                 //
                 // 但要有上限（F-78）：连续 5 页全过滤就当作已到尾部，避免异常网关
                 // 用恒真的 `has_more` 把客户端钉在请求循环里。
-                guard !raw.isEmpty else {
+                guard decoded.rawCount > 0 else {
                     // 原始条数为 0 而 has_more 为真，是服务端自相矛盾的数据。
                     // 这里仍按「没有前进」处理：静默返回半份列表比报错更难排查。
                     throw GatewayDecodeError.malformed("会话分页没有前进，请刷新重试")
