@@ -52,6 +52,30 @@ let reappeared = observation([.recoveryIssue], at: t2)
 expect(!ack.covers(sessionID: "s1", observation: reappeared),
        "observedAt 变化后确认必须失效")
 
+// MARK: - build183: unrelated signal changes preserve the acknowledged version
+let existing = observation([.recoveryIssue], at: t1)
+let addedApproval = SessionTaskObservation.updating(
+    existing, signals: [.recoveryIssue, .waitingForApproval],
+    at: Date(timeIntervalSince1970: t2))
+expect(ack.covers(sessionID: "s1", observation: addedApproval),
+       "adding approval cannot revoke acknowledgement of unchanged recoveryIssue")
+let removedRecovery = SessionTaskObservation.updating(
+    addedApproval, signals: [.waitingForApproval],
+    at: Date(timeIntervalSince1970: t2 + 1))
+let newRecovery = SessionTaskObservation.updating(
+    removedRecovery, signals: [.waitingForApproval, .recoveryIssue],
+    at: Date(timeIntervalSince1970: t2 + 2))
+expect(!ack.covers(sessionID: "s1", observation: newRecovery),
+       "reappearance of the same signal receives a new identity")
+let encodedSignals = try JSONEncoder().encode(addedApproval)
+let decodedSignals = try JSONDecoder().decode(SessionTaskObservation.self, from: encodedSignals)
+expect(ack.covers(sessionID: "s1", observation: decodedSignals),
+       "signal identity survives JSON save/reload")
+let legacyJSON = Data("{\"signals\":[\"recoveryIssue\"],\"observedAt\":1700000000}".utf8)
+let legacyObservation = try JSONDecoder().decode(SessionTaskObservation.self, from: legacyJSON)
+expect(ack.covers(sessionID: "s1", observation: legacyObservation),
+       "build182 observation decoder remains compatible without signalVersions")
+
 // MARK: - 信号消失则确认不再需要
 
 let cleared = observation([], at: t1)
