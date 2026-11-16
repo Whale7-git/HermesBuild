@@ -746,7 +746,7 @@
     "docs/build184-performance.md": "606061fbdef046e02521431801feaa1c5643af15e7d995abe7f6eca624717ae3",
     "docs/build185-session-navigation.md": "95cc151166bd4e7295d3171bbc2d2cacdc219c89df7d021b728c08d466a6617a",
     "Sources/HermesShell/UnifiedSessionModel.swift": "9c6211058b70c04b00b8fffce912b698a83bbd678ace729c6ef3a37eeaefd721",
-    "Sources/HermesShell/UnifiedSessionBrowser.swift": "f2bd2ed760f9cc5fd63aa79759b7c51558d3fba472d2e382c6cd61739eb8e9aa",
+    "Sources/HermesShell/UnifiedSessionBrowser.swift": "3295ec0f946eef22ed55af811e6f1cf96ec6d18cf95753538359512adf46d772",
     "tests/discovery/UnifiedSessionTests.swift": "f8b713ac8c827c146dc086b2eb5afffe73faf78ede2f7b452d4cee59808b11fd",
     "tests/discovery/main.swift": "d2604785935e0711dcabe1a481445beee775342048a0f5727be39faece3a7847",
     "docs/build186-unified-sessions.md": "da04a1613553a0089967d2f4d80bd0bec50e400f78f8f9f07ae4e3bb9255f1b3",
