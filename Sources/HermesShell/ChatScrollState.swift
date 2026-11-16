@@ -120,13 +120,18 @@ enum ChatDrawerInteraction {
     }
 
     static func shouldTrack(startX: Double, translationX: Double,
-                            translationY: Double, open: Bool, width: Double) -> Bool {
+                            translationY: Double, open: Bool, width: Double,
+                            allowFullCard: Bool = false) -> Bool {
         guard startX.isFinite, translationX.isFinite, translationY.isFinite,
               width.isFinite, width > 0 else { return false }
-        // The visible chat card owns swipe-to-close. The drawer itself
-        // contains a horizontally scrolling instance switcher.
-        let validOrigin = open ? startX >= width - 12 : startX < 24
-        return abs(translationX) > abs(translationY) * 1.35 && validOrigin
+        // A closed chat card can follow a deliberate rightward drag anywhere
+        // inside its width (ChatGPT-style). Do not broaden the drawer-open
+        // closing gesture: its horizontal instance rail retains ownership.
+        let validOrigin = open ? startX >= width - 12
+            : (allowFullCard ? startX >= 0 && startX <= width : startX < 24)
+        let validDirection = open ? translationX < 0 : translationX > 0
+        return validOrigin && validDirection
+            && abs(translationX) > abs(translationY) * 1.65
     }
 
     static func finishOpen(width: Double, wasOpen: Bool, predictedTranslation: Double) -> Bool {

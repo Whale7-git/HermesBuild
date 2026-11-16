@@ -187,6 +187,30 @@ expect(ChatDrawerInteraction.reveal(width: 330, open: false, translation: 1000) 
 expect(!ChatDrawerInteraction.shouldTrack(startX: 80, translationX: 100, translationY: 3,
                                          open: false, width: 330),
        "non-edge drags cannot steal chat selection")
+expect(ChatDrawerInteraction.shouldTrack(startX: 170, translationX: 110,
+                                        translationY: 8, open: false, width: 330,
+                                        allowFullCard: true),
+       "full-card swipe from center of a normal chat opens the drawer")
+expect(ChatDrawerInteraction.shouldTrack(startX: 318, translationX: 110,
+                                        translationY: 8, open: false, width: 330,
+                                        allowFullCard: true),
+       "full-card swipe near far edge opens the drawer")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 170, translationX: -110,
+                                         translationY: 8, open: false, width: 330,
+                                         allowFullCard: true),
+       "leftward drag on a closed chat never triggers drawer")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 170, translationX: 20,
+                                         translationY: 100, open: false, width: 330,
+                                         allowFullCard: true),
+       "vertical reading and scrolling keep gesture ownership")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 170, translationX: -110,
+                                         translationY: 8, open: true, width: 330,
+                                         allowFullCard: true),
+       "drawer instance rail cannot be hijacked by closing swipe from center")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 345, translationX: 110,
+                                         translationY: 8, open: false, width: 330,
+                                         allowFullCard: true),
+       "gesture outside visible card never opens drawer")
 expect(!ChatDrawerInteraction.shouldTrack(startX: 8, translationX: 20, translationY: 100,
                                          open: false, width: 330),
        "vertical scroll stays owned by the transcript")

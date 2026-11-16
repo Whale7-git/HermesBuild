@@ -179,7 +179,8 @@ struct RootView: View {
                             startX: Double(value.startLocation.x),
                             translationX: Double(value.translation.width),
                             translationY: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width)) else { return }
+                            open: sidebarOpen, width: Double(width),
+                            allowFullCard: true) else { return }
                         state = sidebarOpen ? min(0, value.translation.width)
                                             : max(0, value.translation.width)
                     }
@@ -189,7 +190,8 @@ struct RootView: View {
                             startX: Double(value.startLocation.x),
                             translationX: Double(value.translation.width),
                             translationY: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width)) else { return }
+                            open: sidebarOpen, width: Double(width),
+                            allowFullCard: true) else { return }
                         let shouldOpen = ChatDrawerInteraction.finishOpen(
                             width: Double(width), wasOpen: sidebarOpen,
                             predictedTranslation: Double(value.predictedEndTranslation.width))
