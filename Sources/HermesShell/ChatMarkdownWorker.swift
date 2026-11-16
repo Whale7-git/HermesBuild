@@ -22,6 +22,7 @@ actor ChatMarkdownWorker {
         let source: String
         let content: AttributedString
         let maximumIdentity: Int
+        let cumulativeSourceBytes: Int
     }
     private enum JoinStyle: CaseIterable { case direct, previousNewline, nextNewline }
     private static let fixtures = [
@@ -79,7 +80,10 @@ actor ChatMarkdownWorker {
             let shifted = Self.renumber(try Self.parse(piece), after: maximum)
             maximum = shifted.1
             prefix = Self.append(prefix, shifted.0, style: style)
-            parts.append(Part(source: piece, content: shifted.0, maximumIdentity: maximum))
+            parts.append(Part(source: piece, content: shifted.0,
+                              maximumIdentity: maximum,
+                              cumulativeSourceBytes: (parts.last?.cumulativeSourceBytes ?? 0)
+                                  + piece.utf8.count))
             metrics.parsedBytes += piece.utf8.count
         }
         let tail = Self.renumber(try Self.parse(plan.tail), after: maximum).0
@@ -98,7 +102,9 @@ actor ChatMarkdownWorker {
             }
         }
         metrics.frozenSegments = parts.count
-        metrics.reusedBytes = parts.prefix(common).reduce(0) { $0 + $1.source.utf8.count }
+        // O(1) reuse accounting: a long stream may freeze hundreds of blocks,
+        // but every subsequent token batch must not rescan their UTF-8 bytes.
+        metrics.reusedBytes = common == 0 ? 0 : parts[common - 1].cumulativeSourceBytes
         metrics.usedIncrementalPath = !semanticFallback && !parts.isEmpty
         return MarkdownRenderSnapshot(content: output, highlightAfter: maximum, metrics: metrics)
     }
