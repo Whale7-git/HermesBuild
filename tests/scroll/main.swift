@@ -239,15 +239,27 @@ expect(!ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 
 
 // build187: toolbar/back gesture must follow the same stack, never
 // jump from a nested All Instances page straight to the chat.
-expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
-       enteredFromSingle: true) == .singleInstance,
+expect(UnifiedBrowserBackNavigation.destination(route: [.single, .all],
+       source: .drawer) == .singleInstance,
        "single->all returns to the single-host browser")
-expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
-       enteredFromSingle: false) == .chat,
-       "direct all-host entry returns to conversation")
-expect(UnifiedBrowserBackNavigation.destination(allInstances: false,
-       enteredFromSingle: true) == .chat,
-       "single-host top-level page always returns to conversation")
+expect(UnifiedBrowserBackNavigation.destination(route: [.all],
+       source: .drawer) == .drawer,
+       "drawer->all returns to the real mounted drawer")
+expect(UnifiedBrowserBackNavigation.destination(route: [.all],
+       source: .chat) == .chat,
+       "home search->all returns to the conversation")
+expect(UnifiedBrowserBackNavigation.destination(route: [.single],
+       source: .drawer) == .drawer,
+       "drawer->single returns to drawer")
+expect(ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: 100,
+       vertical: 3, allowFullCard: true),
+       "full-card right-swipe may begin from middle")
+expect(!ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: 20,
+       vertical: 100, allowFullCard: true),
+       "vertical scroll never hijacked")
+expect(!ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: -100,
+       vertical: 0, allowFullCard: true),
+       "leftward card gesture is never back")
 
 expect(ChatTurnViewport.contentHeight(baseBottom: 240, anchorTop: 140,
                                       viewport: 800) == 940,
