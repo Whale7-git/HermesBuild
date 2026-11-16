@@ -35,6 +35,36 @@ for source in fixtures {
         expect(result.complete.joined() + result.tail == input, "every prefix preserves source bytes and Unicode")
     }
 }
+// Incremental planning must equal the full authoritative boundary scan at
+// every appended prefix, including opaque containers and UTF-8 boundaries.
+let incrementalFixtures = fixtures + [
+    "first\\n\\nsecond\\n\\nthird\\n\\nlast".replacingOccurrences(of: "\\\\n", with: "\\n"),
+    "start\\n\\n\u{1F600}\\n\\n\\\`\\\`\\\`swift\\ncode\\n\\\`\\\`\\\`\\nend"
+        .replacingOccurrences(of: "\\\\n", with: "\\n"),
+    "prefix\\n\\n[link][ref]\\n\\n[ref]: /url"
+        .replacingOccurrences(of: "\\\\n", with: "\\n")
+]
+for source in incrementalFixtures {
+    var last = ""
+    var planned: MarkdownBlockPlan.Plan?
+    for end in 0...source.count {
+        let current = String(source.prefix(end))
+        let next = MarkdownBlockPlan.makeAppending(current, after: last, plan: planned)
+        let full = MarkdownBlockPlan.make(current)
+        expect(next == full, "append-only plan equals complete scan at every prefix")
+        last = current
+        planned = next
+    }
+}
+let longStable = (0..<1000).map { "item \($0)\\n\\n" }.joined()
+let longPlan = MarkdownBlockPlan.make(longStable)
+let grownPlan = MarkdownBlockPlan.makeAppending(longStable + "active", after: longStable, plan: longPlan)
+expect(grownPlan.complete.count == longPlan.complete.count &&
+       grownPlan.tail == "active", "long stable prefix remains frozen when only tail grows")
+let rewrittenPlan = MarkdownBlockPlan.makeAppending("replacement", after: longStable, plan: longPlan)
+expect(rewrittenPlan == MarkdownBlockPlan.make("replacement"),
+       "replacement source discards previous incremental boundaries")
+
 let ready = MarkdownRenderRequest(source: "first", finished: false)
 expect(MarkdownRenderGate.allows(ready, latest: .init(source: "first second", finished: false)), "a slower valid append may be displayed")
 expect(!MarkdownRenderGate.allows(ready, latest: .init(source: "replacement", finished: false)), "late replacement results cannot overwrite new content")
