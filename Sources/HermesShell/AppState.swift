@@ -250,6 +250,30 @@ final class AppState: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private let sessionRefreshClock: SessionRefreshClock
     private var createGeneration = UUID()
+    /// Explicit user navigation revokes the right of an old create response
+    /// to change currentSessionID. A returned SID is still recorded for
+    /// recovery even if the old request has lost navigation ownership.
+    private func invalidateCreationNavigation() {
+        createGeneration = UUID()
+        creating = false
+        homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
+    }
+
+    private func retainKnownCreatedSession(_ sid: String, instanceID: String,
+                                           accountScope: String) {
+        let persisted = CreatedSessionRecoveryStore.remember(
+            sid, instanceID: instanceID, accountScope: accountScope)
+        if instanceID == historyInstanceID && accountScope == historyAccountScope {
+            if !sessions.contains(where: { $0.sessionId == sid }) {
+                sessions.insert(.placeholder(id: sid), at: 0)
+            }
+            if !persisted {
+                homeSendError = "远端会话已创建，但恢复标识保存失败；请刷新会话列表核对。"
+            }
+        }
+    }
+
     private let sessionRefreshPolicy: SessionRefreshPolicy
 
     /// 搜索结果或归档行打开的会话可能不在普通列表里；
@@ -366,8 +390,8 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
-        homeTurnClaim.cancel()
-        homeAttachmentSessionID = nil
+        invalidateCreationNavigation()
+        homeSendError = nil
         openedSession = session
         currentSessionID = session.sessionId
         // 进入会话即视为已读，不再显示完成标记。
@@ -375,8 +399,8 @@ final class AppState: ObservableObject {
     }
 
     func closeSession() {
-        homeTurnClaim.cancel()
-        homeAttachmentSessionID = nil
+        invalidateCreationNavigation()
+        homeSendError = nil
         currentSessionID = nil
         openedSession = nil
     }
@@ -1859,9 +1883,16 @@ final class AppState: ObservableObject {
                     accountScope: historyAccountScope
                 )
             }
-            sessions = next
+            // Known SIDs from a partially completed create stay accessible
+            // until the server list contains them. This is a recovery hint,
+            // not evidence that the Session is still present remotely.
+            let outstanding = CreatedSessionRecoveryStore.reconcile(
+                authoritative: Set(next.map(\.sessionId)),
+                instanceID: historyInstanceID, accountScope: historyAccountScope)
+            let visible = next + outstanding.map { SessionSummary.placeholder(id: $0) }
+            sessions = visible
             hasLoadedSessions = true
-            rememberSessionList(next, scope: sessionListScopeKey)
+            rememberSessionList(visible, scope: sessionListScopeKey)
             let refreshedAt = Date()
             sessionRefreshClock.recordSuccess(
                 scope: historyInstanceID + "|" + historyAccountScope,
@@ -2000,17 +2031,25 @@ final class AppState: ObservableObject {
         creating = true
         homeSendError = nil
         defer { if createGeneration == generation { creating = false } }
+        var createdSID: String?
         do {
             let sid = try await requestAPI.createSession(title: nil, model: option?.model)
+            createdSID = sid
             guard isCurrent(scope), createGeneration == generation,
-                  !Task.isCancelled else { return false }
+                  !Task.isCancelled else {
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                return false
+            }
             let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
                 sessionID: sid, legacyBaseURL: requestAPI.webConsoleBaseURL.absoluteString,
                 fileStore: LocalDataFileStore(instanceID: instanceID,
                     accountScope: accountScope, sessionID: sid))
             let saved = store.save(text)
             guard saved.succeeded else {
-                homeSendError = "会话已创建，但本地草稿保存失败；消息没有发送。请保留输入内容并检查设备存储。"
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                homeSendError = "远端会话已创建，但草稿保存失败；消息未发送。请保留输入内容，并在会话列表中核对新会话。"
                 return false
             }
             if sendImmediately {
@@ -2031,11 +2070,14 @@ final class AppState: ObservableObject {
             currentSessionID = sid
             return true
         } catch {
+            if let createdSID {
+                retainKnownCreatedSession(createdSID, instanceID: instanceID,
+                                          accountScope: accountScope)
+            }
             guard isCurrent(scope), createGeneration == generation else { return false }
-            // An uncertain session-creation HTTP response must not be retried
-            // automatically. Unlike a chat POST, an empty orphan session is
-            // harmless; retaining the user's text is the critical invariant.
-            homeSendError = "新建会话未确认，消息未发送：\(error.localizedDescription)"
+            homeSendError = createdSID == nil
+                ? "新建结果不明确，远端可能已创建会话。请先刷新会话列表核对，勿直接重复发送：\(error.localizedDescription)"
+                : "会话已创建，但后续处理未完成；原消息未发送。请在会话列表核对：\(error.localizedDescription)"
             return false
         }
     }
@@ -2059,6 +2101,8 @@ final class AppState: ObservableObject {
         homeTurnClaim.cancel()
         homeAttachmentSessionID = nil
         let scope = actionScope
+        let instanceID = historyInstanceID
+        let accountScope = historyAccountScope
         let requestAPI = api
         let generation = UUID()
         createGeneration = generation
@@ -2066,11 +2110,18 @@ final class AppState: ObservableObject {
         defer { if createGeneration == generation { creating = false } }
         do {
             let sid = try await requestAPI.createSession(title: nil, model: nil)
-            guard isCurrent(scope), createGeneration == generation else { return }
+            guard isCurrent(scope), createGeneration == generation else {
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                return
+            }
+            if !sessions.contains(where: { $0.sessionId == sid }) {
+                sessions.insert(.placeholder(id: sid), at: 0)
+            }
             currentSessionID = sid
         } catch {
             guard isCurrent(scope), createGeneration == generation else { return }
-            errorText = error.localizedDescription
+            errorText = "新建会话结果不明确，请刷新会话列表核对后再操作：\(error.localizedDescription)"
         }
     }
 }
