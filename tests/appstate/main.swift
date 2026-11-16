@@ -48,6 +48,10 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
 }
 @MainActor final class HermesAPI {
     static var createEntered = false
+    static var holdCreates = false
+    static var pendingCreate: CheckedContinuation<String, Error>?
+    static var nextCreateID = "created-fixture"
+    static var confirmedModelHistory = false
     static var listEntered = false
     static var capabilitiesOverride: BackendCapabilities?
     static var authCalls = 0
@@ -86,6 +90,9 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
     func login(password:String) async throws {}
     func createNativeSession() async throws -> String {
         Self.createEntered = true
+        if Self.holdCreates {
+            return try await withCheckedThrowingContinuation { Self.pendingCreate = $0 }
+        }
         try await Task.sleep(nanoseconds:100_000_000)
         return baseURL.contains("a.example") ? "A-created" : "B-created"
     }
@@ -102,7 +109,12 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
     static var holdRenames = false
     static var pendingRename: CheckedContinuation<Void, Error>? = nil
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
-        try ChatSnapshot(data: Data("{\"session_id\":\"test\",\"messages\":[]}".utf8))
+        if Self.confirmedModelHistory, let selected = Self.lastModelSet {
+            let payload: [String: Any] = ["session_id": sessionID, "messages": [],
+                "model": selected.2, "model_provider": selected.1 ?? NSNull()]
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: payload))
+        }
+        return try ChatSnapshot(data: Data("{\"session_id\":\"test\",\"messages\":[]}".utf8))
     }
     func availableModels() async throws -> ModelCatalog {
         try ModelCatalog(data: Data(#"{"groups":[{"provider":"p","provider_id":"custom:p","models":[{"id":"m1","label":"M1"}]}]}"#.utf8))
@@ -191,6 +203,86 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
             do { try await Task.sleep(nanoseconds: 1_000_000) }
             catch { preconditionFailure("controlled request wait cancelled", file: file, line: line) }
         }
+    }
+
+    @MainActor static func homeCreateNavigationTests() async throws {
+        let old = HermesInstance(name: "Create A", baseURL: "https://create-a.example")
+        let other = HermesInstance(name: "Create B", baseURL: "https://create-b.example")
+        try InstanceStore.save([old, other], credentials: credentials)
+        InstanceStore.activeID = old.id
+
+        let app = AppState(credentials: credentials)
+        HermesAPI.holdCreates = true
+        defer { HermesAPI.holdCreates = false; HermesAPI.pendingCreate = nil }
+
+        // User navigates into an existing Session during a remote create.
+        let request = Task { await app.createSessionForHomeTurn("old turn", model: nil) }
+        await spin { HermesAPI.pendingCreate != nil }
+        app.openSession(.placeholder(id: "existing"))
+        HermesAPI.pendingCreate?.resume(returning: "late-known-session")
+        HermesAPI.pendingCreate = nil
+        let requestAccepted = await request.value
+        precondition(!requestAccepted, "stale home create cannot own navigation")
+        precondition(app.currentSessionID == "existing",
+                     "explicit openSession outranks late create response")
+        precondition(CreatedSessionRecoveryStore.known(
+            instanceID: app.historyInstanceID, accountScope: app.historyAccountScope)
+            .contains("late-known-session"), "known late SID retained for recovery")
+        precondition(app.sessions.contains { $0.sessionId == "late-known-session" },
+                     "known orphan remains visible without switching current page")
+
+        // User navigates back to the empty home while creation is pending.
+        let closeRequest = Task { await app.createSessionForHomeTurn("second turn", model: nil) }
+        await spin { HermesAPI.pendingCreate != nil }
+        app.closeSession()
+        HermesAPI.pendingCreate?.resume(returning: "late-after-close")
+        HermesAPI.pendingCreate = nil
+        let closeAccepted = await closeRequest.value
+        precondition(!closeAccepted && app.currentSessionID == nil,
+                     "closeSession invalidates pending create navigation")
+
+        // Switching account scope/instance must not insert an old host's SID
+        // into the newly active host's view.
+        let scopeAID = app.historyInstanceID, scopeAAccount = app.historyAccountScope
+        let switchRequest = Task { await app.createSessionForHomeTurn("third turn", model: nil) }
+        await spin { HermesAPI.pendingCreate != nil }
+        app.switchTo(1)
+        HermesAPI.pendingCreate?.resume(returning: "old-host-only")
+        HermesAPI.pendingCreate = nil
+        let switchAccepted = await switchRequest.value
+        precondition(!switchAccepted,
+                     "scope change invalidates stale response")
+        precondition(app.currentSessionID != "old-host-only"
+                     && !app.sessions.contains(where: { $0.sessionId == "old-host-only" }),
+                     "old instance SID never appears in current instance")
+        precondition(CreatedSessionRecoveryStore.known(
+            instanceID: scopeAID, accountScope: scopeAAccount).contains("old-host-only"),
+            "old instance SID remains recorded only under its originating scope")
+        print("HOME_NAVIGATION_PASS open, close and cross-instance late-response ownership")
+    }
+
+    @MainActor static func webUIHomeModelTests() async throws {
+        let host = HermesInstance(name: "WebUI model test", baseURL: "https://model-home.example")
+        try InstanceStore.save([host], credentials: credentials)
+        InstanceStore.activeID = host.id
+        let app = AppState(credentials: credentials)
+        await app.loadModels()
+        guard let option = app.modelCatalog?.options.first else {
+            preconditionFailure("fixture model catalog unavailable")
+        }
+        HermesAPI.lastModelSet = nil
+        HermesAPI.confirmedModelHistory = true
+        let ok = await app.createSessionForHomeTurn("model first", model: option)
+        precondition(ok, "WebUI selected model should create verified session")
+        precondition(HermesAPI.lastModelSet?.1 == option.providerID
+            && HermesAPI.lastModelSet?.2 == option.model,
+            "model and provider must reach WebUI session-update request")
+        precondition(app.consumeHomeTurn(for: app.currentSessionID!) == "model first",
+                     "only verified model transition arms automatic first POST")
+        app.closeSession()
+        HermesAPI.confirmedModelHistory = false
+        HermesAPI.lastModelSet = nil
+        print("WEBUI_MODEL_HOME_PASS selected model/provider verified before handoff")
     }
 
     @MainActor static func instanceEditingTests() async throws {
@@ -1010,6 +1102,8 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
                      "closing Session cancels any staged attachment chooser")
         print("HOME_DELIVERY_PASS one-shot, draft, drawer and attachment staging")
 
+        try await homeCreateNavigationTests()
+        try await webUIHomeModelTests()
         try await refreshTests()
         try await instanceDeletionCacheTests()
         try await sessionRefreshPolicyTests()
