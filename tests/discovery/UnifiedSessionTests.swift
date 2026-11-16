@@ -243,5 +243,29 @@ import Foundation
     center.cancel()
     expect(center.refreshIfNeeded(sources: [changed], query: "private", now: Date()) == nil,
            "same scoped query reopened within TTL needs no extra network")
+    // Returning to a previously resolved query must reuse its full-body
+    // result rather than falling back to a title-only projection.
+    let latest = Date()
+    let backToList = center.refreshIfNeeded(sources: [changed], query: "", now: latest)
+    expect(backToList == nil, "recent list query stays fresh across search switching")
+    expect(center.records.map(\.session.sessionId) == ["event-update"],
+           "previous list rows are restored after leaving search")
+    let priorSearch = center.refreshIfNeeded(sources: [changed], query: "private", now: latest)
+    expect(priorSearch == nil && center.records.map(\.session.sessionId) == ["private"],
+           "returning to a fresh search reuses its scoped matching results")
+    expect(fixture.calls[b.instanceID] == 2,
+           "cached search does not perform a third network GET")
+    // The active host may confirm unchanged rows: the timestamp must still
+    // advance without replacing published rows or touching the network.
+    center.refreshIfNeeded(sources: [changed], query: "", now: latest)
+    let before = center.records.map(\.id)
+    center.adoptActiveList(identity: b, instanceName: "other account",
+                           rows: [try row("event-update")],
+                           refreshedAt: latest.addingTimeInterval(100))
+    expect(center.records.map(\.id) == before,
+           "unchanged active-host refresh must not rebuild visible record IDs")
+    expect(center.refreshIfNeeded(sources: [changed], query: "",
+                                  now: latest.addingTimeInterval(340)) == nil,
+           "unchanged successful active-host GET advances the five-minute freshness clock")
     print("UNIFIED_CACHE_PASS fresh skip, silent expiry, account isolation, search freshness")
 }

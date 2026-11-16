@@ -73,7 +73,9 @@ final class UnifiedSessionModel: ObservableObject {
 
     private var cachedKey: RequestKey?
     private var lastSuccess: [CacheKey: Date] = [:]
+    private var cachedResults: [CacheKey: [UnifiedSessionRecord]] = [:]
     private let cacheLifetime: TimeInterval = 300
+    private let maxCachedQueries = 8
     @Published private(set) var hasResolvedSnapshot = false
 
     private var generation = UUID()
@@ -107,16 +109,21 @@ final class UnifiedSessionModel: ObservableObject {
             cancel()
             sections = [:]
             cachedKey = key
-            lastSuccess = lastSuccess.filter { $0.key.query == term }
+            let live = Set(key.identities)
+            lastSuccess = lastSuccess.filter { live.contains($0.key.identity) }
+            cachedResults = cachedResults.filter { live.contains($0.key.identity) }
             for source in sources {
-                if let rows = lastLists[source.identity] ?? source.cached {
+                let cacheKey = CacheKey(identity: source.identity, query: term)
+                if let cached = cachedResults[cacheKey] {
+                    sections[source.identity] = cached
+                } else if let rows = lastLists[source.identity] ?? source.cached {
                     sections[source.identity] = Self.localRows(source,
                                                                messages: rows, query: term)
-                    // A list timestamp is only trustworthy alongside the
-                    // actual cached rows, including a verified empty list.
-                    if term.isEmpty, let date = source.cachedAt {
-                        let itemKey = CacheKey(identity: source.identity, query: term)
-                        if lastSuccess[itemKey] == nil { lastSuccess[itemKey] = date }
+                    // The list timestamp only certifies the unfiltered list,
+                    // never the results of an earlier full-body search.
+                    if term.isEmpty, let date = source.cachedAt,
+                       lastSuccess[cacheKey] == nil {
+                        lastSuccess[cacheKey] = date
                     }
                 }
             }
@@ -155,6 +162,7 @@ final class UnifiedSessionModel: ObservableObject {
         let targets = sources.filter { only?.contains($0.identity) ?? true }
         lastLists = lastLists.filter { live.contains($0.key) }
         lastSuccess = lastSuccess.filter { live.contains($0.key.identity) }
+        cachedResults = cachedResults.filter { live.contains($0.key.identity) }
         if only == nil { failures = [:] }
         else { for target in targets { failures.removeValue(forKey: target.identity) } }
         if !sameQueryAndScope {
@@ -210,6 +218,14 @@ final class UnifiedSessionModel: ObservableObject {
               cachedKey?.identities.contains(identity) == true,
               !loading.contains(identity) else { return }
         let previous = lastLists[identity]
+        if let refreshedAt {
+            let key = CacheKey(identity: identity, query: "")
+            if lastSuccess[key].map({ $0 < refreshedAt }) ?? true {
+                lastSuccess[key] = refreshedAt
+            }
+        }
+        // A successful unchanged GET still advances freshness; don't
+        // unnecessarily publish/re-sort the list when rows are identical.
         guard previous != rows else { return }
         lastLists[identity] = rows
         let local = rows.filter { $0.archived != true }.map { summary in
@@ -218,9 +234,7 @@ final class UnifiedSessionModel: ObservableObject {
                                  matchedFullBody: false)
         }
         sections[identity] = local
-        if let refreshedAt {
-            lastSuccess[CacheKey(identity: identity, query: "")] = refreshedAt
-        }
+        cachedResults[CacheKey(identity: identity, query: "")] = local
         hasResolvedSnapshot = true
         publish()
     }
@@ -300,13 +314,27 @@ final class UnifiedSessionModel: ObservableObject {
         if let rows = outcome.records {
             sections[outcome.identity] = rows
             if let list = outcome.list { lastLists[outcome.identity] = list }
-            lastSuccess[CacheKey(identity: outcome.identity, query: query)] = Date()
+            let cacheKey = CacheKey(identity: outcome.identity, query: query)
+            lastSuccess[cacheKey] = Date()
+            cachedResults[cacheKey] = rows
+            trimCachedQueries()
             hasResolvedSnapshot = true
             failures.removeValue(forKey: outcome.identity)
         } else {
             failures[outcome.identity] = outcome.error ?? "连接失败"
         }
         publish()
+    }
+
+    /// Bound search cache growth even when users explore many keywords.
+    /// Retain the newest query groups, always keyed by full scoped identity.
+    private func trimCachedQueries() {
+        let newest = Dictionary(grouping: lastSuccess, by: { $0.key.query })
+            .mapValues { values in values.map(\.value).max() ?? .distantPast }
+        let keep = Set(newest.sorted { $0.value > $1.value }
+            .prefix(maxCachedQueries).map(\.key))
+        lastSuccess = lastSuccess.filter { keep.contains($0.key.query) }
+        cachedResults = cachedResults.filter { keep.contains($0.key.query) }
     }
 
     private static func localRows(_ source: UnifiedSessionSource, messages: [SessionSummary],

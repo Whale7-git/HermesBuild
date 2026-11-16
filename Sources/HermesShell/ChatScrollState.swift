@@ -161,6 +161,18 @@ enum ChatPageBackInteraction {
 
 /// The root keeps an ordered browser stack and the actual parent surface.
 /// Switching Hermes backends never changes these navigation identities.
+/// Actual presented surface, not merely whether a browser route is retained.
+/// When a session is pushed from the browser, the browser stays mounted behind
+/// the chat, but must not suppress foreground conversation notifications.
+enum UnifiedBrowserPresentation {
+    static func conversationVisible(active: Bool, sidebarOpen: Bool,
+                                    browserOpen: Bool, browserSessionOpen: Bool,
+                                    modalOpen: Bool, hasSession: Bool) -> Bool {
+        active && !sidebarOpen && (!browserOpen || browserSessionOpen)
+            && !modalOpen && hasSession
+    }
+}
+
 enum UnifiedBrowserPage: Equatable { case single, all }
 enum UnifiedBrowserSource: Equatable { case chat, drawer }
 
