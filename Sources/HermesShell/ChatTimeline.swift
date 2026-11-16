@@ -206,27 +206,42 @@ enum ChatProcessPlan {
         }
         flushGroup()
 
+        // Index each anchored tool once. Previously every eligible turn scanned
+        // the full tool array and searched all process groups and visible rows,
+        // making structural rebuilds quadratic in long multi-turn sessions.
         var resolvedAnchorByToolID: [String: String] = [:]
-        for (anchor, group) in toolsByAnchor ?? [:] {
+        for (anchor, group) in toolsByAnchor ?? resolvedTools {
             for tool in group where resolvedAnchorByToolID[tool.id] == nil {
                 resolvedAnchorByToolID[tool.id] = anchor
             }
         }
         let eligibleTurnIDs = completedTurns.union(
             running ? Set([turnIDs[visible.last?.id ?? ""]].compactMap { $0 }) : [])
-        for turnID in eligibleTurnIDs {
-            let turnTools = tools.filter {
-                resolvedAnchorByToolID[$0.id].flatMap { turnIDs[$0] } == turnID
+        var toolsByTurn: [String: [ChatTool]] = [:]
+        for tool in tools {
+            guard let anchor = resolvedAnchorByToolID[tool.id],
+                  let turnID = turnIDs[anchor], eligibleTurnIDs.contains(turnID) else { continue }
+            toolsByTurn[turnID, default: []].append(tool)
+        }
+        // The first visible assistant and first process group in transcript
+        // order are stable across reloads; Dictionary iteration order is not.
+        var firstAssistantByTurn: [String: String] = [:]
+        var firstGroupByTurn: [String: String] = [:]
+        for message in visible {
+            guard let turnID = turnIDs[message.id], eligibleTurnIDs.contains(turnID) else { continue }
+            if message.role == "assistant", firstAssistantByTurn[turnID] == nil {
+                firstAssistantByTurn[turnID] = message.id
             }
-            if let existing = groupsByAnchor.first(where: { anchor, _ in
-                turnIDs[anchor] == turnID
-            })?.value {
-                groupsByAnchor[existing.messages.first?.id ?? ""] = ChatProcessGroup(
-                    messages: existing.messages, tools: turnTools)
-            } else if !turnTools.isEmpty,
-                      let anchor = visible.first(where: {
-                          $0.role == "assistant" && turnIDs[$0.id] == turnID
-                      })?.id {
+            if groupsByAnchor[message.id] != nil, firstGroupByTurn[turnID] == nil {
+                firstGroupByTurn[turnID] = message.id
+            }
+        }
+        for turnID in eligibleTurnIDs {
+            let turnTools = toolsByTurn[turnID] ?? []
+            if let anchor = firstGroupByTurn[turnID], let existing = groupsByAnchor[anchor] {
+                groupsByAnchor[anchor] = ChatProcessGroup(messages: existing.messages,
+                                                         tools: turnTools)
+            } else if !turnTools.isEmpty, let anchor = firstAssistantByTurn[turnID] {
                 groupsByAnchor[anchor] = ChatProcessGroup(messages: [], tools: turnTools)
             }
         }

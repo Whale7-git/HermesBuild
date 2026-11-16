@@ -660,4 +660,45 @@ check(ChatTimelineItemsEquality.equal(comparisonRows, stamp: firstIdentity,
                                      comparisonRows, stamp: unrelatedIdentity),
       "different owners with unchanged content remain equal by value")
 
+// build184: 150 completed turns / 180 anchored tools exercise the one-pass
+// per-turn process index. Assert identities and grouping, not a brittle clock
+// threshold; the printed duration is diagnostic only.
+var stressMessages: [ChatMessage] = []
+stressMessages.reserveCapacity(450)
+for index in 0..<150 {
+    let timestamp = Double(index * 60)
+    stressMessages.append(ChatMessage(id: "long-u-\(index)", role: "user",
+                                      content: "问题 \(index)", timestamp: timestamp))
+    stressMessages.append(ChatMessage(id: "long-a-\(index)-step", role: "assistant",
+                                      content: "执行中", timestamp: timestamp + 1))
+    stressMessages.append(ChatMessage(id: "long-a-\(index)-final", role: "assistant",
+                                      content: "完成", timestamp: timestamp + 2))
+}
+let stressTools: [ChatTool] = (0..<180).map { index in
+    ChatTool(id: "long-tool-\(index)", name: "read_file", args: "",
+             result: "ok", done: true, isError: false,
+             afterMessageID: "long-a-\(index % 150)-step")
+}
+let completedStressTurns = Set((0..<150).map { "long-u-\($0)" })
+let stressStart = ProcessInfo.processInfo.systemUptime
+let stressRows = ChatTimeline.build(messages: stressMessages, tools: stressTools,
+                                    completeTurnIDs: completedStressTurns)
+let stressElapsed = (ProcessInfo.processInfo.systemUptime - stressStart) * 1000
+let processGroups = stressRows.compactMap { row -> ChatProcessGroup? in
+    if case .process(let group) = row.kind { return group }
+    return nil
+}
+check(processGroups.count == 150, "each completed multi-segment turn owns one process disclosure")
+check(processGroups.reduce(0) { $0 + $1.tools.count } == 180,
+      "all 180 tools are preserved once across the 150 completed turns")
+check(processGroups.allSatisfy { $0.messages.count == 1 },
+      "the final assistant segment stays selectable outside process disclosure")
+check(stressRows.filter { if case .message = $0.kind { return true }; return false }.count == 300,
+      "long history keeps all user/final message rows and their stable identity")
+let repeatedStressRows = ChatTimeline.build(messages: stressMessages, tools: stressTools,
+                                           completeTurnIDs: completedStressTurns)
+check(repeatedStressRows == stressRows, "structural projection stays deterministic")
+print(String(format: "LONG_CHAT_PROJECTION_BASELINE rows=%d messages=%d tools=%d elapsed_ms=%.2f",
+             stressRows.count, stressMessages.count, stressTools.count, stressElapsed))
+
 print("TIMELINE_PASS \(checks) assertions (data invariants only, not UIKit scrolling)")
