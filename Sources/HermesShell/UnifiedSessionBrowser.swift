@@ -144,7 +144,8 @@ struct UnifiedSessionBrowser: View {
                         .padding(.horizontal, AppTheme.pagePadding)
                         .padding(.vertical, 8)
                 }
-                if !center.loading.isEmpty && center.records.isEmpty {
+                if !center.loading.isEmpty && !center.hasResolvedSnapshot &&
+                   center.records.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("首次读取会话…")

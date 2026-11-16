@@ -74,6 +74,7 @@ final class UnifiedSessionModel: ObservableObject {
     private var cachedKey: RequestKey?
     private var lastSuccess: [CacheKey: Date] = [:]
     private let cacheLifetime: TimeInterval = 300
+    @Published private(set) var hasResolvedSnapshot = false
 
     private var generation = UUID()
     private var requestKey: RequestKey?
@@ -101,21 +102,28 @@ final class UnifiedSessionModel: ObservableObject {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = RequestKey(identities: sources.map(\.identity), query: term)
         if cachedKey != key {
+            // Cancel the previous query even when this new one is fully cached.
+            // Otherwise a stale completion can still publish in the new view.
+            cancel()
             sections = [:]
             cachedKey = key
+            lastSuccess = lastSuccess.filter { $0.key.query == term }
             for source in sources {
                 if let rows = lastLists[source.identity] ?? source.cached {
                     sections[source.identity] = Self.localRows(source,
                                                                messages: rows, query: term)
-                }
-                // A list cache is usable as a real automatic-refresh hit only
-                // for the unfiltered list, never for a full-body server search.
-                if term.isEmpty, let date = source.cachedAt,
-                   lastSuccess[CacheKey(identity: source.identity, query: term)] == nil {
-                    lastSuccess[CacheKey(identity: source.identity, query: term)] = date
+                    // A list timestamp is only trustworthy alongside the
+                    // actual cached rows, including a verified empty list.
+                    if term.isEmpty, let date = source.cachedAt {
+                        let itemKey = CacheKey(identity: source.identity, query: term)
+                        if lastSuccess[itemKey] == nil { lastSuccess[itemKey] = date }
+                    }
                 }
             }
             publish()
+        }
+        hasResolvedSnapshot = sources.contains { source in
+            lastSuccess[CacheKey(identity: source.identity, query: term)] != nil
         }
         let stale = Set(sources.filter { source in
             guard let at = lastSuccess[CacheKey(identity: source.identity, query: term)],
@@ -270,6 +278,7 @@ final class UnifiedSessionModel: ObservableObject {
             sections[outcome.identity] = rows
             if let list = outcome.list { lastLists[outcome.identity] = list }
             lastSuccess[CacheKey(identity: outcome.identity, query: query)] = Date()
+            hasResolvedSnapshot = true
             failures.removeValue(forKey: outcome.identity)
         } else {
             failures[outcome.identity] = outcome.error ?? "连接失败"

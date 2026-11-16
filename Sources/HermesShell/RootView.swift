@@ -322,6 +322,8 @@ struct RootView: View {
             if app.needsLogin {
                 closeSidebar()
                 browserOpen = false
+                browserSessionOpen = false
+                browserRoute = []
             } else {
                 openPendingNotificationTarget()
             }
@@ -362,8 +364,12 @@ struct RootView: View {
     /// drawer stays mounted and remains the destination of a direct entry.
     private func backFromBrowser() {
         guard !browserRoute.isEmpty else { return }
-        browserRoute.removeLast()
-        if browserRoute.isEmpty {
+        switch UnifiedBrowserBackNavigation.destination(
+            route: browserRoute, source: browserSource) {
+        case .singleInstance:
+            browserRoute.removeLast()
+        case .chat, .drawer:
+            browserRoute = []
             browserOpen = false
             browserSessionOpen = false
             if browserSource == .drawer { sidebarOpen = true }
