@@ -38,11 +38,9 @@ for source in fixtures {
 // Incremental planning must equal the full authoritative boundary scan at
 // every appended prefix, including opaque containers and UTF-8 boundaries.
 let incrementalFixtures = fixtures + [
-    "first\\n\\nsecond\\n\\nthird\\n\\nlast".replacingOccurrences(of: "\\\\n", with: "\\n"),
-    "start\\n\\n\u{1F600}\\n\\n\\\`\\\`\\\`swift\\ncode\\n\\\`\\\`\\\`\\nend"
-        .replacingOccurrences(of: "\\\\n", with: "\\n"),
-    "prefix\\n\\n[link][ref]\\n\\n[ref]: /url"
-        .replacingOccurrences(of: "\\\\n", with: "\\n")
+    "first\n\nsecond\n\nthird\n\nlast",
+    "start\n\n🙂\n\n```swift\ncode\n```\nend",
+    "prefix\n\n[link][ref]\n\n[ref]: /url"
 ]
 for source in incrementalFixtures {
     var last = ""
@@ -56,7 +54,7 @@ for source in incrementalFixtures {
         planned = next
     }
 }
-let longStable = (0..<1000).map { "item \($0)\\n\\n" }.joined()
+let longStable = (0..<1000).map { "item \($0)\n\n" }.joined()
 let longPlan = MarkdownBlockPlan.make(longStable)
 let grownPlan = MarkdownBlockPlan.makeAppending(longStable + "active", after: longStable, plan: longPlan)
 expect(grownPlan.complete.count == longPlan.complete.count &&
