@@ -190,6 +190,7 @@ final class ChatHistoryStore: Sendable {
         let token: UUID
         let namespace: String
         let generation: UInt
+        let sessionGeneration: UInt
         let root: URL
         let scope: Scope
         let record: ChatHistoryRecord
@@ -200,22 +201,20 @@ final class ChatHistoryStore: Sendable {
     private static let queue = DispatchQueue(label: "HermesNative.history-cache", qos: .utility)
     private static let generationLock = NSLock()
     private static var publishedGeneration: UInt = 0
-    // The queue owns every field below. Retirement protects logout/clear from
-    // late callbacks belonging to a model that is still being dismissed.
-    //
-    // F-52：这两个集合原本只增不减，等于进程内永久黑名单：被删会话的 ID 若被
-    // 服务端复用（同一实例重新创建、恢复备份、网关重建 state.db），该会话的历史
-    // 缓存会永久失效。现在 `clearAll()` 会清空它们（那是唯一没有在途写入、
-    // 且用户明确要求「清掉一切」的时机）。没有改成 generation 方案是因为
-    // 这里必须保持「删除后立刻拒绝同 ID 的迟到写入」这一保护。
+    // Protected by generationLock, not the I/O queue: a new page captures
+    // its scope generation immediately without blocking on disk writes.
+    // Deletion advances this generation; only subsequently created stores
+    // can write the same session ID. This replaces the permanent blacklist.
+    private static var sessionGenerations: [String: UInt] = [:]
+    // Queue-owned namespace retirement keeps old signed-out accounts inert.
     private static var retired = Set<String>()
-    private static var retiredSessions = Set<String>()
     private static var generation: UInt = 0
     private static var pending: [String: PendingWrite] = [:]
     private let scope: Scope
     private let root: URL
     private let policy: Policy
     private let generation: UInt
+    private let sessionGeneration: UInt
 
     init(instanceID: String, sessionID: String, accountScope: String,
          rootDirectory: URL? = nil, policy: Policy = Policy(),
@@ -228,6 +227,7 @@ final class ChatHistoryStore: Sendable {
         // the utility queue to finish another session's JSON write.
         Self.generationLock.lock()
         generation = Self.publishedGeneration
+        sessionGeneration = Self.sessionGenerations[scope.filename] ?? 0
         Self.generationLock.unlock()
     }
 
@@ -254,6 +254,7 @@ final class ChatHistoryStore: Sendable {
                 self.publish(report)
             }
             Self.pending[key] = PendingWrite(token: token, namespace: self.scope.namespace, generation: self.generation,
+                                             sessionGeneration: self.sessionGeneration,
                                              root: self.root, scope: self.scope, record: record,
                                              policy: self.policy, task: task)
             Self.queue.asyncAfter(deadline: .now() + max(0, self.policy.debounce), execute: task)
@@ -346,11 +347,11 @@ final class ChatHistoryStore: Sendable {
                 generation &+= 1
                 generationLock.lock()
                 publishedGeneration = generation
+                sessionGenerations.removeAll()
                 generationLock.unlock()
                 for value in pending.values { value.task.cancel() }
                 pending.removeAll()
                 retired.removeAll()
-                retiredSessions.removeAll()
                 let directory = rootDirectory ?? defaultDirectory
                 let manager = FileManager.default
                 var isDirectory: ObjCBool = false
@@ -389,7 +390,15 @@ final class ChatHistoryStore: Sendable {
     func remove() async -> CleanupReport {
         await withCheckedContinuation { continuation in
             Self.queue.async {
-                Self.retiredSessions.insert(self.scope.filename)
+                // A stale controller must never delete the cache of a new
+                // controller that reused the session ID after removal.
+                guard self.valid else {
+                    continuation.resume(returning: .empty)
+                    return
+                }
+                Self.generationLock.lock()
+                Self.sessionGenerations[self.scope.filename] = self.sessionGeneration &+ 1
+                Self.generationLock.unlock()
                 let url = self.root.appendingPathComponent(self.scope.filename)
                 Self.pending.removeValue(forKey: url.path)?.task.cancel()
                 guard FileManager.default.fileExists(atPath: url.path) else {
@@ -420,8 +429,12 @@ final class ChatHistoryStore: Sendable {
     }
 
     private var valid: Bool {
-        generation == Self.generation && !Self.retired.contains(scope.namespace)
-            && !Self.retiredSessions.contains(scope.filename)
+        guard generation == Self.generation && !Self.retired.contains(scope.namespace) else {
+            return false
+        }
+        Self.generationLock.lock()
+        defer { Self.generationLock.unlock() }
+        return sessionGeneration == (Self.sessionGenerations[scope.filename] ?? 0)
     }
 
     private static var defaultDirectory: URL {
@@ -447,8 +460,11 @@ final class ChatHistoryStore: Sendable {
         if let token, pending[key]?.token != token { return .ok }
         guard let item = pending.removeValue(forKey: key) else { return .ok }
         item.task.cancel()
+        generationLock.lock()
+        let sessionIsCurrent = item.sessionGeneration == (sessionGenerations[item.scope.filename] ?? 0)
+        generationLock.unlock()
         guard item.generation == generation, !retired.contains(item.namespace),
-              !retiredSessions.contains(item.scope.filename) else {
+              sessionIsCurrent else {
             return .ok
         }
         guard item.record.sessionID == item.scope.sessionID else {
