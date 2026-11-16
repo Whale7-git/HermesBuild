@@ -86,6 +86,17 @@ final class GatewayRunStore {
 
     func runID(for sessionID: String) -> String? { current()[sessionID] }
 
+    /// Snapshot the run dictionary once for a whole session list. Calling
+    /// runID(for:) once per row repeatedly materializes UserDefaults values.
+    func runIDs(for sessionIDs: [String]) -> [String: String] {
+        let snapshot = current()
+        var found: [String: String] = [:]
+        for sessionID in sessionIDs {
+            if let runID = snapshot[sessionID] { found[sessionID] = runID }
+        }
+        return found
+    }
+
     func remember(runID: String, sessionID: String) {
         guard isValid else { noteRetired(); return }
         values = current()
