@@ -4,6 +4,7 @@ import SwiftUI
 /// read-only discovery runs; changing the active instance happens only on tap.
 struct UnifiedSessionBrowser: View {
     @EnvironmentObject var app: AppState
+    @Environment(\.scenePhase) private var scenePhase
     let onClose: () -> Void
     let backToSingleInstance: Bool
     let backToDrawer: Bool
@@ -17,6 +18,10 @@ struct UnifiedSessionBrowser: View {
     @State private var taskSearch = ""
     @State private var navigationError: String?
     @State private var userRefreshing = false
+    /// Read other hosts' persisted facts only on entering a task scope, not
+    /// for every SwiftUI render or every finger movement of its parent card.
+    @State private var otherTaskSnapshots: [UnifiedSessionIdentity: SessionTaskStore.LoadResult] = [:]
+    @State private var taskEvidenceNow = Date()
 
     /// Explicit initializer: @EnvironmentObject is injected by the parent,
     /// while the root-owned model and bindings are supplied by RootView.
@@ -95,6 +100,47 @@ struct UnifiedSessionBrowser: View {
     /// search filters the complete scoped session-list snapshot instead.
     private var requestQuery: String { section == 1 ? "" : query }
 
+    /// Refreshes only when the task tab or host/account identity changes.
+    /// Active-host observations remain live via AppState's @Published field.
+    private func refreshTaskSnapshots() {
+        guard section == 1 else { return }
+        var next: [UnifiedSessionIdentity: SessionTaskStore.LoadResult] = [:]
+        for instance in app.instances {
+            guard instance.id != app.active.id || instance.baseURL != app.active.baseURL else { continue }
+            let endpoint = ChatHistoryIdentity.instanceID(
+                id: instance.id, baseURL: instance.baseURL)
+            let identity = UnifiedSessionIdentity(
+                instanceID: instance.id, endpointIdentity: endpoint,
+                accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
+            next[identity] = app.unifiedTaskObservations(for: instance)
+        }
+        otherTaskSnapshots = next
+        taskEvidenceNow = Date()
+    }
+
+    /// Schedule only the next evidence expiry. No periodic network polling,
+    /// and no per-second redraw while the user is reading the task list.
+    private var nextEvidenceDeadline: Date? {
+        guard section == 1 else { return nil }
+        return app.instances.compactMap { instance -> Date? in
+            let endpoint = ChatHistoryIdentity.instanceID(
+                id: instance.id, baseURL: instance.baseURL)
+            let identity = UnifiedSessionIdentity(
+                instanceID: instance.id, endpointIdentity: endpoint,
+                accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
+            return center.lastSuccessfulListRefresh(for: identity)?
+                .addingTimeInterval(UnifiedTaskWorkspace.freshnessWindow + 0.02)
+        }
+        .filter { $0 > taskEvidenceNow }
+        .min()
+    }
+
+    private var evidenceExpiryKey: String {
+        [scopeStamp, String(section),
+         nextEvidenceDeadline.map { String($0.timeIntervalSince1970) } ?? "no-expiry"]
+            .joined(separator: "|")
+    }
+
     private var scopedTaskStates: [UnifiedSessionIdentity: UnifiedTaskSourceState] {
         var result: [UnifiedSessionIdentity: UnifiedTaskSourceState] = [:]
         for instance in app.instances {
@@ -104,7 +150,11 @@ struct UnifiedSessionBrowser: View {
                 instanceID: instance.id, endpointIdentity: endpoint,
                 accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
             let observations: [String: SessionTaskObservation]
-            switch app.unifiedTaskObservations(for: instance) {
+            let snapshot: SessionTaskStore.LoadResult =
+                instance.id == app.active.id && instance.baseURL == app.active.baseURL
+                ? app.unifiedTaskObservations(for: instance)
+                : (otherTaskSnapshots[identity] ?? .missing)
+            switch snapshot {
             case .loaded(let rows): observations = rows
             case .missing, .corrupt: observations = [:]
             }
@@ -118,7 +168,8 @@ struct UnifiedSessionBrowser: View {
 
     private var taskEntries: [UnifiedTaskEntry] {
         UnifiedTaskWorkspace.entries(
-            records: center.records, states: scopedTaskStates).filter { entry in
+            records: center.records, states: scopedTaskStates,
+            now: taskEvidenceNow).filter { entry in
                 let needle = taskSearch.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !needle.isEmpty else { return true }
                 return entry.record.session.displayTitle.localizedStandardContains(needle)
@@ -129,9 +180,16 @@ struct UnifiedSessionBrowser: View {
 
     private var damagedTaskInstances: [String] {
         app.instances.compactMap { instance in
-            if case .corrupt = app.unifiedTaskObservations(for: instance) {
-                return instance.name
-            }
+            let endpoint = ChatHistoryIdentity.instanceID(
+                id: instance.id, baseURL: instance.baseURL)
+            let identity = UnifiedSessionIdentity(
+                instanceID: instance.id, endpointIdentity: endpoint,
+                accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
+            let snapshot: SessionTaskStore.LoadResult =
+                instance.id == app.active.id && instance.baseURL == app.active.baseURL
+                ? app.unifiedTaskObservations(for: instance)
+                : (otherTaskSnapshots[identity] ?? .missing)
+            if case .corrupt = snapshot { return instance.name }
             return nil
         }
     }
@@ -234,7 +292,7 @@ struct UnifiedSessionBrowser: View {
                         guard !userRefreshing else { return }
                         userRefreshing = true
                         Task {
-                            let run = center.start(sources: sources(), query: query)
+                            let run = center.start(sources: sources(), query: requestQuery)
                             await run.value
                             userRefreshing = false
                         }
@@ -469,6 +527,30 @@ struct UnifiedSessionBrowser: View {
                                                    maxAge: section == 1
                                                        ? UnifiedTaskWorkspace.freshnessWindow : nil) {
                 await run.value
+            }
+        }
+        // Snapshot decoding is scoped and amortized, not repeated by each
+        // task row's body evaluation or by the card's drag progress.
+        .task(id: scopeStamp + "|task|" + String(section)
+                  + "|host|" + String(app.activeChangeToken)) {
+            refreshTaskSnapshots()
+        }
+        .task(id: evidenceExpiryKey) {
+            guard section == 1, let deadline = nextEvidenceDeadline else { return }
+            do {
+                try await Task.sleep(nanoseconds: UInt64(
+                    max(0, deadline.timeIntervalSinceNow) * 1_000_000_000))
+            } catch { return }
+            guard !Task.isCancelled else { return }
+            taskEvidenceNow = Date()
+        }
+        .onChange(of: center.loading) { _, loading in
+            if section == 1 && loading.isEmpty { taskEvidenceNow = Date() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active && section == 1 {
+                taskEvidenceNow = Date()
+                refreshTaskSnapshots()
             }
         }
         .onDisappear { center.cancel() }
