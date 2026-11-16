@@ -16,6 +16,9 @@ struct RootView: View {
     @State private var browserOpen = false
     @State private var browserSearchRequested = false
     @State private var browserAllInstances = false
+    /// True only when navigating Single Instance -> All Instances in the
+    /// full-page browser. A direct drawer/home entry returns straight to chat.
+    @State private var browserFromSingle = false
     @GestureState private var browserBackDrag: CGFloat = 0
     @State private var homeText = ""
     @State private var homeFocused = false
@@ -116,12 +119,14 @@ struct RootView: View {
                         closeSidebar()
                         browserSearchRequested = false
                         browserAllInstances = false
+                        browserFromSingle = false
                         browserOpen = true
                     },
                     onBrowseAllInstances: {
                         closeSidebar()
                         browserSearchRequested = false
                         browserAllInstances = true
+                        browserFromSingle = false
                         browserOpen = true
                     }
                 )
@@ -155,6 +160,19 @@ struct RootView: View {
                 // Distinct from the root drawer: this is a pushed, full-page
                 // native-Session browser. The underlying chat remains mounted,
                 // and a rightward edge pan returns to that actual chat page.
+                // When All Instances was pushed from Single Instance,
+                // expose the ACTUAL previous browser while swiping back,
+                // not the chat underneath both pages.
+                if browserOpen && browserAllInstances && browserFromSingle {
+                    ChatCardContainer(
+                        size: geometry.size, topInset: topInset, bottomInset: bottomInset,
+                        progress: 0, translation: 0, reduceMotion: reduceMotion,
+                        showsDismissSurface: false, onDismiss: {}
+                    ) {
+                        singleInstanceBrowser
+                    }
+                }
+
                 if browserOpen {
                     let backProgress = min(1, max(0,
                         browserBackDrag / max(1, geometry.size.width)))
@@ -167,8 +185,12 @@ struct RootView: View {
                     ) {
                         if browserAllInstances {
                             UnifiedSessionBrowser(
-                                onClose: { browserOpen = false },
-                                onSingleInstance: { browserAllInstances = false },
+                                onClose: backFromBrowser,
+                                backToSingleInstance: browserFromSingle,
+                                onSingleInstance: {
+                                    browserFromSingle = false
+                                    browserAllInstances = false
+                                },
                                 onSelect: { record in
                                     let opened = app.openSessionFromInstance(
                                         instanceID: record.identity.instanceID,
@@ -181,26 +203,7 @@ struct RootView: View {
                             )
                             .environmentObject(app)
                         } else {
-                            SessionListPane(
-                                mode: .page,
-                                selectedID: app.currentSessionID,
-                                onSelect: { session in
-                                    browserOpen = false
-                                    app.openSession(session)
-                                },
-                                onNew: {
-                                    browserOpen = false
-                                    startConversation()
-                                },
-                                onSettings: {
-                                    browserOpen = false
-                                    app.showSettings = true
-                                },
-                                onClose: { browserOpen = false },
-                                onBrowseAllInstances: { browserAllInstances = true },
-                                startSearching: browserSearchRequested
-                            )
-                            .environmentObject(app)
+                            singleInstanceBrowser
                         }
                     }
                     .transition(.move(edge: .trailing))
@@ -221,7 +224,7 @@ struct RootView: View {
                                 if ChatPageBackInteraction.shouldDismiss(
                                     width: Double(geometry.size.width),
                                     predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                                    browserOpen = false
+                                    backFromBrowser()
                                 }
                             }
                     )
@@ -309,6 +312,49 @@ struct RootView: View {
 
     /// The home screen is a draft workspace, never a server Session until
     /// the user explicitly sends or requests an attachment-capable chat.
+
+    /// Both toolbar and edge-swipe use the same back-stack decision.
+    /// Otherwise a gesture can bypass Single Instance and dismiss to chat.
+    private func backFromBrowser() {
+        if UnifiedBrowserBackNavigation.destination(allInstances: browserAllInstances,
+                                                     enteredFromSingle: browserFromSingle) == .singleInstance {
+            browserAllInstances = false
+            browserFromSingle = false
+        } else {
+            browserOpen = false
+            browserFromSingle = false
+        }
+    }
+
+    private var singleInstanceBrowser: some View {
+        SessionListPane(
+            mode: .page,
+            selectedID: app.currentSessionID,
+            onSelect: { session in
+                browserOpen = false
+                browserFromSingle = false
+                app.openSession(session)
+            },
+            onNew: {
+                browserOpen = false
+                browserFromSingle = false
+                startConversation()
+            },
+            onSettings: {
+                browserOpen = false
+                browserFromSingle = false
+                app.showSettings = true
+            },
+            onClose: backFromBrowser,
+            onBrowseAllInstances: {
+                browserFromSingle = true
+                browserAllInstances = true
+            },
+            startSearching: browserSearchRequested
+        )
+        .environmentObject(app)
+    }
+
     private var emptyConversation: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -347,6 +393,7 @@ struct RootView: View {
                     homeFocused = false
                     browserSearchRequested = true
                     browserAllInstances = app.instances.count > 1
+                    browserFromSingle = false
                     browserOpen = true
                 } label: { ChromeIcon(symbol: "magnifyingglass") }
                 .accessibilityLabel("搜索会话")

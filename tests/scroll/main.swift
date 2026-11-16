@@ -224,6 +224,8 @@ expect(ChatCardPresentation.style(progress: 0.5, reduceMotion: true).drawerParal
 
 expect(ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 120, vertical: 3),
        "child page right edge swipe enters interactive back transition")
+expect(ChatPageBackInteraction.shouldTrack(startX: 28, horizontal: 120, vertical: 3),
+       "browser back edge includes a practical 32pt touch area")
 expect(!ChatPageBackInteraction.shouldTrack(startX: 90, horizontal: 120, vertical: 3),
        "child page does not steal arbitrary horizontal text selection")
 expect(!ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 12, vertical: 55),
@@ -234,6 +236,18 @@ expect(ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 2
        "decisive child-page swipe returns to mounted conversation")
 expect(!ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 85),
        "partial child-page swipe cancels without destroying page state")
+
+// build187: toolbar/back gesture must follow the same stack, never
+// jump from a nested All Instances page straight to the chat.
+expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
+       enteredFromSingle: true) == .singleInstance,
+       "single->all returns to the single-host browser")
+expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
+       enteredFromSingle: false) == .chat,
+       "direct all-host entry returns to conversation")
+expect(UnifiedBrowserBackNavigation.destination(allInstances: false,
+       enteredFromSingle: true) == .chat,
+       "single-host top-level page always returns to conversation")
 
 expect(ChatTurnViewport.contentHeight(baseBottom: 240, anchorTop: 140,
                                       viewport: 800) == 940,

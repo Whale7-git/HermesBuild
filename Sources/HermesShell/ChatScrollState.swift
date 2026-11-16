@@ -149,12 +149,22 @@ enum ChatCardPresentation {
 enum ChatPageBackInteraction {
     static func shouldTrack(startX: Double, horizontal: Double, vertical: Double) -> Bool {
         guard startX.isFinite, horizontal.isFinite, vertical.isFinite else { return false }
-        return startX >= 0 && startX < 24 && horizontal > 0
+        return startX >= 0 && startX < 32 && horizontal > 0
             && horizontal > abs(vertical) * 1.35
     }
     static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
         guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }
         return predictedTranslation > width * 0.4
+    }
+}
+
+/// Pure return-stack policy used by BOTH back-button and edge-swipe actions.
+/// Direct All Instances => chat; Single -> All => Single.
+enum UnifiedBrowserBackNavigation {
+    enum Destination: Equatable { case chat, singleInstance }
+
+    static func destination(allInstances: Bool, enteredFromSingle: Bool) -> Destination {
+        allInstances && enteredFromSingle ? .singleInstance : .chat
     }
 }
 

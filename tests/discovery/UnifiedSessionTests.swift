@@ -2,11 +2,13 @@ import Foundation
 
 @MainActor final class UnifiedFixture {
     var waiting: [UUID: CheckedContinuation<[SessionSummary], Error>] = [:]
+    var calls: [UUID: Int] = [:]
     func held(_ identity: UnifiedSessionIdentity, name: String,
               cached: [SessionSummary]? = nil) -> UnifiedSessionSource {
         UnifiedSessionSource(identity: identity, instanceName: name, cached: cached,
             load: {
-                try await withCheckedThrowingContinuation {
+                self.calls[identity.instanceID, default: 0] += 1
+                return try await withCheckedThrowingContinuation {
                     (cont: CheckedContinuation<[SessionSummary], Error>) in
                     self.waiting[identity.instanceID] = cont
                 }
@@ -85,10 +87,16 @@ import Foundation
     }, query: "")
     await spin { wave.waiting.count == 3 }
     expect(wave.waiting.count == 3, "no more than three concurrent instance loads")
-    for identity in identities.prefix(3) {
+    // A completed source frees one slot immediately: the fourth host does
+    // not wait for the remaining two in the original wave to finish.
+    wave.waiting.removeValue(forKey: identities[0].instanceID)!.resume(returning: [duplicate])
+    await spin { wave.waiting[identities[3].instanceID] != nil }
+    expect(wave.waiting.count == 3 && wave.calls.count == 4,
+           "sliding window starts fourth host while two earlier hosts remain pending")
+    for identity in identities[1...2] {
         wave.waiting.removeValue(forKey: identity.instanceID)!.resume(returning: [duplicate])
     }
-    await spin { wave.waiting.count == 2 }
+    await spin { wave.waiting[identities[4].instanceID] != nil }
     for identity in identities.suffix(2) {
         wave.waiting.removeValue(forKey: identity.instanceID)!.resume(returning: [duplicate])
     }
@@ -97,3 +105,75 @@ import Foundation
            "all five hosts publish independent, collision-free rows")
     print("UNIFIED_SEARCH_PASS scoped identity, partial failures, two search modes, stale callbacks, concurrency cap")
 }
+
+@MainActor func unifiedRefreshTests() async throws {
+    func row(_ id: String) throws -> SessionSummary {
+        try JSONDecoder().decode(SessionSummary.self,
+             from: Data("{\"session_id\":\"\(id)\",\"title\":\"\(id)\"}".utf8))
+    }
+    let identity = UnifiedSessionIdentity(instanceID: UUID(),
+                                         endpointIdentity: "refresh-host",
+                                         accountScope: "refresh-account")
+    let fixture = UnifiedFixture()
+    let source = fixture.held(identity, name: "Host", cached: [try row("cached")])
+    let model = UnifiedSessionModel()
+
+    let first = model.start(sources: [source], query: "")
+    await spin { fixture.waiting[identity.instanceID] != nil }
+    let joined = model.start(sources: [source], query: "")
+    for _ in 0..<20 { await Task.yield() }
+    expect(fixture.calls[identity.instanceID] == 1,
+           "simultaneous automatic, pull and menu refresh share exactly one GET")
+    fixture.waiting.removeValue(forKey: identity.instanceID)!
+        .resume(returning: [try row("authoritative")])
+    await first.value; await joined.value
+    expect(model.records.map(\.session.sessionId) == ["authoritative"],
+           "one shared refresh replaces cached window on success")
+
+    let failed = model.start(sources: [source], query: "")
+    expect(model.records.map(\.session.sessionId) == ["authoritative"],
+           "same-query manual refresh keeps previously verified rows visible")
+    await spin { fixture.waiting[identity.instanceID] != nil }
+    fixture.waiting.removeValue(forKey: identity.instanceID)!
+        .resume(throwing: URLError(.notConnectedToInternet))
+    await failed.value
+    expect(model.records.map(\.session.sessionId) == ["authoritative"] &&
+           model.failures[identity] != nil,
+           "offline refresh retains rows and records a host-specific error")
+
+    let retry = Task { await model.retry(source: source, query: "") }
+    await spin { fixture.waiting[identity.instanceID] != nil }
+    expect(model.loading == Set([identity]), "retry sets only the failed host loading flag")
+    fixture.waiting.removeValue(forKey: identity.instanceID)!
+        .resume(returning: [try row("recovered")])
+    await retry.value
+    expect(model.records.map(\.session.sessionId) == ["recovered"] &&
+           model.failures.isEmpty && model.loading.isEmpty,
+           "retry only replaces its source and clears stale error state")
+    expect(fixture.calls[identity.instanceID] == 3,
+           "coalesced refresh + failed refresh + single-host retry is three GETs")
+
+    // Cancellation-aware fake transports let timeouts be tested without a
+    // 20-second sleep or a real network connection.
+    let timeboxed = UnifiedSessionModel(hostTimeoutNanoseconds: 20_000_000)
+    let slow = UnifiedSessionSource(identity: identity, instanceName: "Slow",
+                                    cached: nil,
+                                    load: {
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        return [try row("unexpected")]
+    }, searchFullBody: nil)
+    await timeboxed.start(sources: [slow], query: "").value
+    expect(timeboxed.failures[identity] != nil && timeboxed.records.isEmpty,
+           "slow host GET times out rather than blocking the whole center")
+    let slowSearch = UnifiedSessionSource(identity: identity, instanceName: "Slow WebUI",
+                                          cached: nil, load: { [] },
+                                          searchFullBody: { _ in
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        return []
+    })
+    await timeboxed.start(sources: [slowSearch], query: "content").value
+    expect(timeboxed.failures[identity] != nil,
+           "full-body search gets the same bounded timeout as session GET")
+    print("UNIFIED_REFRESH_PASS joined requests, stable rows, per-host retry, bounded GET/search")
+}
+

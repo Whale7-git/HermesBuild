@@ -5,6 +5,7 @@ import SwiftUI
 struct UnifiedSessionBrowser: View {
     @EnvironmentObject var app: AppState
     let onClose: () -> Void
+    let backToSingleInstance: Bool
     let onSingleInstance: () -> Void
     let onSelect: (UnifiedSessionRecord) -> Bool
 
@@ -73,7 +74,7 @@ struct UnifiedSessionBrowser: View {
                 Button(action: onClose) {
                     Image(systemName: "chevron.left").frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("返回聊天")
+                .accessibilityLabel(backToSingleInstance ? "返回当前实例会话" : "返回聊天")
                 VStack(alignment: .leading, spacing: 2) {
                     Text("全部实例").font(.title2.weight(.semibold))
                     Text("跨 \(app.instances.count) 个 Hermes 实例")
@@ -129,8 +130,9 @@ struct UnifiedSessionBrowser: View {
             .padding(.bottom, 10)
 
             SessionRefreshList(refresh: {
-                center.start(sources: sources(), query: query)
-                await center.waitForRefresh()
+                // Join an in-flight identical request rather than replacing it.
+                let run = center.start(sources: sources(), query: query)
+                await run.value
             }) {
                 if let navigationError {
                     Label(navigationError, systemImage: "exclamationmark.triangle")
@@ -153,23 +155,51 @@ struct UnifiedSessionBrowser: View {
                     let identity = UnifiedSessionIdentity(instanceID: instance.id,
                         endpointIdentity: endpoint,
                         accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
-                    if center.failures[identity] != nil {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Image(systemName: "wifi.exclamationmark")
-                            Text(instance.name).fontWeight(.medium)
-                            Text("读取失败，其他实例不受影响")
-                            Spacer(minLength: 0)
+                    if let error = center.failures[identity] {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "wifi.exclamationmark")
+                                Text(instance.name).fontWeight(.medium).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button("重试") {
+                                    guard let source = sources().first(where: {
+                                        $0.identity == identity
+                                    }) else { return }
+                                    Task { await center.retry(source: source, query: query) }
+                                }
+                                .font(.caption.weight(.semibold))
+                                .frame(minWidth: 44, minHeight: 44)
+                                .disabled(center.loading.contains(identity))
+                                .accessibilityLabel("重试实例 \(instance.name)")
+                            }
+                            Text(error).lineLimit(2)
+                            Text("其他实例仍可浏览，重试仅重新请求此实例。")
+                                .foregroundStyle(.secondary)
                         }
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                         .padding(.horizontal, AppTheme.pagePadding)
                         .padding(.vertical, 6)
                     }
                 }
                 if visible.isEmpty && center.loading.isEmpty {
-                    HermesEmptyState(symbol: "square.stack",
-                        title: query.isEmpty ? "暂无会话" : "没有匹配的会话",
-                        message: "可下拉重试；网关只搜索会话标题与摘要。")
-                        .padding(.top, 44)
+                    if !app.instances.isEmpty &&
+                       center.failures.count == app.instances.count {
+                        HermesEmptyState(symbol: "wifi.exclamationmark",
+                            title: "所有实例读取失败",
+                            message: "尚未确认会话是否为空。可分别重试失败实例。")
+                            .padding(.top, 44)
+                    } else if !center.failures.isEmpty {
+                        HermesEmptyState(symbol: "wifi.exclamationmark",
+                            title: "部分实例不可用",
+                            message: "其余实例暂无匹配结果；失败实例尚未完成查询。")
+                            .padding(.top, 44)
+                    } else {
+                        HermesEmptyState(symbol: "square.stack",
+                            title: query.isEmpty ? "暂无会话" : "没有匹配的会话",
+                            message: "可下拉刷新；网关只搜索会话标题与摘要。")
+                            .padding(.top, 44)
+                    }
                 }
                 ForEach(visible) { record in
                     Button {
@@ -237,8 +267,8 @@ struct UnifiedSessionBrowser: View {
             }
             guard !Task.isCancelled else { return }
             navigationError = nil
-            center.start(sources: sources(), query: query)
-            await center.waitForRefresh()
+            let run = center.start(sources: sources(), query: query)
+            await run.value
         }
         .onDisappear { center.cancel() }
     }
