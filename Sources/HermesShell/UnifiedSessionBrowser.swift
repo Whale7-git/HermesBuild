@@ -16,6 +16,22 @@ struct UnifiedSessionBrowser: View {
     @State private var navigationError: String?
     @State private var userRefreshing = false
 
+    /// Explicit initializer: @EnvironmentObject is injected by the parent,
+    /// while the root-owned model and bindings are supplied by RootView.
+    init(center: UnifiedSessionModel, query: Binding<String>, filter: Binding<Int>,
+         onClose: @escaping () -> Void, backToSingleInstance: Bool,
+         backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
+         onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
+        self.center = center
+        self._query = query
+        self._filter = filter
+        self.onClose = onClose
+        self.backToSingleInstance = backToSingleInstance
+        self.backToDrawer = backToDrawer
+        self.onSingleInstance = onSingleInstance
+        self.onSelect = onSelect
+    }
+
     /// Rotate the dataset on endpoint edits, account retirement or instance deletion.
     /// The active instance's switching generation is intentionally absent:
     /// browsing cannot silently change the meaning of a scoped result.
