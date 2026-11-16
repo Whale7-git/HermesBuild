@@ -153,6 +153,28 @@ enum ChatDrawerInteraction {
     }
 }
 
+/// One drag retains horizontal ownership after the initial direction test.
+/// Requiring shouldTrack() on EVERY update made a closing card snap to its
+/// fully open offset when the finger reversed at the left edge.
+struct ChatDrawerGestureState {
+    private(set) var claimed = false
+    private(set) var translation: Double = 0
+
+    mutating func update(startX: Double, horizontal: Double, vertical: Double,
+                         open: Bool, width: Double, allowFullCard: Bool = false) {
+        guard horizontal.isFinite, vertical.isFinite else { return }
+        if !claimed {
+            guard ChatDrawerInteraction.shouldTrack(
+                startX: startX, translationX: horizontal, translationY: vertical,
+                open: open, width: width, allowFullCard: allowFullCard) else { return }
+            claimed = true
+        }
+        // Once claimed, keep raw signed translation. The reveal policy clamps
+        // to [0, width] without transferring gesture ownership to text scroll.
+        translation = horizontal
+    }
+}
+
 /// Pure, bounded presentation math; the SwiftUI host owns the actual full-
 /// screen clip, safe-area padding, and interactive animation.
 enum ChatCardPresentation {
