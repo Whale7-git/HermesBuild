@@ -1958,7 +1958,9 @@ final class AppState: ObservableObject {
                 authoritative: Set(next.map(\.sessionId)),
                 instanceID: historyInstanceID, accountScope: historyAccountScope)
             let visible = next + outstanding.map { SessionSummary.placeholder(id: $0) }
-            sessions = visible
+            // An unchanged successful refresh is still fresh, but should not
+            // invalidate the entire drawer, home and task-list projection.
+            if sessions != visible { sessions = visible }
             hasLoadedSessions = true
             rememberSessionList(visible, scope: sessionListScopeKey)
             let refreshedAt = Date()

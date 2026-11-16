@@ -2,6 +2,32 @@ import Foundation
 
 extension NativeChatModel {
 
+    /// Display-only preflight for first paint: no network, POST, stream
+    /// attachment or authority to send. Also used by normal load().
+    func warmupCachedHistory() async {
+        guard !historyReadAttempted, !Task.isCancelled else { return }
+        historyReadAttempted = true
+        let generation = revision
+        let cached = await historyStore?.load()
+        guard generation == revision, !Task.isCancelled else { return }
+        guard let cached, cached.sessionID == sessionID,
+              buffer.messages.isEmpty, buffer.tools.isEmpty else { return }
+        buffer = ChatTranscript()
+        buffer.messages = Array(cached.messages.suffix(Self.cachedWarmupMessages))
+        let visibleIDs = Set(buffer.messages.map(\.id))
+        buffer.tools = Array(cached.tools.filter {
+            $0.afterMessageID.map { visibleIDs.contains($0) } ?? true
+        }.suffix(Self.cachedWarmupMessages))
+        buffer.usage = cached.usage
+        olderOffset = max(cached.olderOffset, buffer.messages.first?.sourceIndex ?? cached.olderOffset)
+        sessionModel = cached.model
+        readOnly = true
+        streamID = nil
+        lastEventID = nil
+        transition(to: .cached(savedAt: cached.savedAt, syncing: loading || syncing))
+        flush()
+    }
+
     /// `allowWhileReconciling` 供 `reconcilePending()` 的核对 GET 使用：
     /// 那个 GET 自己就是置起 `reconciling` 的人，不能被同一个标志挡住。
     func load(silent: Bool = false, preserveLoadedOlder: Bool = false,
@@ -34,31 +60,10 @@ extension NativeChatModel {
         defer {
             if generation == revision, !phase.isRunning, !phase.isCached { transition(to: .idle) }
         }
-        if !historyReadAttempted {
-            historyReadAttempted = true
-            let cached = await historyStore?.load()
-            guard generation == revision, !Task.isCancelled else { return }
-            if let cached, cached.sessionID == sessionID, buffer.messages.isEmpty, buffer.tools.isEmpty {
-                buffer = ChatTranscript()
-                // Avoid mounting a thousand rich-text rows before the first
-                // network request. Disk retention and first-screen work have
-                // independent limits; GET provides the live history window.
-                buffer.messages = Array(cached.messages.suffix(Self.cachedWarmupMessages))
-                let visibleIDs = Set(buffer.messages.map(\.id))
-                buffer.tools = Array(cached.tools.filter {
-                    $0.afterMessageID.map { visibleIDs.contains($0) } ?? true
-                }.suffix(Self.cachedWarmupMessages))
-                buffer.usage = cached.usage
-                olderOffset = max(cached.olderOffset, buffer.messages.first?.sourceIndex ?? cached.olderOffset)
-                sessionModel = cached.model
-                // 磁盘历史一律只读：联网核对成功前不能发送。
-                readOnly = true
-                streamID = nil
-                lastEventID = nil
-                transition(to: .cached(savedAt: cached.savedAt, syncing: true))
-                flush()
-            }
-        }
+        // The page may prewarm and paint this same scoped history before GET.
+        // One-shot per model; the authoritative request remains mandatory.
+        await warmupCachedHistory()
+        guard generation == revision, !Task.isCancelled else { return }
         do {
             let snap = try await api.history(sessionID:sessionID,before:nil)
             guard generation == revision, !Task.isCancelled else { return }

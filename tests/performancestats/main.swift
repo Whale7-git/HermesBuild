@@ -99,5 +99,9 @@ expect(projectionStage.samples[.timelineProjection]?.count == 2,
        "timeline projection is a distinct, separately counted metric")
 expect(projectionStage.samples[.timelineProjection]?.total == 5,
        "timeline projection durations are not mixed into UIKit reconcile")
+projectionStage.record(.historyWarmup, milliseconds: 12.5)
+expect(projectionStage.samples[.historyWarmup]?.count == 1 &&
+       projectionStage.samples[.historyWarmup]?.total == 12.5,
+       "cached prewarm is measured independently of network and first paint")
 
 print("PERFORMANCE_STATS_PASS \(checks) assertions (bounded numeric statistics, variable refresh and lifecycle)")
