@@ -1,6 +1,6 @@
 import Foundation
 
-struct SessionSummary: Identifiable, Decodable, Hashable {
+struct SessionSummary: Identifiable, Decodable, Hashable, Sendable {
     let sessionId: String
     var title: String?
     var updatedAt: Double?
