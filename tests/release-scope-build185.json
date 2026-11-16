@@ -493,8 +493,8 @@
     "docs/sse-contract.md": "9abe7f1d4c28033191cf15f954c759311f7ef8efb904a20021f263613d1ba43e",
     "ios-ci-project.yml": "8bd8c60b8262ff03a2ca6fcecb1a6ce8034bbb16d8c7fa96014f696cb9c12bd9",
     "Package.swift": "c6ab63dc41cde189bef4dd28bc988071cc3f19be4bf425a6057c4e4b50629e34",
-    "README.md": "3821bc0ff11698f6c57b0bd92244d22e3ebbca55e3d8ff31985f878e6d3b9f30",
-    "Resources/Info.plist": "0f9a8016aa10d95c81bee149802fdaafc2639194d6df183cc1256615d9cc516d",
+    "README.md": "c361a0c3db96ebebeaba35e0194d35de6ed6e65b7205fefa1c7c576afd12cae2",
+    "Resources/Info.plist": "0129249e4e6961b8c78b7321b3933d9301a6ff3c8070f896697a1f21bc6d739a",
     "Resources/PrivacyInfo.xcprivacy": "9239baa93627e637725cbb7545e41ae9a7b1ec8282a9fc7078541a3aee388c28",
     "Resources/THIRD_PARTY_NOTICES.txt": "810bcdccfe9cf5f95d6847cf59dd52e5ac7a6ad9f6b781f722d3669e9a18d169",
     "scripts/capture-candidate-toolchain.py": "95a0edd6ba2882b155491b796685b906168bbd3a19829a05817b60e1ef9844f7",
@@ -732,7 +732,8 @@
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
     "Sources/HermesShell/ChatMarkdownWorker.swift": "cfad17e3e733feb2372feb091419f706c2f373c61de9abc93b2a6293d8983331",
-    "release.json": "7925e9bd1db338745d75ee1317d3441baf231b9d8132ee25463e0a5bacc75823",
-    "docs/build184-performance.md": "606061fbdef046e02521431801feaa1c5643af15e7d995abe7f6eca624717ae3"
+    "release.json": "a23059998bbfe851733066a1481246206d955c76b7cbaacdd3fad5f9f4e43b28",
+    "docs/build184-performance.md": "606061fbdef046e02521431801feaa1c5643af15e7d995abe7f6eca624717ae3",
+    "docs/build185-session-navigation.md": "95cc151166bd4e7295d3171bbc2d2cacdc219c89df7d021b728c08d466a6617a"
   }
 }
