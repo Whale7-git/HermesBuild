@@ -240,6 +240,7 @@ func expect(_ value: @autoclosure () -> Bool, _ message: String) {
         catch { expect(true, "nonadvancing archive page rejected") }
         try await refreshTests()
         try await unifiedSessionTests()
+        try await unifiedRefreshTests()
         print("PASS: \(checks) discovery checks")
     }
 }
