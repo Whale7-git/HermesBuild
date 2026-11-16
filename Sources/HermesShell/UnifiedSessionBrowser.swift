@@ -13,18 +13,21 @@ struct UnifiedSessionBrowser: View {
     @ObservedObject var center: UnifiedSessionModel
     @Binding var query: String
     @Binding var filter: Int
+    @Binding var section: Int
+    @State private var taskSearch = ""
     @State private var navigationError: String?
     @State private var userRefreshing = false
 
     /// Explicit initializer: @EnvironmentObject is injected by the parent,
     /// while the root-owned model and bindings are supplied by RootView.
     init(center: UnifiedSessionModel, query: Binding<String>, filter: Binding<Int>,
-         onClose: @escaping () -> Void, backToSingleInstance: Bool,
+         section: Binding<Int>, onClose: @escaping () -> Void, backToSingleInstance: Bool,
          backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
          onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
         self.center = center
         self._query = query
         self._filter = filter
+        self._section = section
         self.onClose = onClose
         self.backToSingleInstance = backToSingleInstance
         self.backToDrawer = backToDrawer
@@ -88,6 +91,129 @@ struct UnifiedSessionBrowser: View {
         }
     }
 
+    /// Task view never runs full-body search to invent task state. Its local
+    /// search filters the complete scoped session-list snapshot instead.
+    private var requestQuery: String { section == 1 ? "" : query }
+
+    private var scopedTaskStates: [UnifiedSessionIdentity: UnifiedTaskSourceState] {
+        var result: [UnifiedSessionIdentity: UnifiedTaskSourceState] = [:]
+        for instance in app.instances {
+            let endpoint = ChatHistoryIdentity.instanceID(
+                id: instance.id, baseURL: instance.baseURL)
+            let identity = UnifiedSessionIdentity(
+                instanceID: instance.id, endpointIdentity: endpoint,
+                accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
+            let observations: [String: SessionTaskObservation]
+            switch app.unifiedTaskObservations(for: instance) {
+            case .loaded(let rows): observations = rows
+            case .missing, .corrupt: observations = [:]
+            }
+            result[identity] = UnifiedTaskSourceState(
+                observations: observations,
+                lastSuccessfulList: center.lastSuccessfulListRefresh(for: identity),
+                failed: center.failures[identity] != nil)
+        }
+        return result
+    }
+
+    private var taskEntries: [UnifiedTaskEntry] {
+        UnifiedTaskWorkspace.entries(
+            records: center.records, states: scopedTaskStates).filter { entry in
+                let needle = taskSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !needle.isEmpty else { return true }
+                return entry.record.session.displayTitle.localizedStandardContains(needle)
+                    || entry.record.instanceName.localizedStandardContains(needle)
+                    || entry.status.localizedStandardContains(needle)
+            }
+    }
+
+    private var damagedTaskInstances: [String] {
+        app.instances.compactMap { instance in
+            if case .corrupt = app.unifiedTaskObservations(for: instance) {
+                return instance.name
+            }
+            return nil
+        }
+    }
+
+    @ViewBuilder
+    private var taskResults: some View {
+        let entries = taskEntries
+        Text("仅展示最近确认的运行记录及本机观察到的待办；未刷新、离线或网关未提供运行状态时不会推测任务正在执行。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, AppTheme.pagePadding)
+            .padding(.vertical, 8)
+        if !damagedTaskInstances.isEmpty {
+            Label("部分实例的本机任务记录损坏，已保留原始数据："
+                  + damagedTaskInstances.joined(separator: "、"),
+                  systemImage: "externaldrive.badge.exclamationmark")
+                .font(.caption).foregroundStyle(AppTheme.warning)
+                .padding(.horizontal, AppTheme.pagePadding)
+                .padding(.vertical, 8)
+        }
+        if entries.isEmpty && center.loading.isEmpty {
+            HermesEmptyState(
+                symbol: "checklist",
+                title: center.failures.isEmpty ? "暂无可确认的任务" : "任务状态尚未全部确认",
+                message: "可下拉刷新各实例。Gateway 未提供 is_streaming 时，"
+                    + "未打开过的后台任务可能无法从会话列表识别；不会猜测运行状态。")
+                .padding(.top, 44)
+        }
+        ForEach(UnifiedTaskEntry.Group.allCases, id: \.rawValue) { group in
+            let grouped = entries.filter { $0.group == group }
+            if !grouped.isEmpty {
+                Text("\(group.title) · \(grouped.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, AppTheme.pagePadding)
+                    .padding(.top, 15)
+                    .padding(.bottom, 5)
+                ForEach(grouped) { entry in
+                    Button {
+                        navigationError = nil
+                        if !onSelect(entry.record) {
+                            navigationError = "实例或账号已变化，请刷新后重新选择。"
+                        }
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: entry.group == .running ? "waveform"
+                                  : (entry.group == .attention ? "hand.raised" : "questionmark.circle"))
+                                .foregroundStyle(entry.group == .attention
+                                                 ? AppTheme.warning : Color.secondary)
+                                .frame(width: 26)
+                                .padding(.top, 3)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.record.session.displayTitle)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary).lineLimit(2)
+                                Text(entry.status)
+                                    .font(.caption).foregroundStyle(.primary)
+                                Text(entry.record.instanceName + " · " + entry.evidence)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                                .padding(.top, 5)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(entry.record.session.displayTitle)，"
+                                        + "\(entry.record.instanceName)，\(entry.status)，\(entry.evidence)")
+                    .accessibilityHint("打开此实例中的原生会话，核对并处理任务")
+                    Divider().padding(.horizontal, AppTheme.pagePadding)
+                }
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -129,43 +255,74 @@ struct UnifiedSessionBrowser: View {
             .padding(.horizontal, 12)
             .padding(.top, 10)
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索所有实例", text: $query)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .submitLabel(.search)
-                    .accessibilityHint("WebUI 搜索正文；Gateway 仅搜索标题和摘要")
-                if !query.isEmpty {
-                    Button { query = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, height: 44)
-                    }
-                    .accessibilityLabel("清除搜索")
-                }
-            }
-            .padding(.leading, 12)
-            .frame(height: 44)
-            .background(Color(.tertiarySystemFill),
-                        in: RoundedRectangle(cornerRadius: AppTheme.radiusS))
-            .padding(.horizontal, AppTheme.pagePadding)
-            .padding(.vertical, 8)
-            .buttonStyle(.plain)
-
-            Picker("筛选", selection: $filter) {
-                Text("全部").tag(0)
-                Text("运行中").tag(1)
-                Text("置顶").tag(2)
-                Text("近7天").tag(3)
+            Picker("浏览内容", selection: $section) {
+                Text("会话").tag(0)
+                Text("任务").tag(1)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, AppTheme.pagePadding)
-            .padding(.bottom, 10)
+            .padding(.top, 5)
+            if section == 1 {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("筛选任务或实例", text: $taskSearch)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if !taskSearch.isEmpty {
+                        Button { taskSearch = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, height: 44)
+                        }
+                        .accessibilityLabel("清除任务筛选")
+                    }
+                }
+                .padding(.leading, 12)
+                .frame(height: 44)
+                .background(Color(.tertiarySystemFill),
+                            in: RoundedRectangle(cornerRadius: AppTheme.radiusS))
+                .padding(.horizontal, AppTheme.pagePadding)
+                .padding(.vertical, 8)
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("搜索所有实例", text: $query)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.search)
+                        .accessibilityHint("WebUI 搜索正文；Gateway 仅搜索标题和摘要")
+                    if !query.isEmpty {
+                        Button { query = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 40, height: 44)
+                        }
+                        .accessibilityLabel("清除搜索")
+                    }
+                }
+                .padding(.leading, 12)
+                .frame(height: 44)
+                .background(Color(.tertiarySystemFill),
+                                in: RoundedRectangle(cornerRadius: AppTheme.radiusS))
+                .padding(.horizontal, AppTheme.pagePadding)
+                .padding(.vertical, 8)
+                .buttonStyle(.plain)
+
+                Picker("筛选", selection: $filter) {
+                    Text("全部").tag(0)
+                    Text("运行中").tag(1)
+                    Text("置顶").tag(2)
+                    Text("近7天").tag(3)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, AppTheme.pagePadding)
+                .padding(.bottom, 10)
+
+            }
 
             SessionRefreshList(refresh: {
                 // Join an in-flight identical request rather than replacing it.
-                let run = center.start(sources: sources(), query: query)
+                let run = center.start(sources: sources(), query: requestQuery)
                 await run.value
             }) {
                 if let navigationError {
@@ -200,7 +357,7 @@ struct UnifiedSessionBrowser: View {
                                     guard let source = sources().first(where: {
                                         $0.identity == identity
                                     }) else { return }
-                                    Task { await center.retry(source: source, query: query) }
+                                    Task { await center.retry(source: source, query: requestQuery) }
                                 }
                                 .font(.caption.weight(.semibold))
                                 .frame(minWidth: 44, minHeight: 44)
@@ -217,6 +374,9 @@ struct UnifiedSessionBrowser: View {
                         .padding(.vertical, 6)
                     }
                 }
+                if section == 1 {
+                    taskResults
+                } else {
                 if visible.isEmpty && center.loading.isEmpty {
                     if !app.instances.isEmpty &&
                        center.failures.count == app.instances.count {
@@ -290,13 +450,14 @@ struct UnifiedSessionBrowser: View {
                     .accessibilityLabel("\(record.session.displayTitle)，实例 \(record.instanceName)")
                     Divider().padding(.horizontal, AppTheme.pagePadding)
                 }
+                }
             }
         }
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity)
         .background(AppTheme.canvas)
-        .task(id: scopeStamp + "\u{0}" + query) {
-            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        .task(id: scopeStamp + "\u{0}" + requestQuery + "\u{0}" + String(section)) {
+            if section == 0 && !requestQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 do { try await Task.sleep(nanoseconds: 350_000_000) }
                 catch { return }
             }
@@ -304,7 +465,9 @@ struct UnifiedSessionBrowser: View {
             navigationError = nil
             // Cache-first: no network for a fresh query/scope. Expired
             // snapshots refresh silently without clearing the visible rows.
-            if let run = center.refreshIfNeeded(sources: sources(), query: query) {
+            if let run = center.refreshIfNeeded(sources: sources(), query: requestQuery,
+                                                   maxAge: section == 1
+                                                       ? UnifiedTaskWorkspace.freshnessWindow : nil) {
                 await run.value
             }
         }
