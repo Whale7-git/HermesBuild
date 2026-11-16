@@ -37,6 +37,14 @@ struct UnifiedTaskSourceState {
 enum UnifiedTaskWorkspace {
     static let freshnessWindow: TimeInterval = 120
 
+    /// Earliest future deadline that must revoke a "recently confirmed"
+    /// badge. One-shot scheduling avoids background polling and timer redraws.
+    static func nextEvidenceExpiry(lastSuccess: [Date], after now: Date) -> Date? {
+        lastSuccess.map { $0.addingTimeInterval(freshnessWindow + 0.02) }
+            .filter { $0 > now }
+            .min()
+    }
+
     static func entries(records: [UnifiedSessionRecord],
                         states: [UnifiedSessionIdentity: UnifiedTaskSourceState],
                         now: Date = Date()) -> [UnifiedTaskEntry] {
