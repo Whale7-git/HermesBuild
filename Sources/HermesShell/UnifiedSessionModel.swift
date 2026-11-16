@@ -156,8 +156,10 @@ final class UnifiedSessionModel: ObservableObject {
         let ticket = generation
         loading.insert(source.identity)
         failures.removeValue(forKey: source.identity)
+        // Capture the immutable budget before the weak-self task begins.
+        let timeout = hostTimeoutNanoseconds
         let run = Task { [weak self] in
-            let result = await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
+            let result = await Self.loadOutcome(source, query: term, timeout: timeout)
             guard let self, self.generation == ticket, !Task.isCancelled else { return }
             self.accept(result)
         }
