@@ -73,6 +73,23 @@ import Foundation
         now: now)
     expect(ended.isEmpty, "completed and unknown idle sessions do not flood the task center")
 
+    let expiry = UnifiedTaskWorkspace.nextEvidenceExpiry(
+        lastSuccess: [now.addingTimeInterval(-100),
+                      now.addingTimeInterval(-50)], after: now)
+    expect(abs((expiry?.timeIntervalSince1970 ?? 0)
+               - now.addingTimeInterval(20.02).timeIntervalSince1970) < 0.001,
+           "one-shot expiry selects the earliest of independently refreshed hosts")
+    let afterFirstExpiry = UnifiedTaskWorkspace.nextEvidenceExpiry(
+        lastSuccess: [now.addingTimeInterval(-100),
+                      now.addingTimeInterval(-50)],
+        after: now.addingTimeInterval(21))
+    expect(abs((afterFirstExpiry?.timeIntervalSince1970 ?? 0)
+               - now.addingTimeInterval(70.02).timeIntervalSince1970) < 0.001,
+           "expiry reschedules next host rather than repeating an expired deadline")
+    expect(UnifiedTaskWorkspace.nextEvidenceExpiry(
+        lastSuccess: [now.addingTimeInterval(-121)], after: now) == nil,
+           "expired host evidence causes no recurring timer or network polling")
+
     let many = (0..<10).map { index -> UnifiedSessionRecord in
         let scope = identity("host-\(index)")
         return UnifiedSessionRecord(identity: scope, instanceName: "Host \(index)",
