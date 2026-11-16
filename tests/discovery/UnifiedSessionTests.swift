@@ -177,3 +177,65 @@ import Foundation
     print("UNIFIED_REFRESH_PASS joined requests, stable rows, per-host retry, bounded GET/search")
 }
 
+
+@MainActor func unifiedCacheTests() async throws {
+    func row(_ id: String) throws -> SessionSummary {
+        try JSONDecoder().decode(SessionSummary.self,
+             from: Data("{\"session_id\":\"\(id)\",\"title\":\"\(id)\"}".utf8))
+    }
+    let a = UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: "ep-188",
+                                   accountScope: "user-188")
+    let b = UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: "ep-188-other",
+                                   accountScope: "different-user")
+    let fixture = UnifiedFixture()
+    let now = Date()
+    var fresh = fixture.held(a, name: "cached", cached: [try row("saved")])
+    fresh.cachedAt = now.addingTimeInterval(-10)
+    let center = UnifiedSessionModel()
+    let skipped = center.refreshIfNeeded(sources: [fresh], query: "", now: now)
+    expect(skipped == nil && fixture.calls[a.instanceID] == nil,
+           "fresh scoped list cache needs no network")
+    expect(center.records.map(\.session.sessionId) == ["saved"] &&
+           center.hasResolvedSnapshot, "cached list appears immediately without spinner")
+    expect(center.refreshIfNeeded(sources: [fresh], query: "",
+                                  now: now.addingTimeInterval(100)) == nil,
+           "reentry during five-minute TTL stays offline")
+
+    let slow = center.refreshIfNeeded(sources: [fresh], query: "",
+                                     now: now.addingTimeInterval(360))
+    expect(slow != nil && center.records.map(\.session.sessionId) == ["saved"],
+           "expired rows stay visible while the automatic refresh starts")
+    await spin { fixture.waiting[a.instanceID] != nil }
+    fixture.waiting.removeValue(forKey: a.instanceID)!
+        .resume(returning: [try row("updated")])
+    await slow?.value
+    expect(center.records.map(\.session.sessionId) == ["updated"],
+           "successful background refresh replaces only the scoped data")
+
+    // A different account is never allowed to reuse host A's Session ID or
+    // claim that the old account's recent refresh belongs to the new one.
+    let changed = fixture.held(b, name: "other account", cached: nil)
+    let switched = center.refreshIfNeeded(sources: [changed], query: "", now: now)
+    expect(switched != nil && center.records.isEmpty && !center.hasResolvedSnapshot,
+           "account switch discards previously visible account rows and freshness")
+    await spin { fixture.waiting[b.instanceID] != nil }
+    fixture.waiting.removeValue(forKey: b.instanceID)!.resume(returning: [try row("private")])
+    await switched?.value
+    expect(center.records.map(\.session.sessionId) == ["private"],
+           "new account publishes only its own sessions")
+
+    // Search queries are independently resolved; a scoped list timestamp
+    // must never suppress full-body search by claiming a cache hit.
+    let searched = center.refreshIfNeeded(sources: [changed], query: "private",
+                                          now: Date())
+    expect(searched != nil, "new query fetches instead of trusting title cache")
+    await spin { fixture.waiting[b.instanceID] != nil }
+    fixture.waiting.removeValue(forKey: b.instanceID)!.resume(returning: [try row("private")])
+    await searched?.value
+    expect(center.records.map(\.session.sessionId) == ["private"],
+           "query returns the proper matching rows")
+    center.cancel()
+    expect(center.refreshIfNeeded(sources: [changed], query: "private", now: Date()) == nil,
+           "same scoped query reopened within TTL needs no extra network")
+    print("UNIFIED_CACHE_PASS fresh skip, silent expiry, account isolation, search freshness")
+}
