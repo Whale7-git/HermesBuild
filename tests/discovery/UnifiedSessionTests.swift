@@ -153,6 +153,67 @@ import Foundation
     expect(fixture.calls[identity.instanceID] == 3,
            "coalesced refresh + failed refresh + single-host retry is three GETs")
 
+    // A stale-only automatic refresh is upgraded in place when the user
+    // chooses full refresh. Both hosts must be fetched exactly once, and the
+    // returned task must not finish until the queued additional host finishes.
+    do {
+        let a = UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: "partial-a",
+                                       accountScope: "account")
+        let b = UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: "partial-b",
+                                       accountScope: "account")
+        let f = UnifiedFixture()
+        let one = f.held(a, name: "stale")
+        let two = f.held(b, name: "fresh")
+        let center = UnifiedSessionModel()
+        let partial = center.start(sources: [one, two], query: "", only: Set([a]))
+        await spin { f.waiting[a.instanceID] != nil }
+        let forced = center.start(sources: [one, two], query: "")
+        expect(f.calls[a.instanceID] == 1,
+               "manual refresh reuses the ongoing stale-host GET")
+        f.waiting.removeValue(forKey: a.instanceID)!
+            .resume(returning: [try row("partial-a")])
+        await spin { f.waiting[b.instanceID] != nil }
+        expect(f.calls[b.instanceID] == 1 && center.loading.contains(b),
+               "manual full refresh also schedules previously fresh host")
+        f.waiting.removeValue(forKey: b.instanceID)!
+            .resume(returning: [try row("partial-b")])
+        await partial.value; await forced.value
+        expect(center.records.count == 2 && center.loading.isEmpty,
+               "full refresh completion includes both hosts with one GET each")
+    }
+
+    // After leaving and re-entering a fresh cache, retry must still work
+    // even though cancel() has intentionally cleared the old requestKey.
+    do {
+        let a = UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: "retry-host",
+                                       accountScope: "retry-account")
+        let f = UnifiedFixture()
+        let src = f.held(a, name: "retry after back", cached: [try row("old")])
+        let center = UnifiedSessionModel()
+        let initial = center.start(sources: [src], query: "")
+        await spin { f.waiting[a.instanceID] != nil }
+        f.waiting.removeValue(forKey: a.instanceID)!
+            .resume(returning: [try row("cached")])
+        await initial.value
+        let failed = center.start(sources: [src], query: "")
+        await spin { f.waiting[a.instanceID] != nil }
+        f.waiting.removeValue(forKey: a.instanceID)!
+            .resume(throwing: URLError(.notConnectedToInternet))
+        await failed.value
+        center.cancel()
+        expect(center.refreshIfNeeded(sources: [src], query: "", now: Date()) == nil &&
+               center.failures[a] != nil,
+               "cached reentry preserves failed host without a new GET")
+        let again = Task { await center.retry(source: src, query: "") }
+        await spin { f.waiting[a.instanceID] != nil }
+        f.waiting.removeValue(forKey: a.instanceID)!
+            .resume(returning: [try row("retried")])
+        await again.value
+        expect(center.records.map(\.session.sessionId) == ["retried"] &&
+               center.failures[a] == nil && f.calls[a.instanceID] == 3,
+               "retry after cached reentry fetches once and clears failure")
+    }
+
     // Cancellation-aware fake transports let timeouts be tested without a
     // 20-second sleep or a real network connection.
     let timeboxed = UnifiedSessionModel(hostTimeoutNanoseconds: 20_000_000)

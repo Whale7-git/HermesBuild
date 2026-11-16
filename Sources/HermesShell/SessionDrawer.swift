@@ -14,6 +14,7 @@ struct SessionListPane: View {
     let onSettings: () -> Void
     var onClose: (() -> Void)?
     var onBrowseAll: (() -> Void)? = nil
+    var backToDrawer = false
     var onBrowseAllInstances: (() -> Void)? = nil
     var startSearching = false
 
@@ -427,7 +428,7 @@ struct SessionListPane: View {
         HStack(spacing: 4) {
             if mode == .page, let onClose {
                 Button(action: onClose) { ChromeIcon(symbol: "chevron.left") }
-                    .accessibilityLabel("返回聊天")
+                     .accessibilityLabel(backToDrawer ? "返回侧栏" : "返回聊天")
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(mode == .drawer ? "Hermes" : "对话")

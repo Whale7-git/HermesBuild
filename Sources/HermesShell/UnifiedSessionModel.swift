@@ -81,6 +81,11 @@ final class UnifiedSessionModel: ObservableObject {
     private var generation = UUID()
     private var requestKey: RequestKey?
     private var task: Task<Void, Never>?
+    /// Extra sources appended to an already running partial request are
+    /// consumed by that task's same three-host sliding window. A manual
+    /// "refresh all" therefore covers every host without duplicating GETs.
+    private var pendingSources: [UnifiedSessionSource] = []
+    private var scheduledIdentities: Set<UnifiedSessionIdentity> = []
     private var retries: [UnifiedSessionIdentity: Task<Void, Never>] = [:]
     private var lastLists: [UnifiedSessionIdentity: [SessionSummary]] = [:]
     private var sections: [UnifiedSessionIdentity: [UnifiedSessionRecord]] = [:]
@@ -90,6 +95,8 @@ final class UnifiedSessionModel: ObservableObject {
         task?.cancel()
         retries.values.forEach { $0.cancel() }
         task = nil
+        pendingSources = []
+        scheduledIdentities = []
         retries.removeAll()
         requestKey = nil
         loading = []
@@ -152,14 +159,26 @@ final class UnifiedSessionModel: ObservableObject {
                only: Set<UnifiedSessionIdentity>? = nil) -> Task<Void, Never> {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = RequestKey(identities: sources.map(\.identity), query: term)
-        if requestKey == key, let task { return task }
+        let targets = sources.filter { only?.contains($0.identity) ?? true }
+        if requestKey == key, let task {
+            // Existing automatic refresh may cover only the stale hosts.
+            // Upgrade its coverage when the user explicitly requests ALL,
+            // while letting the already requested GETs finish normally.
+            let additions = targets.filter { !scheduledIdentities.contains($0.identity) }
+            if !additions.isEmpty {
+                pendingSources.append(contentsOf: additions)
+                scheduledIdentities.formUnion(additions.map(\.identity))
+                loading.formUnion(additions.map(\.identity))
+                for source in additions { failures.removeValue(forKey: source.identity) }
+            }
+            return task
+        }
         let sameQueryAndScope = cachedKey == key
         cancel()
         requestKey = key
         cachedKey = key
         let ticket = generation
         let live = Set(key.identities)
-        let targets = sources.filter { only?.contains($0.identity) ?? true }
         lastLists = lastLists.filter { live.contains($0.key) }
         lastSuccess = lastSuccess.filter { live.contains($0.key.identity) }
         cachedResults = cachedResults.filter { live.contains($0.key.identity) }
@@ -176,13 +195,13 @@ final class UnifiedSessionModel: ObservableObject {
             publish()
         }
         loading = Set(targets.map(\.identity))
+        scheduledIdentities = Set(targets.map(\.identity))
+        pendingSources = targets
         let running = Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Outcome.self) { group in
-                var next = 0
-                for _ in 0..<min(3, targets.count) {
-                    let source = targets[next]
-                    next += 1
+                for _ in 0..<min(3, self.pendingSources.count) {
+                    let source = self.pendingSources.removeFirst()
                     group.addTask { @MainActor in
                         await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
                     }
@@ -193,16 +212,21 @@ final class UnifiedSessionModel: ObservableObject {
                         break
                     }
                     self.accept(result, query: term)
-                    if next < targets.count {
-                        let source = targets[next]
-                        next += 1
+                    // The main actor may have appended more sources while
+                    // the current hosts were awaiting their network calls.
+                    if !self.pendingSources.isEmpty {
+                        let source = self.pendingSources.removeFirst()
                         group.addTask { @MainActor in
                             await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
                         }
                     }
                 }
             }
-            if self.generation == ticket { self.task = nil }
+            if self.generation == ticket {
+                self.task = nil
+                self.pendingSources = []
+                self.scheduledIdentities = []
+            }
         }
         task = running
         return running
@@ -243,7 +267,11 @@ final class UnifiedSessionModel: ObservableObject {
     /// search results are never cleared or fetched again by this action.
     func retry(source: UnifiedSessionSource, query: String) async {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let key = requestKey, key.query == term,
+        // Leaving the browser cancels its GET and clears requestKey, but a
+        // fresh cached view can legitimately preserve a failed-host badge.
+        // Retry belongs to the visible snapshot's FULL identity, not merely
+        // the most recent in-flight task.
+        guard let key = cachedKey, key.query == term,
               key.identities.contains(source.identity) else { return }
         if loading.contains(source.identity) {
             if let retry = retries[source.identity] { await retry.value }

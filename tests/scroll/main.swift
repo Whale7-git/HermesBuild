@@ -262,6 +262,21 @@ expect(UnifiedBrowserBackNavigation.destination(route: [.all],
 expect(UnifiedBrowserBackNavigation.destination(route: [.single],
        source: .drawer) == .drawer,
        "drawer->single returns to drawer")
+expect(UnifiedBrowserPresentation.canOpenSidebar(
+       browserOpen: true, browserSessionOpen: true),
+       "toolbar drawer opens from a chat selected in the unified browser")
+expect(!UnifiedBrowserPresentation.canOpenSidebar(
+       browserOpen: true, browserSessionOpen: false),
+       "a bare browser keeps control of its own back destination")
+expect(UnifiedBrowserPresentation.canOpenSidebar(
+       browserOpen: false, browserSessionOpen: false),
+       "ordinary chat hamburger opens the drawer")
+expect(UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
+       browserOpen: true, browserSessionOpen: true, currentSessionID: nil),
+       "new draft from browser-selected chat clears the old return route")
+expect(!UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
+       browserOpen: true, browserSessionOpen: true, currentSessionID: "sid"),
+       "normal session changes retain their browser back route")
 expect(UnifiedBrowserPresentation.conversationVisible(
        active: true, sidebarOpen: false, browserOpen: true,
        browserSessionOpen: true, modalOpen: false, hasSession: true),
