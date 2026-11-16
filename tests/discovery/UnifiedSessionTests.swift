@@ -257,8 +257,8 @@ import Foundation
            "cached search does not perform a third network GET")
     // The active host may confirm unchanged rows: the timestamp must still
     // advance without replacing published rows or touching the network.
-    let before = center.records.map(\.id)
     center.refreshIfNeeded(sources: [changed], query: "", now: latest)
+    let before = center.records.map(\.id)
     center.adoptActiveList(identity: b, instanceName: "other account",
                            rows: [try row("event-update")],
                            refreshedAt: latest.addingTimeInterval(100))
