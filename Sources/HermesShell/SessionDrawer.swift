@@ -39,6 +39,7 @@ struct SessionListPane: View {
     @State private var selectedSessionIDs: Set<String> = []
     @State private var selectionScope: String?
     @State private var batchDeletePresented = false
+    @State private var confirmClearDamagedTaskState = false
     @State private var batchBusy = false
     @FocusState private var searchFocused: Bool
 
@@ -140,7 +141,7 @@ struct SessionListPane: View {
                     }
                     if app.hasDamagedTaskStore {
                         Button("清除损坏的任务状态记录") {
-                            app.clearDamagedTaskStore()
+                            confirmClearDamagedTaskState = true
                         }
                         .font(.footnote)
                         .padding(.horizontal, AppTheme.pagePadding)
@@ -240,6 +241,16 @@ struct SessionListPane: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("服务端会话一并删除，此操作无法撤销。")
+        }
+        .confirmationDialog("清除损坏的任务状态记录？",
+                            isPresented: $confirmClearDamagedTaskState,
+                            titleVisibility: .visible) {
+            Button("清除本地损坏记录", role: .destructive) {
+                app.clearDamagedTaskStore()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("仅清除当前实例和账号的本地任务状态记录，不删除远端会话。清除后无法恢复原始损坏数据。")
         }
         .overlay(alignment: .bottom) { bottomBanners }
         // 归档当前会话会关闭侧栏并换出新的列表页，所以进入时也要补一次：
