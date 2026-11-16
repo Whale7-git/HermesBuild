@@ -235,6 +235,18 @@ expect(ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 2
 expect(!ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 85),
        "partial child-page swipe cancels without destroying page state")
 
+// build187: toolbar/back gesture must follow the same stack, never
+// jump from a nested All Instances page straight to the chat.
+expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
+       enteredFromSingle: true) == .singleInstance,
+       "single->all returns to the single-host browser")
+expect(UnifiedBrowserBackNavigation.destination(allInstances: true,
+       enteredFromSingle: false) == .chat,
+       "direct all-host entry returns to conversation")
+expect(UnifiedBrowserBackNavigation.destination(allInstances: false,
+       enteredFromSingle: true) == .chat,
+       "single-host top-level page always returns to conversation")
+
 expect(ChatTurnViewport.contentHeight(baseBottom: 240, anchorTop: 140,
                                       viewport: 800) == 940,
        "new turn reserve lets the user bubble sit at the top of the viewport")

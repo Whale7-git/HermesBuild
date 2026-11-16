@@ -158,6 +158,16 @@ enum ChatPageBackInteraction {
     }
 }
 
+/// Pure return-stack policy used by BOTH back-button and edge-swipe actions.
+/// Direct All Instances => chat; Single -> All => Single.
+enum UnifiedBrowserBackNavigation {
+    enum Destination: Equatable { case chat, singleInstance }
+
+    static func destination(allInstances: Bool, enteredFromSingle: Bool) -> Destination {
+        allInstances && enteredFromSingle ? .singleInstance : .chat
+    }
+}
+
 enum ChatTurnViewport {
     /// Runtime-only viewport reserve for a newly sent turn. Never a transcript row.
     static func contentHeight(baseBottom: Double, anchorTop: Double?, viewport: Double) -> Double {
