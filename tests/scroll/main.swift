@@ -186,7 +186,27 @@ expect(ChatDrawerInteraction.reveal(width: 330, open: false, translation: 1000) 
        "drawer reveal is clamped at the open edge")
 expect(!ChatDrawerInteraction.shouldTrack(startX: 80, translationX: 100, translationY: 3,
                                          open: false, width: 330),
-       "non-edge drags cannot steal chat selection")
+       "legacy edge-only fallback is retained unless full card is opted in")
+expect(ChatDrawerInteraction.shouldTrack(startX: 175, translationX: 110,
+                                         translationY: 4, open: false, width: 330,
+                                         allowFullCard: true),
+       "chat right swipe from the center opens the drawer")
+expect(ChatDrawerInteraction.shouldTrack(startX: 320, translationX: 150,
+                                         translationY: 5, open: false, width: 330,
+                                         allowFullCard: true),
+       "chat right swipe near the right edge also works")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 175, translationX: 18,
+                                          translationY: 85, open: false, width: 330,
+                                          allowFullCard: true),
+       "vertical history scrolling wins over a full-card return")
+expect(!ChatDrawerInteraction.shouldTrack(startX: 175, translationX: -160,
+                                          translationY: 2, open: false, width: 330,
+                                          allowFullCard: true),
+       "leftward horizontal child scrolling must not open the drawer")
+expect(!ChatBackAxisPolicy.claimsReturn(horizontal: 3, vertical: 95),
+       "UIKit transcript keeps vertical scroll ownership")
+expect(ChatBackAxisPolicy.claimsReturn(horizontal: 130, vertical: 4),
+       "UIKit transcript ignores vertical activity during rightward card back")
 expect(!ChatDrawerInteraction.shouldTrack(startX: 8, translationX: 20, translationY: 100,
                                          open: false, width: 330),
        "vertical scroll stays owned by the transcript")

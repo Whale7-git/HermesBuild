@@ -63,6 +63,7 @@ struct ChatScrollCommand: Equatable {
 /// Evicting rich text never discards its measured height. Recreated hosts reserve
 /// that exact space while Textual completes its initial empty parsing pass.
 struct StableChatScrollView: UIViewControllerRepresentable {
+    @Environment(\.isScrollEnabled) private var isScrollEnabled
     let snapshot: ChatListSnapshot
     let isGenerating: Bool
     let command: ChatScrollCommand
@@ -88,6 +89,15 @@ struct StableChatScrollView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: ChatScrollController, context: Context) {
+        // SwiftUI's scrollDisabled is not automatically forwarded to our
+        // UIKit UIScrollView. Freeze it only while the horizontal card return
+        // owns the gesture, without reconfiguring the transcript snapshot.
+        if controller.scrollView.isScrollEnabled != isScrollEnabled {
+            controller.scrollView.isScrollEnabled = isScrollEnabled
+            // Disabling scrolling may cancel UIKit's pan without calling
+            // scrollViewDidEndDragging; reset the axis guard on reenable.
+            if isScrollEnabled { controller.horizontalBackPan = false }
+        }
         controller.receive(self)
     }
 }
@@ -188,6 +198,7 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
     var current: StableChatScrollView?
     var pending: StableChatScrollView?
     var policy = ChatScrollState()
+    var horizontalBackPan = false
     private var lastCommand = 0
     var navigationTarget: ChatScrollCommand?
     var navigationDetached = false
@@ -244,6 +255,9 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
         scrollView.backgroundColor = .clear
         scrollView.delegate = self
         scrollView.alwaysBounceVertical = true
+        // UIKit locks to the first strong pan axis. A card-right drag must
+        // not simultaneously move the transcript up or down.
+        scrollView.isDirectionalLockEnabled = true
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.automaticallyAdjustsScrollIndicatorInsets = false
         scrollView.keyboardDismissMode = .interactive
