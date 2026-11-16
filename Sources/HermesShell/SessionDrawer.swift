@@ -16,6 +16,7 @@ struct SessionListPane: View {
     var onBrowseAll: (() -> Void)? = nil
     var backToDrawer = false
     var onBrowseAllInstances: (() -> Void)? = nil
+    var onBrowseAllTasks: (() -> Void)? = nil
     var startSearching = false
 
     @State private var query = ""
@@ -612,6 +613,22 @@ struct SessionListPane: View {
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel("浏览全部 Hermes 实例的会话")
+            }
+
+            if app.instances.count > 1, let onBrowseAllTasks {
+                Button(action: onBrowseAllTasks) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "list.bullet.rectangle.portrait")
+                        Text("全部实例任务").font(.subheadline.weight(.medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("浏览全部 Hermes 实例的任务工作台")
             }
 
             Button {
