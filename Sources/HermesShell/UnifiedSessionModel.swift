@@ -202,6 +202,29 @@ final class UnifiedSessionModel: ObservableObject {
 
     func waitForRefresh() async { await task?.value }
 
+    /// Adopt only a successful active-host list refresh already performed by
+    /// AppState (e.g. a Gateway run-state event). No duplicate GET.
+    func adoptActiveList(identity: UnifiedSessionIdentity, instanceName: String,
+                         rows: [SessionSummary], refreshedAt: Date?) {
+        guard cachedKey?.query == "",
+              cachedKey?.identities.contains(identity) == true,
+              !loading.contains(identity) else { return }
+        let previous = lastLists[identity]
+        guard previous != rows else { return }
+        lastLists[identity] = rows
+        let local = rows.filter { $0.archived != true }.map { summary in
+            UnifiedSessionRecord(identity: identity, instanceName: instanceName,
+                                 session: summary, excerpt: summary.preview,
+                                 matchedFullBody: false)
+        }
+        sections[identity] = local
+        if let refreshedAt {
+            lastSuccess[CacheKey(identity: identity, query: "")] = refreshedAt
+        }
+        hasResolvedSnapshot = true
+        publish()
+    }
+
     /// Retry exactly one failed source. Other hosts' loading flags, rows and
     /// search results are never cleared or fetched again by this action.
     func retry(source: UnifiedSessionSource, query: String) async {

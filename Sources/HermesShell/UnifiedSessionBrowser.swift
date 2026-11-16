@@ -14,6 +14,7 @@ struct UnifiedSessionBrowser: View {
     @Binding var query: String
     @Binding var filter: Int
     @State private var navigationError: String?
+    @State private var userRefreshing = false
 
     /// Rotate the dataset on endpoint edits, account retirement or instance deletion.
     /// The active instance's switching generation is intentionally absent:
@@ -88,10 +89,23 @@ struct UnifiedSessionBrowser: View {
                 Menu {
                     Button("当前实例会话", systemImage: "server.rack", action: onSingleInstance)
                     Button("刷新全部实例", systemImage: "arrow.clockwise") {
-                        center.start(sources: sources(), query: query)
+                        guard !userRefreshing else { return }
+                        userRefreshing = true
+                        Task {
+                            let run = center.start(sources: sources(), query: query)
+                            await run.value
+                            userRefreshing = false
+                        }
                     }
                 } label: {
-                    Image(systemName: "ellipsis").frame(width: 44, height: 44)
+                    HStack(spacing: 4) {
+                        if userRefreshing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "ellipsis")
+                        }
+                    }
+                    .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("切换浏览范围与刷新")
             }

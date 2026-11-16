@@ -338,6 +338,16 @@ struct RootView: View {
             Task { await app.refresh() }
         }
         .onChange(of: app.sessions.map(\.sessionId)) { _, _ in openPendingNotificationTarget() }
+        .onChange(of: app.sessions) { _, updated in
+            guard app.hasLoadedSessions else { return }
+            let endpoint = app.historyInstanceID
+            let identity = UnifiedSessionIdentity(
+                instanceID: app.active.id, endpointIdentity: endpoint,
+                accountScope: app.historyAccountScope)
+            unifiedCenter.adoptActiveList(
+                identity: identity, instanceName: app.active.name,
+                rows: updated, refreshedAt: app.lastSessionRefresh)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NotificationNavigation.changed)) { _ in
             openPendingNotificationTarget()
         }
