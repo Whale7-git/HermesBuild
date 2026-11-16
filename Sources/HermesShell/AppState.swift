@@ -317,10 +317,14 @@ final class AppState: ObservableObject {
         prepareTaskDerivedState()
         prepareTaskAcknowledgements()
         guard visibleTasksDirty else { return }
-        visibleTasks = SessionTaskCenter.filteringAcknowledged(
+        let nextVisible = SessionTaskCenter.filteringAcknowledged(
             taskDerivedState.summaries,
             observations: sessionTaskObservations,
             acknowledgements: taskAcknowledgements)
+        // Metadata edits (title, pin, model, timestamp) must rebuild home
+        // sections, but must NOT invalidate observers of the task revision.
+        let tasksChanged = nextVisible != visibleTasks
+        visibleTasks = nextVisible
         visibleByID = Dictionary(visibleTasks.map { ($0.sessionID, $0) },
                                  uniquingKeysWith: { first, _ in first })
         visibleHomeAll = SessionHomeSections(sessions: sessions, taskSummaries: visibleTasks)
@@ -328,7 +332,7 @@ final class AppState: ObservableObject {
             sessions: sessions.filter { $0.pinned == true },
             taskSummaries: visibleTasks)
         visibleTasksDirty = false
-        visibleRevision &+= 1
+        if tasksChanged { visibleRevision &+= 1 }
     }
 
     func taskSummary(for sessionID: String) -> SessionTaskSummary? {

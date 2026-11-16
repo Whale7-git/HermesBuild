@@ -500,7 +500,7 @@
     "scripts/verify-candidate.py": "364ae99aa76722f3481646d450c7a969a59abbe01308b2680653be25992a5216",
     "scripts/write-candidate-report.py": "4014baab0d2cd62a3666af63320aac393198b03a7d94abb0cd744a6ee5644cb6",
     "Sources/HermesShell/AddInstanceView.swift": "1a417072b04f1664530b29f5472ea17ef64d1f5499d68d12f37d45dc7ba9b3f4",
-    "Sources/HermesShell/AppState.swift": "0c5e1f93593cb63dda1310e87db9afe724f9c5d19daf4eb134e8e9c4707d87bc",
+    "Sources/HermesShell/AppState.swift": "24442096746bed3e9f51527ac2cae7797e08347184077a48155d33d0a47c2005",
     "Sources/HermesShell/AppTheme.swift": "13b3af4df167214186afa6cea2c81206241632e991e735193fff262f938bcf97",
     "Sources/HermesShell/AttachmentHistory.swift": "528f787bd55dd32c62dd672409f0e6b0eb6416bd15dc33f95e43f87ab3a4c095",
     "Sources/HermesShell/AttachmentImageEditor.swift": "6eed564564b55bffc2d10188c7ae75c9b4e504ad69808b5a6365f4baef2d9355",
