@@ -15,6 +15,7 @@ struct RootView: View {
     // back destination; do not mistake this for opening the root drawer.
     @State private var browserOpen = false
     @State private var browserSearchRequested = false
+    @State private var browserAllInstances = false
     @GestureState private var browserBackDrag: CGFloat = 0
     @State private var homeText = ""
     @State private var homeFocused = false
@@ -114,6 +115,13 @@ struct RootView: View {
                     onBrowseAll: {
                         closeSidebar()
                         browserSearchRequested = false
+                        browserAllInstances = false
+                        browserOpen = true
+                    },
+                    onBrowseAllInstances: {
+                        closeSidebar()
+                        browserSearchRequested = false
+                        browserAllInstances = true
                         browserOpen = true
                     }
                 )
@@ -157,25 +165,43 @@ struct RootView: View {
                         showsDismissSurface: false,
                         onDismiss: {}
                     ) {
-                        SessionListPane(
-                            mode: .page,
-                            selectedID: app.currentSessionID,
-                            onSelect: { session in
-                                browserOpen = false
-                                app.openSession(session)
-                            },
-                            onNew: {
-                                browserOpen = false
-                                startConversation()
-                            },
-                            onSettings: {
-                                browserOpen = false
-                                app.showSettings = true
-                            },
-                            onClose: { browserOpen = false },
-                            startSearching: browserSearchRequested
-                        )
-                        .environmentObject(app)
+                        if browserAllInstances {
+                            UnifiedSessionBrowser(
+                                onClose: { browserOpen = false },
+                                onSingleInstance: { browserAllInstances = false },
+                                onSelect: { record in
+                                    let opened = app.openSessionFromInstance(
+                                        instanceID: record.identity.instanceID,
+                                        endpointIdentity: record.identity.endpointIdentity,
+                                        accountScope: record.identity.accountScope,
+                                        session: record.session)
+                                    if opened { browserOpen = false }
+                                    return opened
+                                }
+                            )
+                            .environmentObject(app)
+                        } else {
+                            SessionListPane(
+                                mode: .page,
+                                selectedID: app.currentSessionID,
+                                onSelect: { session in
+                                    browserOpen = false
+                                    app.openSession(session)
+                                },
+                                onNew: {
+                                    browserOpen = false
+                                    startConversation()
+                                },
+                                onSettings: {
+                                    browserOpen = false
+                                    app.showSettings = true
+                                },
+                                onClose: { browserOpen = false },
+                                onBrowseAllInstances: { browserAllInstances = true },
+                                startSearching: browserSearchRequested
+                            )
+                            .environmentObject(app)
+                        }
                     }
                     .transition(.move(edge: .trailing))
                     .simultaneousGesture(
@@ -320,6 +346,7 @@ struct RootView: View {
                 Button {
                     homeFocused = false
                     browserSearchRequested = true
+                    browserAllInstances = app.instances.count > 1
                     browserOpen = true
                 } label: { ChromeIcon(symbol: "magnifyingglass") }
                 .accessibilityLabel("搜索会话")

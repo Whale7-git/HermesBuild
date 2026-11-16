@@ -14,6 +14,7 @@ struct SessionListPane: View {
     let onSettings: () -> Void
     var onClose: (() -> Void)?
     var onBrowseAll: (() -> Void)? = nil
+    var onBrowseAllInstances: (() -> Void)? = nil
     var startSearching = false
 
     @State private var query = ""
@@ -436,6 +437,12 @@ struct SessionListPane: View {
                 // consumes an entire navigation row on a 340pt canvas.
                 if mode != .drawer || app.instances.count <= 1 {
                     Menu {
+                        if mode == .page && app.instances.count > 1, let onBrowseAllInstances {
+                            Button("全部实例", systemImage: "square.stack.3d.up") {
+                                onBrowseAllInstances()
+                            }
+                            Divider()
+                        }
                         ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
                             Button { app.switchTo(index) } label: {
                                 if index == app.activeIndex { Label(instance.name, systemImage: "checkmark") }
@@ -588,6 +595,23 @@ struct SessionListPane: View {
             }
             .disabled(app.creating)
             .accessibilityLabel("新建对话")
+
+            if mode == .drawer && app.instances.count > 1,
+               let onBrowseAllInstances {
+                Button(action: onBrowseAllInstances) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.stack.3d.up")
+                        Text("全部实例会话").font(.subheadline.weight(.medium))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("浏览全部 Hermes 实例的会话")
+            }
 
             Button {
                 showsSearch = true
