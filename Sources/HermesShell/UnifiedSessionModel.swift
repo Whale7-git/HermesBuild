@@ -232,6 +232,12 @@ final class UnifiedSessionModel: ObservableObject {
         return running
     }
 
+    /// Timestamp of the last successful FULL list read for this exact scope.
+    /// Search results do not certify task status; failed reads never advance it.
+    func lastSuccessfulListRefresh(for identity: UnifiedSessionIdentity) -> Date? {
+        lastSuccess[CacheKey(identity: identity, query: "")]
+    }
+
     func waitForRefresh() async { await task?.value }
 
     /// Adopt only a successful active-host list refresh already performed by
