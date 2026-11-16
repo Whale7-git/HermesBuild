@@ -750,7 +750,7 @@
     "docs/build185-session-navigation.md": "95cc151166bd4e7295d3171bbc2d2cacdc219c89df7d021b728c08d466a6617a",
     "Sources/HermesShell/UnifiedSessionModel.swift": "ab081870808d4ae92e579110071548a110357292be4856f44f056e4dfa8c096d",
     "Sources/HermesShell/UnifiedSessionBrowser.swift": "3295ec0f946eef22ed55af811e6f1cf96ec6d18cf95753538359512adf46d772",
-    "tests/discovery/UnifiedSessionTests.swift": "25900c1b24160123354c4d4ab3faf3dc9b013780ec282fa0b04d58cb12d91744",
+    "tests/discovery/UnifiedSessionTests.swift": "e3d12181033a758ae8bbca82c5b5594cb9238b758259b379116236848bc0d48d",
     "tests/discovery/main.swift": "d2604785935e0711dcabe1a481445beee775342048a0f5727be39faece3a7847",
     "docs/build186-unified-sessions.md": "da04a1613553a0089967d2f4d80bd0bec50e400f78f8f9f07ae4e3bb9255f1b3",
     "docs/build187-unified-browser-hotfix.md": "145e117cee180f4c1d3b4889ba8cd3d26678dac11cb06e012f80febdae8720ab",
