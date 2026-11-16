@@ -258,10 +258,12 @@ struct ModelCatalog: Equatable {
     /// 当前会话模型在目录里对应的那一项，用于给输入栏显示真实标签。
     func option(matching model: String?, provider: String?) -> ModelOption? {
         guard let model, !model.isEmpty else { return nil }
-        if let provider, !provider.isEmpty,
-           let exact = options.first(where: { $0.model == model && ($0.providerID ?? "") == provider }) {
-            return exact
+        if let provider, !provider.isEmpty {
+            // An explicit provider must NEVER silently resolve to a model
+            // offered by a different provider.
+            return options.first { $0.model == model && ($0.providerID ?? "") == provider }
         }
-        return options.first { $0.model == model }
+        let candidates = options.filter { $0.model == model }
+        return candidates.count == 1 ? candidates[0] : nil
     }
 }

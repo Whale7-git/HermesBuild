@@ -218,7 +218,10 @@ struct NativeChatView: View {
     /// 输入栏显示真实模型标签；目录未读到或会话无模型时退回“默认模型”。
     var modelLabel: String {
         let current = model.sessionModel ?? app.currentSession?.model
-        if let option = app.modelCatalog?.option(matching: current, provider: nil) { return option.label }
+        if let option = app.modelCatalog?.option(matching: current,
+                                                  provider: model.sessionProvider) {
+            return option.label
+        }
         return current?.isEmpty == false ? current! : "默认模型"
     }
 

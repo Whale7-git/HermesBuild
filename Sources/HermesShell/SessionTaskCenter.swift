@@ -17,10 +17,37 @@ enum SessionTaskSignal: String, Codable, CaseIterable, Sendable {
 struct SessionTaskObservation: Codable, Equatable, Sendable {
     var signals: Set<SessionTaskSignal>
     var observedAt: Double
+    /// Added in build183; nil means a legacy build182 record, whose single
+    /// observedAt timestamp is used for every signal until its next update.
+    var signalVersions: [String: Double]? = nil
 
-    init(signals: Set<SessionTaskSignal>, observedAt: Date = Date()) {
+    init(signals: Set<SessionTaskSignal>, observedAt: Date = Date(),
+         signalVersions: [String: Double]? = nil) {
         self.signals = signals
         self.observedAt = observedAt.timeIntervalSince1970
+        self.signalVersions = signalVersions ?? Dictionary(
+            uniqueKeysWithValues: signals.map { ($0.rawValue, observedAt.timeIntervalSince1970) })
+    }
+
+    func version(for signal: SessionTaskSignal) -> Double {
+        signalVersions?[signal.rawValue] ?? observedAt
+    }
+
+    /// Unrelated signal changes MUST NOT invalidate a prior recovery
+    /// acknowledgement. A removed/reintroduced signal receives a new version.
+    static func updating(_ previous: SessionTaskObservation?,
+                         signals: Set<SessionTaskSignal>,
+                         at date: Date = Date()) -> SessionTaskObservation {
+        var versions: [String: Double] = [:]
+        for signal in signals {
+            if let previous, previous.signals.contains(signal) {
+                versions[signal.rawValue] = previous.version(for: signal)
+            } else {
+                versions[signal.rawValue] = date.timeIntervalSince1970
+            }
+        }
+        return SessionTaskObservation(signals: signals, observedAt: date,
+                                      signalVersions: versions)
     }
 }
 

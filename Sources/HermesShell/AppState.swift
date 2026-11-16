@@ -65,7 +65,7 @@ final class AppState: ObservableObject {
     @Published var instances: [HermesInstance]
     @Published var activeIndex: Int
     @Published var sessions: [SessionSummary] = [] {
-        didSet { taskDerivedDirty = true }
+        didSet { taskDerivedDirty = true; visibleTasksDirty = true }
     }
     @Published var loadingSessions = false
     /// Empty is authoritative only after a successful fetch for this scope.
@@ -124,6 +124,11 @@ final class AppState: ObservableObject {
         instanceID: String,
         accountScope: String
     ) -> Bool {
+        guard !damagedTaskStore else {
+            sessionTaskPersistenceWarning =
+                "任务状态存储损坏，已保留原始记录；请在侧栏明确清除损坏数据后重新同步。"
+            return false
+        }
         let saved = SessionTaskStore.save(
             values, instanceID: instanceID, accountScope: accountScope)
         if saved {
@@ -169,9 +174,16 @@ final class AppState: ObservableObject {
     /// Server `is_streaming` is merged separately, so this dictionary only
     /// contains facts this device could actually observe inside a session.
     @Published private(set) var sessionTaskObservations: [String: SessionTaskObservation] = [:] {
-        didSet { taskDerivedDirty = true }
+        didSet { taskDerivedDirty = true; visibleTasksDirty = true }
     }
     private var taskDerivedDirty = true
+    private var visibleTasksDirty = true
+    private var visibleTasks: [SessionTaskSummary] = []
+    private var visibleByID: [String: SessionTaskSummary] = [:]
+    private var visibleHomeAll = SessionHomeSections(sessions: [])
+    private var visibleHomePinned = SessionHomeSections(sessions: [])
+    private var visibleRevision: UInt64 = 0
+    private var damagedTaskStore = false
     private var taskDerivedState = SessionTaskDerivedState()
     /// 通知投递。默认走系统实现，测试可注入替身。
     let notifier: any TaskNotificationDelivering
@@ -184,7 +196,10 @@ final class AppState: ObservableObject {
     /// request of that kind is resolved.
     private var requestTaskSignals: Set<String> = []
     /// 用户对「需要处理」任务的本地确认。只影响展示，不改动持久化信号。
-    @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = []
+    @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = [] {
+        didSet { visibleTasksDirty = true }
+    }
+    @Published private(set) var taskAcknowledgementWarning: String?
     private var taskAckDirty = true
     private var taskAckLoaded = false
     /// 仅一次领取：先落草稿，重生成才自动发送，切实例即作废。
@@ -250,6 +265,30 @@ final class AppState: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private let sessionRefreshClock: SessionRefreshClock
     private var createGeneration = UUID()
+    /// Explicit user navigation revokes the right of an old create response
+    /// to change currentSessionID. A returned SID is still recorded for
+    /// recovery even if the old request has lost navigation ownership.
+    private func invalidateCreationNavigation() {
+        createGeneration = UUID()
+        creating = false
+        homeTurnClaim.cancel()
+        homeAttachmentSessionID = nil
+    }
+
+    private func retainKnownCreatedSession(_ sid: String, instanceID: String,
+                                           accountScope: String) {
+        let persisted = CreatedSessionRecoveryStore.remember(
+            sid, instanceID: instanceID, accountScope: accountScope)
+        if instanceID == historyInstanceID && accountScope == historyAccountScope {
+            if !sessions.contains(where: { $0.sessionId == sid }) {
+                sessions.insert(.placeholder(id: sid), at: 0)
+            }
+            if !persisted {
+                homeSendError = "远端会话已创建，但恢复标识保存失败；请刷新会话列表核对。"
+            }
+        }
+    }
+
     private let sessionRefreshPolicy: SessionRefreshPolicy
 
     /// 搜索结果或归档行打开的会话可能不在普通列表里；
@@ -274,21 +313,43 @@ final class AppState: ObservableObject {
         return taskDerivedState.summaries
     }
 
-    func taskSummary(for sessionID: String) -> SessionTaskSummary? {
+    private func prepareVisibleTasks() {
         prepareTaskDerivedState()
-        return taskDerivedState.byID[sessionID]
+        prepareTaskAcknowledgements()
+        guard visibleTasksDirty else { return }
+        let nextVisible = SessionTaskCenter.filteringAcknowledged(
+            taskDerivedState.summaries,
+            observations: sessionTaskObservations,
+            acknowledgements: taskAcknowledgements)
+        // Metadata edits (title, pin, model, timestamp) must rebuild home
+        // sections, but must NOT invalidate observers of the task revision.
+        let tasksChanged = nextVisible != visibleTasks
+        visibleTasks = nextVisible
+        visibleByID = Dictionary(visibleTasks.map { ($0.sessionID, $0) },
+                                 uniquingKeysWith: { first, _ in first })
+        visibleHomeAll = SessionHomeSections(sessions: sessions, taskSummaries: visibleTasks)
+        visibleHomePinned = SessionHomeSections(
+            sessions: sessions.filter { $0.pinned == true },
+            taskSummaries: visibleTasks)
+        visibleTasksDirty = false
+        if tasksChanged { visibleRevision &+= 1 }
+    }
+
+    func taskSummary(for sessionID: String) -> SessionTaskSummary? {
+        prepareVisibleTasks()
+        return visibleByID[sessionID]
     }
 
     /// Both filters are cached together; toggling the filter only selects a
     /// snapshot, never recomputes four sections inside individual row readers.
     func homeSections(pinnedOnly: Bool) -> SessionHomeSections {
-        prepareTaskDerivedState()
-        return pinnedOnly ? taskDerivedState.pinnedOnly : taskDerivedState.all
+        prepareVisibleTasks()
+        return pinnedOnly ? visibleHomePinned : visibleHomeAll
     }
 
     var taskSummaryRevision: UInt64 {
-        prepareTaskDerivedState()
-        return taskDerivedState.revision
+        prepareVisibleTasks()
+        return visibleRevision
     }
     var taskDerivationCount: UInt64 {
         prepareTaskDerivedState()
@@ -316,7 +377,8 @@ final class AppState: ObservableObject {
         if persisted.isEmpty {
             sessionTaskObservations.removeValue(forKey: sessionID)
         } else {
-            sessionTaskObservations[sessionID] = SessionTaskObservation(signals: persisted)
+            sessionTaskObservations[sessionID] = SessionTaskObservation.updating(
+                sessionTaskObservations[sessionID], signals: persisted)
         }
         persistSessionTaskObservations(
             sessionTaskObservations, instanceID: instance, accountScope: account)
@@ -366,8 +428,8 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
-        homeTurnClaim.cancel()
-        homeAttachmentSessionID = nil
+        invalidateCreationNavigation()
+        homeSendError = nil
         openedSession = session
         currentSessionID = session.sessionId
         // 进入会话即视为已读，不再显示完成标记。
@@ -375,8 +437,8 @@ final class AppState: ObservableObject {
     }
 
     func closeSession() {
-        homeTurnClaim.cancel()
-        homeAttachmentSessionID = nil
+        invalidateCreationNavigation()
+        homeSendError = nil
         currentSessionID = nil
         openedSession = nil
     }
@@ -924,11 +986,31 @@ final class AppState: ObservableObject {
     }
 
     private func loadSessionTasks() {
-        sessionTaskObservations = SessionTaskStore.load(
-            instanceID: historyInstanceID,
-            accountScope: historyAccountScope
-        )
-        sessionTaskPersistenceWarning = nil
+        switch SessionTaskStore.inspect(instanceID: historyInstanceID,
+                                        accountScope: historyAccountScope) {
+        case .missing:
+            damagedTaskStore = false
+            sessionTaskObservations = [:]
+            sessionTaskPersistenceWarning = nil
+        case .loaded(let rows):
+            damagedTaskStore = false
+            sessionTaskObservations = rows
+            sessionTaskPersistenceWarning = nil
+        case .corrupt:
+            damagedTaskStore = true
+            sessionTaskObservations = [:]
+            sessionTaskPersistenceWarning =
+                "任务状态记录损坏，已保留原始数据。不会静默覆盖；可在侧栏选择清除损坏记录。"
+            RuntimeLogRecorder.shared.recordApp(.error, "task-store", "task observation decode failed")
+        }
+    }
+
+    var hasDamagedTaskStore: Bool { damagedTaskStore }
+
+    func clearDamagedTaskStore() {
+        guard damagedTaskStore else { return }
+        SessionTaskStore.remove(instanceID: historyInstanceID, accountScope: historyAccountScope)
+        loadSessionTasks()
     }
 
     // MARK: - 任务确认（本地）
@@ -972,14 +1054,27 @@ final class AppState: ObservableObject {
         if pruned.count != decoded.count { persistTaskAcknowledgements() }
     }
 
-    private func persistTaskAcknowledgements() {
+    @discardableResult
+    private func persistTaskAcknowledgements() -> Bool {
         let key = taskAckDefaultsKey
         if taskAcknowledgements.isEmpty {
             UserDefaults.standard.removeObject(forKey: key)
-            return
+            let succeeded = UserDefaults.standard.data(forKey: key) == nil
+            taskAcknowledgementWarning = succeeded ? nil : "任务确认清除失败，重启后可能重新显示。"
+            return succeeded
         }
-        guard let data = try? JSONEncoder().encode(taskAcknowledgements) else { return }
+        guard let data = try? JSONEncoder().encode(taskAcknowledgements) else {
+            taskAcknowledgementWarning = "任务确认编码失败，当前结果尚未保存。"
+            RuntimeLogRecorder.shared.recordApp(.error, "task-ack", "encoding failed")
+            return false
+        }
         UserDefaults.standard.set(data, forKey: key)
+        let succeeded = UserDefaults.standard.data(forKey: key) == data
+        taskAcknowledgementWarning = succeeded ? nil : "任务确认保存失败，重启后可能重新显示。"
+        if !succeeded {
+            RuntimeLogRecorder.shared.recordApp(.error, "task-ack", "readback mismatch")
+        }
+        return succeeded
     }
 
     /// 标记一条「需要处理」任务已处理。只有 `recoveryIssue` 允许。
@@ -991,13 +1086,13 @@ final class AppState: ObservableObject {
         // 同一 (会话, 信号, 观察时间) 只留一条。
         let exists = taskAcknowledgements.contains {
             $0.sessionID == sessionID && $0.signal == signal
-                && $0.observedAt == observation.observedAt
+                && $0.observedAt == observation.version(for: signal)
         }
         guard !exists else { return }
         let now = Date().timeIntervalSince1970
         taskAcknowledgements.append(
             TaskAcknowledgement(sessionID: sessionID, signal: signal,
-                                observedAt: observation.observedAt, acknowledgedAt: now))
+                                observedAt: observation.version(for: signal), acknowledgedAt: now))
         taskAcknowledgements = TaskAcknowledgement.pruning(taskAcknowledgements, now: now)
         taskDerivedDirty = true
         persistTaskAcknowledgements()
@@ -1032,6 +1127,7 @@ final class AppState: ObservableObject {
     /// 切作用域：换 key，丢掉内存里的旧集合。
     private func resetTaskAcknowledgements() {
         taskAcknowledgements = []
+        taskAcknowledgementWarning = nil
         taskAckDirty = true
         taskAckLoaded = false
         taskDerivedDirty = true
@@ -1043,12 +1139,8 @@ final class AppState: ObservableObject {
     /// `SessionTaskCenter.filteringAcknowledged`）。原实现按会话整条过滤，
     /// 于是同一会话里「已确认的恢复问题」和「仍需你确认的审批」一起消失。
     var visibleTaskSummaries: [SessionTaskSummary] {
-        prepareTaskDerivedState()
-        prepareTaskAcknowledgements()
-        return SessionTaskCenter.filteringAcknowledged(
-            taskDerivedState.summaries,
-            observations: sessionTaskObservations,
-            acknowledgements: taskAcknowledgements)
+        prepareVisibleTasks()
+        return visibleTasks
     }
 
     /// 「已处理」分区的内容：仍有效的确认，附带会话标题。
@@ -1859,9 +1951,16 @@ final class AppState: ObservableObject {
                     accountScope: historyAccountScope
                 )
             }
-            sessions = next
+            // Known SIDs from a partially completed create stay accessible
+            // until the server list contains them. This is a recovery hint,
+            // not evidence that the Session is still present remotely.
+            let outstanding = CreatedSessionRecoveryStore.reconcile(
+                authoritative: Set(next.map(\.sessionId)),
+                instanceID: historyInstanceID, accountScope: historyAccountScope)
+            let visible = next + outstanding.map { SessionSummary.placeholder(id: $0) }
+            sessions = visible
             hasLoadedSessions = true
-            rememberSessionList(next, scope: sessionListScopeKey)
+            rememberSessionList(visible, scope: sessionListScopeKey)
             let refreshedAt = Date()
             sessionRefreshClock.recordSuccess(
                 scope: historyInstanceID + "|" + historyAccountScope,
@@ -1984,7 +2083,9 @@ final class AppState: ObservableObject {
             : HomeTurnPolicy.canStartAttachment(creating: creating,
                                                 needsSetup: needsInstanceSetup)
         guard eligible, !clearingHistory, !needsLogin else { return false }
-        if let option {
+        if let option, api.capabilities != .webUI {
+            // Gateway create accepts only a model ID. WebUI activation is a
+            // separate provider-aware request after Session creation.
             let count = modelCatalog?.options.filter { $0.model == option.model }.count ?? 0
             guard HomeTurnPolicy.modelIsUnambiguous(option.model, matchingCount: count) else {
                 homeSendError = "同名模型无法区分 provider；请先新建会话，再选择模型。"
@@ -2000,17 +2101,39 @@ final class AppState: ObservableObject {
         creating = true
         homeSendError = nil
         defer { if createGeneration == generation { creating = false } }
+        var createdSID: String?
         do {
-            let sid = try await requestAPI.createSession(title: nil, model: option?.model)
+            let sid = try await requestAPI.createSession(
+                title: nil, model: requestAPI.capabilities == .webUI ? nil : option?.model)
+            createdSID = sid
             guard isCurrent(scope), createGeneration == generation,
-                  !Task.isCancelled else { return false }
+                  !Task.isCancelled else {
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                return false
+            }
+            if let option, requestAPI.capabilities == .webUI {
+                // The WebUI create endpoint ignores model/provider. Only a
+                // verified session-update + authoritative history snapshot
+                // may arm the first automatic chat POST.
+                try await HomeModelActivation.confirmWebUI(
+                    backend: requestAPI, sessionID: sid, option: option)
+                guard isCurrent(scope), createGeneration == generation,
+                      !Task.isCancelled else {
+                    retainKnownCreatedSession(sid, instanceID: instanceID,
+                                              accountScope: accountScope)
+                    return false
+                }
+            }
             let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
                 sessionID: sid, legacyBaseURL: requestAPI.webConsoleBaseURL.absoluteString,
                 fileStore: LocalDataFileStore(instanceID: instanceID,
                     accountScope: accountScope, sessionID: sid))
             let saved = store.save(text)
             guard saved.succeeded else {
-                homeSendError = "会话已创建，但本地草稿保存失败；消息没有发送。请保留输入内容并检查设备存储。"
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                homeSendError = "远端会话已创建，但草稿保存失败；消息未发送。请保留输入内容，并在会话列表中核对新会话。"
                 return false
             }
             if sendImmediately {
@@ -2031,11 +2154,14 @@ final class AppState: ObservableObject {
             currentSessionID = sid
             return true
         } catch {
+            if let createdSID {
+                retainKnownCreatedSession(createdSID, instanceID: instanceID,
+                                          accountScope: accountScope)
+            }
             guard isCurrent(scope), createGeneration == generation else { return false }
-            // An uncertain session-creation HTTP response must not be retried
-            // automatically. Unlike a chat POST, an empty orphan session is
-            // harmless; retaining the user's text is the critical invariant.
-            homeSendError = "新建会话未确认，消息未发送：\(error.localizedDescription)"
+            homeSendError = createdSID == nil
+                ? "新建结果不明确，远端可能已创建会话。请先刷新会话列表核对，勿直接重复发送：\(error.localizedDescription)"
+                : "会话已创建，但后续处理未完成；原消息未发送。请在会话列表核对：\(error.localizedDescription)"
             return false
         }
     }
@@ -2059,6 +2185,8 @@ final class AppState: ObservableObject {
         homeTurnClaim.cancel()
         homeAttachmentSessionID = nil
         let scope = actionScope
+        let instanceID = historyInstanceID
+        let accountScope = historyAccountScope
         let requestAPI = api
         let generation = UUID()
         createGeneration = generation
@@ -2066,11 +2194,18 @@ final class AppState: ObservableObject {
         defer { if createGeneration == generation { creating = false } }
         do {
             let sid = try await requestAPI.createSession(title: nil, model: nil)
-            guard isCurrent(scope), createGeneration == generation else { return }
+            guard isCurrent(scope), createGeneration == generation else {
+                retainKnownCreatedSession(sid, instanceID: instanceID,
+                                          accountScope: accountScope)
+                return
+            }
+            if !sessions.contains(where: { $0.sessionId == sid }) {
+                sessions.insert(.placeholder(id: sid), at: 0)
+            }
             currentSessionID = sid
         } catch {
             guard isCurrent(scope), createGeneration == generation else { return }
-            errorText = error.localizedDescription
+            errorText = "新建会话结果不明确，请刷新会话列表核对后再操作：\(error.localizedDescription)"
         }
     }
 }

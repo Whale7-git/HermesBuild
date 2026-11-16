@@ -115,6 +115,10 @@ let persistedFacts = [
 ]
 defaults.set(try JSONEncoder().encode(persistedFacts), forKey: storeKey)
 let loaded = SessionTaskStore.load(instanceID: "i", accountScope: "a", defaults: defaults)
+if case .loaded(let rows) = SessionTaskStore.inspect(
+    instanceID: "i", accountScope: "a", defaults: defaults) {
+    expect(rows.count == loaded.count, "valid task record has an explicit loaded result")
+} else { expect(false, "valid task record must not be reported corrupt") }
 expect(loaded.values.allSatisfy { !$0.signals.contains(.running) },
        "load already filters running even from legacy persisted data")
 expect(loaded["approval"]?.signals == [.waitingForApproval]
@@ -127,6 +131,16 @@ expect(SessionTaskStore.load(instanceID: "other", accountScope: "a", defaults: d
        "task store is isolated by both instance and account")
 let pruned = SessionTaskCenter.prune(observations: loaded, liveSessionIDs: ["approval", "verify"])
 expect(Set(pruned.keys) == ["approval", "verify"], "prune removes absent IDs and empty facts")
+// Bad JSON must not become an authoritative empty state or get overwritten
+// until the user explicitly clears the damaged record.
+let corruptBytes = Data("{not-valid-json".utf8)
+defaults.set(corruptBytes, forKey: storeKey)
+if case .corrupt = SessionTaskStore.inspect(instanceID: "i", accountScope: "a",
+                                           defaults: defaults) {
+    expect(true, "corruption distinguished from missing state")
+} else { expect(false, "corrupt task record must report a load error") }
+expect(defaults.data(forKey: storeKey) == corruptBytes,
+       "failed decode preserves original bytes for recovery")
 SessionTaskStore.remove(instanceID: "i", accountScope: "a", defaults: defaults)
 expect(SessionTaskStore.load(instanceID: "i", accountScope: "a", defaults: defaults).isEmpty,
        "explicit scope cleanup persists across store reload")
