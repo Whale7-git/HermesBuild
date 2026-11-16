@@ -39,6 +39,9 @@ struct UnifiedSessionSource {
     let load: @MainActor () async throws -> [SessionSummary]
     /// Only provided for a backend that genuinely supports server full-body search.
     let searchFullBody: (@MainActor (String) async throws -> [SessionSearchHit])?
+    /// AppState's last successful scoped list read. Nonempty full-body searches
+    /// are never treated as already resolved by this timestamp.
+    var cachedAt: Date? = nil
 }
 
 /// Scoped, display-only discovery. A full refresh owns one generation and
@@ -63,6 +66,16 @@ final class UnifiedSessionModel: ObservableObject {
         let query: String
     }
 
+    private struct CacheKey: Hashable {
+        let identity: UnifiedSessionIdentity
+        let query: String
+    }
+
+    private var cachedKey: RequestKey?
+    private var lastSuccess: [CacheKey: Date] = [:]
+    private let cacheLifetime: TimeInterval = 300
+    @Published private(set) var hasResolvedSnapshot = false
+
     private var generation = UUID()
     private var requestKey: RequestKey?
     private var task: Task<Void, Never>?
@@ -80,23 +93,70 @@ final class UnifiedSessionModel: ObservableObject {
         loading = []
     }
 
+    /// For automatic entry: serve scoped rows first, and fetch only sources
+    /// missing a fresh successful snapshot. The model is owned by RootView,
+    /// not the transient browser View; returning within TTL does no GET.
+    @discardableResult
+    func refreshIfNeeded(sources: [UnifiedSessionSource], query: String,
+                         now: Date = Date()) -> Task<Void, Never>? {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = RequestKey(identities: sources.map(\.identity), query: term)
+        if cachedKey != key {
+            // Cancel the previous query even when this new one is fully cached.
+            // Otherwise a stale completion can still publish in the new view.
+            cancel()
+            sections = [:]
+            cachedKey = key
+            lastSuccess = lastSuccess.filter { $0.key.query == term }
+            for source in sources {
+                if let rows = lastLists[source.identity] ?? source.cached {
+                    sections[source.identity] = Self.localRows(source,
+                                                               messages: rows, query: term)
+                    // A list timestamp is only trustworthy alongside the
+                    // actual cached rows, including a verified empty list.
+                    if term.isEmpty, let date = source.cachedAt {
+                        let itemKey = CacheKey(identity: source.identity, query: term)
+                        if lastSuccess[itemKey] == nil { lastSuccess[itemKey] = date }
+                    }
+                }
+            }
+            publish()
+        }
+        hasResolvedSnapshot = sources.contains { source in
+            lastSuccess[CacheKey(identity: source.identity, query: term)] != nil
+        }
+        let stale = Set(sources.filter { source in
+            guard let at = lastSuccess[CacheKey(identity: source.identity, query: term)],
+                  now.timeIntervalSince(at) >= 0 &&
+                  now.timeIntervalSince(at) < cacheLifetime else { return true }
+            return false
+        }.map(\.identity))
+        if stale.isEmpty { return nil }
+        return start(sources: sources, query: term, only: stale)
+    }
+
     /// All automatic, pull and menu refreshes call this same entry point.
     /// Repeated requests for the same query + scoped sources JOIN the current
     /// task, instead of cancelling it and opening duplicate network requests.
     /// After completion an explicit refresh starts again, preserving visible
     /// rows until their authoritative replacements arrive.
     @discardableResult
-    func start(sources: [UnifiedSessionSource], query: String) -> Task<Void, Never> {
+    func start(sources: [UnifiedSessionSource], query: String,
+               only: Set<UnifiedSessionIdentity>? = nil) -> Task<Void, Never> {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = RequestKey(identities: sources.map(\.identity), query: term)
         if requestKey == key, let task { return task }
-        let sameQueryAndScope = requestKey == key
+        let sameQueryAndScope = cachedKey == key
         cancel()
         requestKey = key
+        cachedKey = key
         let ticket = generation
         let live = Set(key.identities)
+        let targets = sources.filter { only?.contains($0.identity) ?? true }
         lastLists = lastLists.filter { live.contains($0.key) }
-        failures = [:]
+        lastSuccess = lastSuccess.filter { live.contains($0.key.identity) }
+        if only == nil { failures = [:] }
+        else { for target in targets { failures.removeValue(forKey: target.identity) } }
         if !sameQueryAndScope {
             sections = [:]
             for source in sources {
@@ -107,13 +167,13 @@ final class UnifiedSessionModel: ObservableObject {
             }
             publish()
         }
-        loading = live
+        loading = Set(targets.map(\.identity))
         let running = Task { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Outcome.self) { group in
                 var next = 0
-                for _ in 0..<min(3, sources.count) {
-                    let source = sources[next]
+                for _ in 0..<min(3, targets.count) {
+                    let source = targets[next]
                     next += 1
                     group.addTask { @MainActor in
                         await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
@@ -124,9 +184,9 @@ final class UnifiedSessionModel: ObservableObject {
                         group.cancelAll()
                         break
                     }
-                    self.accept(result)
-                    if next < sources.count {
-                        let source = sources[next]
+                    self.accept(result, query: term)
+                    if next < targets.count {
+                        let source = targets[next]
                         next += 1
                         group.addTask { @MainActor in
                             await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
@@ -141,6 +201,29 @@ final class UnifiedSessionModel: ObservableObject {
     }
 
     func waitForRefresh() async { await task?.value }
+
+    /// Adopt only a successful active-host list refresh already performed by
+    /// AppState (e.g. a Gateway run-state event). No duplicate GET.
+    func adoptActiveList(identity: UnifiedSessionIdentity, instanceName: String,
+                         rows: [SessionSummary], refreshedAt: Date?) {
+        guard cachedKey?.query == "",
+              cachedKey?.identities.contains(identity) == true,
+              !loading.contains(identity) else { return }
+        let previous = lastLists[identity]
+        guard previous != rows else { return }
+        lastLists[identity] = rows
+        let local = rows.filter { $0.archived != true }.map { summary in
+            UnifiedSessionRecord(identity: identity, instanceName: instanceName,
+                                 session: summary, excerpt: summary.preview,
+                                 matchedFullBody: false)
+        }
+        sections[identity] = local
+        if let refreshedAt {
+            lastSuccess[CacheKey(identity: identity, query: "")] = refreshedAt
+        }
+        hasResolvedSnapshot = true
+        publish()
+    }
 
     /// Retry exactly one failed source. Other hosts' loading flags, rows and
     /// search results are never cleared or fetched again by this action.
@@ -161,7 +244,7 @@ final class UnifiedSessionModel: ObservableObject {
         let run = Task { [weak self] in
             let result = await Self.loadOutcome(source, query: term, timeout: timeout)
             guard let self, self.generation == ticket, !Task.isCancelled else { return }
-            self.accept(result)
+            self.accept(result, query: term)
         }
         retries[source.identity] = run
         await run.value
@@ -212,11 +295,13 @@ final class UnifiedSessionModel: ObservableObject {
         }
     }
 
-    private func accept(_ outcome: Outcome) {
+    private func accept(_ outcome: Outcome, query: String) {
         loading.remove(outcome.identity)
         if let rows = outcome.records {
             sections[outcome.identity] = rows
             if let list = outcome.list { lastLists[outcome.identity] = list }
+            lastSuccess[CacheKey(identity: outcome.identity, query: query)] = Date()
+            hasResolvedSnapshot = true
             failures.removeValue(forKey: outcome.identity)
         } else {
             failures[outcome.identity] = outcome.error ?? "连接失败"

@@ -147,10 +147,11 @@ enum ChatCardPresentation {
 /// Root drawer drag math must not be reused for this route: back reveals the
 /// previous conversation, whereas the drawer reveals the session manager.
 enum ChatPageBackInteraction {
-    static func shouldTrack(startX: Double, horizontal: Double, vertical: Double) -> Bool {
+    static func shouldTrack(startX: Double, horizontal: Double, vertical: Double,
+                            allowFullCard: Bool = false) -> Bool {
         guard startX.isFinite, horizontal.isFinite, vertical.isFinite else { return false }
-        return startX >= 0 && startX < 32 && horizontal > 0
-            && horizontal > abs(vertical) * 1.35
+        let horizontalEnough = horizontal > 0 && horizontal > abs(vertical) * 1.65
+        return startX >= 0 && (allowFullCard || startX < 32) && horizontalEnough
     }
     static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
         guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }
@@ -158,13 +159,18 @@ enum ChatPageBackInteraction {
     }
 }
 
-/// Pure return-stack policy used by BOTH back-button and edge-swipe actions.
-/// Direct All Instances => chat; Single -> All => Single.
-enum UnifiedBrowserBackNavigation {
-    enum Destination: Equatable { case chat, singleInstance }
+/// The root keeps an ordered browser stack and the actual parent surface.
+/// Switching Hermes backends never changes these navigation identities.
+enum UnifiedBrowserPage: Equatable { case single, all }
+enum UnifiedBrowserSource: Equatable { case chat, drawer }
 
-    static func destination(allInstances: Bool, enteredFromSingle: Bool) -> Destination {
-        allInstances && enteredFromSingle ? .singleInstance : .chat
+enum UnifiedBrowserBackNavigation {
+    enum Destination: Equatable { case chat, drawer, singleInstance }
+
+    static func destination(route: [UnifiedBrowserPage],
+                            source: UnifiedBrowserSource) -> Destination {
+        if route.count > 1 { return .singleInstance }
+        return source == .drawer ? .drawer : .chat
     }
 }
 

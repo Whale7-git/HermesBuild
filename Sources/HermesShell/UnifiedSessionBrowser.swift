@@ -6,13 +6,31 @@ struct UnifiedSessionBrowser: View {
     @EnvironmentObject var app: AppState
     let onClose: () -> Void
     let backToSingleInstance: Bool
+    let backToDrawer: Bool
     let onSingleInstance: () -> Void
     let onSelect: (UnifiedSessionRecord) -> Bool
 
-    @StateObject private var center = UnifiedSessionModel()
-    @State private var query = ""
-    @State private var filter = 0
+    @ObservedObject var center: UnifiedSessionModel
+    @Binding var query: String
+    @Binding var filter: Int
     @State private var navigationError: String?
+    @State private var userRefreshing = false
+
+    /// Explicit initializer: @EnvironmentObject is injected by the parent,
+    /// while the root-owned model and bindings are supplied by RootView.
+    init(center: UnifiedSessionModel, query: Binding<String>, filter: Binding<Int>,
+         onClose: @escaping () -> Void, backToSingleInstance: Bool,
+         backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
+         onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
+        self.center = center
+        self._query = query
+        self._filter = filter
+        self.onClose = onClose
+        self.backToSingleInstance = backToSingleInstance
+        self.backToDrawer = backToDrawer
+        self.onSingleInstance = onSingleInstance
+        self.onSelect = onSelect
+    }
 
     /// Rotate the dataset on endpoint edits, account retirement or instance deletion.
     /// The active instance's switching generation is intentionally absent:
@@ -43,7 +61,7 @@ struct UnifiedSessionBrowser: View {
             } else {
                 search = nil
             }
-            return UnifiedSessionSource(
+            var source = UnifiedSessionSource(
                 identity: identity, instanceName: instance.name,
                 cached: app.unifiedCachedSessions(for: instance),
                 load: {
@@ -51,6 +69,8 @@ struct UnifiedSessionBrowser: View {
                     return try await SessionRefreshLoader.load(api: backend, policy: .standard)
                 },
                 searchFullBody: search)
+            source.cachedAt = app.unifiedCachedSessionDate(for: instance)
+            return source
         }
     }
 
@@ -74,7 +94,8 @@ struct UnifiedSessionBrowser: View {
                 Button(action: onClose) {
                     Image(systemName: "chevron.left").frame(width: 44, height: 44)
                 }
-                .accessibilityLabel(backToSingleInstance ? "返回当前实例会话" : "返回聊天")
+                .accessibilityLabel(backToSingleInstance ? "返回当前实例会话" :
+                                    (backToDrawer ? "返回侧栏" : "返回聊天"))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("全部实例").font(.title2.weight(.semibold))
                     Text("跨 \(app.instances.count) 个 Hermes 实例")
@@ -84,10 +105,23 @@ struct UnifiedSessionBrowser: View {
                 Menu {
                     Button("当前实例会话", systemImage: "server.rack", action: onSingleInstance)
                     Button("刷新全部实例", systemImage: "arrow.clockwise") {
-                        center.start(sources: sources(), query: query)
+                        guard !userRefreshing else { return }
+                        userRefreshing = true
+                        Task {
+                            let run = center.start(sources: sources(), query: query)
+                            await run.value
+                            userRefreshing = false
+                        }
                     }
                 } label: {
-                    Image(systemName: "ellipsis").frame(width: 44, height: 44)
+                    HStack(spacing: 4) {
+                        if userRefreshing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "ellipsis")
+                        }
+                    }
+                    .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("切换浏览范围与刷新")
             }
@@ -140,10 +174,11 @@ struct UnifiedSessionBrowser: View {
                         .padding(.horizontal, AppTheme.pagePadding)
                         .padding(.vertical, 8)
                 }
-                if !center.loading.isEmpty {
+                if !center.loading.isEmpty && !center.hasResolvedSnapshot &&
+                   center.records.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("正在读取 \(center.loading.count) 个实例…")
+                        Text("首次读取会话…")
                     }
                     .font(.footnote).foregroundStyle(.secondary)
                     .padding(.horizontal, AppTheme.pagePadding)
@@ -267,8 +302,11 @@ struct UnifiedSessionBrowser: View {
             }
             guard !Task.isCancelled else { return }
             navigationError = nil
-            let run = center.start(sources: sources(), query: query)
-            await run.value
+            // Cache-first: no network for a fresh query/scope. Expired
+            // snapshots refresh silently without clearing the visible rows.
+            if let run = center.refreshIfNeeded(sources: sources(), query: query) {
+                await run.value
+            }
         }
         .onDisappear { center.cancel() }
     }

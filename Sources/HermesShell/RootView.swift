@@ -15,10 +15,15 @@ struct RootView: View {
     // back destination; do not mistake this for opening the root drawer.
     @State private var browserOpen = false
     @State private var browserSearchRequested = false
-    @State private var browserAllInstances = false
-    /// True only when navigating Single Instance -> All Instances in the
-    /// full-page browser. A direct drawer/home entry returns straight to chat.
-    @State private var browserFromSingle = false
+    @State private var browserRoute: [UnifiedBrowserPage] = []
+    @State private var browserSource: UnifiedBrowserSource = .chat
+    @State private var browserSessionOpen = false
+    @GestureState private var sessionBackDrag: CGFloat = 0
+    @StateObject private var unifiedCenter = UnifiedSessionModel()
+    @State private var unifiedQuery = ""
+    @State private var unifiedFilter = 0
+    private var browserAllInstances: Bool { browserRoute.last == .all }
+    private var browserFromSingle: Bool { browserRoute.count > 1 }
     @GestureState private var browserBackDrag: CGFloat = 0
     @State private var homeText = ""
     @State private var homeFocused = false
@@ -116,17 +121,17 @@ struct RootView: View {
                     },
                     onClose: closeSidebar,
                     onBrowseAll: {
-                        closeSidebar()
+                        browserSource = .drawer
+                        browserRoute = [.single]
                         browserSearchRequested = false
-                        browserAllInstances = false
-                        browserFromSingle = false
+                        browserSessionOpen = false
                         browserOpen = true
                     },
                     onBrowseAllInstances: {
-                        closeSidebar()
+                        browserSource = .drawer
+                        browserRoute = [.all]
                         browserSearchRequested = false
-                        browserAllInstances = true
-                        browserFromSingle = false
+                        browserSessionOpen = false
                         browserOpen = true
                     }
                 )
@@ -140,95 +145,10 @@ struct RootView: View {
                 .allowsHitTesting(sidebarOpen || exposed > 0)
                 .accessibilityHidden(!sidebarOpen)
 
-                ChatCardContainer(
-                    size: geometry.size, topInset: topInset, bottomInset: bottomInset,
-                    progress: progress, translation: exposed,
-                    reduceMotion: reduceMotion,
-                    showsDismissSurface: sidebarOpen,
-                    onDismiss: closeSidebar
-                ) {
-                    Group {
-                        if let sessionID = app.currentSessionID {
-                            chatDestination(ChatRoute(sessionID: sessionID))
-                        } else {
-                            emptyConversation
-                        }
-                    }
-                    .accessibilityHidden(sidebarOpen)
-                }
-
-                // Distinct from the root drawer: this is a pushed, full-page
-                // native-Session browser. The underlying chat remains mounted,
-                // and a rightward edge pan returns to that actual chat page.
-                // When All Instances was pushed from Single Instance,
-                // expose the ACTUAL previous browser while swiping back,
-                // not the chat underneath both pages.
-                if browserOpen && browserAllInstances && browserFromSingle {
-                    ChatCardContainer(
-                        size: geometry.size, topInset: topInset, bottomInset: bottomInset,
-                        progress: 0, translation: 0, reduceMotion: reduceMotion,
-                        showsDismissSurface: false, onDismiss: {}
-                    ) {
-                        singleInstanceBrowser
-                    }
-                }
-
-                if browserOpen {
-                    let backProgress = min(1, max(0,
-                        browserBackDrag / max(1, geometry.size.width)))
-                    ChatCardContainer(
-                        size: geometry.size, topInset: topInset, bottomInset: bottomInset,
-                        progress: backProgress, translation: browserBackDrag,
-                        reduceMotion: reduceMotion,
-                        showsDismissSurface: false,
-                        onDismiss: {}
-                    ) {
-                        if browserAllInstances {
-                            UnifiedSessionBrowser(
-                                onClose: backFromBrowser,
-                                backToSingleInstance: browserFromSingle,
-                                onSingleInstance: {
-                                    browserFromSingle = false
-                                    browserAllInstances = false
-                                },
-                                onSelect: { record in
-                                    let opened = app.openSessionFromInstance(
-                                        instanceID: record.identity.instanceID,
-                                        endpointIdentity: record.identity.endpointIdentity,
-                                        accountScope: record.identity.accountScope,
-                                        session: record.session)
-                                    if opened { browserOpen = false }
-                                    return opened
-                                }
-                            )
-                            .environmentObject(app)
-                        } else {
-                            singleInstanceBrowser
-                        }
-                    }
-                    .transition(.move(edge: .trailing))
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 18)
-                            .updating($browserBackDrag) { value, drag, _ in
-                                guard ChatPageBackInteraction.shouldTrack(
-                                    startX: Double(value.startLocation.x),
-                                    horizontal: Double(value.translation.width),
-                                    vertical: Double(value.translation.height)) else { return }
-                                drag = max(0, value.translation.width)
-                            }
-                            .onEnded { value in
-                                guard ChatPageBackInteraction.shouldTrack(
-                                    startX: Double(value.startLocation.x),
-                                    horizontal: Double(value.translation.width),
-                                    vertical: Double(value.translation.height)) else { return }
-                                if ChatPageBackInteraction.shouldDismiss(
-                                    width: Double(geometry.size.width),
-                                    predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                                    backFromBrowser()
-                                }
-                            }
-                    )
-                }
+                chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
+                              progress: progress, exposed: exposed)
+                precedingBrowserLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset)
+                activeBrowserLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset)
             }
             .frame(width: geometry.size.width, height: fullHeight,
                    alignment: .leading)
@@ -277,6 +197,8 @@ struct RootView: View {
             if app.needsLogin {
                 closeSidebar()
                 browserOpen = false
+                browserSessionOpen = false
+                browserRoute = []
             } else {
                 openPendingNotificationTarget()
             }
@@ -291,6 +213,16 @@ struct RootView: View {
             Task { await app.refresh() }
         }
         .onChange(of: app.sessions.map(\.sessionId)) { _, _ in openPendingNotificationTarget() }
+        .onChange(of: app.sessions) { _, updated in
+            guard app.hasLoadedSessions else { return }
+            let endpoint = app.historyInstanceID
+            let identity = UnifiedSessionIdentity(
+                instanceID: app.active.id, endpointIdentity: endpoint,
+                accountScope: app.historyAccountScope)
+            unifiedCenter.adoptActiveList(
+                identity: identity, instanceName: app.active.name,
+                rows: updated, refreshedAt: app.lastSessionRefresh)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NotificationNavigation.changed)) { _ in
             openPendingNotificationTarget()
         }
@@ -313,16 +245,157 @@ struct RootView: View {
     /// The home screen is a draft workspace, never a server Session until
     /// the user explicitly sends or requests an attachment-capable chat.
 
-    /// Both toolbar and edge-swipe use the same back-stack decision.
-    /// Otherwise a gesture can bypass Single Instance and dismiss to chat.
+
+    /// Compiler-isolated layers: keep the conversation mounted when a Session
+    /// browser is presented, while the card itself remains the swipe surface.
+    private func chatCardLayer(size: CGSize, topInset: CGFloat, bottomInset: CGFloat,
+                               progress: CGFloat, exposed: CGFloat) -> some View {
+    ChatCardContainer(
+        size: size, topInset: topInset, bottomInset: bottomInset,
+        progress: browserSessionOpen
+            ? min(1, max(0, sessionBackDrag / max(1, size.width)))
+            : progress,
+        translation: browserSessionOpen ? sessionBackDrag : exposed,
+        reduceMotion: reduceMotion,
+        showsDismissSurface: sidebarOpen && !browserSessionOpen,
+        onDismiss: closeSidebar
+    ) {
+        Group {
+            if let sessionID = app.currentSessionID {
+                chatDestination(ChatRoute(sessionID: sessionID))
+            } else {
+                emptyConversation
+            }
+        }
+        .accessibilityHidden(sidebarOpen && !browserSessionOpen)
+    }
+    .zIndex(browserSessionOpen ? 3 : 0)
+    .simultaneousGesture(
+        DragGesture(minimumDistance: 26)
+            .updating($sessionBackDrag) { value, drag, _ in
+                guard browserOpen && browserSessionOpen,
+                      ChatPageBackInteraction.shouldTrack(
+                          startX: Double(value.startLocation.x),
+                          horizontal: Double(value.translation.width),
+                          vertical: Double(value.translation.height),
+                          allowFullCard: true) else { return }
+                drag = max(0, value.translation.width)
+            }
+            .onEnded { value in
+                guard browserOpen && browserSessionOpen,
+                      ChatPageBackInteraction.shouldTrack(
+                          startX: Double(value.startLocation.x),
+                          horizontal: Double(value.translation.width),
+                          vertical: Double(value.translation.height),
+                          allowFullCard: true) else { return }
+                if ChatPageBackInteraction.shouldDismiss(
+                    width: Double(size.width),
+                    predictedTranslation: Double(value.predictedEndTranslation.width)) {
+                    browserSessionOpen = false
+                    if browserSource == .drawer { sidebarOpen = true }
+                }
+            }
+    )
+    }
+
+    @ViewBuilder
+    private func precedingBrowserLayer(size: CGSize, topInset: CGFloat,
+                                       bottomInset: CGFloat) -> some View {
+    if browserOpen && browserAllInstances && browserFromSingle {
+        ChatCardContainer(
+            size: size, topInset: topInset, bottomInset: bottomInset,
+            progress: 0, translation: 0, reduceMotion: reduceMotion,
+            showsDismissSurface: false, onDismiss: {}
+        ) {
+            singleInstanceBrowser
+        }
+        .zIndex(1)
+    }
+    }
+
+    @ViewBuilder
+    private func activeBrowserLayer(size: CGSize, topInset: CGFloat,
+                                    bottomInset: CGFloat) -> some View {
+    if browserOpen {
+        let backProgress = min(1, max(0,
+            browserBackDrag / max(1, size.width)))
+        ChatCardContainer(
+            size: size, topInset: topInset, bottomInset: bottomInset,
+            progress: backProgress, translation: browserBackDrag,
+            reduceMotion: reduceMotion,
+            showsDismissSurface: false,
+            onDismiss: {}
+        ) {
+            if browserAllInstances {
+                UnifiedSessionBrowser(
+                    center: unifiedCenter,
+                    query: $unifiedQuery,
+                    filter: $unifiedFilter,
+                    onClose: backFromBrowser,
+                    backToSingleInstance: browserFromSingle,
+                    backToDrawer: browserSource == .drawer && !browserFromSingle,
+                    onSingleInstance: {
+                        browserRoute = [.single]
+                    },
+                    onSelect: { record in
+                        let opened = app.openSessionFromInstance(
+                            instanceID: record.identity.instanceID,
+                            endpointIdentity: record.identity.endpointIdentity,
+                            accountScope: record.identity.accountScope,
+                            session: record.session)
+                        if opened {
+                            sidebarOpen = false
+                            browserSessionOpen = true
+                        }
+                        return opened
+                    }
+                )
+                .environmentObject(app)
+            } else {
+                singleInstanceBrowser
+            }
+        }
+        .transition(.move(edge: .trailing))
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 18)
+                .updating($browserBackDrag) { value, drag, _ in
+                    guard ChatPageBackInteraction.shouldTrack(
+                        startX: Double(value.startLocation.x),
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height),
+                        allowFullCard: true) else { return }
+                    drag = max(0, value.translation.width)
+                }
+                .onEnded { value in
+                    guard ChatPageBackInteraction.shouldTrack(
+                        startX: Double(value.startLocation.x),
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height),
+                        allowFullCard: true) else { return }
+                    if ChatPageBackInteraction.shouldDismiss(
+                        width: Double(size.width),
+                        predictedTranslation: Double(value.predictedEndTranslation.width)) {
+                        backFromBrowser()
+                    }
+                }
+        )
+        .zIndex(2)
+    }
+    }
+
+    /// Keep a real page stack: pop the visible page. The original
+    /// drawer stays mounted and remains the destination of a direct entry.
     private func backFromBrowser() {
-        if UnifiedBrowserBackNavigation.destination(allInstances: browserAllInstances,
-                                                     enteredFromSingle: browserFromSingle) == .singleInstance {
-            browserAllInstances = false
-            browserFromSingle = false
-        } else {
+        guard !browserRoute.isEmpty else { return }
+        switch UnifiedBrowserBackNavigation.destination(
+            route: browserRoute, source: browserSource) {
+        case .singleInstance:
+            browserRoute.removeLast()
+        case .chat, .drawer:
+            browserRoute = []
             browserOpen = false
-            browserFromSingle = false
+            browserSessionOpen = false
+            if browserSource == .drawer { sidebarOpen = true }
         }
     }
 
@@ -331,24 +404,23 @@ struct RootView: View {
             mode: .page,
             selectedID: app.currentSessionID,
             onSelect: { session in
-                browserOpen = false
-                browserFromSingle = false
+                sidebarOpen = false
                 app.openSession(session)
+                browserSessionOpen = true
             },
             onNew: {
                 browserOpen = false
-                browserFromSingle = false
+                browserSessionOpen = false
                 startConversation()
             },
             onSettings: {
                 browserOpen = false
-                browserFromSingle = false
+                browserSessionOpen = false
                 app.showSettings = true
             },
             onClose: backFromBrowser,
             onBrowseAllInstances: {
-                browserFromSingle = true
-                browserAllInstances = true
+                if browserRoute.last != .all { browserRoute.append(.all) }
             },
             startSearching: browserSearchRequested
         )
@@ -392,8 +464,9 @@ struct RootView: View {
                 Button {
                     homeFocused = false
                     browserSearchRequested = true
-                    browserAllInstances = app.instances.count > 1
-                    browserFromSingle = false
+                    browserSource = .chat
+                    browserRoute = app.instances.count > 1 ? [.all] : [.single]
+                    browserSessionOpen = false
                     browserOpen = true
                 } label: { ChromeIcon(symbol: "magnifyingglass") }
                 .accessibilityLabel("搜索会话")
@@ -590,6 +663,8 @@ struct RootView: View {
         guard NotificationNavigation.shared.consume(target: target) else { return }
         closeSidebar()
         browserOpen = false
+        browserSessionOpen = false
+        browserRoute = []
         app.openSession(session)
     }
 

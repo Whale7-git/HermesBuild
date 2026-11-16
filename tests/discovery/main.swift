@@ -241,6 +241,7 @@ func expect(_ value: @autoclosure () -> Bool, _ message: String) {
         try await refreshTests()
         try await unifiedSessionTests()
         try await unifiedRefreshTests()
+        try await unifiedCacheTests()
         print("PASS: \(checks) discovery checks")
     }
 }
