@@ -6,6 +6,8 @@ import Foundation
     private let pages: [Int: ChatSnapshot]
     var failure: Error?
     var holdStream = false
+    var holdOlderPage = false
+    var pendingOlder: CheckedContinuation<ChatSnapshot, Error>?
     private(set) var calls: [Int?] = []
 
     init(initial: ChatSnapshot, pages: [Int: ChatSnapshot]) {
@@ -16,6 +18,9 @@ import Foundation
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         calls.append(before)
         if let failure { throw failure }
+        if before != nil && holdOlderPage {
+            return try await withCheckedThrowingContinuation { pendingOlder = $0 }
+        }
         if let before, let page = pages[before] { return page }
         if before == nil { return initial }
         throw URLError(.badServerResponse)
@@ -172,5 +177,48 @@ func runPagingBudgetTests() async throws {
         model.disconnect()
     }
 
-    print("PAGING_BUDGET_PASS 7 scenarios")
+    // 8. A cancelled view-owned older GET must not set a misleading error.
+    // The service deliberately ignores cancellation until the test releases
+    // its continuation, reproducing a non-cooperative transport callback.
+    do {
+        let sessionID = "paging-cancelled"
+        let initial = try pagedSnapshot(sessionID, rows: 1000..<1100, offset: 1000)
+        let page = try pagedSnapshot(sessionID, rows: 900..<1000, offset: 900)
+        let service = PagedHistoryService(initial: initial, pages: [1000: page])
+        let model = NativeChatModel(sessionID: sessionID, api: service)
+        await model.load()
+        service.holdOlderPage = true
+        let cancelled = Task { await model.loadOlder() }
+        for _ in 0..<2000 {
+            if service.pendingOlder != nil { break }
+            await Task.yield()
+        }
+        precondition(service.pendingOlder != nil, "older request must be in flight")
+        cancelled.cancel()
+        service.pendingOlder?.resume(throwing: CancellationError())
+        service.pendingOlder = nil
+        await cancelled.value
+        precondition(model.error == nil && model.olderOffset == 1000,
+                     "cancelled older GET never mutates history or shows a paging error")
+        precondition(model.transcript.messages.count == 100,
+                     "cancelled older page retains existing history")
+
+        // Cancellation followed by a late *successful* history result is
+        // still untrusted after the Session has been suspended.
+        let late = Task { await model.loadOlder() }
+        for _ in 0..<2000 {
+            if service.pendingOlder != nil { break }
+            await Task.yield()
+        }
+        precondition(service.pendingOlder != nil, "late page fixture must be in flight")
+        model.disconnect()
+        service.pendingOlder?.resume(returning: page)
+        service.pendingOlder = nil
+        await late.value
+        precondition(model.olderOffset == 1000 && model.transcript.messages.count == 100,
+                     "late successful page after disconnect must not prepend or advance cursor")
+        print("PAGING_PASS cancellation and late success cannot corrupt a retired session")
+    }
+
+    print("PAGING_BUDGET_PASS 8 scenarios")
 }
