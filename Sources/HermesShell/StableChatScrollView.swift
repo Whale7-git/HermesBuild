@@ -94,6 +94,9 @@ struct StableChatScrollView: UIViewControllerRepresentable {
         // owns the gesture, without reconfiguring the transcript snapshot.
         if controller.scrollView.isScrollEnabled != isScrollEnabled {
             controller.scrollView.isScrollEnabled = isScrollEnabled
+            // Disabling scrolling may cancel UIKit's pan without calling
+            // scrollViewDidEndDragging; reset the axis guard on reenable.
+            if isScrollEnabled { controller.horizontalBackPan = false }
         }
         controller.receive(self)
     }
