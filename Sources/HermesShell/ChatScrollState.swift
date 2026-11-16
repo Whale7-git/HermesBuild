@@ -45,6 +45,23 @@ struct ChatScrollState: Equatable {
     }
 }
 
+/// A single visible Session owns a single page request ticket. Retiring
+/// invalidates even non-cooperative network completions and protects a
+/// replacement page from an old completion resetting its spinner.
+struct ChatPaginationOwnership {
+    private var activeTicket: UUID?
+
+    mutating func begin() -> UUID {
+        let ticket = UUID()
+        activeTicket = ticket
+        return ticket
+    }
+
+    func owns(_ ticket: UUID) -> Bool { activeTicket == ticket }
+
+    mutating func retire() { activeTicket = nil }
+}
+
 /// 自动分页的判定。抽成纯类型是为了能在离线套件里断言——
 /// 真实的判定点在 `StableChatScrollView+Coordinator`，那是 UIKit 文件，
 /// 不在任何 Linux 套件的编译单元里。

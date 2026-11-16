@@ -131,11 +131,14 @@ extension NativeChatModel {
             if let confirmedHistory { historyStore?.schedule(confirmedHistory) }
             flush()
         } catch {
-            if generation == revision {
-                if handleAuthenticationFailure(error) { return }
-                self.error = error.localizedDescription
-                RuntimeLogRecorder.shared.record(.error, "paging", "page fail err=\(error.localizedDescription)")
-            }
+            // A dismissed page cancels its GET. Cancellation, suspension and
+            // obsolete generation must not surface a spurious paging error
+            // into a new/returned Session UI.
+            guard generation == revision, !Task.isCancelled, !suspended else { return }
+            if error is CancellationError { return }
+            if handleAuthenticationFailure(error) { return }
+            self.error = error.localizedDescription
+            RuntimeLogRecorder.shared.record(.error, "paging", "page fail err=\(error.localizedDescription)")
         }
     }
 

@@ -9,6 +9,17 @@ func expect(_ condition: @autoclosure () -> Bool, _ message:String) {
 // 追加时按跟随意图决定滚不滚。
 // 所以这里只锁一件事——什么时候算"跟着底部"，并且必须带迟滞、不抖。
 
+var ownership = ChatPaginationOwnership()
+let pageA = ownership.begin()
+expect(ownership.owns(pageA), "initial older-page task owns its completion")
+ownership.retire()
+expect(!ownership.owns(pageA), "page finishing after view disappearance is rejected")
+let pageB = ownership.begin()
+expect(ownership.owns(pageB) && !ownership.owns(pageA),
+       "late old page must not clear successor's spinner or pagination timing")
+ownership.retire()
+expect(!ownership.owns(pageB), "account switch invalidates pending pagination completion")
+
 var state = ChatScrollState()
 expect(state.following, "starts following the tail")
 

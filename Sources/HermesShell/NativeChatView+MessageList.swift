@@ -166,15 +166,38 @@ extension NativeChatView {
         resumePosition = position
     }
 
+    /// Cancel the view-owned pagination without settling any backend Run.
+    /// A cancelled old response must not clear a newer page's loading state.
+    func retirePagination() {
+        paginationOwnership.retire()
+        paginationTask?.cancel()
+        paginationTask = nil
+        controllerBox.value?.notePaginationEnded()
+        isLoadingOlder = false
+    }
+
     /// 顶部距离触发分页；UIKit 对本次加载统一保位。
     private func loadOlderIfNeeded() {
-        guard !restoringReading, !isLoadingOlder, model.canLoadOlderHistory else { return }
+        guard visible, !restoringReading, !isLoadingOlder,
+              model.canLoadOlderHistory, paginationTask == nil else { return }
+        let ticket = paginationOwnership.begin()
+        let changeToken = app.activeChangeToken
+        let scopedSession = sessionID
+        let scopedInstance = displayScope
         isLoadingOlder = true
         controllerBox.value?.notePaginationBegan()
-        Task {
+        paginationTask = Task {
             await model.loadOlder()
             // 让本轮保位与高度提交跑完再收尾，样本覆盖「请求→prepend→一次布局」。
-            try? await Task.sleep(nanoseconds: 60_000_000)
+            do { try await Task.sleep(nanoseconds: 60_000_000) }
+            catch { return }
+            guard !Task.isCancelled, paginationOwnership.owns(ticket),
+                  visible, app.activeChangeToken == changeToken,
+                  app.currentSessionID == scopedSession,
+                  app.historyInstanceID + "|" + app.historyAccountScope == scopedInstance
+            else { return }
+            paginationOwnership.retire()
+            paginationTask = nil
             controllerBox.value?.notePaginationEnded()
             isLoadingOlder = false
         }

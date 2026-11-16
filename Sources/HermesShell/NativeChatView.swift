@@ -140,6 +140,8 @@ struct NativeChatView: View {
     @State var focusedUserTurnID: String?
     @State var focusedUserTurnText: String?
     @State var isLoadingOlder = false
+    @State var paginationOwnership = ChatPaginationOwnership()
+    @State var paginationTask: Task<Void, Never>?
     @State var toast: String?
     @State var toastTask: Task<Void, Never>?
     /// 顶部错误/只读钉住条：本次会话里点过关闭就不再出现。
@@ -410,6 +412,7 @@ struct NativeChatView: View {
             }
         }
         .onDisappear {
+            retirePagination()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
             focusedUserTurnText = nil
@@ -481,6 +484,7 @@ struct NativeChatView: View {
     var body: some View {
         observationContent
         .onChange(of: app.activeChangeToken) { _, _ in
+            retirePagination()
             controllerBox.value?.turnReading.reset()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
