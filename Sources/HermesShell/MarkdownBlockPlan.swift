@@ -21,6 +21,31 @@ enum MarkdownBlockPlan {
         let requiresWholeDocument: Bool
     }
 
+    /// The complete blocks from a prior append-only render have passed the
+    /// conservative boundary scanner and cannot change without a source
+    /// replacement. Scan only the unfinished tail plus appended bytes.
+    ///
+    /// A late reference/HTML construct or a CR/CRLF newline must still force
+    /// whole-document Markdown parsing; never freeze semantics speculatively.
+    static func makeAppending(_ source: String, after previousSource: String,
+                              plan previous: Plan?) -> Plan {
+        guard let previous, !previous.requiresWholeDocument,
+              !previous.complete.isEmpty,
+              source.hasPrefix(previousSource) else {
+            return make(source)
+        }
+        let prefixBytes = previous.complete.reduce(0) { $0 + $1.utf8.count }
+        // The byte boundary was produced by make() at a terminated LF, not
+        // by splitting arbitrary Unicode scalar sequences.
+        let active = String(decoding: source.utf8.dropFirst(prefixBytes), as: UTF8.self)
+        let extensionPlan = make(active)
+        if extensionPlan.requiresWholeDocument {
+            return Plan(complete: [], tail: source, requiresWholeDocument: true)
+        }
+        return Plan(complete: previous.complete + extensionPlan.complete,
+                    tail: extensionPlan.tail, requiresWholeDocument: false)
+    }
+
     static func make(_ source: String) -> Plan {
         let bytes = Array(source.utf8)
         // Preserve Foundation's CR/CRLF handling without guessing line offsets.
