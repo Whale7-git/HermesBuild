@@ -449,6 +449,16 @@ final class AppState: ObservableObject {
         return sessionListCache[endpoint + "|" + account]
     }
 
+    /// Timestamp is scoped identically to the matching cached Session list.
+    /// A successful active-instance refresh can be reused by the full browser.
+    func unifiedCachedSessionDate(for instance: HermesInstance) -> Date? {
+        guard instances.contains(where: { $0.id == instance.id && $0.baseURL == instance.baseURL })
+        else { return nil }
+        let endpoint = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
+        let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
+        return sessionRefreshClock.lastSuccess(scope: endpoint + "|" + account)
+    }
+
     /// Only a user tap can change the selected host. Validate the full
     /// identity BEFORE switchTo mutates the backend or clears the old chat.
     /// Search results use their own scoped GET client and never mutate this
