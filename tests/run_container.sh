@@ -153,7 +153,7 @@ run renderscheduling -swift-version 5 -parse-as-library "$S/ChatRenderScheduler.
 run performancestats -swift-version 6 "$S/ChatPerformanceStatistics.swift" tests/performancestats/main.swift
 run inlineimage "$S/ChatCore.swift" "$S/AttachmentHistory.swift" "$S/AttachmentModels.swift" "$S/ImageRefKind.swift" tests/inlineimage/main.swift
 run attachmentinteraction -swift-version 6 -parse-as-library "$S/AttachmentInteractionState.swift" "$S/SharedAsyncResourcePool.swift" tests/attachmentinteraction/main.swift
-run discovery -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/Models.swift" "$S/ChatRequests.swift" "$S/SessionSearch.swift" "$S/UnifiedSessionModel.swift" "$S/SessionListService.swift" tests/discovery/Shims.swift tests/discovery/UnifiedSessionTests.swift tests/discovery/main.swift
+run discovery -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/Models.swift" "$S/ChatRequests.swift" "$S/SessionSearch.swift" "$S/SessionTaskCenter.swift" "$S/SessionTaskStore.swift" "$S/UnifiedSessionModel.swift" "$S/UnifiedTaskWorkspace.swift" "$S/SessionListService.swift" tests/discovery/Shims.swift tests/discovery/UnifiedSessionTests.swift tests/discovery/UnifiedTaskWorkspaceTests.swift tests/discovery/main.swift
 run credentials -swift-version 6 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/Models.swift" "$S/InstanceCredentialStore.swift" tests/credentials/main.swift
 
 # Build every recorded suite in parallel, then run them in declaration order.
