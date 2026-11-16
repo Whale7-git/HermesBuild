@@ -32,11 +32,20 @@ struct ChatTaskPanel: View {
     @ObservedObject var model: NativeChatModel
     let onQueue: () -> Void
     let onRecovery: () -> Void
+    let onLocateTool: (String) -> Void
+    @State private var toolFilter: ChatTaskToolFilter = .all
     @Environment(\.dismiss) private var dismiss
     private var queue: ChatQueueStatus { ChatQueueStatus(turns: model.queuedTurns) }
 
     var body: some View {
-        let liveIDs = activeIDs
+        let liveIDs = ChatActivity.activeToolIDs(
+            messages: model.transcript.messages, tools: model.transcript.tools)
+        let tools = ChatTaskToolInspector.currentTurn(
+            messages: model.transcript.messages, tools: model.transcript.tools)
+        let counts = ChatTaskToolInspector.counts(
+            tools, activeIDs: liveIDs, running: model.running)
+        let matching = ChatTaskToolInspector.filtered(
+            tools, by: toolFilter, activeIDs: liveIDs, running: model.running)
         NavigationStack {
             List {
                 Section("当前会话") {
@@ -56,7 +65,8 @@ struct ChatTaskPanel: View {
                 }
                 Section("消息与恢复") {
                     Button(action: onQueue) {
-                        Label(queue.isEmpty ? "消息队列为空" : queue.summary, systemImage: "text.line.first.and.arrowtriangle.forward")
+                        Label(queue.isEmpty ? "消息队列为空" : queue.summary,
+                              systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     Button(action: onRecovery) {
                         Label("核对发送与本地数据", systemImage: "lifepreserver")
@@ -65,42 +75,66 @@ struct ChatTaskPanel: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
-                    if currentTools.isEmpty {
-                        Text("当前没有可关联的工具记录").foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Text("总计 \(counts.total)")
+                        Spacer(minLength: 0)
+                        Text("完成 \(counts.finished)")
+                        Text("失败 \(counts.failed)")
+                            .foregroundStyle(counts.failed > 0 ? AppTheme.warning : Color.secondary)
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    if counts.active > 0 || counts.unresolved > 0 {
+                        Text("执行中 \(counts.active) · 状态待核对 \(counts.unresolved)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Picker("工具状态", selection: $toolFilter) {
+                        ForEach(ChatTaskToolFilter.allCases) { kind in
+                            Text(kind.title).tag(kind)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    if matching.isEmpty {
+                        Text(tools.isEmpty ? "当前没有可关联的工具记录" : "没有符合筛选条件的工具")
+                            .foregroundStyle(.secondary)
                     } else {
-                        ForEach(currentTools) { tool in
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: tool.isError ? "exclamationmark.circle" : (tool.done ? "checkmark.circle" : "clock"))
-                                    .foregroundStyle(tool.isError ? AppTheme.warning : Color.secondary)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(tool.name).font(.subheadline)
-                                    Text(tool.isError ? "执行失败" : (tool.done ? "已完成" : (liveIDs.contains(tool.id) && model.running ? "执行中" : "状态待核对")))
-                                        .font(.caption).foregroundStyle(.secondary)
+                        ForEach(Array(matching.suffix(40))) { tool in
+                            Button { onLocateTool(tool.id) } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: tool.isError ? "exclamationmark.circle"
+                                          : (tool.done ? "checkmark.circle" : "clock"))
+                                        .foregroundStyle(tool.isError ? AppTheme.warning : Color.secondary)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(tool.name).font(.subheadline).foregroundStyle(.primary)
+                                        Text(tool.isError ? "执行失败" :
+                                             (tool.done ? "已完成" :
+                                              (model.running && liveIDs.contains(tool.id)
+                                               ? "执行中" : "状态待核对")))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: "arrow.up.right")
+                                        .font(.caption).foregroundStyle(.tertiary)
                                 }
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("跳转到聊天中对应的工具过程并展开")
                         }
                     }
                 } header: { Text("本轮工具") }
-                  footer: { Text("只显示当前一轮最多 40 条工具；完整过程可在聊天中展开。") }
+                  footer: {
+                    Text("展示符合筛选条件的最近 40 条；点击可定位到聊天中的原始工具记录。"
+                         + " 未完成且服务端未确认时不推断为成功。")
+                }
             }
             .scrollContentBackground(.hidden).background(AppTheme.canvas)
             .navigationTitle("任务与消息队列").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                Button("完成") { dismiss() }
+            } }
         }
     }
-
-    private var activeIDs: Set<String> {
-        ChatActivity.activeToolIDs(messages: model.transcript.messages, tools: model.transcript.tools)
-    }
-    private var currentTools: [ChatTool] {
-        let messages = model.transcript.messages
-        let start = messages.lastIndex(where: { $0.role == "user" }) ?? messages.startIndex
-        let anchors = Set(messages[start...].map(\.id))
-        return Array(model.transcript.tools.filter { tool in
-            tool.afterMessageID.map { anchors.contains($0) } == true
-        }.suffix(40))
-    }
-
 }
 
 struct ChatConversationInfo: View {
