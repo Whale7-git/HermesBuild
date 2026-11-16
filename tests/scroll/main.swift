@@ -231,6 +231,52 @@ expect(!ChatDrawerInteraction.shouldTrack(startX: .nan, translationX: 100,
                                           translationY: 0, open: false, width: 330),
        "invalid gesture geometry cannot start transition")
 
+// build196: the closing card must keep ownership when the finger reverses
+// at x=0. Previously shouldTrack() was re-evaluated on every sample; a
+// sign reversal returned false and reset @GestureState mid-gesture.
+var closingDrag = ChatDrawerGestureState()
+closingDrag.update(startX: 385, horizontal: -100, vertical: 3,
+                   open: true, width: 330, allowFullCard: true)
+expect(closingDrag.claimed && closingDrag.translation == -100,
+       "horizontal close owns the drag after initial direction check")
+closingDrag.update(startX: 385, horizontal: -360, vertical: 0,
+                   open: true, width: 330, allowFullCard: true)
+expect(closingDrag.claimed &&
+       ChatDrawerInteraction.reveal(width: 330, open: true,
+                                    translation: closingDrag.translation) == 0,
+       "leftmost card edge clamps without dropping gesture ownership")
+closingDrag.update(startX: 385, horizontal: -290, vertical: 10,
+                   open: true, width: 330, allowFullCard: true)
+expect(closingDrag.claimed &&
+       ChatDrawerInteraction.reveal(width: 330, open: true,
+                                    translation: closingDrag.translation) == 40,
+       "reversing within one gesture returns smoothly from the zero edge")
+closingDrag.update(startX: 385, horizontal: 25, vertical: 40,
+                   open: true, width: 330, allowFullCard: true)
+expect(closingDrag.claimed &&
+       ChatDrawerInteraction.reveal(width: 330, open: true,
+                                    translation: closingDrag.translation) == 330,
+       "direction reversal and vertical jitter cannot revoke an acquired drag")
+var unclaimedDrag = ChatDrawerGestureState()
+unclaimedDrag.update(startX: 80, horizontal: -100, vertical: 3,
+                     open: true, width: 330, allowFullCard: true)
+expect(!unclaimedDrag.claimed,
+       "underlying sidebar rail keeps its own horizontal gesture")
+unclaimedDrag.update(startX: 80, horizontal: 0, vertical: 120,
+                     open: true, width: 330, allowFullCard: true)
+expect(!unclaimedDrag.claimed, "vertical scroll cannot seize the drawer")
+var openingDrag = ChatDrawerGestureState()
+openingDrag.update(startX: 150, horizontal: 90, vertical: 2,
+                   open: false, width: 330, allowFullCard: true)
+openingDrag.update(startX: 150, horizontal: -25, vertical: 8,
+                   open: false, width: 330, allowFullCard: true)
+expect(openingDrag.claimed &&
+       ChatDrawerInteraction.reveal(width: 330, open: false,
+                                    translation: openingDrag.translation) == 0,
+       "opening swipe also preserves ownership during direction reversal")
+expect(!ChatDrawerGestureState().claimed,
+       "new gesture has no stale ownership from the preceding gesture")
+
 // build152: full-height card clipping must interpolate monotonically and
 // preserve a square, unshaded canvas at rest.
 let cardClosed = ChatCardPresentation.style(progress: 0)
