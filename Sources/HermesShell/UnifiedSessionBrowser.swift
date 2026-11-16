@@ -122,17 +122,16 @@ struct UnifiedSessionBrowser: View {
     /// and no per-second redraw while the user is reading the task list.
     private var nextEvidenceDeadline: Date? {
         guard section == 1 else { return nil }
-        return app.instances.compactMap { instance -> Date? in
+        let dates = app.instances.compactMap { instance -> Date? in
             let endpoint = ChatHistoryIdentity.instanceID(
                 id: instance.id, baseURL: instance.baseURL)
             let identity = UnifiedSessionIdentity(
                 instanceID: instance.id, endpointIdentity: endpoint,
                 accountScope: ChatHistoryIdentity.accountScope(instanceID: endpoint))
-            return center.lastSuccessfulListRefresh(for: identity)?
-                .addingTimeInterval(UnifiedTaskWorkspace.freshnessWindow + 0.02)
+            return center.lastSuccessfulListRefresh(for: identity)
         }
-        .filter { $0 > taskEvidenceNow }
-        .min()
+        return UnifiedTaskWorkspace.nextEvidenceExpiry(
+            lastSuccess: dates, after: taskEvidenceNow)
     }
 
     private var evidenceExpiryKey: String {
