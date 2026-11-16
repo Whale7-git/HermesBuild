@@ -44,7 +44,12 @@ enum GatewayDecode {
     /// 顶层不是对象、`data` 缺失或不是数组时抛错——静默返回空数组会让 UI
     /// 以为会话真的被删光了。
     static func sessions(_ data: Data) throws -> [SessionSummary] {
-        let root = try gatewayRoot(data, what: "会话列表")
+        try sessions(root: gatewayRoot(data, what: "会话列表"))
+    }
+
+    /// Reuse an already-decoded page in GatewaySessionReader; no second JSON
+    /// deserialization on MainActor for every page of a large session list.
+    static func sessions(root: [String: Any]) throws -> [SessionSummary] {
         if let error = root["error"], !(error is NSNull) {
             throw GatewayDecodeError.server(gatewayString(error) ?? "会话列表读取失败")
         }

@@ -35,9 +35,11 @@ enum MarkdownBlockPlan {
             let end = bytes[cursor...].firstIndex(of: 10) ?? bytes.count
             let terminated = end < bytes.count
             let next = terminated ? end + 1 : end
-            let line = Array(bytes[cursor..<end])
+            // ArraySlice keeps the original byte buffer: allocating two new
+            // arrays per line on each streaming update is unnecessary.
+            let line = bytes[cursor..<end]
             let indent = line.prefix { $0 == 32 }.count
-            let trimmed = Array(line.dropFirst(indent))
+            let trimmed = line.dropFirst(indent)
             let blank = trimmed.allSatisfy { $0 == 9 || $0 == 32 }
             if let active = fence {
                 let count = trimmed.prefix { $0 == active.0 }.count
@@ -64,8 +66,8 @@ enum MarkdownBlockPlan {
                         && trimmed.dropFirst().first.map { $0 == 32 || $0 == 9 } == true
                     let digits = trimmed.prefix { (48...57).contains($0) }.count
                     let ordered = digits > 0 && digits <= 9 && trimmed.count > digits + 1
-                        && [UInt8(46), 41].contains(trimmed[digits])
-                        && [UInt8(32), 9].contains(trimmed[digits + 1])
+                        && [UInt8(46), 41].contains(trimmed[trimmed.startIndex + digits])
+                        && [UInt8(32), 9].contains(trimmed[trimmed.startIndex + digits + 1])
                     if indent >= 4 || marker == 9 || marker == 62 || bullet || ordered || trimmed.contains(124) {
                         // A list/quote/table/indented-code tail stays intact,
                         // including all later lazy/indented continuation lines.

@@ -211,10 +211,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // 收敛时才 `finish`。用它补齐这个字段，不必新增网络往返。
         // Refresh known runs when returning to the list as well as inside a chat.
         // Unknown/network failure keeps the durable record; it is not completion.
-        scheduleRunProbes(sessionIDs: decoded.map(\.sessionId))
+        let knownRuns = runStore.runIDs(for: decoded.map(\.sessionId))
+        scheduleRunProbes(knownRuns: knownRuns)
         return decoded.map { row in
             var copy = row
-            copy.isStreaming = runStore.runID(for: row.sessionId) != nil
+            copy.isStreaming = knownRuns[row.sessionId] != nil
             return copy
         }
     }
@@ -223,14 +224,13 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     private var runProbeTask: Task<Void, Never>?
 
     /// List availability never waits for status endpoints.
-    private func scheduleRunProbes(sessionIDs: [String]) {
-        guard runProbeTask == nil else { return }
-        let known = sessionIDs.filter { runStore.runID(for: $0) != nil }
-        guard !known.isEmpty else { return }
+    private func scheduleRunProbes(knownRuns: [String: String]) {
+        guard runProbeTask == nil, !knownRuns.isEmpty else { return }
+        let known = knownRuns.keys.sorted()
         runProbeTask = Task { [weak self] in
             guard let self else { return }
             defer { self.runProbeTask = nil }
-            let before = known.map { self.runStore.runID(for: $0) }
+            let before = self.runStore.runIDs(for: known)
             await withTaskGroup(of: Void.self) { group in
                 var iterator = known.makeIterator()
                 for _ in 0..<4 {
@@ -244,7 +244,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                     }
                 }
             }
-            if before != known.map({ self.runStore.runID(for: $0) }) {
+            if before != self.runStore.runIDs(for: known) {
                 NotificationCenter.default.post(name: Self.runsChanged, object: self)
             }
         }

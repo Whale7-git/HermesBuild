@@ -167,11 +167,47 @@ extension NativeChatModel {
     /// 等于静默消失。两个问题同一个根因，一起修。
     @discardableResult
     private func trimLoadedMessages() -> Bool {
-        let overflow = buffer.messages.count - Self.maxLoadedMessages
-        guard overflow > 0 else { return false }
-        buffer.messages.removeFirst(overflow)
-        pruneOrphanedTools()
-        return true
+        let count = buffer.messages.count
+        var remainingBytes = loadedBytes
+        guard count > Self.maxLoadedMessages || remainingBytes > Self.maxLoadedBytes else { return false }
+
+        // Account for the tools that disappear when their message anchor is
+        // evicted. Count and byte limits must describe the SAME retained window;
+        // a 60-row snapshot containing huge tool results can exceed 16 MiB.
+        var toolBytesByAnchor: [String: Int] = [:]
+        for tool in buffer.tools {
+            if let anchor = tool.afterMessageID {
+                toolBytesByAnchor[anchor, default: 0] += Self.cost(tool)
+            }
+        }
+        var removedMessages = 0
+        while count - removedMessages > 1 &&
+              (count - removedMessages > Self.maxLoadedMessages ||
+               remainingBytes > Self.maxLoadedBytes) {
+            let oldest = buffer.messages[removedMessages]
+            remainingBytes -= Self.cost(oldest) + (toolBytesByAnchor[oldest.id] ?? 0)
+            removedMessages += 1
+        }
+        if removedMessages > 0 {
+            buffer.messages.removeFirst(removedMessages)
+            pruneOrphanedTools()
+        }
+
+        // A single current turn can own more tool output than the entire data
+        // budget. Drop oldest complete tool records first, never truncate a
+        // message or discard the last tool; full history remains on the server.
+        var removedTools = 0
+        remainingBytes = loadedBytes
+        if remainingBytes > Self.maxLoadedBytes && buffer.tools.count > 1 {
+            for tool in buffer.tools.dropLast() where remainingBytes > Self.maxLoadedBytes {
+                remainingBytes -= Self.cost(tool)
+                removedTools += 1
+            }
+            if removedTools > 0 { buffer.tools.removeFirst(removedTools) }
+        }
+        // One oversized message/tool is kept intact rather than presenting
+        // clipped content as if it were a complete server response.
+        return removedMessages > 0 || removedTools > 0
     }
 
     /// 只保留「无锚点」或「锚点仍在窗口内」的工具。
