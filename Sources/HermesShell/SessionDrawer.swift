@@ -14,8 +14,8 @@ struct SessionListPane: View {
     let onSettings: () -> Void
     var onClose: (() -> Void)?
     var onBrowseAll: (() -> Void)? = nil
-    var onBrowseAllInstances: (() -> Void)? = nil
     var backToDrawer = false
+    var onBrowseAllInstances: (() -> Void)? = nil
     var startSearching = false
 
     @State private var query = ""
