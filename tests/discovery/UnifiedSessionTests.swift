@@ -223,6 +223,12 @@ import Foundation
     await switched?.value
     expect(center.records.map(\.session.sessionId) == ["private"],
            "new account publishes only its own sessions")
+    center.adoptActiveList(identity: b, instanceName: "other account",
+                           rows: [try row("event-update")], refreshedAt: Date())
+    expect(center.records.map(\.session.sessionId) == ["event-update"],
+           "active Gateway list event updates the unified cache without an extra GET")
+    expect(fixture.calls[b.instanceID] == 1,
+           "adopting a live active-host update must not duplicate GET")
 
     // Search queries are independently resolved; a scoped list timestamp
     // must never suppress full-body search by claiming a cache hit.
