@@ -252,70 +252,7 @@ enum ChatProcessPlan {
     }
 }
 
-enum ChatTimeline {
-    /// Resolve the complete assistant reply that owns a message row. This is
-    /// intentionally separate from `replyText`: a continuation segment still
-    /// needs a reader entry, while the turn-level copy/share action must keep
-    /// returning the complete assistant response.
-    static func replyRange(containing id: String,
-                           messages: [ChatMessage]) -> ClosedRange<Int>? {
-        guard let index = messages.firstIndex(where: { $0.id == id }),
-              messages[index].role == "assistant" else { return nil }
-        let turns = turnIDs(for: messages)
-        let turnID = turns[id]
-        func sameTurn(_ message: ChatMessage) -> Bool {
-            guard message.role == "assistant" else { return false }
-            guard let turnID else { return true }
-            return turns[message.id] == turnID
-        }
-        var first = index
-        while first > 0 && sameTurn(messages[first - 1]) {
-            first -= 1
-        }
-        var last = index
-        while last + 1 < messages.count && sameTurn(messages[last + 1]) {
-            last += 1
-        }
-        return first...last
-    }
-
-    /// Stable and unique at every visible assistant row. A non-final
-    /// continuation uses the assistant row after it, so both rows resolve to
-    /// the same complete turn without depending on which segment was tapped.
-    static func replyAnchor(for id: String, messages: [ChatMessage]) -> String {
-        guard let range = replyRange(containing: id, messages: messages) else { return id }
-        let final = messages[range].last(where: {
-            ChatRenderableText.hasVisibleContent($0.content)
-        })
-        return final?.id ?? messages[range.upperBound].id
-    }
-
-    /// Resolve on tap, not in item equality: loading an earlier reply segment
-    /// changes clipboard payload, but must not resize/reconfigure the tail cell.
-    static func replyText(endingAt id: String, messages: [ChatMessage]) -> String {
-        guard let range = replyRange(containing: id, messages: messages) else { return "" }
-        return messages[range].map(\.content)
-            .filter(ChatRenderableText.hasVisibleContent)
-            .joined(separator: "\n\n")
-    }
-
-    /// The complete assistant turn through the final row, excluding the user
-    /// prompt. This backs the explicit "copy entire process" action without
-    /// changing normal reply copying or text selection.
-    static func replyProcessText(endingAt id: String, messages: [ChatMessage]) -> String {
-        guard let end = messages.firstIndex(where: { $0.id == id }),
-              messages[end].role == "assistant" else { return "" }
-        var start = end
-        while start > 0, messages[start - 1].role != "user" {
-            start -= 1
-        }
-        let body = messages[start...end].map(\.content)
-            .filter(ChatRenderableText.hasVisibleContent)
-            .joined(separator: "\n\n")
-        return body.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// Current-turn tool summary for the task panel. This is presentation-only:
+/// Current-turn tool summary for the task panel. This is presentation-only:
 /// terminal truth continues to come from the Run/Session verification model.
 enum ChatTaskToolFilter: String, CaseIterable, Identifiable {
     case all, failed, active, unresolved
@@ -388,7 +325,70 @@ enum ChatTaskToolInspector {
     }
 }
 
-/// Stable landmarks for long conversations. The target is always an
+enum ChatTimeline {
+    /// Resolve the complete assistant reply that owns a message row. This is
+    /// intentionally separate from `replyText`: a continuation segment still
+    /// needs a reader entry, while the turn-level copy/share action must keep
+    /// returning the complete assistant response.
+    static func replyRange(containing id: String,
+                           messages: [ChatMessage]) -> ClosedRange<Int>? {
+        guard let index = messages.firstIndex(where: { $0.id == id }),
+              messages[index].role == "assistant" else { return nil }
+        let turns = turnIDs(for: messages)
+        let turnID = turns[id]
+        func sameTurn(_ message: ChatMessage) -> Bool {
+            guard message.role == "assistant" else { return false }
+            guard let turnID else { return true }
+            return turns[message.id] == turnID
+        }
+        var first = index
+        while first > 0 && sameTurn(messages[first - 1]) {
+            first -= 1
+        }
+        var last = index
+        while last + 1 < messages.count && sameTurn(messages[last + 1]) {
+            last += 1
+        }
+        return first...last
+    }
+
+    /// Stable and unique at every visible assistant row. A non-final
+    /// continuation uses the assistant row after it, so both rows resolve to
+    /// the same complete turn without depending on which segment was tapped.
+    static func replyAnchor(for id: String, messages: [ChatMessage]) -> String {
+        guard let range = replyRange(containing: id, messages: messages) else { return id }
+        let final = messages[range].last(where: {
+            ChatRenderableText.hasVisibleContent($0.content)
+        })
+        return final?.id ?? messages[range.upperBound].id
+    }
+
+    /// Resolve on tap, not in item equality: loading an earlier reply segment
+    /// changes clipboard payload, but must not resize/reconfigure the tail cell.
+    static func replyText(endingAt id: String, messages: [ChatMessage]) -> String {
+        guard let range = replyRange(containing: id, messages: messages) else { return "" }
+        return messages[range].map(\.content)
+            .filter(ChatRenderableText.hasVisibleContent)
+            .joined(separator: "\n\n")
+    }
+
+    /// The complete assistant turn through the final row, excluding the user
+    /// prompt. This backs the explicit "copy entire process" action without
+    /// changing normal reply copying or text selection.
+    static func replyProcessText(endingAt id: String, messages: [ChatMessage]) -> String {
+        guard let end = messages.firstIndex(where: { $0.id == id }),
+              messages[end].role == "assistant" else { return "" }
+        var start = end
+        while start > 0, messages[start - 1].role != "user" {
+            start -= 1
+        }
+        let body = messages[start...end].map(\.content)
+            .filter(ChatRenderableText.hasVisibleContent)
+            .joined(separator: "\n\n")
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Stable landmarks for long conversations. The target is always an
     /// existing row id, so navigation never mutates history or depends on the
     /// current viewport window.
     static func navigationNodes(messages: [ChatMessage],
