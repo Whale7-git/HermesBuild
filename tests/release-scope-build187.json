@@ -743,7 +743,7 @@
     "release.json": "cc59d4ce7ebd9cc4c0c058a678876832fc4256d5b1774764bef1d10a2fa9e0ad",
     "docs/build184-performance.md": "606061fbdef046e02521431801feaa1c5643af15e7d995abe7f6eca624717ae3",
     "docs/build185-session-navigation.md": "95cc151166bd4e7295d3171bbc2d2cacdc219c89df7d021b728c08d466a6617a",
-    "Sources/HermesShell/UnifiedSessionModel.swift": "52aad1c2d2e0a94c738cd1f931fd8dd5eece1087271dd18211a00c65eac4f142",
+    "Sources/HermesShell/UnifiedSessionModel.swift": "fd226897e2ad6694f2cd48ba3ab4bd5a53b50d2d7a3ca6e6fc03f181edce8af7",
     "Sources/HermesShell/UnifiedSessionBrowser.swift": "2f5dba81654fd6586fccefb6392de902d7bf9228a1b340874ac5a352b1875cc8",
     "tests/discovery/UnifiedSessionTests.swift": "4870c7248fd2b3ebbde2cde4b62f00b45c6697a81a02d75263e3963457508061",
     "tests/discovery/main.swift": "037cff3e33cbf413ee9dbfc5960f84381cd2186352fcc245e1bbc6434e307325",
