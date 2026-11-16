@@ -207,10 +207,14 @@ expect(!ChatDrawerInteraction.shouldTrack(startX: 170, translationX: -110,
                                          translationY: 8, open: true, width: 330,
                                          allowFullCard: true),
        "drawer instance rail cannot be hijacked by closing swipe from center")
-expect(!ChatDrawerInteraction.shouldTrack(startX: 345, translationX: 110,
+expect(ChatDrawerInteraction.shouldTrack(startX: 345, translationX: 110,
+                                        translationY: 8, open: false, width: 330,
+                                        allowFullCard: true),
+       "rightmost chat strip is swipeable even when drawer is narrower than screen")
+expect(!ChatDrawerInteraction.shouldTrack(startX: -1, translationX: 110,
                                          translationY: 8, open: false, width: 330,
                                          allowFullCard: true),
-       "gesture outside visible card never opens drawer")
+       "negative local coordinate is rejected")
 expect(!ChatDrawerInteraction.shouldTrack(startX: 8, translationX: 20, translationY: 100,
                                          open: false, width: 330),
        "vertical scroll stays owned by the transcript")

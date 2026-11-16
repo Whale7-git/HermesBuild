@@ -128,7 +128,7 @@ enum ChatDrawerInteraction {
         // inside its width (ChatGPT-style). Do not broaden the drawer-open
         // closing gesture: its horizontal instance rail retains ownership.
         let validOrigin = open ? startX >= width - 12
-            : (allowFullCard ? startX >= 0 && startX <= width : startX < 24)
+            : (allowFullCard ? startX >= 0 : startX < 24)
         let validDirection = open ? translationX < 0 : translationX > 0
         return validOrigin && validDirection
             && abs(translationX) > abs(translationY) * 1.65
