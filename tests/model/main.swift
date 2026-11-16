@@ -423,6 +423,40 @@ var transcriptPublications = 0
         precondition(model.transcript.messages.first?.content == "cached history", "offline errors must preserve readable cache")
         print("MODEL_PASS cached history appears before GET, stays read-only after offline failure")
 
+        // build185: a freshly opened chat reads the confirmed local window
+        // before network history starts. The same one-shot warmup is reused
+        // by load(), without replaying an old run or granting send permission.
+        let earlyService = CachedHistoryService()
+        let earlyModel = NativeChatModel(sessionID: "cache", api: earlyService, historyStore: store)
+        await earlyModel.warmupCachedHistory()
+        precondition(earlyModel.cachedHistoryDate != nil &&
+                     earlyModel.transcript.messages.map(\.id) == ["cached"] &&
+                     earlyModel.readOnly && !earlyModel.canSend,
+                     "prewarm paints only read-only confirmed history")
+        precondition(earlyService.historyCalls == 0 && earlyService.startCalls == 0 &&
+                     earlyModel.streamID == nil && earlyService.cursors.isEmpty,
+                     "prewarm never issues GET/POST/stream or restores stale run identity")
+        await earlyModel.warmupCachedHistory()
+        precondition(earlyService.historyCalls == 0, "prewarm does not repeat remote I/O")
+        let earlyLoad = Task { await earlyModel.load() }
+        try await eventually { earlyService.pending != nil }
+        precondition(earlyService.historyCalls == 1 &&
+                     earlyModel.cachedHistoryDate != nil && earlyModel.syncing &&
+                     earlyModel.transcript.messages.first?.id == "cached",
+                     "remote GET preserves the painted cache until authority arrives")
+        earlyService.pending?.resume(throwing: URLError(.notConnectedToInternet))
+        earlyService.pending = nil
+        await earlyLoad.value
+        precondition(earlyModel.cachedHistoryDate != nil && !earlyModel.canSend,
+                     "offline error keeps local content visible but send remains locked")
+        earlyService.deferHistory = false
+        await earlyModel.refresh()
+        precondition(earlyModel.cachedHistoryDate == nil && earlyModel.canSend &&
+                     earlyModel.transcript.messages.map(\.id) == ["fresh"],
+                     "authoritative recovery replaces cached history and restores permission")
+        earlyModel.disconnect()
+        print("MODEL_PASS build185 early history paint, cached-only safety, authoritative replacement")
+
         service.deferHistory = false
         await model.refresh()
         precondition(model.cachedHistoryDate == nil && model.canSend && !model.readOnly)
