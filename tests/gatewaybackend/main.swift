@@ -97,6 +97,19 @@ actor ConcurrencyProbe {
         check(fromBytes.map(\.sessionId) == fromRoot.map(\.sessionId) &&
               fromRoot.map(\.sessionId) == ["one", "two"],
               "single-deserialization gateway paging preserves filtering and identity")
+        // A page can be decoded on a detached executor and returned as a
+        // Sendable value; the MainActor only processes final summaries.
+        let offMainPage = try await Task.detached {
+            try GatewaySessionReader.decodePage(page, size: 200)
+        }.value
+        check(offMainPage.rows.map(\.sessionId) == ["one", "two"] &&
+              offMainPage.rawCount == 3 && !offMainPage.hasMore,
+              "session decode is actor-independent and retains raw count")
+        let fallbackPage = try GatewaySessionReader.decodePage(
+            JSONSerialization.data(withJSONObject: ["data": (0..<2).map { ["id": "s\($0)"] }]),
+            size: 2)
+        check(fallbackPage.hasMore && fallbackPage.rows.count == 2,
+              "missing has_more retains page-size pagination fallback")
         let transport = FixtureTransport()
         let suite = "HermesGatewayTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
