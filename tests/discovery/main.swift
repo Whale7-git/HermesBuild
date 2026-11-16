@@ -239,6 +239,7 @@ func expect(_ value: @autoclosure () -> Bool, _ message: String) {
         do { _ = try ArchivedSessionPage(data: Data(#"{"sessions":[],"archived_count":10,"archived_limit":2,"archived_offset":0}"#.utf8)); expect(false, "nonadvancing archive page cannot silently finish") }
         catch { expect(true, "nonadvancing archive page rejected") }
         try await refreshTests()
+        try await unifiedSessionTests()
         print("PASS: \(checks) discovery checks")
     }
 }
