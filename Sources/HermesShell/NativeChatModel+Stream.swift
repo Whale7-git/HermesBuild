@@ -181,9 +181,9 @@ extension NativeChatModel {
             }
         }
         var removedMessages = 0
-        while count - removedMessages > 1,
-              count - removedMessages > Self.maxLoadedMessages ||
-              remainingBytes > Self.maxLoadedBytes && count - removedMessages > 1 {
+        while count - removedMessages > 1 &&
+              (count - removedMessages > Self.maxLoadedMessages ||
+               remainingBytes > Self.maxLoadedBytes) {
             let oldest = buffer.messages[removedMessages]
             remainingBytes -= Self.cost(oldest) + (toolBytesByAnchor[oldest.id] ?? 0)
             removedMessages += 1
