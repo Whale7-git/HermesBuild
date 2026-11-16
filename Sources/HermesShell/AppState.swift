@@ -2079,7 +2079,9 @@ final class AppState: ObservableObject {
             : HomeTurnPolicy.canStartAttachment(creating: creating,
                                                 needsSetup: needsInstanceSetup)
         guard eligible, !clearingHistory, !needsLogin else { return false }
-        if let option {
+        if let option, api.capabilities != .webUI {
+            // Gateway create accepts only a model ID. WebUI activation is a
+            // separate provider-aware request after Session creation.
             let count = modelCatalog?.options.filter { $0.model == option.model }.count ?? 0
             guard HomeTurnPolicy.modelIsUnambiguous(option.model, matchingCount: count) else {
                 homeSendError = "同名模型无法区分 provider；请先新建会话，再选择模型。"
@@ -2097,13 +2099,27 @@ final class AppState: ObservableObject {
         defer { if createGeneration == generation { creating = false } }
         var createdSID: String?
         do {
-            let sid = try await requestAPI.createSession(title: nil, model: option?.model)
+            let sid = try await requestAPI.createSession(
+                title: nil, model: requestAPI.capabilities == .webUI ? nil : option?.model)
             createdSID = sid
             guard isCurrent(scope), createGeneration == generation,
                   !Task.isCancelled else {
                 retainKnownCreatedSession(sid, instanceID: instanceID,
                                           accountScope: accountScope)
                 return false
+            }
+            if let option, requestAPI.capabilities == .webUI {
+                // The WebUI create endpoint ignores model/provider. Only a
+                // verified session-update + authoritative history snapshot
+                // may arm the first automatic chat POST.
+                try await HomeModelActivation.confirmWebUI(
+                    backend: requestAPI, sessionID: sid, option: option)
+                guard isCurrent(scope), createGeneration == generation,
+                      !Task.isCancelled else {
+                    retainKnownCreatedSession(sid, instanceID: instanceID,
+                                              accountScope: accountScope)
+                    return false
+                }
             }
             let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
                 sessionID: sid, legacyBaseURL: requestAPI.webConsoleBaseURL.absoluteString,

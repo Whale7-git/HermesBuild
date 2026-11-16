@@ -90,6 +90,12 @@ let dupJSON = """
 """
 let dup = try ModelCatalog(data: Data(dupJSON.utf8))
 expect(dup.options.count == 2, "same model under two providers is not deduped away")
+expect(dup.option(matching: "m1", provider: nil) == nil,
+       "ambiguous provider-less model ID cannot display a guessed label")
+expect(dup.option(matching: "m1", provider: "b")?.label == "M1 (b)",
+       "exact provider/model pair resolves the correct UI label")
+expect(dup.option(matching: "m1", provider: "unknown") == nil,
+       "unknown provider never falls back to another provider")
 expect(dup.options.map(\.providerID) == ["a", "b"], "both providers survive, in catalog order")
 
 // An error payload must throw, not present as an empty catalog.
