@@ -107,7 +107,7 @@ final class UnifiedSessionModel: ObservableObject {
     /// not the transient browser View; returning within TTL does no GET.
     @discardableResult
     func refreshIfNeeded(sources: [UnifiedSessionSource], query: String,
-                         now: Date = Date()) -> Task<Void, Never>? {
+                         now: Date = Date(), maxAge: TimeInterval? = nil) -> Task<Void, Never>? {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = RequestKey(identities: sources.map(\.identity), query: term)
         if cachedKey != key {
@@ -142,7 +142,7 @@ final class UnifiedSessionModel: ObservableObject {
         let stale = Set(sources.filter { source in
             guard let at = lastSuccess[CacheKey(identity: source.identity, query: term)],
                   now.timeIntervalSince(at) >= 0 &&
-                  now.timeIntervalSince(at) < cacheLifetime else { return true }
+                  now.timeIntervalSince(at) < min(cacheLifetime, maxAge ?? cacheLifetime) else { return true }
             return false
         }.map(\.identity))
         if stale.isEmpty { return nil }
