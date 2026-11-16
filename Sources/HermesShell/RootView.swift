@@ -77,6 +77,9 @@ struct RootView: View {
             .onChange(of: browserOpen) { _, _ in
                 synchronizeConversationVisibility()
             }
+            .onChange(of: browserSessionOpen) { _, _ in
+                synchronizeConversationVisibility()
+            }
             .onChange(of: app.showSettings) { _, _ in
                 synchronizeConversationVisibility()
             }
@@ -291,8 +294,9 @@ struct RootView: View {
                 if ChatPageBackInteraction.shouldDismiss(
                     width: Double(size.width),
                     predictedTranslation: Double(value.predictedEndTranslation.width)) {
+                    // The browser is still the destination. Do not expose
+                    // the drawer until the browser itself is popped.
                     browserSessionOpen = false
-                    if browserSource == .drawer { sidebarOpen = true }
                 }
             }
     )
@@ -621,10 +625,13 @@ struct RootView: View {
     /// unobscured. A backgrounded app keeps the same `currentSessionID`, but
     /// that must not hide the notification the user needs when returning.
     private func synchronizeConversationVisibility() {
-        let visible = scenePhase == .active
-            && !sidebarOpen && !browserOpen
-            && !app.showSettings && !app.needsLogin
-            && app.currentSessionID != nil
+        let visible = UnifiedBrowserPresentation.conversationVisible(
+            active: scenePhase == .active,
+            sidebarOpen: sidebarOpen,
+            browserOpen: browserOpen,
+            browserSessionOpen: browserSessionOpen,
+            modalOpen: app.showSettings || app.needsLogin,
+            hasSession: app.currentSessionID != nil)
         app.setPresentationVisibility(
             appActive: scenePhase == .active,
             conversationVisible: visible)
