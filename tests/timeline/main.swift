@@ -663,15 +663,16 @@ check(ChatTimelineItemsEquality.equal(comparisonRows, stamp: firstIdentity,
 // build184: 150 completed turns / 180 anchored tools exercise the one-pass
 // per-turn process index. Assert identities and grouping, not a brittle clock
 // threshold; the printed duration is diagnostic only.
-let stressMessages: [ChatMessage] = (0..<150).flatMap { index in
-    [
-        ChatMessage(id: "long-u-\(index)", role: "user", content: "问题 \(index)",
-                    timestamp: Double(index * 60)),
-        ChatMessage(id: "long-a-\(index)-step", role: "assistant", content: "执行中",
-                    timestamp: Double(index * 60 + 1)),
-        ChatMessage(id: "long-a-\(index)-final", role: "assistant", content: "完成",
-                    timestamp: Double(index * 60 + 2))
-    ]
+var stressMessages: [ChatMessage] = []
+stressMessages.reserveCapacity(450)
+for index in 0..<150 {
+    let timestamp = Double(index * 60)
+    stressMessages.append(ChatMessage(id: "long-u-\(index)", role: "user",
+                                      content: "问题 \(index)", timestamp: timestamp))
+    stressMessages.append(ChatMessage(id: "long-a-\(index)-step", role: "assistant",
+                                      content: "执行中", timestamp: timestamp + 1))
+    stressMessages.append(ChatMessage(id: "long-a-\(index)-final", role: "assistant",
+                                      content: "完成", timestamp: timestamp + 2))
 }
 let stressTools: [ChatTool] = (0..<180).map { index in
     ChatTool(id: "long-tool-\(index)", name: "read_file", args: "",
