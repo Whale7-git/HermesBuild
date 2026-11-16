@@ -459,6 +459,21 @@ final class AppState: ObservableObject {
         return sessionRefreshClock.lastSuccess(scope: endpoint + "|" + account)
     }
 
+    /// Read-only local task facts for the exact instance/account. Never
+    /// borrow the active instance's observations for another endpoint. An
+    /// unreadable store is reported instead of silently discarded.
+    func unifiedTaskObservations(for instance: HermesInstance) -> SessionTaskStore.LoadResult {
+        guard instances.contains(where: {
+            $0.id == instance.id && $0.baseURL == instance.baseURL
+        }) else { return .missing }
+        let endpoint = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
+        let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
+        if active.id == instance.id && active.baseURL == instance.baseURL {
+            return damagedTaskStore ? .corrupt : .loaded(sessionTaskObservations)
+        }
+        return SessionTaskStore.inspect(instanceID: endpoint, accountScope: account)
+    }
+
     /// Only a user tap can change the selected host. Validate the full
     /// identity BEFORE switchTo mutates the backend or clears the old chat.
     /// Search results use their own scoped GET client and never mutate this
