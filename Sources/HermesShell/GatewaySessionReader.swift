@@ -81,7 +81,7 @@ enum GatewaySessionReader {
 
             guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let raw = root["data"] as? [Any] else { throw APIError.badResponse }
-            let rows = try GatewayDecode.sessions(data)
+            let rows = try GatewayDecode.sessions(root: root)
             let new = rows.filter { seen.insert($0.sessionId).inserted }
             result.append(contentsOf: new)
             let hasMore = root["has_more"] as? Bool ?? (raw.count >= size)
