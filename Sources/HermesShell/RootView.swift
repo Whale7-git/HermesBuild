@@ -22,6 +22,7 @@ struct RootView: View {
     @StateObject private var unifiedCenter = UnifiedSessionModel()
     @State private var unifiedQuery = ""
     @State private var unifiedFilter = 0
+    @State private var unifiedSection = 0
     private var browserAllInstances: Bool { browserRoute.last == .all }
     private var browserFromSingle: Bool { browserRoute.count > 1 }
     @GestureState private var browserBackDrag: CGFloat = 0
@@ -144,6 +145,15 @@ struct RootView: View {
                     onBrowseAllInstances: {
                         browserSource = .drawer
                         browserRoute = [.all]
+                        unifiedSection = 0
+                        browserSearchRequested = false
+                        browserSessionOpen = false
+                        browserOpen = true
+                    },
+                    onBrowseAllTasks: {
+                        browserSource = .drawer
+                        browserRoute = [.all]
+                        unifiedSection = 1
                         browserSearchRequested = false
                         browserSessionOpen = false
                         browserOpen = true
@@ -353,6 +363,7 @@ struct RootView: View {
                     center: unifiedCenter,
                     query: $unifiedQuery,
                     filter: $unifiedFilter,
+                    section: $unifiedSection,
                     onClose: backFromBrowser,
                     backToSingleInstance: browserFromSingle,
                     backToDrawer: browserSource == .drawer && !browserFromSingle,
@@ -445,6 +456,11 @@ struct RootView: View {
             onClose: backFromBrowser,
             backToDrawer: browserSource == .drawer && browserRoute.count == 1,
             onBrowseAllInstances: {
+                unifiedSection = 0
+                if browserRoute.last != .all { browserRoute.append(.all) }
+            },
+            onBrowseAllTasks: {
+                unifiedSection = 1
                 if browserRoute.last != .all { browserRoute.append(.all) }
             },
             startSearching: browserSearchRequested
@@ -491,6 +507,7 @@ struct RootView: View {
                     browserSearchRequested = true
                     browserSource = .chat
                     browserRoute = app.instances.count > 1 ? [.all] : [.single]
+                    unifiedSection = 0
                     browserSessionOpen = false
                     browserOpen = true
                 } label: { ChromeIcon(symbol: "magnifyingglass") }
