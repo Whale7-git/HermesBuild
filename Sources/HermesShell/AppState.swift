@@ -65,7 +65,7 @@ final class AppState: ObservableObject {
     @Published var instances: [HermesInstance]
     @Published var activeIndex: Int
     @Published var sessions: [SessionSummary] = [] {
-        didSet { taskDerivedDirty = true }
+        didSet { taskDerivedDirty = true; visibleTasksDirty = true }
     }
     @Published var loadingSessions = false
     /// Empty is authoritative only after a successful fetch for this scope.
@@ -124,6 +124,11 @@ final class AppState: ObservableObject {
         instanceID: String,
         accountScope: String
     ) -> Bool {
+        guard !damagedTaskStore else {
+            sessionTaskPersistenceWarning =
+                "任务状态存储损坏，已保留原始记录；请在侧栏明确清除损坏数据后重新同步。"
+            return false
+        }
         let saved = SessionTaskStore.save(
             values, instanceID: instanceID, accountScope: accountScope)
         if saved {
@@ -169,9 +174,16 @@ final class AppState: ObservableObject {
     /// Server `is_streaming` is merged separately, so this dictionary only
     /// contains facts this device could actually observe inside a session.
     @Published private(set) var sessionTaskObservations: [String: SessionTaskObservation] = [:] {
-        didSet { taskDerivedDirty = true }
+        didSet { taskDerivedDirty = true; visibleTasksDirty = true }
     }
     private var taskDerivedDirty = true
+    private var visibleTasksDirty = true
+    private var visibleTasks: [SessionTaskSummary] = []
+    private var visibleByID: [String: SessionTaskSummary] = [:]
+    private var visibleHomeAll = SessionHomeSections(sessions: [])
+    private var visibleHomePinned = SessionHomeSections(sessions: [])
+    private var visibleRevision: UInt64 = 0
+    private var damagedTaskStore = false
     private var taskDerivedState = SessionTaskDerivedState()
     /// 通知投递。默认走系统实现，测试可注入替身。
     let notifier: any TaskNotificationDelivering
@@ -184,7 +196,10 @@ final class AppState: ObservableObject {
     /// request of that kind is resolved.
     private var requestTaskSignals: Set<String> = []
     /// 用户对「需要处理」任务的本地确认。只影响展示，不改动持久化信号。
-    @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = []
+    @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = [] {
+        didSet { visibleTasksDirty = true }
+    }
+    @Published private(set) var taskAcknowledgementWarning: String?
     private var taskAckDirty = true
     private var taskAckLoaded = false
     /// 仅一次领取：先落草稿，重生成才自动发送，切实例即作废。
@@ -274,21 +289,39 @@ final class AppState: ObservableObject {
         return taskDerivedState.summaries
     }
 
-    func taskSummary(for sessionID: String) -> SessionTaskSummary? {
+    private func prepareVisibleTasks() {
         prepareTaskDerivedState()
-        return taskDerivedState.byID[sessionID]
+        prepareTaskAcknowledgements()
+        guard visibleTasksDirty else { return }
+        visibleTasks = SessionTaskCenter.filteringAcknowledged(
+            taskDerivedState.summaries,
+            observations: sessionTaskObservations,
+            acknowledgements: taskAcknowledgements)
+        visibleByID = Dictionary(visibleTasks.map { ($0.sessionID, $0) },
+                                 uniquingKeysWith: { first, _ in first })
+        visibleHomeAll = SessionHomeSections(sessions: sessions, taskSummaries: visibleTasks)
+        visibleHomePinned = SessionHomeSections(
+            sessions: sessions.filter { $0.pinned == true },
+            taskSummaries: visibleTasks)
+        visibleTasksDirty = false
+        visibleRevision &+= 1
+    }
+
+    func taskSummary(for sessionID: String) -> SessionTaskSummary? {
+        prepareVisibleTasks()
+        return visibleByID[sessionID]
     }
 
     /// Both filters are cached together; toggling the filter only selects a
     /// snapshot, never recomputes four sections inside individual row readers.
     func homeSections(pinnedOnly: Bool) -> SessionHomeSections {
-        prepareTaskDerivedState()
-        return pinnedOnly ? taskDerivedState.pinnedOnly : taskDerivedState.all
+        prepareVisibleTasks()
+        return pinnedOnly ? visibleHomePinned : visibleHomeAll
     }
 
     var taskSummaryRevision: UInt64 {
-        prepareTaskDerivedState()
-        return taskDerivedState.revision
+        prepareVisibleTasks()
+        return visibleRevision
     }
     var taskDerivationCount: UInt64 {
         prepareTaskDerivedState()
@@ -316,7 +349,8 @@ final class AppState: ObservableObject {
         if persisted.isEmpty {
             sessionTaskObservations.removeValue(forKey: sessionID)
         } else {
-            sessionTaskObservations[sessionID] = SessionTaskObservation(signals: persisted)
+            sessionTaskObservations[sessionID] = SessionTaskObservation.updating(
+                sessionTaskObservations[sessionID], signals: persisted)
         }
         persistSessionTaskObservations(
             sessionTaskObservations, instanceID: instance, accountScope: account)
@@ -924,11 +958,31 @@ final class AppState: ObservableObject {
     }
 
     private func loadSessionTasks() {
-        sessionTaskObservations = SessionTaskStore.load(
-            instanceID: historyInstanceID,
-            accountScope: historyAccountScope
-        )
-        sessionTaskPersistenceWarning = nil
+        switch SessionTaskStore.inspect(instanceID: historyInstanceID,
+                                        accountScope: historyAccountScope) {
+        case .missing:
+            damagedTaskStore = false
+            sessionTaskObservations = [:]
+            sessionTaskPersistenceWarning = nil
+        case .loaded(let rows):
+            damagedTaskStore = false
+            sessionTaskObservations = rows
+            sessionTaskPersistenceWarning = nil
+        case .corrupt:
+            damagedTaskStore = true
+            sessionTaskObservations = [:]
+            sessionTaskPersistenceWarning =
+                "任务状态记录损坏，已保留原始数据。不会静默覆盖；可在侧栏选择清除损坏记录。"
+            RuntimeLogRecorder.shared.recordApp(.error, "task-store", "task observation decode failed")
+        }
+    }
+
+    var hasDamagedTaskStore: Bool { damagedTaskStore }
+
+    func clearDamagedTaskStore() {
+        guard damagedTaskStore else { return }
+        SessionTaskStore.remove(instanceID: historyInstanceID, accountScope: historyAccountScope)
+        loadSessionTasks()
     }
 
     // MARK: - 任务确认（本地）
@@ -972,14 +1026,27 @@ final class AppState: ObservableObject {
         if pruned.count != decoded.count { persistTaskAcknowledgements() }
     }
 
-    private func persistTaskAcknowledgements() {
+    @discardableResult
+    private func persistTaskAcknowledgements() -> Bool {
         let key = taskAckDefaultsKey
         if taskAcknowledgements.isEmpty {
             UserDefaults.standard.removeObject(forKey: key)
-            return
+            let succeeded = UserDefaults.standard.data(forKey: key) == nil
+            taskAcknowledgementWarning = succeeded ? nil : "任务确认清除失败，重启后可能重新显示。"
+            return succeeded
         }
-        guard let data = try? JSONEncoder().encode(taskAcknowledgements) else { return }
+        guard let data = try? JSONEncoder().encode(taskAcknowledgements) else {
+            taskAcknowledgementWarning = "任务确认编码失败，当前结果尚未保存。"
+            RuntimeLogRecorder.shared.recordApp(.error, "task-ack", "encoding failed")
+            return false
+        }
         UserDefaults.standard.set(data, forKey: key)
+        let succeeded = UserDefaults.standard.data(forKey: key) == data
+        taskAcknowledgementWarning = succeeded ? nil : "任务确认保存失败，重启后可能重新显示。"
+        if !succeeded {
+            RuntimeLogRecorder.shared.recordApp(.error, "task-ack", "readback mismatch")
+        }
+        return succeeded
     }
 
     /// 标记一条「需要处理」任务已处理。只有 `recoveryIssue` 允许。
@@ -991,13 +1058,13 @@ final class AppState: ObservableObject {
         // 同一 (会话, 信号, 观察时间) 只留一条。
         let exists = taskAcknowledgements.contains {
             $0.sessionID == sessionID && $0.signal == signal
-                && $0.observedAt == observation.observedAt
+                && $0.observedAt == observation.version(for: signal)
         }
         guard !exists else { return }
         let now = Date().timeIntervalSince1970
         taskAcknowledgements.append(
             TaskAcknowledgement(sessionID: sessionID, signal: signal,
-                                observedAt: observation.observedAt, acknowledgedAt: now))
+                                observedAt: observation.version(for: signal), acknowledgedAt: now))
         taskAcknowledgements = TaskAcknowledgement.pruning(taskAcknowledgements, now: now)
         taskDerivedDirty = true
         persistTaskAcknowledgements()
@@ -1032,6 +1099,7 @@ final class AppState: ObservableObject {
     /// 切作用域：换 key，丢掉内存里的旧集合。
     private func resetTaskAcknowledgements() {
         taskAcknowledgements = []
+        taskAcknowledgementWarning = nil
         taskAckDirty = true
         taskAckLoaded = false
         taskDerivedDirty = true
@@ -1043,12 +1111,8 @@ final class AppState: ObservableObject {
     /// `SessionTaskCenter.filteringAcknowledged`）。原实现按会话整条过滤，
     /// 于是同一会话里「已确认的恢复问题」和「仍需你确认的审批」一起消失。
     var visibleTaskSummaries: [SessionTaskSummary] {
-        prepareTaskDerivedState()
-        prepareTaskAcknowledgements()
-        return SessionTaskCenter.filteringAcknowledged(
-            taskDerivedState.summaries,
-            observations: sessionTaskObservations,
-            acknowledgements: taskAcknowledgements)
+        prepareVisibleTasks()
+        return visibleTasks
     }
 
     /// 「已处理」分区的内容：仍有效的确认，附带会话标题。

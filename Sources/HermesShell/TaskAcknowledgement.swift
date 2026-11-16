@@ -35,7 +35,7 @@ struct TaskAcknowledgement: Codable, Equatable, Sendable {
     func covers(sessionID otherID: String, observation: SessionTaskObservation) -> Bool {
         guard otherID == sessionID else { return false }
         guard observation.signals.contains(signal) else { return false }
-        return observation.observedAt == observedAt
+        return observation.version(for: signal) == observedAt
     }
 }
 
