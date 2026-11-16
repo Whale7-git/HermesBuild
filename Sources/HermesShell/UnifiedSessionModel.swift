@@ -52,7 +52,11 @@ final class UnifiedSessionModel: ObservableObject {
 
     /// A positive, per-host deadline applies to BOTH WebUI full-body searches
     /// and Gateway list reads. The transport must honor Swift task cancellation.
-    static let hostTimeoutNanoseconds: UInt64 = 20_000_000_000
+    private let hostTimeoutNanoseconds: UInt64
+
+    init(hostTimeoutNanoseconds: UInt64 = 20_000_000_000) {
+        self.hostTimeoutNanoseconds = max(1_000_000, hostTimeoutNanoseconds)
+    }
 
     private struct RequestKey: Equatable {
         let identities: [UnifiedSessionIdentity]
@@ -112,7 +116,7 @@ final class UnifiedSessionModel: ObservableObject {
                     let source = sources[next]
                     next += 1
                     group.addTask { @MainActor in
-                        await Self.loadOutcome(source, query: term)
+                        await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
                     }
                 }
                 while let result = await group.next() {
@@ -125,7 +129,7 @@ final class UnifiedSessionModel: ObservableObject {
                         let source = sources[next]
                         next += 1
                         group.addTask { @MainActor in
-                            await Self.loadOutcome(source, query: term)
+                            await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
                         }
                     }
                 }
@@ -153,7 +157,7 @@ final class UnifiedSessionModel: ObservableObject {
         loading.insert(source.identity)
         failures.removeValue(forKey: source.identity)
         let run = Task { [weak self] in
-            let result = await Self.loadOutcome(source, query: term)
+            let result = await Self.loadOutcome(source, query: term, timeout: self.hostTimeoutNanoseconds)
             guard let self, self.generation == ticket, !Task.isCancelled else { return }
             self.accept(result)
         }
@@ -170,7 +174,7 @@ final class UnifiedSessionModel: ObservableObject {
     }
 
     private static func loadOutcome(_ source: UnifiedSessionSource,
-                                    query: String) async -> Outcome {
+                                    query: String, timeout: UInt64) async -> Outcome {
         do {
             return try await withThrowingTaskGroup(of: Outcome.self) { group in
                 group.addTask { @MainActor in
@@ -193,7 +197,7 @@ final class UnifiedSessionModel: ObservableObject {
                         list: messages, error: nil)
                 }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: hostTimeoutNanoseconds)
+                    try await Task.sleep(nanoseconds: timeout)
                     throw URLError(.timedOut)
                 }
                 defer { group.cancelAll() }
