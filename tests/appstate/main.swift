@@ -30,6 +30,9 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
     }
     func remove(reference: String) throws { values.removeValue(forKey: reference) }
 }
+func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
+    precondition(condition(), message)
+}
 @MainActor final class RecordingTaskNotifier: TaskNotificationDelivering {
     private(set) var delivered: [TaskNotification] = []
     private(set) var removed: [String] = []
@@ -387,6 +390,45 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
                      "in-flight edit cannot overwrite state after switching instances")
         HermesAPI.heldLists = []
         print("INSTANCE_EDIT_PASS rename preserve, strict URL/key validation, failed probes, secure rollback, endpoint isolation, account rotation and switched-scope race")
+    }
+
+    @MainActor static func unifiedSessionNavigationTests() async throws {
+        let a = HermesInstance(name: "Unified A", baseURL: "https://unified-a.test")
+        let b = HermesInstance(name: "Unified B", baseURL: "https://unified-b.test")
+        try InstanceStore.save([a, b], credentials: credentials)
+        InstanceStore.activeID = a.id
+        let model = AppState(credentials: credentials)
+        await model.refresh()
+        let shared = SessionSummary.placeholder(id: "same-session-id")
+        model.sessions = [shared]
+        let endpointA = model.historyInstanceID
+        let accountA = model.historyAccountScope
+        model.switchTo(1)
+        await spin { model.hasLoadedSessions }
+        let endpointB = model.historyInstanceID
+        let accountB = model.historyAccountScope
+        expectUnified(model.unifiedCachedSessions(for: a)?.first?.sessionId == shared.sessionId,
+                      "inactive host's scoped confirmed list remains available")
+        expectUnified(!model.openSessionFromInstance(instanceID: a.id,
+            endpointIdentity: endpointA, accountScope: "wrong-account", session: shared)
+            && model.active.id == b.id,
+            "mismatched account cannot navigate or switch hosts")
+        expectUnified(!model.openSessionFromInstance(instanceID: a.id,
+            endpointIdentity: endpointB, accountScope: accountA, session: shared)
+            && model.active.id == b.id,
+            "matching session ID with mismatched endpoint cannot switch")
+        expectUnified(model.openSessionFromInstance(instanceID: a.id,
+            endpointIdentity: endpointA, accountScope: accountA, session: shared)
+            && model.active.id == a.id && model.currentSessionID == shared.sessionId,
+            "explicit scoped tap switches to the correct host and opens its native Session")
+        expectUnified(model.unifiedCachedSessions(for: b) != nil,
+                      "other host's known list remains in its own scope")
+        let unknown = HermesInstance(name: "Not configured", baseURL: "https://unified-c.test")
+        expectUnified(model.unifiedCachedSessions(for: unknown) == nil,
+                      "unknown host cannot inspect any scoped cached list")
+        expectUnified(accountA != accountB || endpointA != endpointB,
+                      "test hosts use independent identity tuples")
+        print("UNIFIED_NAV_PASS exact host/account/session routing and isolated snapshots")
     }
 
     @MainActor static func refreshTests() async throws {
@@ -1104,6 +1146,7 @@ final class MemoryInstanceCredentials: InstanceCredentialStorage {
 
         try await homeCreateNavigationTests()
         try await webUIHomeModelTests()
+        try await unifiedSessionNavigationTests()
         try await refreshTests()
         try await instanceDeletionCacheTests()
         try await sessionRefreshPolicyTests()
