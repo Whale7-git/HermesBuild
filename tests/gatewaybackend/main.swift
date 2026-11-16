@@ -82,6 +82,21 @@ actor ConcurrencyProbe {
     @MainActor static func main() async throws {
         var checks = 0
         func check(_ value: Bool, _ why: String) { checks += 1; precondition(value, why) }
+        // A caller that already parsed a page must get identical filtering
+        // and identities without a second JSON deserialization.
+        let page = try JSONSerialization.data(withJSONObject: [
+            "data": [
+                ["id": "one", "title": "Visible", "pinned": true],
+                ["id": "hidden", "hidden": true],
+                ["id": "two", "title": "Visible 2", "pinned": false]
+            ]
+        ])
+        let parsedPage = try JSONSerialization.jsonObject(with: page) as! [String: Any]
+        let fromBytes = try GatewayDecode.sessions(page)
+        let fromRoot = try GatewayDecode.sessions(root: parsedPage)
+        check(fromBytes.map(\.sessionId) == fromRoot.map(\.sessionId) &&
+              fromRoot.map(\.sessionId) == ["one", "two"],
+              "single-deserialization gateway paging preserves filtering and identity")
         let transport = FixtureTransport()
         let suite = "HermesGatewayTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -806,6 +821,8 @@ actor ConcurrencyProbe {
         // 记一条 run，该会话就必须被标成 streaming。
         let liveSession = beforeRun.first?.sessionId ?? "s0"
         streamingStore.remember(runID: "run-live", sessionID: liveSession)
+        check(streamingStore.runIDs(for: [liveSession, "absent"]) == [liveSession: "run-live"],
+              "bulk run lookup returns only active IDs and does not invent missing runs")
         let duringRun = try await streamingBackend.sessions()
         let liveRow = duringRun.first { $0.sessionId == liveSession }
         check(liveRow?.isStreaming == true,
