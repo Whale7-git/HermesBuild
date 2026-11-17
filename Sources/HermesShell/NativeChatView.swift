@@ -96,7 +96,6 @@ struct NativeChatView: View {
     let sessionID: String
     let title: String
     let onOpenSidebar: () -> Void
-    let webURL: URL
     let readingStore: ChatReadingPositionStore
     /// 进入会话时取一次的比例快照，整个会话（含宿主重建）都用这一份。
     var imageRatios: ImageRatioSnapshot { objects.imageRatios }
@@ -191,9 +190,6 @@ struct NativeChatView: View {
         self.readingStore = readingStore
         _readerPositionStore = State(initialValue: ChatReaderPositionStore(
             instanceID: instanceID, accountScope: accountScope, sessionID: sessionID))
-        self.webURL = api.webConsoleBaseURL
-            .appendingPathComponent("session")
-            .appendingPathComponent(sessionID)
         let attachmentDraftStore = ChatDraftStore(
             instanceID: instanceID, accountScope: accountScope, sessionID: sessionID,
             legacyBaseURL: api.webConsoleBaseURL.absoluteString,
