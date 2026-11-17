@@ -100,12 +100,24 @@ struct RootView: View {
                 cancelNavigationGestures()
             }
             .onChange(of: app.showSettings) { _, shown in
-                if shown { cancelNavigationGestures() }
+                if shown {
+                    cancelNavigationGestures()
+                    taskCenterPresented = false
+                }
                 synchronizeConversationVisibility()
             }
             .onChange(of: app.needsLogin) { _, shown in
-                if shown { cancelNavigationGestures() }
+                if shown {
+                    cancelNavigationGestures()
+                    taskCenterPresented = false
+                }
                 synchronizeConversationVisibility()
+            }
+            .onChange(of: homeScope) { _, _ in
+                // A token/account change can invalidate a task-sheet identity
+                // even without an explicit instance-switch button.
+                if taskCenterPresented { taskCenterPresented = false }
+                cancelNavigationGestures()
             }
             .onChange(of: app.currentSessionID) { _, current in
                 cancelNavigationGestures()
