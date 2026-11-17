@@ -35,6 +35,14 @@ def violations(contents: dict[str, str]) -> list[str]:
             "drawerGestureOwner.changed(",
             "drawerGestureOwner.ended(",
             "drawerGestureOwner.cancelled()",
+            "@GestureState private var sessionBackDrag = RootPageGestureState()",
+            "@GestureState private var browserBackDrag = RootPageGestureState()",
+            "@State private var sessionBackOwner = RootPageGestureOwnership()",
+            "@State private var browserBackOwner = RootPageGestureOwnership()",
+            "sessionBackOwner.changed(",
+            "sessionBackOwner.ended(",
+            "browserBackOwner.changed(",
+            "browserBackOwner.ended(",
         ),
         "SessionDrawer.swift": (
             "enum Mode { case page, drawer }",
@@ -75,6 +83,8 @@ def violations(contents: dict[str, str]) -> list[str]:
         ),
         "ChatScrollState.swift": (
             "struct RootDrawerGestureOwnership: Equatable",
+            "struct RootPageGestureState",
+            "struct RootPageGestureOwnership: Equatable",
             "mutating func ended(open: Bool, width: Double,",
             "enum UnifiedBrowserBackNavigation",
             "enum ChatPageBackInteraction",
@@ -128,6 +138,9 @@ def main() -> int:
         ("cross-instance identity", "AppState.swift", "func openSessionFromInstance("),
         ("full-page session browser", "SessionDrawer.swift", "mode == .page"),
         ("stable drawer owner", "RootView.swift", "drawerGestureOwner.ended("),
+        ("stable browser owner", "RootView.swift", "browserBackOwner.ended("),
+        ("browser visual state", "RootView.swift",
+         "@GestureState private var browserBackDrag = RootPageGestureState()"),
         ("export action", "NativeChatView+Chrome.swift",
          "Button(\"获取完整历史后导出\""),
     )
