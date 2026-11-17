@@ -190,8 +190,6 @@ struct NativeChatView: View {
         self.readingStore = readingStore
         _readerPositionStore = State(initialValue: ChatReaderPositionStore(
             instanceID: instanceID, accountScope: accountScope, sessionID: sessionID))
-            .appendingPathComponent("session")
-            .appendingPathComponent(sessionID)
         let attachmentDraftStore = ChatDraftStore(
             instanceID: instanceID, accountScope: accountScope, sessionID: sessionID,
             legacyBaseURL: api.webConsoleBaseURL.absoluteString,
