@@ -215,6 +215,149 @@ enum ChatPageBackInteraction {
     }
 }
 
+/// A single value is the authority for all visible root-level routes.
+/// This replaces independent, partially updated SwiftUI booleans. The browser
+/// remains mounted behind a selected chat so Back returns to the same list.
+struct RootNavigationState: Equatable {
+    private(set) var drawerOpen = false
+    private(set) var browserRoute: [UnifiedBrowserPage] = []
+    private(set) var browserSource: UnifiedBrowserSource = .chat
+    private(set) var selectedBrowserChat = false
+
+    var browserOpen: Bool { !browserRoute.isEmpty }
+    var browserAllInstances: Bool { browserRoute.last == .all }
+    var browserFromSingle: Bool { browserRoute.count > 1 }
+
+    enum SwipeTarget: Equatable {
+        case openDrawer, closeDrawer, backFromBrowserChat, backFromBrowserPage
+    }
+
+    /// Visible page owns the gesture. A mounted background browser cannot
+    /// compete with the selected chat, and drawer return cannot pop a browser.
+    var swipeTarget: SwipeTarget {
+        if selectedBrowserChat { return .backFromBrowserChat }
+        if browserOpen { return .backFromBrowserPage }
+        return drawerOpen ? .closeDrawer : .openDrawer
+    }
+
+    mutating func openDrawer() {
+        guard !browserOpen || selectedBrowserChat else { return }
+        if selectedBrowserChat { dismissBrowser() }
+        drawerOpen = true
+    }
+
+    mutating func closeDrawer() { drawerOpen = false }
+
+    mutating func enterBrowser(_ path: [UnifiedBrowserPage],
+                              from source: UnifiedBrowserSource) {
+        guard !path.isEmpty else { return }
+        browserRoute = path
+        browserSource = source
+        selectedBrowserChat = false
+        // A drawer-launched browser returns to that same drawer.
+        drawerOpen = source == .drawer
+    }
+
+    mutating func openBrowserChat() {
+        guard browserOpen else { return }
+        selectedBrowserChat = true
+        drawerOpen = false
+    }
+
+    mutating func showSingleBrowser() {
+        guard browserOpen else { return }
+        browserRoute = [.single]
+        selectedBrowserChat = false
+    }
+
+    mutating func showAllBrowser() {
+        guard browserOpen, !selectedBrowserChat else { return }
+        if browserRoute.last != .all { browserRoute.append(.all) }
+    }
+
+    mutating func back() {
+        if selectedBrowserChat {
+            selectedBrowserChat = false
+        } else if browserRoute.count > 1 {
+            browserRoute.removeLast()
+        } else if browserOpen {
+            let destination = browserSource
+            dismissBrowser()
+            drawerOpen = destination == .drawer
+        }
+    }
+
+    mutating func dismissBrowser() {
+        browserRoute = []
+        selectedBrowserChat = false
+        drawerOpen = false
+    }
+
+    mutating func closeForSettingsOrNewChat() {
+        dismissBrowser()
+    }
+
+    /// The incoming draft has no parent conversation; never strand a hidden
+    /// browser route behind it.
+    mutating func retireForNewDraft(hasSession: Bool) {
+        if browserOpen && selectedBrowserChat && !hasSession { dismissBrowser() }
+    }
+}
+
+/// All root-card gestures use one axis and initial-claim contract. SwiftUI
+/// may reset @GestureState before onEnded is read; onEnded can safely re-check
+/// the final sample, without depending only on the transient property.
+struct RootNavigationGesture: Equatable {
+    private(set) var claimed = false
+    private(set) var translation: Double = 0
+
+    static func canClaim(_ target: RootNavigationState.SwipeTarget,
+                         startX: Double, horizontal: Double,
+                         vertical: Double, width: Double) -> Bool {
+        switch target {
+        case .openDrawer:
+            return ChatDrawerInteraction.shouldTrack(
+                startX: startX, translationX: horizontal, translationY: vertical,
+                open: false, width: width, allowFullCard: true)
+        case .closeDrawer:
+            return ChatDrawerInteraction.shouldTrack(
+                startX: startX, translationX: horizontal, translationY: vertical,
+                open: true, width: width, allowFullCard: true)
+        case .backFromBrowserChat, .backFromBrowserPage:
+            return ChatPageBackInteraction.shouldTrack(
+                startX: startX, horizontal: horizontal, vertical: vertical,
+                allowFullCard: true)
+        }
+    }
+
+    mutating func update(_ target: RootNavigationState.SwipeTarget,
+                         startX: Double, horizontal: Double,
+                         vertical: Double, width: Double) {
+        guard horizontal.isFinite, vertical.isFinite else { return }
+        if !claimed {
+            guard Self.canClaim(target, startX: startX, horizontal: horizontal,
+                                vertical: vertical, width: width) else { return }
+            claimed = true
+        }
+        translation = horizontal
+    }
+
+    static func shouldComplete(_ target: RootNavigationState.SwipeTarget,
+                               width: Double, predicted: Double) -> Bool {
+        switch target {
+        case .openDrawer:
+            return ChatDrawerInteraction.finishOpen(
+                width: width, wasOpen: false, predictedTranslation: predicted)
+        case .closeDrawer:
+            return !ChatDrawerInteraction.finishOpen(
+                width: width, wasOpen: true, predictedTranslation: predicted)
+        case .backFromBrowserChat, .backFromBrowserPage:
+            return ChatPageBackInteraction.shouldDismiss(
+                width: width, predictedTranslation: predicted)
+        }
+    }
+}
+
 /// The root keeps an ordered browser stack and the actual parent surface.
 /// Switching Hermes backends never changes these navigation identities.
 /// Actual presented surface, not merely whether a browser route is retained.
