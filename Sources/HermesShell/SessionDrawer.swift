@@ -18,6 +18,9 @@ struct SessionListPane: View {
     var onBrowseAllInstances: (() -> Void)? = nil
     var onBrowseAllTasks: (() -> Void)? = nil
     var startSearching = false
+    /// Supplied by the root shell so the sheet does not move with this pane.
+    /// Standalone callers retain the existing local presentation fallback.
+    var onShowTaskCenter: (() -> Void)? = nil
 
     @State private var query = ""
     @State private var showsSearch = false
@@ -822,7 +825,8 @@ struct SessionListPane: View {
         let summaries = app.visibleTaskSummaries
         let attention = summaries.filter(\.needsAttention).count
         return Button {
-            showTaskCenter = true
+            if let onShowTaskCenter { onShowTaskCenter() }
+            else { showTaskCenter = true }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: attention > 0 ? "checklist.checked" : "waveform")

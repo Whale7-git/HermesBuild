@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build202 navigation preservation gate.
+"""Build202/203 navigation and modal/reading ownership preservation gate.
 
 The feature baseline is build198/build201, NOT build199's drawer-only rewrite.
 This checks that executable SwiftUI wiring still exposes every legacy route,
@@ -43,6 +43,15 @@ def violations(contents: dict[str, str]) -> list[str]:
             "sessionBackOwner.ended(",
             "browserBackOwner.changed(",
             "browserBackOwner.ended(",
+            "@State private var taskCenterPresented = false",
+            ".sheet(isPresented: $taskCenterPresented",
+            "onShowTaskCenter: presentTaskCenter",
+            "onOpenCurrentTaskCenter: presentTaskCenter",
+            "navigationGesturesAllowed",
+            "taskCenterScope == homeScope",
+            "pendingTaskSheetSelection = (",
+            "RootTaskSheetNavigation.canOpen(",
+            "SessionTaskCenterView(",
         ),
         "SessionDrawer.swift": (
             "enum Mode { case page, drawer }",
@@ -54,6 +63,8 @@ def violations(contents: dict[str, str]) -> list[str]:
             "mode == .page",
             "SessionSearchView(",
             "SessionTaskCenterView(",
+            "var onShowTaskCenter: (() -> Void)?",
+            "if let onShowTaskCenter { onShowTaskCenter() }",
         ),
         "UnifiedSessionBrowser.swift": (
             "struct UnifiedSessionBrowser: View",
@@ -63,6 +74,8 @@ def violations(contents: dict[str, str]) -> list[str]:
             "TextField(\"筛选任务或实例\"",
             "center.retry(source:",
             "onSelect(record)",
+            "Button(action: onOpenCurrentTaskCenter)",
+            "activeAttention > 0",
         ),
         "UnifiedSessionModel.swift": (
             "struct UnifiedSessionIdentity: Hashable",
@@ -89,6 +102,12 @@ def violations(contents: dict[str, str]) -> list[str]:
             "enum UnifiedBrowserBackNavigation",
             "enum ChatPageBackInteraction",
             "struct ChatDrawerGestureState",
+            "enum RootNavigationModalPolicy",
+            "enum RootTaskSheetNavigation",
+            "static func geometryReportedDistance(",
+        ),
+        "StableChatScrollView+Coordinator.swift": (
+            "ChatScrollState.geometryReportedDistance(",
         ),
         "NativeChatView+Chrome.swift": (
             "Button(\"导出已加载内容\"",
@@ -120,6 +139,7 @@ def main() -> int:
         "RootView.swift", "SessionDrawer.swift", "UnifiedSessionBrowser.swift",
         "UnifiedSessionModel.swift", "UnifiedTaskWorkspace.swift", "AppState.swift",
         "ChatScrollState.swift", "NativeChatView+Chrome.swift", "NativeChatView.swift",
+        "StableChatScrollView+Coordinator.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
@@ -143,6 +163,15 @@ def main() -> int:
          "@GestureState private var browserBackDrag = RootPageGestureState()"),
         ("export action", "NativeChatView+Chrome.swift",
          "Button(\"获取完整历史后导出\""),
+        ("root-owned task sheet", "RootView.swift",
+         ".sheet(isPresented: $taskCenterPresented"),
+        ("deferred task opening", "RootView.swift",
+         "RootTaskSheetNavigation.canOpen("),
+        ("modal swipe gate", "RootView.swift", "navigationGesturesAllowed"),
+        ("unified local task entry", "UnifiedSessionBrowser.swift",
+         "Button(action: onOpenCurrentTaskCenter)"),
+        ("keyboard geometry protection", "StableChatScrollView+Coordinator.swift",
+         "ChatScrollState.geometryReportedDistance("),
     )
     for description, filename, fragment in cases:
         if fragment not in contents[filename]:

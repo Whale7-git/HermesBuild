@@ -9,6 +9,9 @@ struct UnifiedSessionBrowser: View {
     let backToSingleInstance: Bool
     let backToDrawer: Bool
     let onSingleInstance: () -> Void
+    /// Separate read-only cross-instance evidence from the active host's local
+    /// actionable task center; do not invent a cross-instance run on a miss.
+    let onOpenCurrentTaskCenter: () -> Void
     let onSelect: (UnifiedSessionRecord) -> Bool
 
     @ObservedObject var center: UnifiedSessionModel
@@ -28,6 +31,7 @@ struct UnifiedSessionBrowser: View {
     init(center: UnifiedSessionModel, query: Binding<String>, filter: Binding<Int>,
          section: Binding<Int>, onClose: @escaping () -> Void, backToSingleInstance: Bool,
          backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
+         onOpenCurrentTaskCenter: @escaping () -> Void,
          onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
         self.center = center
         self._query = query
@@ -37,6 +41,7 @@ struct UnifiedSessionBrowser: View {
         self.backToSingleInstance = backToSingleInstance
         self.backToDrawer = backToDrawer
         self.onSingleInstance = onSingleInstance
+        self.onOpenCurrentTaskCenter = onOpenCurrentTaskCenter
         self.onSelect = onSelect
     }
 
@@ -203,11 +208,38 @@ struct UnifiedSessionBrowser: View {
     @ViewBuilder
     private var taskResults: some View {
         let entries = taskEntries
-        Text("仅展示最近确认的运行记录及本机观察到的待办；未刷新、离线或网关未提供运行状态时不会推测任务正在执行。")
+        let activeAttention = app.visibleTaskSummaries.filter(\.needsAttention).count
+        Text("跨实例视图仅展示已关联到已加载会话的任务证据。此处没有条目，不代表本实例没有待处理事项；不会推测网关未知的运行状态。")
             .font(.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, AppTheme.pagePadding)
             .padding(.vertical, 8)
+        if activeAttention > 0 {
+            Button(action: onOpenCurrentTaskCenter) {
+                HStack(spacing: 10) {
+                    Image(systemName: "checklist.checked")
+                        .foregroundStyle(AppTheme.warning)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("本实例有 \(activeAttention) 项待处理")
+                            .font(.subheadline.weight(.semibold))
+                        Text("打开本实例任务中心核对，不受跨实例列表筛选影响")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .background(AppTheme.softFill,
+                            in: RoundedRectangle(cornerRadius: AppTheme.radiusM))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, AppTheme.pagePadding)
+            .accessibilityLabel("本实例有 \(activeAttention) 项待处理，打开任务中心")
+        }
         if !damagedTaskInstances.isEmpty {
             Label("部分实例的本机任务记录损坏，已保留原始数据："
                   + damagedTaskInstances.joined(separator: "、"),
@@ -219,7 +251,7 @@ struct UnifiedSessionBrowser: View {
         if entries.isEmpty && center.loading.isEmpty {
             HermesEmptyState(
                 symbol: "checklist",
-                title: center.failures.isEmpty ? "暂无可确认的任务" : "任务状态尚未全部确认",
+                title: center.failures.isEmpty ? "跨实例暂无可确认的任务" : "跨实例任务状态尚未全部确认",
                 message: "可下拉刷新各实例。Gateway 未提供 is_streaming 时，"
                     + "未打开过的后台任务可能无法从会话列表识别；不会猜测运行状态。")
                 .padding(.top, 44)

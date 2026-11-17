@@ -568,7 +568,12 @@ extension ChatScrollController {
             guard self.navigationTarget == nil else { return }
             let distance = max(0, self.scrollView.contentSize.height - self.scrollView.bounds.height
                                - self.scrollView.contentOffset.y)
-            let reported = self.navigationDetached ? max(ChatScrollState.detachThreshold + 1, Double(distance)) : Double(distance)
+            // This asynchronous callback can follow a keyboard/viewport resize,
+            // with no user pan. Never allow it to reattach a detached reader.
+            // The genuine scroll delegate above still controls reattachment.
+            let reported = ChatScrollState.geometryReportedDistance(
+                Double(distance), following: self.policy.following,
+                navigationDetached: self.navigationDetached)
             self.policy.update(distanceFromBottom: reported)
             self.current?.onDistance(reported)
         }
