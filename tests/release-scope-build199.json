@@ -608,7 +608,7 @@
     "Sources/HermesShell/RuntimeLogRecorder.swift": "0420cd92ecaecb2e4137932d8eb692bc605cab52fa38fc33163c08e4ec1766d6",
     "Sources/HermesShell/RuntimeLogStorage.swift": "2588887ea918a49d2c597ee0ba9fbca6a83c72db0807e501f4f45c1e1ea217f3",
     "Sources/HermesShell/SSEFrameBudget.swift": "fcd693f6435cf6bc844a418b7082125d9b9635610a4559c66c49189b7bf71b15",
-    "Sources/HermesShell/SessionDrawer.swift": "4af9a89f2ae2117f1f8f4d8b17e5c9deeb753ff998ec392dcd5c5e6fe6ce601c",
+    "Sources/HermesShell/SessionDrawer.swift": "2a5e78852472be15d35b8535e8c07506f1a733e56db11403a6dbfdab8f74c048",
     "Sources/HermesShell/SessionHomeSections.swift": "c1bbfae65eff58f7cdd48ac51ee26df807bbfead365070a398466cf082ed5805",
     "Sources/HermesShell/SessionRefreshClock.swift": "54e710d21a1a1536b3818d0ae4b18b4fd4972c0529f24da98ee3c6623a982f0a",
     "Sources/HermesShell/SessionSearchView.swift": "bea60c1e5dcc9fdab60fda2938dba147a80661048246343edf593bc97727b8d2",
