@@ -231,6 +231,35 @@ expect(!ChatDrawerInteraction.shouldTrack(startX: .nan, translationX: 100,
                                           translationY: 0, open: false, width: 330),
        "invalid gesture geometry cannot start transition")
 
+// Production RootView calls RootNavigationInteraction.changed / ended.
+// Model those exact callback events, including the window in which
+// @GestureState may have reset before onEnded runs.
+var host = RootNavigationInteraction()
+var hostNav = RootNavigationState()
+host.changed(open: false, startX: 190, horizontal: 65, vertical: 3, width: 330)
+expect(host.claimed, "host acquires horizontal gesture onChanged")
+host.changed(open: false, startX: 190, horizontal: -17, vertical: 12, width: 330)
+expect(host.claimed, "host holds ownership even when user reverses")
+host.ended(navigation: &hostNav, width: 330, predicted: 245)
+expect(hostNav.sidebarOpen && !host.claimed,
+       "onEnded works after transient GestureState resets and releases host latch")
+host.changed(open: true, startX: 380, horizontal: -120, vertical: 3, width: 330)
+host.ended(navigation: &hostNav, width: 330, predicted: -270)
+expect(!hostNav.sidebarOpen, "next complete close returns to native chat")
+host.changed(open: false, startX: 190, horizontal: 75, vertical: 3, width: 330)
+host.cancelled()
+host.ended(navigation: &hostNav, width: 330, predicted: 300)
+expect(!hostNav.sidebarOpen, "cancelled gesture cannot navigate from a stale owner")
+host.changed(open: false, startX: 190, horizontal: 15, vertical: 170, width: 330)
+host.ended(navigation: &hostNav, width: 330, predicted: 340)
+expect(!hostNav.sidebarOpen, "vertical scroll cannot become right-swipe by prediction alone")
+host.changed(open: false, startX: 210, horizontal: 100, vertical: 1, width: 330)
+host.ended(navigation: &hostNav, width: 330, predicted: 60)
+expect(!hostNav.sidebarOpen, "short right swipe settles back, preserving chat")
+host.changed(open: false, startX: 210, horizontal: 100, vertical: 1, width: 330)
+host.ended(navigation: &hostNav, width: 330, predicted: 290)
+expect(hostNav.sidebarOpen, "later complete gesture succeeds without stale cancellation")
+
 // build199: one navigation owner, with sequences rather than isolated
 // button callbacks. There is no full-screen browser or second back stack.
 var nav = RootNavigationState()
