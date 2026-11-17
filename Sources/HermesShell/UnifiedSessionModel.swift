@@ -306,40 +306,85 @@ final class UnifiedSessionModel: ObservableObject {
         let error: String?
     }
 
+    /// A TaskGroup always awaits its children on scope exit, even after a
+    /// timeout child wins. A network client that ignores cancellation can
+    /// therefore pin one of the browser's three host slots indefinitely.
+    /// The one-shot gate below returns by deadline while still cancelling
+    /// the losing underlying GET. A late result has NO route to publishing.
+    private final class OutcomeGate {
+        let identity: UnifiedSessionIdentity
+        private var continuation: CheckedContinuation<Outcome, Never>?
+        private var resolved: Outcome?
+        var request: Task<Void, Never>?
+        var timer: Task<Void, Never>?
+
+        init(identity: UnifiedSessionIdentity) { self.identity = identity }
+
+        func install(_ continuation: CheckedContinuation<Outcome, Never>) {
+            if let resolved { continuation.resume(returning: resolved) }
+            else { self.continuation = continuation }
+        }
+
+        func finish(_ outcome: Outcome) {
+            guard resolved == nil else { return }
+            resolved = outcome
+            let request = request
+            let timer = timer
+            self.request = nil
+            self.timer = nil
+            request?.cancel()
+            timer?.cancel()
+            let pending = continuation
+            continuation = nil
+            pending?.resume(returning: outcome)
+        }
+
+        func cancel() {
+            finish(Outcome(identity: identity, records: nil, list: nil,
+                           error: CancellationError().localizedDescription))
+        }
+    }
+
     private static func loadOutcome(_ source: UnifiedSessionSource,
                                     query: String, timeout: UInt64) async -> Outcome {
-        do {
-            return try await withThrowingTaskGroup(of: Outcome.self) { group in
-                group.addTask { @MainActor in
-                    try Task.checkCancellation()
-                    if !query.isEmpty, let search = source.searchFullBody {
-                        let hits = try await search(query)
-                        let rows = hits.map { hit in
-                            UnifiedSessionRecord(identity: source.identity,
-                                instanceName: source.instanceName,
-                                session: hit.session,
-                                excerpt: hit.preview ?? hit.session.preview,
-                                matchedFullBody: hit.matchType == "content")
+        let gate = OutcomeGate(identity: source.identity)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Outcome, Never>) in
+                gate.install(continuation)
+                gate.request = Task { @MainActor in
+                    do {
+                        try Task.checkCancellation()
+                        if !query.isEmpty, let search = source.searchFullBody {
+                            let hits = try await search(query)
+                            let rows = hits.map { hit in
+                                UnifiedSessionRecord(identity: source.identity,
+                                    instanceName: source.instanceName,
+                                    session: hit.session,
+                                    excerpt: hit.preview ?? hit.session.preview,
+                                    matchedFullBody: hit.matchType == "content")
+                            }
+                            gate.finish(Outcome(identity: source.identity,
+                                records: rows, list: nil, error: nil))
+                        } else {
+                            let messages = try await source.load()
+                            gate.finish(Outcome(identity: source.identity,
+                                records: Self.localRows(source, messages: messages, query: query),
+                                list: messages, error: nil))
                         }
-                        return Outcome(identity: source.identity,
-                                       records: rows, list: nil, error: nil)
+                    } catch {
+                        gate.finish(Outcome(identity: source.identity,
+                            records: nil, list: nil, error: error.localizedDescription))
                     }
-                    let messages = try await source.load()
-                    return Outcome(identity: source.identity,
-                        records: Self.localRows(source, messages: messages, query: query),
-                        list: messages, error: nil)
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: timeout)
-                    throw URLError(.timedOut)
+                gate.timer = Task { @MainActor in
+                    do { try await Task.sleep(nanoseconds: timeout) }
+                    catch { return }
+                    gate.finish(Outcome(identity: source.identity, records: nil,
+                        list: nil, error: URLError(.timedOut).localizedDescription))
                 }
-                defer { group.cancelAll() }
-                guard let first = try await group.next() else { throw URLError(.badServerResponse) }
-                return first
             }
-        } catch {
-            return Outcome(identity: source.identity, records: nil, list: nil,
-                           error: error.localizedDescription)
+        } onCancel: {
+            Task { @MainActor in gate.cancel() }
         }
     }
 
