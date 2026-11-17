@@ -1,0 +1,35 @@
+name: HermesBuild candidate queue watchdog
+
+on:
+  workflow_run:
+    workflows: [HermesBuild single-build candidate]
+    types: [requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-queue-watchdog-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Retry macOS queue twice then Bark on third timeout
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.repository.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 21
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # Trusted default branch only. Never checkout untrusted PR HEAD.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: main
+      - name: Monitor three queue windows and notify on exhaustion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BARK_URL: ${{ secrets.BARK_URL }}
+        run: python3 scripts/queued_candidate_watchdog.py
