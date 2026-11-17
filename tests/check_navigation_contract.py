@@ -148,7 +148,8 @@ def main() -> int:
         if fragment not in contents[filename]:
             raise AssertionError(f"fixture missing for {description}")
         altered = dict(contents)
-        altered[filename] = altered[filename].replace(fragment, "", 1)
+        # Remove every matching binding: some routes have multiple valid entry points.
+        altered[filename] = altered[filename].replace(fragment, "")
         if not violations(altered):
             raise AssertionError(f"gate failed to detect removed {description}")
 
