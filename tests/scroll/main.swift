@@ -41,6 +41,42 @@ for geometryDistance in [0.0, 12.0, 39.0, 60.0, 120.0, 0.0] {
 expect(ChatScrollState.geometryReportedDistance(
        0, following: true, navigationDetached: false) == 0,
        "reader already following latest still receives true geometry")
+
+// build204: UIKit viewport/keyboard/cell-height corrections never change
+// follow intent in the absence of a user scrolling gesture.
+var attachedLayoutReader = ChatScrollState()
+for distance in [190.0, 300.0, 650.0, 95.0, 0.0] {
+    let reported = ChatScrollState.geometryReportedDistance(
+        distance, following: attachedLayoutReader.following,
+        navigationDetached: false)
+    attachedLayoutReader.update(distanceFromBottom: reported)
+    expect(attachedLayoutReader.following,
+           "programmatic geometry cannot detach an already-following reader")
+}
+expect(ChatScrollState.isUserScroll(tracking: true, dragging: false,
+       decelerating: false, horizontalBackPan: false, animatedJump: false,
+       resizingViewport: false),
+       "vertical touch tracking can change reading ownership")
+expect(ChatScrollState.isUserScroll(tracking: false, dragging: false,
+       decelerating: true, horizontalBackPan: false, animatedJump: false,
+       resizingViewport: false),
+       "user-originated scroll deceleration remains manual reading")
+expect(!ChatScrollState.isUserScroll(tracking: false, dragging: false,
+       decelerating: false, horizontalBackPan: false, animatedJump: false,
+       resizingViewport: false),
+       "pure geometry delegate callback is not user input")
+expect(!ChatScrollState.isUserScroll(tracking: true, dragging: true,
+       decelerating: false, horizontalBackPan: false, animatedJump: false,
+       resizingViewport: true),
+       "keyboard resize defers gesture ownership changes")
+expect(!ChatScrollState.isUserScroll(tracking: true, dragging: true,
+       decelerating: false, horizontalBackPan: false, animatedJump: true,
+       resizingViewport: false),
+       "explicit animated jump cannot trigger manual scroll state")
+expect(!ChatScrollState.isUserScroll(tracking: true, dragging: true,
+       decelerating: false, horizontalBackPan: true, animatedJump: false,
+       resizingViewport: false),
+       "horizontal back swipe cannot become transcript scroll intent")
 expect(ChatScrollState.geometryReportedDistance(
        0, following: true, navigationDetached: true) > ChatScrollState.detachThreshold,
        "active reading navigation locks out geometry auto-reattach")
