@@ -231,51 +231,70 @@ expect(!ChatDrawerInteraction.shouldTrack(startX: .nan, translationX: 100,
                                           translationY: 0, open: false, width: 330),
        "invalid gesture geometry cannot start transition")
 
-// build196: the closing card must keep ownership when the finger reverses
-// at x=0. Previously shouldTrack() was re-evaluated on every sample; a
-// sign reversal returned false and reset @GestureState mid-gesture.
-var closingDrag = ChatDrawerGestureState()
-closingDrag.update(startX: 385, horizontal: -100, vertical: 3,
-                   open: true, width: 330, allowFullCard: true)
-expect(closingDrag.claimed && closingDrag.translation == -100,
-       "horizontal close owns the drag after initial direction check")
-closingDrag.update(startX: 385, horizontal: -360, vertical: 0,
-                   open: true, width: 330, allowFullCard: true)
-expect(closingDrag.claimed &&
+// build199: one navigation owner, with sequences rather than isolated
+// button callbacks. There is no full-screen browser or second back stack.
+var nav = RootNavigationState()
+expect(!nav.sidebarOpen, "the chat owns the initial visible surface")
+expect(RootNavigationState.conversationVisible(
+    active: true, sidebarOpen: false, modalOpen: false, hasSession: true),
+       "unobscured chat is visibly active")
+expect(!RootNavigationState.conversationVisible(
+    active: true, sidebarOpen: true, modalOpen: false, hasSession: true),
+       "drawer opening suppresses foreground-only chat notifications")
+expect(!RootNavigationState.conversationVisible(
+    active: false, sidebarOpen: false, modalOpen: false, hasSession: true),
+       "inactive app does not claim chat is visible")
+
+var opening = RootNavigationGesture()
+opening.update(open: false, startX: 175, horizontal: 90, vertical: 4, width: 330)
+expect(opening.claimed && opening.translation == 90,
+       "right swipe from middle claims the chat card")
+opening.update(open: false, startX: 175, horizontal: -15, vertical: 35, width: 330)
+expect(opening.claimed && opening.translation == -15,
+       "finger reverses without losing the acquired navigation gesture")
+nav.finishSwipe(width: 330, predictedTranslation: 270)
+expect(nav.sidebarOpen, "completed right swipe reveals the native sidebar")
+
+var cancelledClose = RootNavigationGesture()
+cancelledClose.update(open: true, startX: 385, horizontal: -100,
+                      vertical: 1, width: 330)
+expect(cancelledClose.claimed, "chat card outside the drawer rail can close")
+nav.finishSwipe(width: 330, predictedTranslation: -50)
+expect(nav.sidebarOpen, "short closing swipe cancels without losing the page")
+
+var closing = RootNavigationGesture()
+closing.update(open: true, startX: 385, horizontal: -100, vertical: 3, width: 330)
+closing.update(open: true, startX: 385, horizontal: -360, vertical: 0, width: 330)
+expect(closing.claimed &&
        ChatDrawerInteraction.reveal(width: 330, open: true,
-                                    translation: closingDrag.translation) == 0,
-       "leftmost card edge clamps without dropping gesture ownership")
-closingDrag.update(startX: 385, horizontal: -290, vertical: 10,
-                   open: true, width: 330, allowFullCard: true)
-expect(closingDrag.claimed &&
+                                     translation: closing.translation) == 0,
+       "card left edge is clamped, not a navigation owner reset")
+closing.update(open: true, startX: 385, horizontal: -290, vertical: 18, width: 330)
+expect(closing.claimed &&
        ChatDrawerInteraction.reveal(width: 330, open: true,
-                                    translation: closingDrag.translation) == 40,
-       "reversing within one gesture returns smoothly from the zero edge")
-closingDrag.update(startX: 385, horizontal: 25, vertical: 40,
-                   open: true, width: 330, allowFullCard: true)
-expect(closingDrag.claimed &&
-       ChatDrawerInteraction.reveal(width: 330, open: true,
-                                    translation: closingDrag.translation) == 330,
-       "direction reversal and vertical jitter cannot revoke an acquired drag")
-var unclaimedDrag = ChatDrawerGestureState()
-unclaimedDrag.update(startX: 80, horizontal: -100, vertical: 3,
-                     open: true, width: 330, allowFullCard: true)
-expect(!unclaimedDrag.claimed,
-       "underlying sidebar rail keeps its own horizontal gesture")
-unclaimedDrag.update(startX: 80, horizontal: 0, vertical: 120,
-                     open: true, width: 330, allowFullCard: true)
-expect(!unclaimedDrag.claimed, "vertical scroll cannot seize the drawer")
-var openingDrag = ChatDrawerGestureState()
-openingDrag.update(startX: 150, horizontal: 90, vertical: 2,
-                   open: false, width: 330, allowFullCard: true)
-openingDrag.update(startX: 150, horizontal: -25, vertical: 8,
-                   open: false, width: 330, allowFullCard: true)
-expect(openingDrag.claimed &&
-       ChatDrawerInteraction.reveal(width: 330, open: false,
-                                    translation: openingDrag.translation) == 0,
-       "opening swipe also preserves ownership during direction reversal")
-expect(!ChatDrawerGestureState().claimed,
-       "new gesture has no stale ownership from the preceding gesture")
+                                     translation: closing.translation) == 40,
+       "left-edge reversal remains continuous in the same drag")
+nav.finishSwipe(width: 330, predictedTranslation: -260)
+expect(!nav.sidebarOpen, "closing swipe returns to the original chat")
+
+var rail = RootNavigationGesture()
+rail.update(open: true, startX: 80, horizontal: -150, vertical: 4, width: 330)
+expect(!rail.claimed, "the drawer's horizontal instance rail retains control")
+var scrolling = RootNavigationGesture()
+scrolling.update(open: false, startX: 160, horizontal: 20, vertical: 110, width: 330)
+expect(!scrolling.claimed, "vertical transcript scrolling is never navigation")
+var leftSwipe = RootNavigationGesture()
+leftSwipe.update(open: false, startX: 160, horizontal: -150, vertical: 1, width: 330)
+expect(!leftSwipe.claimed, "a closed chat cannot open drawer by left swipe")
+expect(!RootNavigationGesture().claimed, "every new drag begins without stale ownership")
+
+nav.showSidebar()
+expect(nav.sidebarOpen, "toolbar hamburger routes to the same drawer as right swipe")
+nav.hideSidebar()
+expect(!nav.sidebarOpen, "drawer close button returns to chat")
+nav.showSidebar()
+nav.hideSidebar()
+expect(!nav.sidebarOpen, "rapid repeated menu toggles do not create hidden routes")
 
 // build152: full-height card clipping must interpolate monotonically and
 // preserve a square, unshaded canvas at rest.
@@ -299,76 +318,15 @@ expect(ChatCardPresentation.style(progress: .nan).cardDim == 0,
 expect(ChatCardPresentation.style(progress: 0.5, reduceMotion: true).drawerParallax == 0,
        "reduce motion disables decorative parallax")
 
-expect(ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 120, vertical: 3),
-       "child page right edge swipe enters interactive back transition")
-expect(ChatPageBackInteraction.shouldTrack(startX: 28, horizontal: 120, vertical: 3),
-       "browser back edge includes a practical 32pt touch area")
-expect(!ChatPageBackInteraction.shouldTrack(startX: 90, horizontal: 120, vertical: 3),
-       "child page does not steal arbitrary horizontal text selection")
-expect(!ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: 12, vertical: 55),
-       "vertical child list scrolling does not trigger a back transition")
-expect(!ChatPageBackInteraction.shouldTrack(startX: 9, horizontal: -120, vertical: 0),
-       "left swipe in a child page is not a back gesture")
-expect(ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 240),
-       "decisive child-page swipe returns to mounted conversation")
-expect(!ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 85),
-       "partial child-page swipe cancels without destroying page state")
-
-// build187: toolbar/back gesture must follow the same stack, never
-// jump from a nested All Instances page straight to the chat.
-expect(UnifiedBrowserBackNavigation.destination(route: [.single, .all],
-       source: .drawer) == .singleInstance,
-       "single->all returns to the single-host browser")
-expect(UnifiedBrowserBackNavigation.destination(route: [.all],
-       source: .drawer) == .drawer,
-       "drawer->all returns to the real mounted drawer")
-expect(UnifiedBrowserBackNavigation.destination(route: [.all],
-       source: .chat) == .chat,
-       "home search->all returns to the conversation")
-expect(UnifiedBrowserBackNavigation.destination(route: [.single],
-       source: .drawer) == .drawer,
-       "drawer->single returns to drawer")
-expect(UnifiedBrowserPresentation.canOpenSidebar(
-       browserOpen: true, browserSessionOpen: true),
-       "toolbar drawer opens from a chat selected in the unified browser")
-expect(!UnifiedBrowserPresentation.canOpenSidebar(
-       browserOpen: true, browserSessionOpen: false),
-       "a bare browser keeps control of its own back destination")
-expect(UnifiedBrowserPresentation.canOpenSidebar(
-       browserOpen: false, browserSessionOpen: false),
-       "ordinary chat hamburger opens the drawer")
-expect(UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
-       browserOpen: true, browserSessionOpen: true, currentSessionID: nil),
-       "new draft from browser-selected chat clears the old return route")
-expect(!UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
-       browserOpen: true, browserSessionOpen: true, currentSessionID: "sid"),
-       "normal session changes retain their browser back route")
-expect(UnifiedBrowserPresentation.conversationVisible(
-       active: true, sidebarOpen: false, browserOpen: true,
-       browserSessionOpen: true, modalOpen: false, hasSession: true),
-       "selected conversation remains foreground even when browser stays mounted")
-expect(!UnifiedBrowserPresentation.conversationVisible(
-       active: true, sidebarOpen: true, browserOpen: true,
-       browserSessionOpen: false, modalOpen: false, hasSession: true),
-       "drawer browser never presents the chat as foreground")
-expect(!UnifiedBrowserPresentation.conversationVisible(
-       active: true, sidebarOpen: false, browserOpen: true,
-       browserSessionOpen: false, modalOpen: false, hasSession: true),
-       "browser top page suppresses conversation presentation")
-expect(!UnifiedBrowserPresentation.conversationVisible(
-       active: false, sidebarOpen: false, browserOpen: true,
-       browserSessionOpen: true, modalOpen: false, hasSession: true),
-       "backgrounded app cannot present a foreground conversation")
-expect(ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: 100,
-       vertical: 3, allowFullCard: true),
-       "full-card right-swipe may begin from middle")
-expect(!ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: 20,
-       vertical: 100, allowFullCard: true),
-       "vertical scroll never hijacked")
-expect(!ChatPageBackInteraction.shouldTrack(startX: 190, horizontal: -100,
-       vertical: 0, allowFullCard: true),
-       "leftward card gesture is never back")
-
+// build199: no stacked browser destination remains. The single drawer route
+// is stable across gestures and cannot trigger a session switch or a send.
+var interrupted = RootNavigationState()
+interrupted.finishSwipe(width: 330, predictedTranslation: 130)
+expect(!interrupted.sidebarOpen, "cancelled swipe does not create navigation")
+interrupted.finishSwipe(width: 330, predictedTranslation: 300)
+expect(interrupted.sidebarOpen, "next complete gesture can still open sidebar")
+interrupted.finishSwipe(width: 330, predictedTranslation: -270)
+expect(!interrupted.sidebarOpen, "next closing gesture returns to chat")
 expect(ChatTurnViewport.contentHeight(baseBottom: 240, anchorTop: 140,
                                       viewport: 800) == 940,
        "new turn reserve lets the user bubble sit at the top of the viewport")
