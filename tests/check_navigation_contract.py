@@ -49,6 +49,8 @@ def violations(contents: dict[str, str]) -> list[str]:
             "onOpenCurrentTaskCenter: presentTaskCenter",
             "navigationGesturesAllowed",
             "taskCenterScope == homeScope",
+            "pendingTaskSheetSelection = (",
+            "RootTaskSheetNavigation.canOpen(",
             "SessionTaskCenterView(",
         ),
         "SessionDrawer.swift": (
@@ -101,6 +103,7 @@ def violations(contents: dict[str, str]) -> list[str]:
             "enum ChatPageBackInteraction",
             "struct ChatDrawerGestureState",
             "enum RootNavigationModalPolicy",
+            "enum RootTaskSheetNavigation",
             "static func geometryReportedDistance(",
         ),
         "StableChatScrollView+Coordinator.swift": (
@@ -162,6 +165,8 @@ def main() -> int:
          "Button(\"获取完整历史后导出\""),
         ("root-owned task sheet", "RootView.swift",
          ".sheet(isPresented: $taskCenterPresented"),
+        ("deferred task opening", "RootView.swift",
+         "RootTaskSheetNavigation.canOpen("),
         ("modal swipe gate", "RootView.swift", "navigationGesturesAllowed"),
         ("unified local task entry", "UnifiedSessionBrowser.swift",
          "Button(action: onOpenCurrentTaskCenter)"),
