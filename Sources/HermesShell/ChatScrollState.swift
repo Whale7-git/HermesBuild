@@ -153,28 +153,6 @@ enum ChatDrawerInteraction {
     }
 }
 
-/// One drag retains horizontal ownership after the initial direction test.
-/// Requiring shouldTrack() on EVERY update made a closing card snap to its
-/// fully open offset when the finger reversed at the left edge.
-struct ChatDrawerGestureState {
-    private(set) var claimed = false
-    private(set) var translation: Double = 0
-
-    mutating func update(startX: Double, horizontal: Double, vertical: Double,
-                         open: Bool, width: Double, allowFullCard: Bool = false) {
-        guard horizontal.isFinite, vertical.isFinite else { return }
-        if !claimed {
-            guard ChatDrawerInteraction.shouldTrack(
-                startX: startX, translationX: horizontal, translationY: vertical,
-                open: open, width: width, allowFullCard: allowFullCard) else { return }
-            claimed = true
-        }
-        // Once claimed, keep raw signed translation. The reveal policy clamps
-        // to [0, width] without transferring gesture ownership to text scroll.
-        translation = horizontal
-    }
-}
-
 /// Pure, bounded presentation math; the SwiftUI host owns the actual full-
 /// screen clip, safe-area padding, and interactive animation.
 enum ChatCardPresentation {
@@ -199,59 +177,80 @@ enum ChatCardPresentation {
     }
 }
 
-/// A distinct navigation state machine for a real page stacked above chat.
-/// Root drawer drag math must not be reused for this route: back reveals the
-/// previous conversation, whereas the drawer reveals the session manager.
-enum ChatPageBackInteraction {
-    static func shouldTrack(startX: Double, horizontal: Double, vertical: Double,
-                            allowFullCard: Bool = false) -> Bool {
-        guard startX.isFinite, horizontal.isFinite, vertical.isFinite else { return false }
-        return startX >= 0 && (allowFullCard || startX < 32)
-            && ChatBackAxisPolicy.claimsReturn(horizontal: horizontal, vertical: vertical)
-    }
-    static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
-        guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }
-        return predictedTranslation > width * 0.4
-    }
-}
+/// One authoritative navigation state. There is no in-app browser stack:
+/// the native chat card opens and closes its mounted instance/session drawer.
+struct RootNavigationState: Equatable {
+    private(set) var sidebarOpen = false
 
-/// The root keeps an ordered browser stack and the actual parent surface.
-/// Switching Hermes backends never changes these navigation identities.
-/// Actual presented surface, not merely whether a browser route is retained.
-/// When a session is pushed from the browser, the browser stays mounted behind
-/// the chat, but must not suppress foreground conversation notifications.
-enum UnifiedBrowserPresentation {
-    /// The selected chat is above the mounted browser: its hamburger must
-    /// still work. A bare browser page cannot bypass its own back route.
-    static func canOpenSidebar(browserOpen: Bool, browserSessionOpen: Bool) -> Bool {
-        !browserOpen || browserSessionOpen
-    }
+    mutating func showSidebar() { sidebarOpen = true }
+    mutating func hideSidebar() { sidebarOpen = false }
 
-    static func shouldRetireBrowserForNewDraft(browserOpen: Bool,
-                                               browserSessionOpen: Bool,
-                                               currentSessionID: String?) -> Bool {
-        browserOpen && browserSessionOpen && currentSessionID == nil
+    mutating func finishSwipe(width: Double, predictedTranslation: Double) {
+        sidebarOpen = ChatDrawerInteraction.finishOpen(
+            width: width, wasOpen: sidebarOpen, predictedTranslation: predictedTranslation)
     }
 
     static func conversationVisible(active: Bool, sidebarOpen: Bool,
-                                    browserOpen: Bool, browserSessionOpen: Bool,
                                     modalOpen: Bool, hasSession: Bool) -> Bool {
-        active && !sidebarOpen && (!browserOpen || browserSessionOpen)
-            && !modalOpen && hasSession
+        active && !sidebarOpen && !modalOpen && hasSession
     }
 }
 
-enum UnifiedBrowserPage: Equatable { case single, all }
-enum UnifiedBrowserSource: Equatable { case chat, drawer }
+/// One horizontal gesture owner across the entire chat/side-drawer surface.
+/// GestureState only drives the offset; a stable host-side ownership latch
+/// handles SwiftUI resetting GestureState before onEnded can read it.
+struct RootNavigationGesture: Equatable {
+    private(set) var claimed = false
+    private(set) var translation: Double = 0
 
-enum UnifiedBrowserBackNavigation {
-    enum Destination: Equatable { case chat, drawer, singleInstance }
-
-    static func destination(route: [UnifiedBrowserPage],
-                            source: UnifiedBrowserSource) -> Destination {
-        if route.count > 1 { return .singleInstance }
-        return source == .drawer ? .drawer : .chat
+    static func canClaim(open: Bool, startX: Double,
+                         horizontal: Double, vertical: Double,
+                         width: Double) -> Bool {
+        ChatDrawerInteraction.shouldTrack(
+            startX: startX, translationX: horizontal, translationY: vertical,
+            open: open, width: width, allowFullCard: true)
     }
+
+    mutating func update(open: Bool, startX: Double,
+                         horizontal: Double, vertical: Double,
+                         width: Double) {
+        guard horizontal.isFinite, vertical.isFinite else { return }
+        if !claimed {
+            guard Self.canClaim(open: open, startX: startX,
+                               horizontal: horizontal, vertical: vertical,
+                               width: width) else { return }
+            claimed = true
+        }
+        // Direction reversal after acquisition is still the SAME gesture.
+        translation = horizontal
+    }
+}
+
+/// Event-level gesture host. It is held in ordinary @State so it survives
+/// the @GestureState reset that can precede DragGesture.onEnded. These
+/// callbacks (changed/ended/cancelled) are used by the real RootView, not
+/// a duplicated test-only threshold calculation.
+struct RootNavigationInteraction: Equatable {
+    private(set) var claimed = false
+
+    mutating func changed(open: Bool, startX: Double,
+                          horizontal: Double, vertical: Double,
+                          width: Double) {
+        if !claimed && RootNavigationGesture.canClaim(
+            open: open, startX: startX,
+            horizontal: horizontal, vertical: vertical, width: width) {
+            claimed = true
+        }
+    }
+
+    mutating func ended(navigation: inout RootNavigationState,
+                        width: Double, predicted: Double) {
+        defer { claimed = false }
+        guard claimed else { return }
+        navigation.finishSwipe(width: width, predictedTranslation: predicted)
+    }
+
+    mutating func cancelled() { claimed = false }
 }
 
 enum ChatTurnViewport {

@@ -23,6 +23,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - run: python3 tests/verify_source.py
+      - run: python3 tests/check_navigation_contract.py
       - run: |
           python3 tests/check_swiftui_modifiers.py
           python3 tests/test_swiftui_modifiers.py

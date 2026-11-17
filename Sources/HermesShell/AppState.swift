@@ -416,65 +416,6 @@ final class AppState: ObservableObject {
         clearCompletion(sessionID: session.sessionId)
     }
 
-    /// Read-only, per-instance/account snapshot for the unified browser.
-    /// Never return current-instance rows to a different endpoint or account.
-    func unifiedCachedSessions(for instance: HermesInstance) -> [SessionSummary]? {
-        guard instances.contains(where: { $0.id == instance.id && $0.baseURL == instance.baseURL })
-        else { return nil }
-        let endpoint = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
-        let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
-        if active.id == instance.id && active.baseURL == instance.baseURL {
-            return hasLoadedSessions ? sessions : nil
-        }
-        return sessionListCache[endpoint + "|" + account]
-    }
-
-    /// Timestamp is scoped identically to the matching cached Session list.
-    /// A successful active-instance refresh can be reused by the full browser.
-    func unifiedCachedSessionDate(for instance: HermesInstance) -> Date? {
-        guard instances.contains(where: { $0.id == instance.id && $0.baseURL == instance.baseURL })
-        else { return nil }
-        let endpoint = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
-        let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
-        return sessionRefreshClock.lastSuccess(scope: endpoint + "|" + account)
-    }
-
-    /// Read-only local task facts for the exact instance/account. Never
-    /// borrow the active instance's observations for another endpoint. An
-    /// unreadable store is reported instead of silently discarded.
-    func unifiedTaskObservations(for instance: HermesInstance) -> SessionTaskStore.LoadResult {
-        guard instances.contains(where: {
-            $0.id == instance.id && $0.baseURL == instance.baseURL
-        }) else { return .missing }
-        let endpoint = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
-        let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
-        if active.id == instance.id && active.baseURL == instance.baseURL {
-            return damagedTaskStore ? .corrupt : .loaded(sessionTaskObservations)
-        }
-        return SessionTaskStore.inspect(instanceID: endpoint, accountScope: account)
-    }
-
-    /// Only a user tap can change the selected host. Validate the full
-    /// identity BEFORE switchTo mutates the backend or clears the old chat.
-    /// Search results use their own scoped GET client and never mutate this
-    /// state while fetching.
-    @discardableResult
-    func openSessionFromInstance(instanceID: UUID, endpointIdentity: String,
-                                 accountScope: String, session: SessionSummary) -> Bool {
-        guard !clearingHistory, !session.sessionId.isEmpty,
-              let index = instances.firstIndex(where: {
-                  $0.id == instanceID &&
-                  ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == endpointIdentity
-              }),
-              ChatHistoryIdentity.accountScope(instanceID: endpointIdentity) == accountScope
-        else { return false }
-        if index != activeIndex { switchTo(index) }
-        guard active.id == instanceID, historyInstanceID == endpointIdentity,
-              historyAccountScope == accountScope, !needsLogin else { return false }
-        openSession(session)
-        return currentSessionID == session.sessionId && openedSession?.sessionId == session.sessionId
-    }
-
     func closeSession() {
         invalidateCreationNavigation()
         homeSendError = nil
