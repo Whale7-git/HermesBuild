@@ -197,6 +197,16 @@ enum RootNavigationModalPolicy {
     }
 }
 
+/// Defer a task selection until its sheet has fully disappeared. A host or
+/// account change during dismissal revokes the pending navigation.
+enum RootTaskSheetNavigation {
+    static func canOpen(pendingScope: String,
+                        currentScope: String,
+                        sessionAvailable: Bool) -> Bool {
+        !pendingScope.isEmpty && pendingScope == currentScope && sessionAvailable
+    }
+}
+
 /// Persistent event owner for the root chat-card / drawer gesture.
 /// @GestureState provides only interactive translation; SwiftUI may reset it
 /// before onEnded, so a separate state value must own the completed gesture.
