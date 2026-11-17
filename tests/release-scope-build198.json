@@ -662,7 +662,7 @@
     "Sources/HermesShell/UnifiedSessionModel.swift": "28acd4cf6e6c3050a35b6edaacc0d07c5b6b2dc2c21865d797dad483f51474d7",
     "Sources/HermesShell/UnifiedTaskWorkspace.swift": "ada04e207afea90b95742ef062531fab55fcc3c5e522c279a29140447aa10bd6",
     "Sources/HermesShell/ZoomableImagePage.swift": "429879e30d0a63c9abe9613b300f6939b7a98be48d627a286984f805ab6cecaa",
-    "tests/appstate/main.swift": "572be884c5486a131469c246b764f895caa904e5fd8cc8b39cf384e67c62e029",
+    "tests/appstate/main.swift": "e87248c64ed133935a0343faa44456577c77d85e1e44e38030dcf17e6dc88e4f",
     "tests/appstate/TaskCacheTests.swift": "829509e880039b160ed4d7eb9c88d9753b3be0f9810d07a03c53773355b8ffc6",
     "tests/attachments/iOSContracts.swift": "7c40292722444597724cb31b97e0a22a1bf43f8063101d7f9d1d5324bd1c8906",
     "tests/attachments/main.swift": "2a342c651b8198abf309aaeab6cdba4f2f1f11ecee559d538d97e5e057a0e18a",
