@@ -226,6 +226,33 @@ struct RootNavigationGesture: Equatable {
     }
 }
 
+/// Event-level gesture host. It is held in ordinary @State so it survives
+/// the @GestureState reset that can precede DragGesture.onEnded. These
+/// callbacks (changed/ended/cancelled) are used by the real RootView, not
+/// a duplicated test-only threshold calculation.
+struct RootNavigationInteraction: Equatable {
+    private(set) var claimed = false
+
+    mutating func changed(open: Bool, startX: Double,
+                          horizontal: Double, vertical: Double,
+                          width: Double) {
+        if !claimed && RootNavigationGesture.canClaim(
+            open: open, startX: startX,
+            horizontal: horizontal, vertical: vertical, width: width) {
+            claimed = true
+        }
+    }
+
+    mutating func ended(navigation: inout RootNavigationState,
+                        width: Double, predicted: Double) {
+        defer { claimed = false }
+        guard claimed else { return }
+        navigation.finishSwipe(width: width, predictedTranslation: predicted)
+    }
+
+    mutating func cancelled() { claimed = false }
+}
+
 enum ChatTurnViewport {
     /// Runtime-only viewport reserve for a newly sent turn. Never a transcript row.
     static func contentHeight(baseBottom: Double, anchorTop: Double?, viewport: Double) -> Double {
