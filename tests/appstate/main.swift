@@ -406,7 +406,8 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         let host = HermesInstance(name: "Task recovery", baseURL: "https://task-restart.test")
         try InstanceStore.save([host], credentials: credentials)
         InstanceStore.activeID = host.id
-        let app = AppState(credentials: credentials)
+        let notifier = RecordingTaskNotifier()
+        let app = AppState(credentials: credentials, notifier: notifier)
         let instanceScope = app.historyInstanceID
         let accountScope = app.historyAccountScope
         defer {
@@ -422,7 +423,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         precondition(before.isSuperset(of: [.waitingForApproval, .waitingForClarify, .stopping]),
                      "different requests and STOP persist as separate local facts")
 
-        let reopened = AppState(credentials: credentials)
+        let reopened = AppState(credentials: credentials, notifier: notifier)
         let restored = reopened.sessionTaskObservations["pending-long"]?.signals ?? []
         precondition(restored == before && reopened.historyInstanceID == instanceScope
                      && reopened.historyAccountScope == accountScope,
