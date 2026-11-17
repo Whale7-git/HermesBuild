@@ -22,6 +22,50 @@ expect(!ownership.owns(pageB), "account switch invalidates pending pagination co
 
 var state = ChatScrollState()
 expect(state.following, "starts following the tail")
+// build203: geometry reports are NOT user intent. In a long transcript,
+// opening/closing the keyboard can make the measured distance temporarily 0
+// even while the reader was intentionally detached.
+var keyboardReader = ChatScrollState()
+keyboardReader.update(distanceFromBottom: 450)
+keyboardReader.receivedAssistantUpdate()
+expect(!keyboardReader.following && keyboardReader.hasUnreadContent,
+       "fixture is detached with unread output")
+for geometryDistance in [0.0, 12.0, 39.0, 60.0, 120.0, 0.0] {
+    let reported = ChatScrollState.geometryReportedDistance(
+        geometryDistance, following: keyboardReader.following,
+        navigationDetached: false)
+    keyboardReader.update(distanceFromBottom: reported)
+    expect(!keyboardReader.following && keyboardReader.hasUnreadContent,
+           "keyboard resize does not reattach detached history reader")
+}
+expect(ChatScrollState.geometryReportedDistance(
+       0, following: true, navigationDetached: false) == 0,
+       "reader already following latest still receives true geometry")
+expect(ChatScrollState.geometryReportedDistance(
+       0, following: true, navigationDetached: true) > ChatScrollState.detachThreshold,
+       "active reading navigation locks out geometry auto-reattach")
+keyboardReader.update(distanceFromBottom: 30)
+expect(keyboardReader.following && !keyboardReader.hasUnreadContent,
+       "real UIScrollView user-drag callback reattaches and clears unread")
+keyboardReader.update(distanceFromBottom: 130)
+expect(!keyboardReader.following, "manual scroll away still detaches normally")
+
+expect(RootNavigationModalPolicy.allowsGesture(
+       taskCenterPresented: false, settingsPresented: false, needsLogin: false),
+       "root horizontal swipes work after task sheet closes")
+expect(!RootNavigationModalPolicy.allowsGesture(
+       taskCenterPresented: true, settingsPresented: false, needsLogin: false),
+       "task sheet blocks drawer and stacked browser gestures")
+expect(!RootNavigationModalPolicy.allowsGesture(
+       taskCenterPresented: false, settingsPresented: true, needsLogin: false),
+       "settings sheet blocks background drawer gesture")
+expect(!RootNavigationModalPolicy.allowsGesture(
+       taskCenterPresented: false, settingsPresented: false, needsLogin: true),
+       "login sheet blocks background navigation")
+expect(RootNavigationModalPolicy.allowsGesture(
+       taskCenterPresented: false, settingsPresented: false, needsLogin: false),
+       "dismissal permits next distinct user gesture")
+
 
 // 1) 短距离离底不算脱离：手指轻碰不该停掉自动跟随
 state.update(distanceFromBottom: 60)
