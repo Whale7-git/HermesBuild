@@ -151,9 +151,10 @@ struct RootView: View {
                             predictedTranslation: Double(value.predictedEndTranslation.width))
                     }
             )
+        }
         .animation(reduceMotion ? nil : .interactiveSpring(response: 0.34,
                                                             dampingFraction: 0.88),
-                   value: sidebarOpen)
+                   value: navigation.sidebarOpen)
         .onChange(of: app.activeChangeToken) { _, _ in
             if app.needsLogin { closeSidebar() }
             else { openPendingNotificationTarget() }
