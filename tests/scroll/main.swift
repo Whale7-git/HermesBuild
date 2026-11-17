@@ -277,6 +277,45 @@ expect(openingDrag.claimed &&
 expect(!ChatDrawerGestureState().claimed,
        "new gesture has no stale ownership from the preceding gesture")
 
+// build202: the event-level owner survives a reset of the visual @GestureState.
+// Unlike the visual translation, the event owner is ordinary @State and is
+// not consulted through @GestureState.claimed at onEnded.
+var rootOwner = RootDrawerGestureOwnership()
+rootOwner.changed(open: false, startX: 175, horizontal: 95, vertical: 4, width: 330)
+expect(rootOwner.claimed, "host event claims a horizontal drawer opening")
+rootOwner.changed(open: false, startX: 175, horizontal: -25, vertical: 15, width: 330)
+expect(rootOwner.claimed, "reversal cannot revoke a claimed root gesture")
+expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 260) == true,
+       "onEnded succeeds even when transient gesture state has reset")
+expect(!rootOwner.claimed, "ending a gesture releases the stable owner")
+
+rootOwner.changed(open: true, startX: 385, horizontal: -110, vertical: 3, width: 330)
+expect(rootOwner.ended(open: true, width: 330, predictedTranslation: -290) == false,
+       "claimed left swipe closes an open drawer")
+rootOwner.changed(open: true, startX: 385, horizontal: -110, vertical: 3, width: 330)
+expect(rootOwner.ended(open: true, width: 330, predictedTranslation: -40) == true,
+       "short closing swipe leaves drawer open")
+rootOwner.changed(open: false, startX: 175, horizontal: 17, vertical: 105, width: 330)
+expect(!rootOwner.claimed && rootOwner.ended(
+       open: false, width: 330, predictedTranslation: 300) == nil,
+       "vertical scroll cannot navigate even with a horizontal prediction")
+rootOwner.changed(open: true, startX: 80, horizontal: -130, vertical: 2, width: 330)
+expect(!rootOwner.claimed && rootOwner.ended(
+       open: true, width: 330, predictedTranslation: -290) == nil,
+       "instance rail gesture cannot close the sidebar")
+rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.cancelled()
+expect(!rootOwner.claimed && rootOwner.ended(
+       open: false, width: 330, predictedTranslation: 270) == nil,
+       "scene change or browser handoff cancels pending root navigation")
+rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 60) == false,
+       "short opening swipe springs back instead of navigating")
+rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 270) == true,
+       "new gesture succeeds after an interrupted and a cancelled gesture")
+expect(!rootOwner.claimed, "no owner leaks into the next interaction")
+
 // build152: full-height card clipping must interpolate monotonically and
 // preserve a square, unshaded canvas at rest.
 let cardClosed = ChatCardPresentation.style(progress: 0)
