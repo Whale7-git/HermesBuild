@@ -25,6 +25,10 @@ def violations(root: str, drawer: str, interaction: str, browser_files: set[str]
         "native sidebar accessibility": 'accessibilityIdentifier("native-session-sidebar")',
         "native chat accessibility": 'accessibilityIdentifier("native-chat-page")',
         "gesture host accessibility": 'accessibilityIdentifier("native-chat-sidebar-host")',
+        "cross-instance modal": ".fullScreenCover(isPresented: $showUnifiedSessions)",
+        "cross-instance view": "UnifiedSessionBrowser(",
+        "cross-instance sessions action": "onBrowseAllInstances:",
+        "cross-instance tasks action": "onBrowseAllTasks:",
     }
     for name, needle in required.items():
         if root.count(needle) != 1:
@@ -33,22 +37,26 @@ def violations(root: str, drawer: str, interaction: str, browser_files: set[str]
         if root.count(name) != count:
             failures.append(f"duplicate/absent root gesture {name}: {root.count(name)}")
     for forbidden in (
-        "browserRoute", "browserSessionOpen", "browserBackDrag", "UnifiedSessionBrowser",
+        "browserRoute", "browserSessionOpen", "browserBackDrag",
         "ChatPageBackInteraction", "precedingBrowserLayer", "activeBrowserLayer",
         "navigationSwipeClaimed", "UnifiedBrowserBackNavigation",
     ):
         if forbidden in root:
             failures.append(f"legacy competing navigation in RootView: {forbidden}")
-    for forbidden in ("enum Mode", "mode == .page", "onBrowseAllInstances", "onBrowseAllTasks",
-                      "onBrowseAll:", "backToDrawer"):
+    for forbidden in ("enum Mode", "mode == .page", "onBrowseAll:",
+                      "backToDrawer"):
         if forbidden in drawer:
             failures.append(f"browser-only drawer path persisted: {forbidden}")
     for forbidden in ("UnifiedBrowserPresentation", "UnifiedBrowserBackNavigation",
                       "UnifiedBrowserPage", "UnifiedBrowserSource", "ChatPageBackInteraction"):
         if forbidden in interaction:
             failures.append(f"second root navigation in gesture policy: {forbidden}")
-    for path in browser_files:
-        failures.append(f"obsolete full-screen browser file still exists: {path}")
+    for path in ("UnifiedSessionBrowser.swift", "UnifiedSessionModel.swift",
+                 "UnifiedTaskWorkspace.swift"):
+        if path not in browser_files:
+            failures.append(f"cross-instance management source missing: {path}")
+    if "var onBrowseAllInstances:" not in drawer or "var onBrowseAllTasks:" not in drawer:
+        failures.append("cross-instance drawer entry callbacks missing")
     for positive in ("struct RootNavigationInteraction", "func changed(", "func ended(",
                      "func cancelled()", "struct RootNavigationState"):
         if positive not in interaction:
@@ -67,12 +75,16 @@ def validate() -> list[str]:
     names = ("UnifiedSessionBrowser.swift", "UnifiedSessionModel.swift",
              "UnifiedTaskWorkspace.swift")
     present = {p for p in names if (folder / p).exists()}
-    return violations(
+    failures = violations(
         (folder / "RootView.swift").read_text(),
         (folder / "SessionDrawer.swift").read_text(),
         (folder / "ChatScrollState.swift").read_text(),
         present,
     )
+    chrome = (folder / "NativeChatView+Chrome.swift").read_text()
+    if 'Label("在浏览器打开"' in chrome or "Link(destination: webURL)" in chrome:
+        failures.append("external browser action must not remain in chat menu")
+    return failures
 
 
 def self_test() -> None:
@@ -80,12 +92,15 @@ def self_test() -> None:
     root = (ROOT / "Sources/HermesShell/RootView.swift").read_text()
     drawer = (ROOT / "Sources/HermesShell/SessionDrawer.swift").read_text()
     policy = (ROOT / "Sources/HermesShell/ChatScrollState.swift").read_text()
+    required_files = {"UnifiedSessionBrowser.swift", "UnifiedSessionModel.swift",
+                      "UnifiedTaskWorkspace.swift"}
     tamper = (
-        (root + "\n.simultaneousGesture(DragGesture())", drawer, policy, set()),
+        (root + "\n.simultaneousGesture(DragGesture())", drawer, policy, required_files),
         (root.replace("navigationInteraction.ended(", "navigation.finishSwipe("),
-         drawer, policy, set()),
-        (root, drawer + "\nlet onBrowseAllInstances = 0", policy, set()),
-        (root, drawer, policy, {"UnifiedSessionBrowser.swift"}),
+         drawer, policy, required_files),
+        (root, drawer.replace("var onBrowseAllInstances:", "var removedEntry:"),
+         policy, required_files),
+        (root, drawer, policy, set()),
     )
     for index, case in enumerate(tamper):
         if not violations(*case):
@@ -97,4 +112,4 @@ if __name__ == "__main__":
     if issues:
         raise SystemExit("NAVIGATION_CONTRACT_FAILED: " + "; ".join(issues))
     self_test()
-    print("NAVIGATION_CONTRACT_PASS native chat/drawer, one gesture owner, callback and event safeguards")
+    print("NAVIGATION_CONTRACT_PASS native chat/drawer, isolated cross-instance modal, one gesture owner")

@@ -13,6 +13,11 @@ struct RootView: View {
     @GestureState private var sidebarGesture = RootNavigationGesture()
     @State private var navigationInteraction = RootNavigationInteraction()
     @State private var sidebarSearchRequest = 0
+    @StateObject private var unifiedCenter = UnifiedSessionModel()
+    @State private var showUnifiedSessions = false
+    @State private var unifiedQuery = ""
+    @State private var unifiedFilter = 0
+    @State private var unifiedSection = 0
     @State private var homeText = ""
     @State private var homeFocused = false
     @State private var homeSelectedModel: ModelOption?
@@ -62,6 +67,9 @@ struct RootView: View {
             .onChange(of: navigation.sidebarOpen) { _, _ in
                 synchronizeConversationVisibility()
             }
+            .onChange(of: showUnifiedSessions) { _, _ in
+                synchronizeConversationVisibility()
+            }
             .onChange(of: app.showSettings) { _, _ in
                 synchronizeConversationVisibility()
             }
@@ -95,6 +103,14 @@ struct RootView: View {
                     onNew: { closeSidebar(); startConversation() },
                     onSettings: { closeSidebar(); app.showSettings = true },
                     onClose: closeSidebar,
+                    onBrowseAllInstances: {
+                        unifiedSection = 0
+                        showUnifiedSessions = true
+                    },
+                    onBrowseAllTasks: {
+                        unifiedSection = 1
+                        showUnifiedSessions = true
+                    },
                     searchRequest: sidebarSearchRequest
                 )
                 .environmentObject(app)
@@ -166,6 +182,30 @@ struct RootView: View {
         .onChange(of: app.sessions.map(\.sessionId)) { _, _ in openPendingNotificationTarget() }
         .onReceive(NotificationCenter.default.publisher(for: NotificationNavigation.changed)) { _ in
             openPendingNotificationTarget()
+        }
+        .fullScreenCover(isPresented: $showUnifiedSessions) {
+            UnifiedSessionBrowser(
+                center: unifiedCenter,
+                query: $unifiedQuery,
+                filter: $unifiedFilter,
+                section: $unifiedSection,
+                onClose: { showUnifiedSessions = false },
+                backToSingleInstance: false,
+                backToDrawer: true,
+                onSingleInstance: { showUnifiedSessions = false },
+                onSelect: { record in
+                    guard app.openSessionFromInstance(
+                        instanceID: record.identity.instanceID,
+                        endpointIdentity: record.identity.endpointIdentity,
+                        accountScope: record.identity.accountScope,
+                        session: record.session
+                    ) else { return false }
+                    closeSidebar()
+                    showUnifiedSessions = false
+                    return true
+                }
+            )
+            .environmentObject(app)
         }
         .sheet(isPresented: Binding(
             get: { app.needsLogin || app.showSettings },
@@ -401,7 +441,7 @@ struct RootView: View {
         let visible = RootNavigationState.conversationVisible(
             active: scenePhase == .active,
             sidebarOpen: navigation.sidebarOpen,
-            modalOpen: app.showSettings || app.needsLogin,
+            modalOpen: app.showSettings || app.needsLogin || showUnifiedSessions,
             hasSession: app.currentSessionID != nil)
         app.setPresentationVisibility(
             appActive: scenePhase == .active,
