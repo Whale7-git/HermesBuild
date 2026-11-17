@@ -507,7 +507,17 @@ extension ChatScrollController {
         // No measurement, timeline rebuild, or content-geometry changes here.
         updateWindow()
         let distance = max(0, scrollView.contentSize.height - scrollView.bounds.height - scrollView.contentOffset.y)
-        if navigationTarget == nil && !navigationDetached { policy.update(distanceFromBottom: Double(distance)) }
+        // UIKit sends this delegate for keyboard reflow, row measurement
+        // and programmatic offset correction as well as finger scrolling.
+        // Only a genuine vertical pan/deceleration can change follow intent.
+        if navigationTarget == nil && !navigationDetached,
+           ChatScrollState.isUserScroll(
+               tracking: scrollView.isTracking, dragging: scrollView.isDragging,
+               decelerating: scrollView.isDecelerating,
+               horizontalBackPan: horizontalBackPan,
+               animatedJump: animatedJump, resizingViewport: resizingViewport) {
+            policy.update(distanceFromBottom: Double(distance))
+        }
         publishDistance()
         checkPagination()
     }

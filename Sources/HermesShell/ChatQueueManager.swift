@@ -57,6 +57,22 @@ struct ChatQueueManager: View {
                                              ? AppTheme.warning : Color.secondary)
                             .accessibilityLabel(queueStatus.summary)
                     }
+                    if model.queuedTurns.isEmpty {
+                        ContentUnavailableView {
+                            Label("队列为空", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        } description: {
+                            Text("回复进行中发送的消息会出现在这里。")
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 140)
+                        .listRowBackground(Color.clear)
+                    }
+                    if model.queuedTurns.first?.delivery == .uncertain {
+                        Label("首条消息的发送结果未确认。先核对会话，确认没有这条后再重试，避免重复执行。",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.warning)
+                            .padding(.vertical, 8)
+                    }
                     ForEach(Array(model.queuedTurns.enumerated()), id: \.element.id) { index, turn in
                         queueRow(turn, index: index)
                     }
@@ -80,27 +96,8 @@ struct ChatQueueManager: View {
                     .disabled(model.queuedTurns.isEmpty)
                 }
             }
-            .overlay {
-                if model.queuedTurns.isEmpty {
-                    ContentUnavailableView {
-                        Label("队列为空", systemImage: "text.line.first.and.arrowtriangle.forward")
-                    } description: {
-                        Text("回复进行中发送的消息会出现在这里。")
-                    }
-                } else if model.queuedTurns.first?.delivery == .uncertain {
-                    VStack {
-                        Spacer()
-                        Label("首条消息的发送结果未确认。先核对会话，确认没有这条后再重试，避免重复执行。",
-                              systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(12)
-                            .background(.regularMaterial,
-                                        in: RoundedRectangle(cornerRadius: 12))
-                            .padding()
-                    }
-                }
-            }
+            // Empty/uncertain states are List rows. They must not cover
+            // the auto-dispatch switch, toolbar, or queue action buttons.
             .confirmationDialog("清空全部排队消息？", isPresented: $confirmingClear,
                                 titleVisibility: .visible) {
                 Button("清空 \(model.queuedTurns.count) 条消息", role: .destructive) {

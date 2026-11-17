@@ -23,8 +23,23 @@ struct ChatScrollState: Equatable {
                                          following: Bool,
                                          navigationDetached: Bool) -> Double {
         guard distance.isFinite else { return detachThreshold + 1 }
+        // UIKit geometry changes may temporarily report distance far from
+        // bottom before commitLayout restores its anchor. Such callbacks
+        // preserve existing ownership in both directions; user drag is the
+        // only event that can change it through the delegate.
         return !following || navigationDetached
-            ? max(detachThreshold + 1, distance) : max(0, distance)
+            ? max(detachThreshold + 1, distance)
+            : min(resumeThreshold - 1, max(0, distance))
+    }
+
+    /// Programmatic layout/keyboard scroll notifications are not reading
+    /// gestures. Preserve vertical drag/deceleration without claiming
+    /// horizontal navigation, animations or viewport resize as manual intent.
+    static func isUserScroll(tracking: Bool, dragging: Bool, decelerating: Bool,
+                             horizontalBackPan: Bool, animatedJump: Bool,
+                             resizingViewport: Bool) -> Bool {
+        !horizontalBackPan && !animatedJump && !resizingViewport
+            && (tracking || dragging || decelerating)
     }
 
     /// 离视觉底部的距离（pt），只由几何回调驱动，不猜手势。

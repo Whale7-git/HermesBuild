@@ -132,6 +132,17 @@ struct ChatNavigationView: View {
                 }
 
                 Section("关键节点 · \(filtered.count)") {
+                    if filtered.isEmpty {
+                        ContentUnavailableView(
+                            "没有匹配的关键节点",
+                            systemImage: "text.magnifyingglass",
+                            description: Text(query.isEmpty
+                                ? "当前已加载消息中没有此类节点，可继续加载更早历史。"
+                                : "试试其他关键词，或加载更早历史。")
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 130)
+                        .listRowBackground(Color.clear)
+                    }
                     ForEach(filtered) { node in
                         Button {
                             onSelect(node.id)
@@ -196,11 +207,7 @@ struct ChatNavigationView: View {
                 }
             }
             .searchable(text: $query, prompt: "查找问题")
-            .overlay {
-                if filtered.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                }
-            }
+            // Empty state is inside its Section, never above navigation actions.
             .navigationTitle("消息导航")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
