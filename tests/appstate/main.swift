@@ -436,13 +436,11 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         precondition(after.isSuperset(of: [.waitingForApproval, .waitingForClarify,
                                          .stopping, .needsVerification]),
                      "late resolution after relaunch must keep other tasks and require verification")
-        let isolatedEndpoint = ChatHistoryIdentity.instanceID(
-            id: UUID(), baseURL: "https://task-other.test")
-        if case .missing = SessionTaskStore.inspect(
-            instanceID: isolatedEndpoint, accountScope: "isolated-other-account") {
-            // A different host/account has no access to these stored facts.
+        let anotherHost = HermesInstance(name: "Unrelated", baseURL: "https://task-other.test")
+        if case .missing = reopened.unifiedTaskObservations(for: anotherHost) {
+            // Expected: an unconfigured host cannot access this account's facts.
         } else {
-            preconditionFailure("another instance must not inherit task observations")
+            preconditionFailure("task observations cannot be read from an unconfigured host")
         }
         print("TASK_RESTART_PASS persistent scoped facts; stale request resolution stays fail-closed")
     }
