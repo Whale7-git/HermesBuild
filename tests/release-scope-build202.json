@@ -755,7 +755,7 @@
     "tests/releaseautomation/test_candidate_diagnostics.py": "1fd29c929e5543276b7aac79ad27a0463223719ed9085583726fd3c69d967242",
     "tests/releaseautomation/test_candidate_manifest.py": "492425abfcdadb9a8ce0bb85b7596fcd20d6e3716f75e76cc3e40378e268abe6",
     "tests/releaseautomation/test_publish_candidate.py": "0d8a37591f3e0ccabdbad8f5775499743ce7b09f1ac156b1787bf4b29bfffab7",
-    "tests/releaseautomation/test_queued_candidate_watchdog.py": "5c5ee5fa115efbdfa92f27cac39a2faefb752ba0b889054c27352a8743b59bc5",
+    "tests/releaseautomation/test_queued_candidate_watchdog.py": "a2674f4a7f1213c3e97dff42ae5def0081d4d7daa8e5e03c3b698caca0f34a96",
     "tests/releaseautomation/test_release_plan.py": "5c13a29d4bbbf17077b8c609ee93a367fd988585e7b3d606c8c05017f9cf7063",
     "tests/releaseautomation/test_select_candidate.py": "89557cd6ae53594f4c6193f307137a97fa3c0268e2a7eef1fa4101deee88d247",
     "tests/releaseautomation/test_single_build_workflows.py": "58e116ec0c7127d9cb21a09581e36dff5ae800e36a52955252b0bb58d108ee72",
