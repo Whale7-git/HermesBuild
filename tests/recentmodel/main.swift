@@ -43,6 +43,35 @@ store.remember(scope: scope, id: "p2/shared")
 check(store.ids(scope: scope).prefix(2) == ["p2/shared", "p1/shared"],
       "same model name under two providers stays distinct")
 
+// build197 provider verification: exact IDs are the only authoritative
+// way to distinguish equal model names. A server omitting provider must
+// produce "unknown", not silently check another provider in ModelPicker.
+let sameNameCatalog = try! ModelCatalog(data: Data(#"""
+{"active_provider":"provider-b","default_model":"shared",
+ "groups":[
+ {"provider":"Provider A","provider_id":"provider-a",
+  "models":[{"id":"shared","label":"Shared A"},{"id":"only-a","label":"Only A"}]},
+ {"provider":"Provider B","provider_id":"provider-b",
+  "models":[{"id":"shared","label":"Shared B"}]}
+ ]}
+"""#.utf8))
+check(sameNameCatalog.options.count == 3
+      && Set(sameNameCatalog.options.map(\.id)).count == 3,
+      "catalog preserves model+provider identity for same model ID")
+check(sameNameCatalog.option(matching: "shared", provider: "provider-a")?.id
+      == "provider-a/shared", "explicit Provider A cannot select Provider B")
+check(sameNameCatalog.option(matching: "shared", provider: "provider-b")?.id
+      == "provider-b/shared", "explicit Provider B cannot select Provider A")
+check(sameNameCatalog.option(matching: "shared", provider: nil) == nil,
+      "same-named model with missing provider must remain ambiguous")
+check(sameNameCatalog.option(matching: "only-a", provider: nil)?.id
+      == "provider-a/only-a", "unambiguous model can be mapped safely")
+check(sameNameCatalog.option(matching: "only-a", provider: "provider-b") == nil,
+      "unknown model/provider combination cannot silently fall back")
+check(sameNameCatalog.activeProvider == "provider-b"
+      && sameNameCatalog.defaultModel == "shared",
+      "catalog retains separately reported authoritative provider and model")
+
 // 5. 作用域隔离。
 store.remember(scope: "other|acct", id: "p9/z")
 check(!store.ids(scope: scope).contains("p9/z"), "scopes do not leak into each other")
