@@ -12,6 +12,31 @@ import Foundation
         UnifiedSessionIdentity(instanceID: UUID(), endpointIdentity: name,
                                accountScope: "account-" + name)
     }
+    let freshAt119 = now.addingTimeInterval(-119)
+    let staleAt121 = now.addingTimeInterval(-121)
+    expect(UnifiedRunEvidence.evaluate(isStreaming: true, lastSuccessfulList: freshAt119,
+                                       failed: false, now: now) == .recentlyRunning,
+           "119 second streaming evidence is recently confirmed")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: true, lastSuccessfulList: staleAt121,
+                                       failed: false, now: now) == .historicalRunning,
+           "121 second streaming evidence is historical, never live")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: true, lastSuccessfulList: now,
+                                       failed: true, now: now) == .historicalRunning,
+           "failed instance never asserts fresh running even if cache has a green flag")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: false, lastSuccessfulList: now,
+                                       failed: false, now: now) == .recentlyNotRunning,
+           "fresh is_streaming=false is not equivalent to terminal completed")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: false, lastSuccessfulList: staleAt121,
+                                       failed: false, now: now) == .unknown,
+           "stale is_streaming=false provides no current end-state evidence")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: nil, lastSuccessfulList: now,
+                                       failed: false, now: now) == .unknown,
+           "Gateway without a flag cannot manufacture a task state")
+    expect(UnifiedRunEvidence.evaluate(isStreaming: true,
+                                       lastSuccessfulList: now.addingTimeInterval(1),
+                                       failed: false, now: now) == .historicalRunning,
+           "future clock skew must not certify a run")
+
     let a = identity("nas")
     let b = identity("win")
     let c = identity("linux")

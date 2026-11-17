@@ -51,6 +51,63 @@ struct SessionTaskObservation: Codable, Equatable, Sendable {
     }
 }
 
+/// In-memory identities for individually observed approval/clarification
+/// requests in the ACTIVE instance/account scope. A missing ID is a distinct
+/// ambiguous observation, never a reason to replace the whole session set.
+/// AppState resets this ledger when its account/instance scope changes.
+enum SessionRequestSignalLedger {
+    struct Key: Hashable {
+        let signal: SessionTaskSignal
+        let sessionID: String
+        let requestID: String?
+    }
+
+    static func arrived(_ signal: SessionTaskSignal, sessionID: String,
+                        requestID: String?, index: inout Set<Key>,
+                        current: Set<SessionTaskSignal>) -> Set<SessionTaskSignal> {
+        index.insert(Key(signal: signal, sessionID: sessionID,
+                         requestID: normalized(requestID)))
+        var updated = current
+        updated.insert(signal)
+        return updated
+    }
+
+    static func resolved(_ signal: SessionTaskSignal, sessionID: String,
+                         requestID: String?, index: inout Set<Key>,
+                         current: Set<SessionTaskSignal>) -> Set<SessionTaskSignal> {
+        let id = normalized(requestID)
+        let removed = index.remove(Key(signal: signal, sessionID: sessionID,
+                                       requestID: id)) != nil
+        var updated = current
+        let stillObserved = index.contains {
+            $0.sessionID == sessionID && $0.signal == signal
+        }
+        if id == nil {
+            // A legacy resolution cannot prove that all indistinguishable
+            // requests finished. Remove only the matching anonymous marker,
+            // preserve named siblings, and retain a verification fact.
+            if removed || updated.contains(signal) {
+                updated.insert(.needsVerification)
+            }
+            if !stillObserved { updated.remove(signal) }
+        } else if removed {
+            // Only the exact request has been completed. Another ID or an
+            // anonymous sibling must keep the blocking signal visible.
+            if !stillObserved { updated.remove(signal) }
+        } else if updated.contains(signal) {
+            // A late resolution after process restart has no reliable local
+            // request index. Never convert it into proof of all-complete.
+            updated.insert(.needsVerification)
+        }
+        return updated
+    }
+
+    private static func normalized(_ id: String?) -> String? {
+        guard let id, !id.isEmpty else { return nil }
+        return id
+    }
+}
+
 /// The merged view of server truth and local observations for one session.
 struct SessionTaskSummary: Identifiable, Equatable, Sendable {
     let sessionID: String

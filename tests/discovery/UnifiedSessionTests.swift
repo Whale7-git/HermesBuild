@@ -235,6 +235,61 @@ import Foundation
     await timeboxed.start(sources: [slowSearch], query: "content").value
     expect(timeboxed.failures[identity] != nil,
            "full-body search gets the same bounded timeout as session GET")
+    // build197: TaskGroup cancellation cannot bound a transport that ignores
+    // cancellation. Detached probe deliberately finishes later; the browser
+    // must settle by its own deadline and must not publish the late result.
+    let badID = UnifiedSessionIdentity(instanceID: UUID(),
+        endpointIdentity: "uncancellable-host", accountScope: "isolated-account")
+    let lateRow = try row("late-bad-host")
+    let stubborn = UnifiedSessionSource(identity: badID, instanceName: "Noncooperative",
+        cached: nil, load: {
+            let detached = Task.detached {
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                return [lateRow]
+            }
+            return await detached.value
+        }, searchFullBody: nil)
+    let quickHosts = (0..<4).map { index -> UnifiedSessionSource in
+        let identity = UnifiedSessionIdentity(instanceID: UUID(),
+            endpointIdentity: "quick-\(index)", accountScope: "scope-\(index)")
+        return UnifiedSessionSource(identity: identity, instanceName: "Healthy",
+            cached: nil, load: { [lateRow] in
+                var copy = lateRow
+                copy.title = "healthy-\(index)"
+                return [copy]
+            }, searchFullBody: nil)
+    }
+    let hardTimeout = UnifiedSessionModel(hostTimeoutNanoseconds: 25_000_000)
+    let start = Date()
+    await hardTimeout.start(sources: [stubborn] + quickHosts, query: "").value
+    let seconds = Date().timeIntervalSince(start)
+    expect(seconds < 0.40,
+           "uncancellable host must not postpone browser beyond its deadline (\(seconds)s)")
+    expect(hardTimeout.records.count == 4 && hardTimeout.failures[badID] != nil
+           && hardTimeout.loading.isEmpty,
+           "four healthy hosts complete despite one uncooperative timeout")
+    await hardTimeout.start(sources: quickHosts, query: "").value
+    try? await Task.sleep(nanoseconds: 720_000_000)
+    expect(hardTimeout.records.count == 4
+           && !hardTimeout.records.contains(where: { $0.identity == badID }),
+           "late response cannot repopulate changed request scope")
+
+    let slowBody = UnifiedSessionSource(identity: badID, instanceName: "Slow Search",
+        cached: nil, load: { [] }, searchFullBody: { _ in
+            let detached = Task.detached {
+                try? await Task.sleep(nanoseconds: 650_000_000)
+                return [SessionSearchHit(session: lateRow, matchType: "content", preview: nil)]
+            }
+            return await detached.value
+        })
+    let searchTimeout = UnifiedSessionModel(hostTimeoutNanoseconds: 25_000_000)
+    let searchStart = Date()
+    await searchTimeout.start(sources: [slowBody], query: "body").value
+    expect(Date().timeIntervalSince(searchStart) < 0.40
+           && searchTimeout.failures[badID] != nil,
+           "WebUI full-body search also bounds uncooperative requests")
+    print("UNIFIED_DEADLINE_PASS noncooperative host and full-body search")
+
     print("UNIFIED_REFRESH_PASS joined requests, stable rows, per-host retry, bounded GET/search")
 }
 

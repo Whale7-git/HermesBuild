@@ -76,6 +76,92 @@ check(SessionTaskCenter.summaries(
       observations: [:]).count == 2,
       "duplicate session IDs cannot crash activity ordering")
 
+// build197: ID-less legacy events must never overwrite another pending
+// signal or clear a distinct named request. This runs in the existing Swift
+// offline suite against the exact ledger that AppState calls.
+var requests = Set<SessionRequestSignalLedger.Key>()
+var signals = Set<SessionTaskSignal>([.stopping])
+signals = SessionRequestSignalLedger.arrived(
+    .waitingForApproval, sessionID: "shared", requestID: nil,
+    index: &requests, current: signals)
+signals = SessionRequestSignalLedger.arrived(
+    .waitingForClarify, sessionID: "shared", requestID: "clarify-a",
+    index: &requests, current: signals)
+check(signals.contains(.waitingForApproval) && signals.contains(.waitingForClarify)
+      && signals.contains(.stopping),
+      "anonymous approval arrival preserves clarify and STOP")
+signals = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "shared", requestID: nil,
+    index: &requests, current: signals)
+check(!signals.contains(.waitingForApproval) && signals.contains(.waitingForClarify)
+      && signals.contains(.stopping) && signals.contains(.needsVerification),
+      "anonymous approval resolution removes only its signal, retains clarify and verification")
+signals = SessionRequestSignalLedger.resolved(
+    .waitingForClarify, sessionID: "shared", requestID: "clarify-a",
+    index: &requests, current: signals)
+check(!signals.contains(.waitingForClarify) && signals.contains(.stopping)
+      && signals.contains(.needsVerification),
+      "exact clarify resolution cannot delete STOP or legacy verification")
+
+var parallelKeys = Set<SessionRequestSignalLedger.Key>()
+var parallel = Set<SessionTaskSignal>()
+parallel = SessionRequestSignalLedger.arrived(
+    .waitingForApproval, sessionID: "S", requestID: "id-1",
+    index: &parallelKeys, current: parallel)
+parallel = SessionRequestSignalLedger.arrived(
+    .waitingForApproval, sessionID: "S", requestID: "id-2",
+    index: &parallelKeys, current: parallel)
+parallel = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "S", requestID: "id-1",
+    index: &parallelKeys, current: parallel)
+check(parallel.contains(.waitingForApproval) && parallelKeys.count == 1,
+      "resolving one approval leaves another named request in the same session")
+parallel = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "S", requestID: "id-2",
+    index: &parallelKeys, current: parallel)
+check(!parallel.contains(.waitingForApproval) && parallelKeys.isEmpty,
+      "only the last named approval resolution clears its signal")
+
+var mixedKeys = Set<SessionRequestSignalLedger.Key>()
+var mixed = Set<SessionTaskSignal>()
+for id in ["named", ""] {
+    mixed = SessionRequestSignalLedger.arrived(
+        .waitingForApproval, sessionID: "S", requestID: id,
+        index: &mixedKeys, current: mixed)
+}
+mixed = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "S", requestID: "named",
+    index: &mixedKeys, current: mixed)
+check(mixed.contains(.waitingForApproval) && mixedKeys.count == 1,
+      "named request resolved while anonymous sibling remains")
+mixed = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "S", requestID: nil,
+    index: &mixedKeys, current: mixed)
+check(!mixed.contains(.waitingForApproval) && mixed.contains(.needsVerification),
+      "anonymous completion remains uncertain rather than falsely all-complete")
+
+var perScopeA = Set<SessionRequestSignalLedger.Key>()
+var perScopeB = Set<SessionRequestSignalLedger.Key>()
+var scopeA = SessionRequestSignalLedger.arrived(
+    .waitingForApproval, sessionID: "same-id", requestID: "same-request",
+    index: &perScopeA, current: [])
+let scopeB = SessionRequestSignalLedger.arrived(
+    .waitingForApproval, sessionID: "same-id", requestID: "same-request",
+    index: &perScopeB, current: [])
+scopeA = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "same-id", requestID: "same-request",
+    index: &perScopeA, current: scopeA)
+check(!scopeA.contains(.waitingForApproval) && scopeB.contains(.waitingForApproval)
+      && perScopeB.count == 1,
+      "different instance/account ledgers never clear each other's identical IDs")
+let late = SessionRequestSignalLedger.resolved(
+    .waitingForApproval, sessionID: "restarted", requestID: "unseen",
+    index: &perScopeA, current: [.waitingForApproval])
+check(late.contains(.needsVerification),
+      "unknown exact resolution after restart retains ambiguity for verification")
+check(perScopeA.isEmpty,
+      "a late resolution cannot manufacture an earlier request index")
+
 let large = (0..<2000).map { row("row-\($0)", pinned: $0 % 2 == 0, running: true) }
 state.update(sessions: large, observations: [:])
 let count = state.derivationCount
