@@ -34,6 +34,32 @@ struct UnifiedTaskSourceState {
     let failed: Bool
 }
 
+/// One common interpretation of a scoped GET /api/sessions observation.
+/// A list flag is never a terminal Run state, and a stale/failed host cannot
+/// prove that a background task is still running.
+enum UnifiedRunEvidence: Equatable {
+    case recentlyRunning
+    case historicalRunning
+    case recentlyNotRunning
+    case unknown
+
+    static func fresh(lastSuccessfulList: Date?, failed: Bool, now: Date) -> Bool {
+        guard !failed, let lastSuccessfulList else { return false }
+        let age = now.timeIntervalSince(lastSuccessfulList)
+        return age >= 0 && age <= UnifiedTaskWorkspace.freshnessWindow
+    }
+
+    static func evaluate(isStreaming: Bool?, lastSuccessfulList: Date?,
+                         failed: Bool, now: Date) -> UnifiedRunEvidence {
+        let recent = fresh(lastSuccessfulList: lastSuccessfulList, failed: failed, now: now)
+        switch isStreaming {
+        case true: return recent ? .recentlyRunning : .historicalRunning
+        case false: return recent ? .recentlyNotRunning : .unknown
+        case nil: return .unknown
+        }
+    }
+}
+
 enum UnifiedTaskWorkspace {
     static let freshnessWindow: TimeInterval = 120
 
@@ -50,14 +76,18 @@ enum UnifiedTaskWorkspace {
                         now: Date = Date()) -> [UnifiedTaskEntry] {
         records.compactMap { record in
             guard let source = states[record.identity] else { return nil }
-            let age = source.lastSuccessfulList.map { now.timeIntervalSince($0) }
-            let recentlyConfirmed = !source.failed && age.map {
-                $0 >= 0 && $0 <= freshnessWindow
-            } == true
+            let evidence = UnifiedRunEvidence.evaluate(
+                isStreaming: record.session.isStreaming,
+                lastSuccessfulList: source.lastSuccessfulList,
+                failed: source.failed, now: now)
+            let recentlyConfirmed = UnifiedRunEvidence.fresh(
+                lastSuccessfulList: source.lastSuccessfulList,
+                failed: source.failed, now: now)
             let observation = source.observations[record.session.sessionId]
             let localSignals = observation?.signals ?? []
-            let reportedRunning = record.session.isStreaming == true
-            let verifiedRunning = recentlyConfirmed && reportedRunning
+            let reportedRunning = evidence == .recentlyRunning
+                || evidence == .historicalRunning
+            let verifiedRunning = evidence == .recentlyRunning
             let observed = SessionTaskCenter.summary(
                 sessionID: record.session.sessionId,
                 serverStreaming: recentlyConfirmed ? record.session.isStreaming : nil,
