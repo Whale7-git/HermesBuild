@@ -76,7 +76,7 @@ enum UnifiedTaskWorkspace {
                         now: Date = Date()) -> [UnifiedTaskEntry] {
         records.compactMap { record in
             guard let source = states[record.identity] else { return nil }
-            let evidence = UnifiedRunEvidence.evaluate(
+            let runEvidence = UnifiedRunEvidence.evaluate(
                 isStreaming: record.session.isStreaming,
                 lastSuccessfulList: source.lastSuccessfulList,
                 failed: source.failed, now: now)
@@ -85,9 +85,9 @@ enum UnifiedTaskWorkspace {
                 failed: source.failed, now: now)
             let observation = source.observations[record.session.sessionId]
             let localSignals = observation?.signals ?? []
-            let reportedRunning = evidence == .recentlyRunning
-                || evidence == .historicalRunning
-            let verifiedRunning = evidence == .recentlyRunning
+            let reportedRunning = runEvidence == .recentlyRunning
+                || runEvidence == .historicalRunning
+            let verifiedRunning = runEvidence == .recentlyRunning
             let observed = SessionTaskCenter.summary(
                 sessionID: record.session.sessionId,
                 serverStreaming: recentlyConfirmed ? record.session.isStreaming : nil,
