@@ -130,7 +130,6 @@ extension NativeChatView {
         switch panel {
         case .drawer:
             SessionListPane(
-                mode: .drawer,
                 selectedID: sessionID,
                 onSelect: { session in
                     // 先关侧栏再切会话，避免两个遮盖层叠在一起。
