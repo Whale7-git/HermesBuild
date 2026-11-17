@@ -700,7 +700,7 @@
     "tests/core/fixtures/ios-native-live-history.json": "4d59881bf99fc4f3c99a5a290da389818922e51ebcc5109239b96cb54ace4a2e",
     "tests/core/main.swift": "b283e1e77e3fea6c65734209b7254244f1b13f22111e95cc155a3747fbb25113",
     "tests/credentials/main.swift": "2c202b205db976d3f23da2b1cb2ff7f6f0160cb3b75f8537738d514da4f4460d",
-    "tests/discovery/UnifiedSessionTests.swift": "afa8380873e476f46748a8b9d7d221c0d9ac5b786bb35ecb03dd07377e2fc834",
+    "tests/discovery/UnifiedSessionTests.swift": "80670644591a1e03c8a54065e3c749bf1c24b2b74d338abac5f8c9f595cd5954",
     "tests/discovery/UnifiedTaskWorkspaceTests.swift": "90a9dbb5919a9513cc54759fb40b59d4e64143b3f0c3f3de1bc2ab644051da4c",
     "tests/discovery/main.swift": "ecedda4b69f90f91c51ce2e96bde3e0b663ce1fb50cd3514561a9f39812e4c64",
     "tests/drafts/main.swift": "13f5f263c0beb52ad8c83ef873a489b0c2cfb3ac6c417bbfebffbea4846dd1b0",
