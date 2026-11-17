@@ -55,6 +55,11 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
     static var pendingCreate: CheckedContinuation<String, Error>?
     static var nextCreateID = "created-fixture"
     static var confirmedModelHistory = false
+    static var modelHistoryOverride: [String: Any]? = nil
+    static var modelHistoryError: Error? = nil
+    static var holdModelHistory = false
+    static var pendingModelHistory: CheckedContinuation<ChatSnapshot, Error>? = nil
+    static var modelHistoryCalls = 0
     static var listEntered = false
     static var capabilitiesOverride: BackendCapabilities?
     static var authCalls = 0
@@ -112,6 +117,16 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
     static var holdRenames = false
     static var pendingRename: CheckedContinuation<Void, Error>? = nil
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
+        Self.modelHistoryCalls += 1
+        if Self.holdModelHistory {
+            return try await withCheckedThrowingContinuation {
+                Self.pendingModelHistory = $0
+            }
+        }
+        if let error = Self.modelHistoryError { throw error }
+        if let response = Self.modelHistoryOverride {
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: response))
+        }
         if Self.confirmedModelHistory, let selected = Self.lastModelSet {
             let payload: [String: Any] = ["session_id": sessionID, "messages": [],
                 "model": selected.2, "model_provider": selected.1 ?? NSNull()]
@@ -286,6 +301,94 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         HermesAPI.confirmedModelHistory = false
         HermesAPI.lastModelSet = nil
         print("WEBUI_MODEL_HOME_PASS selected model/provider verified before handoff")
+    }
+
+    @MainActor static func modelSwitchReadbackTests() async throws {
+        let a = HermesInstance(name: "Model A", baseURL: "https://model-switch-a.test")
+        let b = HermesInstance(name: "Model B", baseURL: "https://model-switch-b.test")
+        try InstanceStore.save([a, b], credentials: credentials)
+        InstanceStore.activeID = a.id
+        let app = AppState(credentials: credentials)
+        await app.loadModels()
+        let selected = app.modelCatalog!.options[0]
+        var old = SessionSummary.placeholder(id: "existing")
+        old.model = "earlier"
+        app.sessions = [old]
+        app.openSession(old)
+        HermesAPI.confirmedModelHistory = true
+        HermesAPI.lastModelSet = nil
+        defer {
+            HermesAPI.confirmedModelHistory = false
+            HermesAPI.modelHistoryOverride = nil
+            HermesAPI.modelHistoryError = nil
+            HermesAPI.holdModelHistory = false
+            HermesAPI.pendingModelHistory = nil
+        }
+
+        let initialReads = HermesAPI.modelHistoryCalls
+        let accepted = await app.setModel(selected, for: "existing")
+        precondition(accepted && app.currentSession?.model == selected.model
+                     && app.sessions[0].model == selected.model,
+                     "model update becomes visible only after exact history confirmation")
+        precondition(HermesAPI.modelHistoryCalls == initialReads + 1
+                     && HermesAPI.lastModelSet?.1 == selected.providerID,
+                     "model switch calls server history once and sends the intended provider")
+
+        var prior = app.sessions[0]
+        prior.model = "unchanged"
+        app.sessions = [prior]
+        app.openSession(prior)
+        HermesAPI.modelHistoryOverride = [
+            "session_id": "existing", "messages": [],
+            "model": selected.model, "model_provider": "unrelated-provider"]
+        let wrongProvider = await app.setModel(selected, for: "existing")
+        precondition(!wrongProvider && app.sessions[0].model == "unchanged"
+                     && app.currentSession?.model == "unchanged"
+                     && app.sessionActionError?.contains("Provider") == true,
+                     "HTTP success with wrong provider cannot publish selected model")
+
+        HermesAPI.modelHistoryOverride = [
+            "session_id": "existing", "messages": [], "model": selected.model]
+        let missingProvider = await app.setModel(selected, for: "existing")
+        precondition(!missingProvider && app.sessions[0].model == "unchanged"
+                     && app.sessionActionError?.contains("Provider") == true,
+                     "legacy backend omitting provider remains unverified, not guessed")
+
+        HermesAPI.modelHistoryOverride = [
+            "session_id": "existing", "messages": [],
+            "model": "different", "model_provider": selected.providerID!]
+        precondition(!(await app.setModel(selected, for: "existing"))
+                     && app.sessions[0].model == "unchanged",
+                     "different actual model cannot be confirmed just by 200 response")
+        HermesAPI.modelHistoryOverride = [
+            "session_id": "someone-else", "messages": [],
+            "model": selected.model, "model_provider": selected.providerID!]
+        precondition(!(await app.setModel(selected, for: "existing"))
+                     && app.sessions[0].model == "unchanged",
+                     "cross-session history cannot authorize a model switch")
+
+        HermesAPI.modelHistoryOverride = nil
+        HermesAPI.modelHistoryError = URLError(.notConnectedToInternet)
+        let failedHistory = await app.setModel(selected, for: "existing")
+        precondition(!failedHistory && app.sessions[0].model == "unchanged"
+                     && app.sessionActionError != nil,
+                     "failed history read must preserve previous local model identity")
+        HermesAPI.modelHistoryError = nil
+
+        // Independent scope checks survive an old server completion after
+        // switching instances. No result or error from A may mutate host B.
+        HermesAPI.holdModelHistory = true
+        let oldSwitch = Task { await app.setModel(selected, for: "existing") }
+        await spin { HermesAPI.pendingModelHistory != nil }
+        app.switchTo(1)
+        let oldResult = try ChatSnapshot(data: Data(
+            "{\"session_id\":\"existing\",\"messages\":[],\"model\":\"m1\",\"model_provider\":\"custom:p\"}".utf8))
+        HermesAPI.pendingModelHistory?.resume(returning: oldResult)
+        HermesAPI.pendingModelHistory = nil
+        precondition(!(await oldSwitch.value) && app.active.id == b.id
+                     && !app.sessionActionBusy && app.sessionActionError == nil,
+                     "late model confirmation cannot mutate an unrelated instance")
+        print("MODEL_SWITCH_READBACK_PASS success, mismatch, missing provider, network failure and scope race")
     }
 
     @MainActor static func instanceEditingTests() async throws {
@@ -982,6 +1085,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         let first = catalog!.options[0]
         model.sessions = [SessionSummary.placeholder(id:"opened")]
         model.currentSessionID = "opened"
+        HermesAPI.confirmedModelHistory = true
         let switched = await model.setModel(first, for: "opened")
         precondition(switched && HermesAPI.lastModelSet?.0 == "opened","set model hits the session route")
         precondition(HermesAPI.lastModelSet?.1 == "custom:p","set model forwards the catalog provider id")
@@ -1027,6 +1131,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         precondition(searchSwitched && HermesAPI.lastModelSet?.0 == "search-model","set model hits the session route for an opened search hit")
         precondition(model.currentSession?.model == "m1","setModel on an opened non-list session updates the visible row")
         model.closeSession()
+        HermesAPI.confirmedModelHistory = false
         // ---- A01: 切实例必须重置目录与会话操作状态 ----
         // The login-loss retirement above now also clears the catalog (part of
         // the A01 fix), so load it again to set up the reset check.
@@ -1146,6 +1251,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
 
         try await homeCreateNavigationTests()
         try await webUIHomeModelTests()
+        try await modelSwitchReadbackTests()
         try await unifiedSessionNavigationTests()
         try await refreshTests()
         try await instanceDeletionCacheTests()
