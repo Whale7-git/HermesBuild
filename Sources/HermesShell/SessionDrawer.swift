@@ -10,6 +10,8 @@ struct SessionListPane: View {
     let onNew: () -> Void
     let onSettings: () -> Void
     var onClose: (() -> Void)?
+    var onBrowseAllInstances: (() -> Void)?
+    var onBrowseAllTasks: (() -> Void)?
     var searchRequest: Int = 0
 
     @State private var query = ""
@@ -457,6 +459,17 @@ struct SessionListPane: View {
             Menu {
                 Button("全部对话", systemImage: "bubble.left.and.bubble.right") { cancelSearch(); resetFilters() }
                     .disabled(selecting)
+                if app.instances.count > 1 {
+                    if let onBrowseAllInstances {
+                        Button("跨实例会话", systemImage: "rectangle.stack", action: onBrowseAllInstances)
+                            .disabled(selecting)
+                    }
+                    if let onBrowseAllTasks {
+                        Button("跨实例任务", systemImage: "list.bullet.clipboard", action: onBrowseAllTasks)
+                            .disabled(selecting)
+                    }
+                    Divider()
+                }
                 Button("置顶会话", systemImage: "pin") { cancelSearch(); filterPinnedOnly = true; showArchived = false }
                     .disabled(selecting)
                 if supportsArchive {
@@ -605,6 +618,19 @@ struct SessionListPane: View {
                 .contentShape(Rectangle())
             }
             .accessibilityLabel("任务中心，查看运行及待处理会话")
+            if app.instances.count > 1, let onBrowseAllInstances {
+                Button(action: onBrowseAllInstances) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "rectangle.stack")
+                        Text("跨实例会话").font(.subheadline.weight(.medium))
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("查看全部 Hermes 实例的会话")
+            }
         }
         .foregroundStyle(.primary)
         .buttonStyle(.plain)
