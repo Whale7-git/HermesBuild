@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build202/203 navigation and modal/reading ownership preservation gate.
+"""Build202-204 navigation, modal and reading ownership preservation gate.
 
 The feature baseline is build198/build201, NOT build199's drawer-only rewrite.
 This checks that executable SwiftUI wiring still exposes every legacy route,
@@ -105,14 +105,39 @@ def violations(contents: dict[str, str]) -> list[str]:
             "enum RootNavigationModalPolicy",
             "enum RootTaskSheetNavigation",
             "static func geometryReportedDistance(",
+            "static func isUserScroll(",
         ),
         "StableChatScrollView+Coordinator.swift": (
             "ChatScrollState.geometryReportedDistance(",
+            "ChatScrollState.isUserScroll(",
         ),
         "NativeChatView+Chrome.swift": (
             "Button(\"导出已加载内容\"",
             "Button(\"获取完整历史后导出\"",
             "Label(\"导出会话\", systemImage: \"doc.text\")",
+            "showPanel(.task)",
+            "查看任务与消息队列",
+        ),
+        "SessionTaskCenterView.swift": (
+            ".onTapGesture { onSelect(session) }",
+        ),
+        "ChatNavigation.swift": (
+            "if filtered.isEmpty {",
+            "Section(\"关键节点 · \\(filtered.count)\")",
+            "加载更早问题",
+            "ContentUnavailableView(",
+        ),
+        "ChatQueueManager.swift": (
+            "if model.queuedTurns.isEmpty {",
+            "if model.queuedTurns.first?.delivery == .uncertain {",
+            "自动续发",
+            ".confirmationDialog(",
+        ),
+        "NativeChatView+MessageList.swift": (
+            "private var jumpBar: some View",
+            "Button { showMessageNavigation = true }",
+            "Text(\"新回复\")",
+            "goToLatest(animated: true)",
         ),
     }
     failures = [
@@ -131,6 +156,14 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("NativeChatView: stale external URL initialization returned")
     if "legacyBaseURL: api.webConsoleBaseURL.absoluteString" not in chat:
         failures.append("NativeChatView: attachment legacy base URL must survive")
+    if ".onTapGesture { onSelect(session) }" not in contents.get("SessionTaskCenterView.swift", ""):
+        failures.append("Task center: owner must handle a single dismissal before navigation")
+    if "dismiss()\n                    onSelect(session)" in contents.get("SessionTaskCenterView.swift", ""):
+        failures.append("Task center: duplicate dismiss path returned")
+    if ".overlay {\n                if filtered.isEmpty" in contents.get("ChatNavigation.swift", ""):
+        failures.append("Navigation: full-screen empty overlay intercepts actions")
+    if ".overlay {\n                if model.queuedTurns.isEmpty" in contents.get("ChatQueueManager.swift", ""):
+        failures.append("Queue: full-screen empty overlay intercepts auto-dispatch controls")
     return failures
 
 
@@ -140,6 +173,8 @@ def main() -> int:
         "UnifiedSessionModel.swift", "UnifiedTaskWorkspace.swift", "AppState.swift",
         "ChatScrollState.swift", "NativeChatView+Chrome.swift", "NativeChatView.swift",
         "StableChatScrollView+Coordinator.swift",
+        "SessionTaskCenterView.swift", "ChatNavigation.swift", "ChatQueueManager.swift",
+        "NativeChatView+MessageList.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
@@ -172,6 +207,20 @@ def main() -> int:
          "Button(action: onOpenCurrentTaskCenter)"),
         ("keyboard geometry protection", "StableChatScrollView+Coordinator.swift",
          "ChatScrollState.geometryReportedDistance("),
+        ("user-only scroll delegate", "StableChatScrollView+Coordinator.swift",
+         "ChatScrollState.isUserScroll("),
+        ("single-owner task dismissal", "SessionTaskCenterView.swift",
+         ".onTapGesture { onSelect(session) }"),
+        ("navigation scoped empty state", "ChatNavigation.swift",
+         "if filtered.isEmpty {"),
+        ("queue local empty row", "ChatQueueManager.swift",
+         "if model.queuedTurns.isEmpty {"),
+        ("status action", "NativeChatView+Chrome.swift",
+         "showPanel(.task)"),
+        ("reading navigation action", "NativeChatView+MessageList.swift",
+         "Button { showMessageNavigation = true }"),
+        ("unread reading badge", "NativeChatView+MessageList.swift",
+         "Text(\"新回复\")"),
     )
     for description, filename, fragment in cases:
         if fragment not in contents[filename]:
@@ -183,7 +232,7 @@ def main() -> int:
             raise AssertionError(f"gate failed to detect removed {description}")
 
     print("NAVIGATION_CONTRACT_PASS build198 routes, cross-instance tasks, "
-          "persistent gesture ownership, export-only chat menu")
+          "persistent gesture ownership, build204 reading/status controls")
     return 0
 
 
