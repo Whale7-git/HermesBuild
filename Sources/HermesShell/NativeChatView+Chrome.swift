@@ -157,8 +157,12 @@ extension NativeChatView {
                     if !canFetchFullExport {
                         Text("生成中、核对中或离线时，仍可导出已加载内容。")
                     }
+                    Divider()
+                    Link(destination: webURL) {
+                        Label("在浏览器打开", systemImage: "safari")
+                    }
                 } label: {
-                    Label("导出会话", systemImage: "doc.text")
+                    Label("导出与打开", systemImage: "doc.text")
                 }
                 Divider()
                 Button {
