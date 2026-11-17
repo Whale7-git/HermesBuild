@@ -56,7 +56,9 @@ class FakeGitHub:
                 self.run.update(status="completed", conclusion="cancelled")
             return {}
         if (path, method) == ("actions/runs/77/rerun", "POST"):
-            assert self.operations == ["cancel"], "rerun must follow cancellation"
+            assert self.operations[-1] == "cancel", "rerun must follow cancellation"
+            self.run.update(status="in_progress", conclusion=None,
+                            run_attempt=self.run["run_attempt"] + 1)
             self.operations.append("rerun")
             return {}
         raise AssertionError((path, method))
@@ -75,8 +77,8 @@ def execute(**params):
 class QueueWatchdogTests(unittest.TestCase):
     def test_queued_over_three_minutes_cancels_then_reruns(self):
         result, client = execute()
-        self.assertTrue(result.startswith("rerun:"))
-        self.assertEqual(client.operations, ["cancel", "rerun"])
+        self.assertTrue(result.startswith("alert:"))
+        self.assertEqual(client.operations, ["cancel", "rerun", "cancel", "rerun"])
 
     def test_compilation_started_or_finished_does_nothing(self):
         for status in ("in_progress", "completed"):
@@ -140,12 +142,50 @@ class QueueWatchdogTests(unittest.TestCase):
         self.assertIn("did not finish", result)
         self.assertEqual(client.operations, ["cancel"])
 
+    def test_third_window_alerts_exactly_once(self):
+        run, jobs, pr = example()
+        client = FakeGitHub(run, jobs, pr)
+        clock = [NOW]
+        signals = []
+        result = watchdog.monitor(
+            client, 77, now=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            alert=lambda rid, reason: signals.append((rid, reason)))
+        self.assertTrue(result.startswith("alert:"))
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0][0], 77)
+        self.assertEqual(client.run["run_attempt"], 3)
+        self.assertEqual(client.operations, ["cancel", "rerun", "cancel", "rerun"])
+
+    def test_bark_payload_without_exposing_secret(self):
+        from unittest.mock import patch
+        import json
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps({"code": 200}).encode()
+        with patch.object(watchdog.request, "urlopen", return_value=Response()) as post:
+            self.assertTrue(watchdog.send_bark("https://example.com/secret", 77, "queue"))
+        req = post.call_args.args[0]
+        self.assertEqual(req.full_url, "https://example.com/secret")
+        self.assertIn(b"actions%2Fruns%2F77", req.data)
+        self.assertNotIn(b"secret", req.data)
+
+    def test_repeated_attempt_is_not_initial_trigger(self):
+        run, jobs, pr = example(attempt=2)
+        client = FakeGitHub(run, jobs, pr)
+        self.assertTrue(watchdog.monitor(client, 77).startswith("skip:"))
+        self.assertFalse(client.operations)
+
     def test_trusted_trigger_and_token_permissions(self):
         yaml = (ROOT / ".github/workflows/hermes-candidate-queue-watchdog.yml").read_text()
         self.assertIn("types: [requested]", yaml)
         self.assertIn("actions: write", yaml)
         self.assertIn("ref: main", yaml)
         self.assertIn("scripts/queued_candidate_watchdog.py", yaml)
+        self.assertIn("secrets.BARK_URL", yaml)
+        self.assertIn("timeout-minutes: 21", yaml)
         self.assertNotIn("pull_request_target:", yaml)
         self.assertNotIn("scripts/github-build-ipa-main.sh", yaml)
 
