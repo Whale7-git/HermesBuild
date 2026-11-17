@@ -357,14 +357,14 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         HermesAPI.modelHistoryOverride = [
             "session_id": "existing", "messages": [],
             "model": "different", "model_provider": selected.providerID!]
-        precondition(!(await app.setModel(selected, for: "existing"))
-                     && app.sessions[0].model == "unchanged",
+        let differentModel = await app.setModel(selected, for: "existing")
+        precondition(!differentModel && app.sessions[0].model == "unchanged",
                      "different actual model cannot be confirmed just by 200 response")
         HermesAPI.modelHistoryOverride = [
             "session_id": "someone-else", "messages": [],
             "model": selected.model, "model_provider": selected.providerID!]
-        precondition(!(await app.setModel(selected, for: "existing"))
-                     && app.sessions[0].model == "unchanged",
+        let otherSession = await app.setModel(selected, for: "existing")
+        precondition(!otherSession && app.sessions[0].model == "unchanged",
                      "cross-session history cannot authorize a model switch")
 
         HermesAPI.modelHistoryOverride = nil
@@ -385,7 +385,8 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
             "{\"session_id\":\"existing\",\"messages\":[],\"model\":\"m1\",\"model_provider\":\"custom:p\"}".utf8))
         HermesAPI.pendingModelHistory?.resume(returning: oldResult)
         HermesAPI.pendingModelHistory = nil
-        precondition(!(await oldSwitch.value) && app.active.id == b.id
+        let oldAccepted = await oldSwitch.value
+        precondition(!oldAccepted && app.active.id == b.id
                      && !app.sessionActionBusy && app.sessionActionError == nil,
                      "late model confirmation cannot mutate an unrelated instance")
         print("MODEL_SWITCH_READBACK_PASS success, mismatch, missing provider, network failure and scope race")
