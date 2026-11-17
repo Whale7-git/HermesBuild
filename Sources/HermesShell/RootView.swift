@@ -9,23 +9,10 @@ struct RootView: View {
     @AppStorage("hermesAppearance") private var appearance = "system"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sidebarOpen = false
-    @GestureState private var sidebarGesture = ChatDrawerGestureState()
-    // Full-page session browser has its own navigation gesture and a real
-    // back destination; do not mistake this for opening the root drawer.
-    @State private var browserOpen = false
-    @State private var browserSearchRequested = false
-    @State private var browserRoute: [UnifiedBrowserPage] = []
-    @State private var browserSource: UnifiedBrowserSource = .chat
-    @State private var browserSessionOpen = false
-    @GestureState private var sessionBackDrag: CGFloat = 0
-    @StateObject private var unifiedCenter = UnifiedSessionModel()
-    @State private var unifiedQuery = ""
-    @State private var unifiedFilter = 0
-    @State private var unifiedSection = 0
-    private var browserAllInstances: Bool { browserRoute.last == .all }
-    private var browserFromSingle: Bool { browserRoute.count > 1 }
-    @GestureState private var browserBackDrag: CGFloat = 0
+    @State private var navigation = RootNavigationState()
+    @GestureState private var sidebarGesture = RootNavigationGesture()
+    @State private var navigationSwipeClaimed = false
+    @State private var sidebarSearchRequest = 0
     @State private var homeText = ""
     @State private var homeFocused = false
     @State private var homeSelectedModel: ModelOption?
@@ -50,7 +37,7 @@ struct RootView: View {
 
     private func reveal(width: CGFloat) -> CGFloat {
         CGFloat(ChatDrawerInteraction.reveal(width: Double(drawerWidth(width)),
-                                              open: sidebarOpen, translation: sidebarGesture.translation))
+                                              open: navigation.sidebarOpen, translation: sidebarGesture.translation))
     }
 
     var body: some View {
@@ -72,13 +59,7 @@ struct RootView: View {
             .onChange(of: scenePhase) { _, _ in
                 synchronizeConversationVisibility()
             }
-            .onChange(of: sidebarOpen) { _, _ in
-                synchronizeConversationVisibility()
-            }
-            .onChange(of: browserOpen) { _, _ in
-                synchronizeConversationVisibility()
-            }
-            .onChange(of: browserSessionOpen) { _, _ in
+            .onChange(of: navigation.sidebarOpen) { _, _ in
                 synchronizeConversationVisibility()
             }
             .onChange(of: app.showSettings) { _, _ in
@@ -87,18 +68,7 @@ struct RootView: View {
             .onChange(of: app.needsLogin) { _, _ in
                 synchronizeConversationVisibility()
             }
-            .onChange(of: app.currentSessionID) { _, current in
-                // A chat opened from the browser can create a new draft via
-                // its own toolbar. Closing the session must also retire the
-                // browser route; otherwise the empty composer inherits an
-                // unrelated old session-list back stack.
-                if UnifiedBrowserPresentation.shouldRetireBrowserForNewDraft(
-                    browserOpen: browserOpen, browserSessionOpen: browserSessionOpen,
-                    currentSessionID: current) {
-                    browserSessionOpen = false
-                    browserOpen = false
-                    browserRoute = []
-                }
+            .onChange(of: app.currentSessionID) { _, _ in
                 synchronizeConversationVisibility()
             }
             .onAppear { synchronizeConversationVisibility() }
@@ -120,44 +90,12 @@ struct RootView: View {
             // Only its interior content is padded into the safe area.
             ZStack(alignment: .leading) {
                 SessionListPane(
-                    mode: .drawer,
                     selectedID: app.currentSessionID,
-                    onSelect: { session in
-                        closeSidebar()
-                        app.openSession(session)
-                    },
-                    onNew: {
-                        closeSidebar()
-                        startConversation()
-                    },
-                    onSettings: {
-                        closeSidebar()
-                        app.showSettings = true
-                    },
+                    onSelect: { session in closeSidebar(); app.openSession(session) },
+                    onNew: { closeSidebar(); startConversation() },
+                    onSettings: { closeSidebar(); app.showSettings = true },
                     onClose: closeSidebar,
-                    onBrowseAll: {
-                        browserSource = .drawer
-                        browserRoute = [.single]
-                        browserSearchRequested = false
-                        browserSessionOpen = false
-                        browserOpen = true
-                    },
-                    onBrowseAllInstances: {
-                        browserSource = .drawer
-                        browserRoute = [.all]
-                        unifiedSection = 0
-                        browserSearchRequested = false
-                        browserSessionOpen = false
-                        browserOpen = true
-                    },
-                    onBrowseAllTasks: {
-                        browserSource = .drawer
-                        browserRoute = [.all]
-                        unifiedSection = 1
-                        browserSearchRequested = false
-                        browserSessionOpen = false
-                        browserOpen = true
-                    }
+                    searchRequest: sidebarSearchRequest
                 )
                 .environmentObject(app)
                 .padding(.top, topInset)
@@ -168,13 +106,11 @@ struct RootView: View {
                 // Keep the drawer mounted behind the fully opaque chat canvas.
                 // Flipping opacity/hit-testing at exposed == 0 introduced a
                 // compositing and gesture hit-map discontinuity on left return.
-                .allowsHitTesting(sidebarOpen)
-                .accessibilityHidden(!sidebarOpen)
+                .allowsHitTesting(navigation.sidebarOpen)
+                .accessibilityHidden(!navigation.sidebarOpen)
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
-                precedingBrowserLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset)
-                activeBrowserLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset)
             }
             .frame(width: geometry.size.width, height: fullHeight,
                    alignment: .leading)
@@ -186,42 +122,42 @@ struct RootView: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 14)
                     .updating($sidebarGesture) { value, state, _ in
-                        guard !browserOpen else { return }
-                        state.update(
+                        state.update(open: navigation.sidebarOpen,
                             startX: Double(value.startLocation.x),
                             horizontal: Double(value.translation.width),
                             vertical: Double(value.translation.height),
-                            open: sidebarOpen, width: Double(width),
-                            allowFullCard: true)
+                            width: Double(width))
+                    }
+                    .onChanged { value in
+                        if !navigationSwipeClaimed && RootNavigationGesture.canClaim(
+                            open: navigation.sidebarOpen,
+                            startX: Double(value.startLocation.x),
+                            horizontal: Double(value.translation.width),
+                            vertical: Double(value.translation.height),
+                            width: Double(width)) {
+                            navigationSwipeClaimed = true
+                        }
                     }
                     .onEnded { value in
-                        guard !browserOpen, sidebarGesture.claimed else { return }
-                        let shouldOpen = ChatDrawerInteraction.finishOpen(
-                            width: Double(width), wasOpen: sidebarOpen,
+                        defer { navigationSwipeClaimed = false }
+                        guard navigationSwipeClaimed || sidebarGesture.claimed
+                            || RootNavigationGesture.canClaim(
+                                open: navigation.sidebarOpen,
+                                startX: Double(value.startLocation.x),
+                                horizontal: Double(value.translation.width),
+                                vertical: Double(value.translation.height),
+                                width: Double(width)) else { return }
+                        navigation.finishSwipe(width: Double(width),
                             predictedTranslation: Double(value.predictedEndTranslation.width))
-                        if shouldOpen && !sidebarOpen { openSidebar() }
-                        else if !shouldOpen && sidebarOpen { closeSidebar() }
                     }
             )
-        }
         .animation(reduceMotion ? nil : .interactiveSpring(response: 0.34,
                                                             dampingFraction: 0.88),
                    value: sidebarOpen)
-        .animation(reduceMotion ? nil : .interactiveSpring(response: 0.36,
-                                                            dampingFraction: 0.9),
-                   value: browserOpen)
         .onChange(of: app.activeChangeToken) { _, _ in
-            // Keep the drawer visible when selecting another Hermes host: the
-            // user still has to pick a native Session from that host. Account
-            // login remains a sheet and must hide the previously opened drawer.
-            if app.needsLogin {
-                closeSidebar()
-                browserOpen = false
-                browserSessionOpen = false
-                browserRoute = []
-            } else {
-                openPendingNotificationTarget()
-            }
+            if app.needsLogin { closeSidebar() }
+            else { openPendingNotificationTarget() }
+            navigationSwipeClaimed = false
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -233,16 +169,6 @@ struct RootView: View {
             Task { await app.refresh() }
         }
         .onChange(of: app.sessions.map(\.sessionId)) { _, _ in openPendingNotificationTarget() }
-        .onChange(of: app.sessions) { _, updated in
-            guard app.hasLoadedSessions else { return }
-            let endpoint = app.historyInstanceID
-            let identity = UnifiedSessionIdentity(
-                instanceID: app.active.id, endpointIdentity: endpoint,
-                accountScope: app.historyAccountScope)
-            unifiedCenter.adoptActiveList(
-                identity: identity, instanceName: app.active.name,
-                rows: updated, refreshedAt: app.lastSessionRefresh)
-        }
         .onReceive(NotificationCenter.default.publisher(for: NotificationNavigation.changed)) { _ in
             openPendingNotificationTarget()
         }
@@ -266,200 +192,26 @@ struct RootView: View {
     /// the user explicitly sends or requests an attachment-capable chat.
 
 
-    /// Compiler-isolated layers: keep the conversation mounted when a Session
-    /// browser is presented, while the card itself remains the swipe surface.
+    /// The native conversation is the only card; no second full-screen page
+    /// or browser recognizer may compete for the horizontal swipe.
     private func chatCardLayer(size: CGSize, topInset: CGFloat, bottomInset: CGFloat,
                                progress: CGFloat, exposed: CGFloat) -> some View {
-    ChatCardContainer(
-        size: size, topInset: topInset, bottomInset: bottomInset,
-        progress: browserSessionOpen
-            ? min(1, max(0, sessionBackDrag / max(1, size.width)))
-            : progress,
-        translation: browserSessionOpen ? sessionBackDrag : exposed,
-        reduceMotion: reduceMotion,
-        showsDismissSurface: sidebarOpen && !browserSessionOpen,
-        suppressVerticalScroll: browserSessionOpen
-            ? sessionBackDrag > 0 : (!browserOpen && sidebarGesture.claimed),
-        onDismiss: closeSidebar
-    ) {
-        Group {
-            if let sessionID = app.currentSessionID {
-                chatDestination(ChatRoute(sessionID: sessionID))
-            } else {
-                emptyConversation
-            }
-        }
-        .accessibilityHidden(sidebarOpen && !browserSessionOpen)
-    }
-    .zIndex(browserSessionOpen ? 3 : 0)
-    .simultaneousGesture(
-        DragGesture(minimumDistance: 26)
-            .updating($sessionBackDrag) { value, drag, _ in
-                guard browserOpen && browserSessionOpen,
-                      ChatPageBackInteraction.shouldTrack(
-                          startX: Double(value.startLocation.x),
-                          horizontal: Double(value.translation.width),
-                          vertical: Double(value.translation.height),
-                          allowFullCard: true) else { return }
-                drag = max(0, value.translation.width)
-            }
-            .onEnded { value in
-                guard browserOpen && browserSessionOpen,
-                      ChatPageBackInteraction.shouldTrack(
-                          startX: Double(value.startLocation.x),
-                          horizontal: Double(value.translation.width),
-                          vertical: Double(value.translation.height),
-                          allowFullCard: true) else { return }
-                if ChatPageBackInteraction.shouldDismiss(
-                    width: Double(size.width),
-                    predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                    // The browser is still the destination. Do not expose
-                    // the drawer until the browser itself is popped.
-                    browserSessionOpen = false
-                }
-            }
-    )
-    }
-
-    @ViewBuilder
-    private func precedingBrowserLayer(size: CGSize, topInset: CGFloat,
-                                       bottomInset: CGFloat) -> some View {
-    if browserOpen && browserAllInstances && browserFromSingle {
         ChatCardContainer(
             size: size, topInset: topInset, bottomInset: bottomInset,
-            progress: 0, translation: 0, reduceMotion: reduceMotion,
-            showsDismissSurface: false, onDismiss: {}
+            progress: progress, translation: exposed, reduceMotion: reduceMotion,
+            showsDismissSurface: navigation.sidebarOpen,
+            suppressVerticalScroll: navigationSwipeClaimed || sidebarGesture.claimed,
+            onDismiss: closeSidebar
         ) {
-            singleInstanceBrowser
-        }
-        .zIndex(1)
-        .allowsHitTesting(!browserSessionOpen)
-        .accessibilityHidden(browserSessionOpen)
-    }
-    }
-
-    @ViewBuilder
-    private func activeBrowserLayer(size: CGSize, topInset: CGFloat,
-                                    bottomInset: CGFloat) -> some View {
-    if browserOpen {
-        let backProgress = min(1, max(0,
-            browserBackDrag / max(1, size.width)))
-        ChatCardContainer(
-            size: size, topInset: topInset, bottomInset: bottomInset,
-            progress: backProgress, translation: browserBackDrag,
-            reduceMotion: reduceMotion,
-            showsDismissSurface: false,
-            suppressVerticalScroll: browserBackDrag > 0,
-            onDismiss: {}
-        ) {
-            if browserAllInstances {
-                UnifiedSessionBrowser(
-                    center: unifiedCenter,
-                    query: $unifiedQuery,
-                    filter: $unifiedFilter,
-                    section: $unifiedSection,
-                    onClose: backFromBrowser,
-                    backToSingleInstance: browserFromSingle,
-                    backToDrawer: browserSource == .drawer && !browserFromSingle,
-                    onSingleInstance: {
-                        browserRoute = [.single]
-                    },
-                    onSelect: { record in
-                        let opened = app.openSessionFromInstance(
-                            instanceID: record.identity.instanceID,
-                            endpointIdentity: record.identity.endpointIdentity,
-                            accountScope: record.identity.accountScope,
-                            session: record.session)
-                        if opened {
-                            sidebarOpen = false
-                            browserSessionOpen = true
-                        }
-                        return opened
-                    }
-                )
-                .environmentObject(app)
-            } else {
-                singleInstanceBrowser
+            Group {
+                if let sessionID = app.currentSessionID {
+                    chatDestination(ChatRoute(sessionID: sessionID))
+                } else {
+                    emptyConversation
+                }
             }
+            .accessibilityHidden(navigation.sidebarOpen)
         }
-        .transition(.move(edge: .trailing))
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 18)
-                .updating($browserBackDrag) { value, drag, _ in
-                    guard ChatPageBackInteraction.shouldTrack(
-                        startX: Double(value.startLocation.x),
-                        horizontal: Double(value.translation.width),
-                        vertical: Double(value.translation.height),
-                        allowFullCard: true) else { return }
-                    drag = max(0, value.translation.width)
-                }
-                .onEnded { value in
-                    guard ChatPageBackInteraction.shouldTrack(
-                        startX: Double(value.startLocation.x),
-                        horizontal: Double(value.translation.width),
-                        vertical: Double(value.translation.height),
-                        allowFullCard: true) else { return }
-                    if ChatPageBackInteraction.shouldDismiss(
-                        width: Double(size.width),
-                        predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                        backFromBrowser()
-                    }
-                }
-        )
-        .zIndex(2)
-        .allowsHitTesting(!browserSessionOpen)
-        .accessibilityHidden(browserSessionOpen)
-    }
-    }
-
-    /// Keep a real page stack: pop the visible page. The original
-    /// drawer stays mounted and remains the destination of a direct entry.
-    private func backFromBrowser() {
-        guard !browserRoute.isEmpty else { return }
-        switch UnifiedBrowserBackNavigation.destination(
-            route: browserRoute, source: browserSource) {
-        case .singleInstance:
-            browserRoute.removeLast()
-        case .chat, .drawer:
-            browserRoute = []
-            browserOpen = false
-            browserSessionOpen = false
-            if browserSource == .drawer { sidebarOpen = true }
-        }
-    }
-
-    private var singleInstanceBrowser: some View {
-        SessionListPane(
-            mode: .page,
-            selectedID: app.currentSessionID,
-            onSelect: { session in
-                sidebarOpen = false
-                app.openSession(session)
-                browserSessionOpen = true
-            },
-            onNew: {
-                browserOpen = false
-                browserSessionOpen = false
-                startConversation()
-            },
-            onSettings: {
-                browserOpen = false
-                browserSessionOpen = false
-                app.showSettings = true
-            },
-            onClose: backFromBrowser,
-            backToDrawer: browserSource == .drawer && browserRoute.count == 1,
-            onBrowseAllInstances: {
-                unifiedSection = 0
-                if browserRoute.last != .all { browserRoute.append(.all) }
-            },
-            onBrowseAllTasks: {
-                unifiedSection = 1
-                if browserRoute.last != .all { browserRoute.append(.all) }
-            },
-            startSearching: browserSearchRequested
-        )
-        .environmentObject(app)
     }
 
     private var emptyConversation: some View {
@@ -498,12 +250,8 @@ struct RootView: View {
                 Spacer(minLength: 6)
                 Button {
                     homeFocused = false
-                    browserSearchRequested = true
-                    browserSource = .chat
-                    browserRoute = app.instances.count > 1 ? [.all] : [.single]
-                    unifiedSection = 0
-                    browserSessionOpen = false
-                    browserOpen = true
+                    openSidebar()
+                    sidebarSearchRequest &+= 1
                 } label: { ChromeIcon(symbol: "magnifyingglass") }
                 .accessibilityLabel("搜索会话")
                 Button {
@@ -647,30 +395,16 @@ struct RootView: View {
         homeFocused = true
     }
 
-    private func openSidebar() {
-        guard UnifiedBrowserPresentation.canOpenSidebar(
-            browserOpen: browserOpen, browserSessionOpen: browserSessionOpen) else { return }
-        // The toolbar hamburger is a direct drawer action, not another
-        // browser back-swipe. Retire that route while keeping the selected
-        // Hermes Session and its draft unchanged.
-        if browserSessionOpen {
-            browserSessionOpen = false
-            browserOpen = false
-            browserRoute = []
-        }
-        sidebarOpen = true
-    }
-    private func closeSidebar() { sidebarOpen = false }
+    private func openSidebar() { navigation.showSidebar() }
+    private func closeSidebar() { navigation.hideSidebar() }
 
     /// Planner suppression is only valid for an active app whose chat page is
     /// unobscured. A backgrounded app keeps the same `currentSessionID`, but
     /// that must not hide the notification the user needs when returning.
     private func synchronizeConversationVisibility() {
-        let visible = UnifiedBrowserPresentation.conversationVisible(
+        let visible = RootNavigationState.conversationVisible(
             active: scenePhase == .active,
-            sidebarOpen: sidebarOpen,
-            browserOpen: browserOpen,
-            browserSessionOpen: browserSessionOpen,
+            sidebarOpen: navigation.sidebarOpen,
             modalOpen: app.showSettings || app.needsLogin,
             hasSession: app.currentSessionID != nil)
         app.setPresentationVisibility(
@@ -710,9 +444,6 @@ struct RootView: View {
         }
         guard NotificationNavigation.shared.consume(target: target) else { return }
         closeSidebar()
-        browserOpen = false
-        browserSessionOpen = false
-        browserRoute = []
         app.openSession(session)
     }
 
