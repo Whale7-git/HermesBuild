@@ -297,10 +297,20 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
             "model and provider must reach WebUI session-update request")
         precondition(app.consumeHomeTurn(for: app.currentSessionID!) == "model first",
                      "only verified model transition arms automatic first POST")
+        let sid = app.currentSessionID!
         app.closeSession()
+        HermesAPI.modelHistoryOverride = [
+            "session_id": sid, "messages": [], "model": option.model,
+            "model_provider": "other-provider"]
+        let rejected = await app.createSessionForHomeTurn("do not send", model: option)
+        precondition(!rejected && app.homeSendError?.contains("消息未发送") == true,
+                     "WebUI first turn cannot arm a POST when Provider read-back disagrees")
+        precondition(app.consumeHomeTurn(for: sid) == nil,
+                     "rejected model activation never authorizes first-turn replay")
+        HermesAPI.modelHistoryOverride = nil
         HermesAPI.confirmedModelHistory = false
         HermesAPI.lastModelSet = nil
-        print("WEBUI_MODEL_HOME_PASS selected model/provider verified before handoff")
+        print("WEBUI_MODEL_HOME_PASS verified model and provider before first POST; mismatches blocked")
     }
 
     @MainActor static func modelSwitchReadbackTests() async throws {
