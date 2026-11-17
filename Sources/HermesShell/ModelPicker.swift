@@ -11,6 +11,9 @@ struct ModelPickerView: View {
     let busy: Bool
     let onPick: (ModelOption?) -> Void
     let onReload: () async -> Void
+    /// A failed or unverified server read-back must remain visible in the
+    /// model picker. The sheet must not dismiss before confirmation.
+    var errorMessage: String? = nil
     /// Omitted on WebUI and other backends that have no request-scoped wire.
     var reasoningEffort: Binding<String>? = nil
     @Environment(\.dismiss) private var dismiss
@@ -85,6 +88,13 @@ struct ModelPickerView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                     List {
+                        if let errorMessage, !errorMessage.isEmpty {
+                            Section {
+                                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(AppTheme.warning)
+                                    .font(.footnote)
+                            }
+                        }
                         if let reasoningEffort {
                             Section {
                                 Picker("单轮推理强度", selection: reasoningEffort) {
@@ -123,10 +133,9 @@ struct ModelPickerView: View {
                                     Section(group.provider) {
                                         ForEach(group.options) { option in
                                             Button {
+                                                // Parent closes only after an exact server
+                                                // history confirmation. Errors stay readable.
                                                 onPick(option)
-                                                // Keep model settings open after selecting
-                                                // a model, so effort can be set in one visit.
-                                                if reasoningEffort == nil { dismiss() }
                                             } label: {
                                                 row(option)
                                             }
