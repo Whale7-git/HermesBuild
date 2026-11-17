@@ -21,6 +21,9 @@ struct RootView: View {
     @State private var browserRoute: [UnifiedBrowserPage] = []
     @State private var browserSource: UnifiedBrowserSource = .chat
     @State private var browserSessionOpen = false
+    /// The sheet belongs to the root, not to a horizontally moving page.
+    @State private var taskCenterPresented = false
+    @State private var taskCenterScope: String?
     @GestureState private var sessionBackDrag = RootPageGestureState()
     @StateObject private var unifiedCenter = UnifiedSessionModel()
     @State private var unifiedQuery = ""
@@ -28,6 +31,11 @@ struct RootView: View {
     @State private var unifiedSection = 0
     private var browserAllInstances: Bool { browserRoute.last == .all }
     private var browserFromSingle: Bool { browserRoute.count > 1 }
+    private var navigationGesturesAllowed: Bool {
+        RootNavigationModalPolicy.allowsGesture(taskCenterPresented: taskCenterPresented,
+            settingsPresented: app.showSettings, needsLogin: app.needsLogin)
+            && scenePhase == .active
+    }
     @GestureState private var browserBackDrag = RootPageGestureState()
     @State private var homeText = ""
     @State private var homeFocused = false
@@ -88,6 +96,9 @@ struct RootView: View {
                 cancelNavigationGestures()
                 synchronizeConversationVisibility()
             }
+            .onChange(of: taskCenterPresented) { _, _ in
+                cancelNavigationGestures()
+            }
             .onChange(of: app.showSettings) { _, shown in
                 if shown { cancelNavigationGestures() }
                 synchronizeConversationVisibility()
@@ -113,6 +124,42 @@ struct RootView: View {
             }
             .onAppear { synchronizeConversationVisibility() }
             .onDisappear { cancelNavigationGestures() }
+            .sheet(isPresented: $taskCenterPresented, onDismiss: {
+                taskCenterScope = nil
+                cancelNavigationGestures()
+            }) {
+                SessionTaskCenterView(
+                    sessions: app.sessions,
+                    summaries: app.visibleTaskSummaries,
+                    acknowledgements: app.acknowledgedTaskEntries,
+                    onSelect: { session in
+                        guard taskCenterScope == homeScope,
+                              let current = app.sessions.first(where: {
+                                  $0.sessionId == session.sessionId
+                              }) else {
+                            taskCenterPresented = false
+                            return
+                        }
+                        taskCenterPresented = false
+                        browserSessionOpen = false
+                        browserOpen = false
+                        browserRoute = []
+                        sidebarOpen = false
+                        app.openSession(current)
+                    },
+                    onAcknowledge: { sessionID, signal in
+                        guard taskCenterScope == homeScope else { return }
+                        app.acknowledgeTask(sessionID: sessionID, signal: signal)
+                    },
+                    onUndo: { acknowledgement in
+                        guard taskCenterScope == homeScope else { return }
+                        app.undoTaskAcknowledgement(acknowledgement)
+                    }
+                )
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(AppTheme.radiusSheet)
+            }
     }
 
     private var content: some View {
@@ -168,7 +215,8 @@ struct RootView: View {
                         browserSearchRequested = false
                         browserSessionOpen = false
                         browserOpen = true
-                    }
+                    },
+                    onShowTaskCenter: presentTaskCenter
                 )
                 .environmentObject(app)
                 .padding(.top, topInset)
@@ -197,7 +245,7 @@ struct RootView: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 14)
                     .updating($sidebarGesture) { value, state, _ in
-                        guard !browserOpen else { return }
+                        guard navigationGesturesAllowed, !browserOpen else { return }
                         state.update(
                             startX: Double(value.startLocation.x),
                             horizontal: Double(value.translation.width),
@@ -206,7 +254,7 @@ struct RootView: View {
                             allowFullCard: true)
                     }
                     .onChanged { value in
-                        guard !browserOpen, !browserSessionOpen else {
+                        guard navigationGesturesAllowed, !browserOpen, !browserSessionOpen else {
                             drawerGestureOwner.cancelled()
                             return
                         }
@@ -218,7 +266,7 @@ struct RootView: View {
                             width: Double(width))
                     }
                     .onEnded { value in
-                        guard !browserOpen, !browserSessionOpen else {
+                        guard navigationGesturesAllowed, !browserOpen, !browserSessionOpen else {
                             drawerGestureOwner.cancelled()
                             return
                         }
@@ -239,6 +287,8 @@ struct RootView: View {
                    value: browserOpen)
         .onChange(of: app.activeChangeToken) { _, _ in
             cancelNavigationGestures()
+            // Retire the old host/account sheet on any instance change.
+            if taskCenterPresented { taskCenterPresented = false }
             // Keep the drawer visible when selecting another Hermes host: the
             // user still has to pick a native Session from that host. Account
             // login remains a sheet and must hide the previously opened drawer.
@@ -323,14 +373,14 @@ struct RootView: View {
     .simultaneousGesture(
         DragGesture(minimumDistance: 26)
             .updating($sessionBackDrag) { value, drag, _ in
-                guard browserOpen && browserSessionOpen else { return }
+                guard navigationGesturesAllowed, browserOpen && browserSessionOpen else { return }
                 drag.update(
                     startX: Double(value.startLocation.x),
                     horizontal: Double(value.translation.width),
                     vertical: Double(value.translation.height))
             }
             .onChanged { value in
-                guard browserOpen && browserSessionOpen else {
+                guard navigationGesturesAllowed, browserOpen && browserSessionOpen else {
                     sessionBackOwner.cancelled()
                     return
                 }
@@ -340,7 +390,7 @@ struct RootView: View {
                     vertical: Double(value.translation.height))
             }
             .onEnded { value in
-                guard browserOpen && browserSessionOpen else {
+                guard navigationGesturesAllowed, browserOpen && browserSessionOpen else {
                     sessionBackOwner.cancelled()
                     return
                 }
@@ -397,6 +447,7 @@ struct RootView: View {
                     onSingleInstance: {
                         browserRoute = [.single]
                     },
+                    onOpenCurrentTaskCenter: presentTaskCenter,
                     onSelect: { record in
                         let opened = app.openSessionFromInstance(
                             instanceID: record.identity.instanceID,
@@ -419,14 +470,14 @@ struct RootView: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 18)
                 .updating($browserBackDrag) { value, drag, _ in
-                    guard browserOpen && !browserSessionOpen else { return }
+                    guard navigationGesturesAllowed, browserOpen && !browserSessionOpen else { return }
                     drag.update(
                         startX: Double(value.startLocation.x),
                         horizontal: Double(value.translation.width),
                         vertical: Double(value.translation.height))
                 }
                 .onChanged { value in
-                    guard browserOpen && !browserSessionOpen else {
+                    guard navigationGesturesAllowed, browserOpen && !browserSessionOpen else {
                         browserBackOwner.cancelled()
                         return
                     }
@@ -436,7 +487,7 @@ struct RootView: View {
                         vertical: Double(value.translation.height))
                 }
                 .onEnded { value in
-                    guard browserOpen && !browserSessionOpen else {
+                    guard navigationGesturesAllowed, browserOpen && !browserSessionOpen else {
                         browserBackOwner.cancelled()
                         return
                     }
@@ -498,7 +549,8 @@ struct RootView: View {
                 unifiedSection = 1
                 if browserRoute.last != .all { browserRoute.append(.all) }
             },
-            startSearching: browserSearchRequested
+            startSearching: browserSearchRequested,
+            onShowTaskCenter: presentTaskCenter
         )
         .environmentObject(app)
     }
@@ -702,6 +754,13 @@ struct RootView: View {
         sidebarOpen = true
     }
     private func closeSidebar() { sidebarOpen = false }
+
+    private func presentTaskCenter() {
+        guard !taskCenterPresented else { return }
+        taskCenterScope = homeScope
+        cancelNavigationGestures()
+        taskCenterPresented = true
+    }
 
     /// Browser routing stays unchanged; only gesture event ownership is reset.
     /// Call on scope, foreground, modal and navigation transitions.
