@@ -687,7 +687,7 @@
     "tests/attachprogress/main.swift": "c57e5947acd8766221dbb46cee3817fa5d5c061a354fed6ef0fc430b9b39f9ea",
     "tests/backendcapabilities/main.swift": "103be0d9be4e86554e8e1e647dc1e900a230b10274745fe374acf1c2f5caaca8",
     "tests/blockcoalescer/main.swift": "3812b719933de7afdeaf01d35dcf7404393bbfa3bbf87f474cd3cedb29c62fdb",
-    "tests/check_navigation_contract.py": "1231fc0319dd9f2b7b928e70116deaac97ca1b7a849fe6f4a0dd0b0b267b69be",
+    "tests/check_navigation_contract.py": "4ed9845d7a07063e70e8151d777577fa8e1652dd685d61ae29bc05afbf55d152",
     "tests/check_swiftui_modifiers.py": "64290149b31ccacb678532169c94271c960f2a6ecb76502ffa9efbb6d811e790",
     "tests/clientaudit/main.swift": "349a6576d5c592ae3f988fdbb1ee3f9ce2a1f510329afb5cbf785a6ed5f884dc",
     "tests/conversationreading/main.swift": "595c89f3241a12e65e2367cfad8ba91075954d942836784ee6ac9e224656d454",
