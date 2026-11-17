@@ -11,6 +11,9 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sidebarOpen = false
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
+    @State private var drawerGestureOwner = RootDrawerGestureOwnership()
+    @State private var sessionBackOwner = RootPageGestureOwnership()
+    @State private var browserBackOwner = RootPageGestureOwnership()
     // Full-page session browser has its own navigation gesture and a real
     // back destination; do not mistake this for opening the root drawer.
     @State private var browserOpen = false
@@ -18,14 +21,14 @@ struct RootView: View {
     @State private var browserRoute: [UnifiedBrowserPage] = []
     @State private var browserSource: UnifiedBrowserSource = .chat
     @State private var browserSessionOpen = false
-    @GestureState private var sessionBackDrag: CGFloat = 0
+    @GestureState private var sessionBackDrag = RootPageGestureState()
     @StateObject private var unifiedCenter = UnifiedSessionModel()
     @State private var unifiedQuery = ""
     @State private var unifiedFilter = 0
     @State private var unifiedSection = 0
     private var browserAllInstances: Bool { browserRoute.last == .all }
     private var browserFromSingle: Bool { browserRoute.count > 1 }
-    @GestureState private var browserBackDrag: CGFloat = 0
+    @GestureState private var browserBackDrag = RootPageGestureState()
     @State private var homeText = ""
     @State private var homeFocused = false
     @State private var homeSelectedModel: ModelOption?
@@ -69,25 +72,32 @@ struct RootView: View {
                 }
             }
             .animation(nil, value: scenePhase)
-            .onChange(of: scenePhase) { _, _ in
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { cancelNavigationGestures() }
                 synchronizeConversationVisibility()
             }
             .onChange(of: sidebarOpen) { _, _ in
+                drawerGestureOwner.cancelled()
                 synchronizeConversationVisibility()
             }
             .onChange(of: browserOpen) { _, _ in
+                cancelNavigationGestures()
                 synchronizeConversationVisibility()
             }
             .onChange(of: browserSessionOpen) { _, _ in
+                cancelNavigationGestures()
                 synchronizeConversationVisibility()
             }
-            .onChange(of: app.showSettings) { _, _ in
+            .onChange(of: app.showSettings) { _, shown in
+                if shown { cancelNavigationGestures() }
                 synchronizeConversationVisibility()
             }
-            .onChange(of: app.needsLogin) { _, _ in
+            .onChange(of: app.needsLogin) { _, shown in
+                if shown { cancelNavigationGestures() }
                 synchronizeConversationVisibility()
             }
             .onChange(of: app.currentSessionID) { _, current in
+                cancelNavigationGestures()
                 // A chat opened from the browser can create a new draft via
                 // its own toolbar. Closing the session must also retire the
                 // browser route; otherwise the empty composer inherits an
@@ -102,6 +112,7 @@ struct RootView: View {
                 synchronizeConversationVisibility()
             }
             .onAppear { synchronizeConversationVisibility() }
+            .onDisappear { cancelNavigationGestures() }
     }
 
     private var content: some View {
@@ -194,11 +205,27 @@ struct RootView: View {
                             open: sidebarOpen, width: Double(width),
                             allowFullCard: true)
                     }
+                    .onChanged { value in
+                        guard !browserOpen, !browserSessionOpen else {
+                            drawerGestureOwner.cancelled()
+                            return
+                        }
+                        drawerGestureOwner.changed(
+                            open: sidebarOpen,
+                            startX: Double(value.startLocation.x),
+                            horizontal: Double(value.translation.width),
+                            vertical: Double(value.translation.height),
+                            width: Double(width))
+                    }
                     .onEnded { value in
-                        guard !browserOpen, sidebarGesture.claimed else { return }
-                        let shouldOpen = ChatDrawerInteraction.finishOpen(
-                            width: Double(width), wasOpen: sidebarOpen,
+                        guard !browserOpen, !browserSessionOpen else {
+                            drawerGestureOwner.cancelled()
+                            return
+                        }
+                        guard let shouldOpen = drawerGestureOwner.ended(
+                            open: sidebarOpen, width: Double(width),
                             predictedTranslation: Double(value.predictedEndTranslation.width))
+                        else { return }
                         if shouldOpen && !sidebarOpen { openSidebar() }
                         else if !shouldOpen && sidebarOpen { closeSidebar() }
                     }
@@ -211,6 +238,7 @@ struct RootView: View {
                                                             dampingFraction: 0.9),
                    value: browserOpen)
         .onChange(of: app.activeChangeToken) { _, _ in
+            cancelNavigationGestures()
             // Keep the drawer visible when selecting another Hermes host: the
             // user still has to pick a native Session from that host. Account
             // login remains a sheet and must hide the previously opened drawer.
@@ -273,13 +301,13 @@ struct RootView: View {
     ChatCardContainer(
         size: size, topInset: topInset, bottomInset: bottomInset,
         progress: browserSessionOpen
-            ? min(1, max(0, sessionBackDrag / max(1, size.width)))
+            ? min(1, max(0, CGFloat(sessionBackDrag.translation) / max(1, size.width)))
             : progress,
-        translation: browserSessionOpen ? sessionBackDrag : exposed,
+        translation: browserSessionOpen ? CGFloat(sessionBackDrag.translation) : exposed,
         reduceMotion: reduceMotion,
         showsDismissSurface: sidebarOpen && !browserSessionOpen,
         suppressVerticalScroll: browserSessionOpen
-            ? sessionBackDrag > 0 : (!browserOpen && sidebarGesture.claimed),
+            ? sessionBackDrag.claimed : (!browserOpen && sidebarGesture.claimed),
         onDismiss: closeSidebar
     ) {
         Group {
@@ -295,26 +323,31 @@ struct RootView: View {
     .simultaneousGesture(
         DragGesture(minimumDistance: 26)
             .updating($sessionBackDrag) { value, drag, _ in
-                guard browserOpen && browserSessionOpen,
-                      ChatPageBackInteraction.shouldTrack(
-                          startX: Double(value.startLocation.x),
-                          horizontal: Double(value.translation.width),
-                          vertical: Double(value.translation.height),
-                          allowFullCard: true) else { return }
-                drag = max(0, value.translation.width)
+                guard browserOpen && browserSessionOpen else { return }
+                drag.update(
+                    startX: Double(value.startLocation.x),
+                    horizontal: Double(value.translation.width),
+                    vertical: Double(value.translation.height))
+            }
+            .onChanged { value in
+                guard browserOpen && browserSessionOpen else {
+                    sessionBackOwner.cancelled()
+                    return
+                }
+                sessionBackOwner.changed(
+                    startX: Double(value.startLocation.x),
+                    horizontal: Double(value.translation.width),
+                    vertical: Double(value.translation.height))
             }
             .onEnded { value in
-                guard browserOpen && browserSessionOpen,
-                      ChatPageBackInteraction.shouldTrack(
-                          startX: Double(value.startLocation.x),
-                          horizontal: Double(value.translation.width),
-                          vertical: Double(value.translation.height),
-                          allowFullCard: true) else { return }
-                if ChatPageBackInteraction.shouldDismiss(
+                guard browserOpen && browserSessionOpen else {
+                    sessionBackOwner.cancelled()
+                    return
+                }
+                if sessionBackOwner.ended(
                     width: Double(size.width),
                     predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                    // The browser is still the destination. Do not expose
-                    // the drawer until the browser itself is popped.
+                    // The browser remains mounted as the actual back destination.
                     browserSessionOpen = false
                 }
             }
@@ -343,13 +376,13 @@ struct RootView: View {
                                     bottomInset: CGFloat) -> some View {
     if browserOpen {
         let backProgress = min(1, max(0,
-            browserBackDrag / max(1, size.width)))
+            CGFloat(browserBackDrag.translation) / max(1, size.width)))
         ChatCardContainer(
             size: size, topInset: topInset, bottomInset: bottomInset,
-            progress: backProgress, translation: browserBackDrag,
+            progress: backProgress, translation: CGFloat(browserBackDrag.translation),
             reduceMotion: reduceMotion,
             showsDismissSurface: false,
-            suppressVerticalScroll: browserBackDrag > 0,
+            suppressVerticalScroll: browserBackDrag.claimed,
             onDismiss: {}
         ) {
             if browserAllInstances {
@@ -386,20 +419,28 @@ struct RootView: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 18)
                 .updating($browserBackDrag) { value, drag, _ in
-                    guard ChatPageBackInteraction.shouldTrack(
+                    guard browserOpen && !browserSessionOpen else { return }
+                    drag.update(
                         startX: Double(value.startLocation.x),
                         horizontal: Double(value.translation.width),
-                        vertical: Double(value.translation.height),
-                        allowFullCard: true) else { return }
-                    drag = max(0, value.translation.width)
+                        vertical: Double(value.translation.height))
+                }
+                .onChanged { value in
+                    guard browserOpen && !browserSessionOpen else {
+                        browserBackOwner.cancelled()
+                        return
+                    }
+                    browserBackOwner.changed(
+                        startX: Double(value.startLocation.x),
+                        horizontal: Double(value.translation.width),
+                        vertical: Double(value.translation.height))
                 }
                 .onEnded { value in
-                    guard ChatPageBackInteraction.shouldTrack(
-                        startX: Double(value.startLocation.x),
-                        horizontal: Double(value.translation.width),
-                        vertical: Double(value.translation.height),
-                        allowFullCard: true) else { return }
-                    if ChatPageBackInteraction.shouldDismiss(
+                    guard browserOpen && !browserSessionOpen else {
+                        browserBackOwner.cancelled()
+                        return
+                    }
+                    if browserBackOwner.ended(
                         width: Double(size.width),
                         predictedTranslation: Double(value.predictedEndTranslation.width)) {
                         backFromBrowser()
@@ -661,6 +702,14 @@ struct RootView: View {
         sidebarOpen = true
     }
     private func closeSidebar() { sidebarOpen = false }
+
+    /// Browser routing stays unchanged; only gesture event ownership is reset.
+    /// Call on scope, foreground, modal and navigation transitions.
+    private func cancelNavigationGestures() {
+        drawerGestureOwner.cancelled()
+        sessionBackOwner.cancelled()
+        browserBackOwner.cancelled()
+    }
 
     /// Planner suppression is only valid for an active app whose chat page is
     /// unobscured. A backgrounded app keeps the same `currentSessionID`, but

@@ -175,6 +175,75 @@ struct ChatDrawerGestureState {
     }
 }
 
+/// Persistent event owner for the root chat-card / drawer gesture.
+/// @GestureState provides only interactive translation; SwiftUI may reset it
+/// before onEnded, so a separate state value must own the completed gesture.
+/// Browser-page gestures use their own route, not this drawer owner.
+struct RootDrawerGestureOwnership: Equatable {
+    private(set) var claimed = false
+
+    mutating func changed(open: Bool, startX: Double, horizontal: Double,
+                          vertical: Double, width: Double) {
+        guard !claimed else { return }
+        claimed = ChatDrawerInteraction.shouldTrack(
+            startX: startX, translationX: horizontal, translationY: vertical,
+            open: open, width: width, allowFullCard: true)
+    }
+
+    /// A cancelled, vertical, or browser-owned gesture has no destination.
+    /// The caller changes the drawer only when a claimed gesture has ended.
+    mutating func ended(open: Bool, width: Double,
+                        predictedTranslation: Double) -> Bool? {
+        defer { claimed = false }
+        guard claimed else { return nil }
+        return ChatDrawerInteraction.finishOpen(
+            width: width, wasOpen: open, predictedTranslation: predictedTranslation)
+    }
+
+    mutating func cancelled() { claimed = false }
+}
+
+/// Transient visual motion for the two existing stacked browser routes.
+/// Unlike a raw CGFloat GestureState this retains ownership across finger
+/// reversal within one gesture, while still resetting between gestures.
+struct RootPageGestureState {
+    private(set) var claimed = false
+    private(set) var translation: Double = 0
+
+    mutating func update(startX: Double, horizontal: Double, vertical: Double) {
+        guard horizontal.isFinite, vertical.isFinite else { return }
+        if !claimed {
+            guard ChatPageBackInteraction.shouldTrack(
+                startX: startX, horizontal: horizontal, vertical: vertical,
+                allowFullCard: true) else { return }
+            claimed = true
+        }
+        translation = max(0, horizontal)
+    }
+}
+
+/// The stacked browser and the chat opened from it each hold their own stable
+/// event owner. Only the topmost route receives input; this struct does not
+/// modify the route stack or steal the native chat/drawer gesture.
+struct RootPageGestureOwnership: Equatable {
+    private(set) var claimed = false
+
+    mutating func changed(startX: Double, horizontal: Double, vertical: Double) {
+        guard !claimed else { return }
+        claimed = ChatPageBackInteraction.shouldTrack(
+            startX: startX, horizontal: horizontal, vertical: vertical,
+            allowFullCard: true)
+    }
+
+    mutating func ended(width: Double, predictedTranslation: Double) -> Bool {
+        defer { claimed = false }
+        return claimed && ChatPageBackInteraction.shouldDismiss(
+            width: width, predictedTranslation: predictedTranslation)
+    }
+
+    mutating func cancelled() { claimed = false }
+}
+
 /// Pure, bounded presentation math; the SwiftUI host owns the actual full-
 /// screen clip, safe-area padding, and interactive animation.
 enum ChatCardPresentation {
