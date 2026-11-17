@@ -15,6 +15,18 @@ struct ChatScrollState: Equatable {
     static let resumeThreshold: Double = 40
     static let detachThreshold: Double = 80
 
+    /// UIKit layout/keyboard callbacks are not a user's scroll-to-bottom.
+    /// When already reading history, a resized viewport that temporarily
+    /// reports distance 0 must never silently reattach the stream follower.
+    /// User-driven scrollViewDidScroll still owns the normal 40/80 hysteresis.
+    static func geometryReportedDistance(_ distance: Double,
+                                         following: Bool,
+                                         navigationDetached: Bool) -> Double {
+        guard distance.isFinite else { return detachThreshold + 1 }
+        return !following || navigationDetached
+            ? max(detachThreshold + 1, distance) : max(0, distance)
+    }
+
     /// 离视觉底部的距离（pt），只由几何回调驱动，不猜手势。
     /// 传入 max(0, contentSize.height - bounds.height - contentOffset.y)。
     /// - Returns: 状态是否发生变化（调用方据此决定要不要写视图状态）。
@@ -172,6 +184,16 @@ struct ChatDrawerGestureState {
         // Once claimed, keep raw signed translation. The reveal policy clamps
         // to [0, width] without transferring gesture ownership to text scroll.
         translation = horizontal
+    }
+}
+
+/// Modal sheets own all pan gestures until dismissed, even if a parent
+/// simultaneously recognizes a horizontal drag behind the sheet.
+enum RootNavigationModalPolicy {
+    static func allowsGesture(taskCenterPresented: Bool,
+                              settingsPresented: Bool,
+                              needsLogin: Bool) -> Bool {
+        !taskCenterPresented && !settingsPresented && !needsLogin
     }
 }
 
