@@ -243,25 +243,47 @@ extension NativeChatView {
     /// A floating control outside transcript geometry: its appearance must not
     /// affect viewport size or the reading anchor. It only appears while detached.
     private var jumpBar: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 10) {
             Spacer(minLength: 0)
-            Button { goToLatest(animated: true) } label: {
-                Image(systemName: "arrow.down")
-                    .font(.system(size: 15, weight: .semibold))
+            // Two compact reading actions share the existing floating
+            // overlay. Neither one changes the transcript's layout.
+            Button { showMessageNavigation = true } label: {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.primary)
                     .frame(width: 38, height: 38)
                     .background(AppTheme.surface, in: Circle())
                     .overlay(Circle().strokeBorder(AppTheme.hairline.opacity(0.75), lineWidth: 0.7))
-                    .shadow(color: .black.opacity(0.08), radius: 5, y: 2)
             }
             .buttonStyle(.plain)
-            .padding(.bottom, 9)
-            .accessibilityLabel(scroll.hasUnreadContent ? "有新内容，回到最新消息" : "回到最新消息")
+            .frame(minWidth: 44, minHeight: 44)
+            .accessibilityLabel("浏览会话关键节点")
+            Button { goToLatest(animated: true) } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 15, weight: .semibold))
+                    if scroll.hasUnreadContent {
+                        Text("新回复").font(.caption.weight(.medium))
+                    }
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, scroll.hasUnreadContent ? 12 : 0)
+                .frame(minWidth: 38, minHeight: 38)
+                .background(AppTheme.surface, in: Capsule())
+                .overlay(Capsule().strokeBorder(
+                    scroll.hasUnreadContent ? AppTheme.accent.opacity(0.55)
+                                            : AppTheme.hairline.opacity(0.75),
+                    lineWidth: scroll.hasUnreadContent ? 1 : 0.7))
+            }
+            .buttonStyle(.plain)
+            .frame(minHeight: 44)
+            .accessibilityLabel(scroll.hasUnreadContent ? "有新回复，回到最新消息" : "回到最新消息")
         }
-        .frame(maxWidth: .infinity)
+        .padding(.trailing, 14)
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .frame(height: 48, alignment: .bottom)
-        // No 64pt gradient over live text and no layout-dependent safeAreaInset.
-        // The button overlays the content without changing transcript geometry.
+        // No safeAreaInset or full-width translucent mask over live text.
         .transition(.opacity)
     }
     private func forkAction(_ message: ChatMessage, regenerate: Bool) {
