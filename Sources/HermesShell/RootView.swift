@@ -11,7 +11,7 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var navigation = RootNavigationState()
     @GestureState private var sidebarGesture = RootNavigationGesture()
-    @State private var navigationSwipeClaimed = false
+    @State private var navigationInteraction = RootNavigationInteraction()
     @State private var sidebarSearchRequest = 0
     @State private var homeText = ""
     @State private var homeFocused = false
@@ -108,6 +108,7 @@ struct RootView: View {
                 // compositing and gesture hit-map discontinuity on left return.
                 .allowsHitTesting(navigation.sidebarOpen)
                 .accessibilityHidden(!navigation.sidebarOpen)
+                .accessibilityIdentifier("native-session-sidebar")
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
@@ -129,28 +130,21 @@ struct RootView: View {
                             width: Double(width))
                     }
                     .onChanged { value in
-                        if !navigationSwipeClaimed && RootNavigationGesture.canClaim(
+                        navigationInteraction.changed(
                             open: navigation.sidebarOpen,
                             startX: Double(value.startLocation.x),
                             horizontal: Double(value.translation.width),
                             vertical: Double(value.translation.height),
-                            width: Double(width)) {
-                            navigationSwipeClaimed = true
-                        }
+                            width: Double(width))
                     }
                     .onEnded { value in
-                        defer { navigationSwipeClaimed = false }
-                        guard navigationSwipeClaimed || sidebarGesture.claimed
-                            || RootNavigationGesture.canClaim(
-                                open: navigation.sidebarOpen,
-                                startX: Double(value.startLocation.x),
-                                horizontal: Double(value.translation.width),
-                                vertical: Double(value.translation.height),
-                                width: Double(width)) else { return }
-                        navigation.finishSwipe(width: Double(width),
-                            predictedTranslation: Double(value.predictedEndTranslation.width))
+                        navigationInteraction.ended(
+                            navigation: &navigation,
+                            width: Double(width),
+                            predicted: Double(value.predictedEndTranslation.width))
                     }
             )
+            .accessibilityIdentifier("native-chat-sidebar-host")
         }
         .animation(reduceMotion ? nil : .interactiveSpring(response: 0.34,
                                                             dampingFraction: 0.88),
@@ -158,7 +152,7 @@ struct RootView: View {
         .onChange(of: app.activeChangeToken) { _, _ in
             if app.needsLogin { closeSidebar() }
             else { openPendingNotificationTarget() }
-            navigationSwipeClaimed = false
+            navigationInteraction.cancelled()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -201,7 +195,7 @@ struct RootView: View {
             size: size, topInset: topInset, bottomInset: bottomInset,
             progress: progress, translation: exposed, reduceMotion: reduceMotion,
             showsDismissSurface: navigation.sidebarOpen,
-            suppressVerticalScroll: navigationSwipeClaimed || sidebarGesture.claimed,
+            suppressVerticalScroll: navigationInteraction.claimed || sidebarGesture.claimed,
             onDismiss: closeSidebar
         ) {
             Group {
@@ -212,6 +206,7 @@ struct RootView: View {
                 }
             }
             .accessibilityHidden(navigation.sidebarOpen)
+            .accessibilityIdentifier("native-chat-page")
         }
     }
 
