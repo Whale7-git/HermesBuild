@@ -7,14 +7,15 @@ import json
 import os
 import sys
 import time
-from urllib import error, request
+from urllib import error, parse, request
 
 REPO = "Whale7-git/HermesBuild"
 WORKFLOW = ".github/workflows/hermesshell-single-build.yml"
 CANDIDATE = "Compile and upload one candidate IPA"
 OTHER_JOBS = {"Source and release plan", "Swift offline regression"}
 QUEUE_SECONDS = 180
-MAX_MONITOR_SECONDS = 600
+MAX_MONITOR_SECONDS = 1080
+MAX_ATTEMPTS = 3
 POLL_SECONDS = 10
 
 
@@ -51,7 +52,8 @@ def run_is_target(run: dict, run_id: int) -> bool:
         run.get("id") == run_id
         and run.get("event") == "pull_request"
         and run.get("path") == WORKFLOW
-        and run.get("run_attempt") == 1
+        and isinstance(run.get("run_attempt"), int)
+        and 1 <= run["run_attempt"] <= MAX_ATTEMPTS
         and (run.get("repository") or {}).get("full_name") == REPO
         and isinstance(run.get("head_sha"), str)
         and len(run["head_sha"]) == 40
@@ -93,61 +95,106 @@ def candidate_waiting(jobs: list[dict], now: float) -> bool:
     return QUEUE_SECONDS <= elapsed <= MAX_MONITOR_SECONDS + 120
 
 
-def monitor(client: GitHub, run_id: int, now=time.time, sleep=time.sleep) -> str:
+def send_bark(url: str, run_id: int, reason: str) -> bool:
+    """Best-effort single alert. Never print URL, token or response body."""
+    if not url:
+        print("warning: BARK_URL unavailable; queue alert skipped")
+        return False
+    target = f"https://github.com/{REPO}/actions/runs/{run_id}"
+    body = parse.urlencode({
+        "title": "HermesBuild macOS 排队异常",
+        "body": f"候选构建三轮各等待约 3 分钟仍未开始；{reason}。请检查 GitHub Actions Runner。",
+        "url": target,
+        "group": "hermes-ci",
+    }).encode()
+    try:
+        with request.urlopen(request.Request(url, data=body, method="POST"),
+                             timeout=20) as response:
+            payload = json.loads(response.read())
+            success = response.status == 200 and payload.get("code") == 200
+            print("BARK_SENT queue_watchdog" if success else "warning: Bark rejected queue alert")
+            return success
+    except (OSError, ValueError, TypeError):
+        print("warning: Bark queue alert delivery failed")
+        return False
+
+
+def monitor(client: GitHub, run_id: int, now=time.time, sleep=time.sleep,
+            alert=None) -> str:
+    """Track attempts 1-3 in one workflow_run.requested invocation.
+
+    A re-run does not trigger another workflow_run.requested event.
+    Only queued macOS jobs may be cancelled; never interrupt compilation.
+    """
     first = client.api(f"actions/runs/{run_id}")
-    if not run_is_target(first, run_id):
+    if not run_is_target(first, run_id) or first["run_attempt"] != 1:
         return "skip: not an initial same-repository PR candidate"
     deadline = timestamp(first["created_at"]) + MAX_MONITOR_SECONDS
+    retries = 0
     while now() < deadline:
         run = client.api(f"actions/runs/{run_id}")
-        if not run_is_target(run, run_id) or run.get("status") == "completed":
-            return "skip: run finished or identity changed"
-        if run.get("status") not in (
-            "queued", "in_progress", "requested", "pending", "waiting"
-        ):
+        if not run_is_target(run, run_id):
+            return "skip: run identity changed"
+        attempt = run["run_attempt"]
+        if attempt != retries + 1:
+            if attempt <= retries:
+                sleep(POLL_SECONDS)
+                continue
+            return "skip: unexpected attempt transition"
+        if run.get("status") == "completed":
+            return "skip: candidate run completed"
+        if run.get("status") not in ("queued", "in_progress", "requested", "pending", "waiting"):
             return "skip: unexpected run status"
         jobs = client.api(f"actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
-        if candidate_waiting(jobs, now()):
-            if not same_open_pr(client, run):
-                return "skip: PR closed, forked, or head changed"
-            fresh = client.api(f"actions/runs/{run_id}")
-            fresh_jobs = client.api(
-                f"actions/runs/{run_id}/jobs?per_page=100"
-            ).get("jobs", [])
-            if (
-                not run_is_target(fresh, run_id)
-                or fresh.get("status") == "completed"
-                or not candidate_waiting(fresh_jobs, now())
-            ):
-                return "skip: macOS started or run changed on recheck"
-            client.api(f"actions/runs/{run_id}/cancel", method="POST")
-            # Never re-run while the original workflow is still live.
-            for _ in range(30):
-                state = client.api(f"actions/runs/{run_id}")
-                if not run_is_target(state, run_id):
-                    return "skip: attempt changed during cancellation"
-                if state.get("status") == "completed":
-                    if state.get("conclusion") != "cancelled":
-                        return "skip: cancellation did not produce cancelled"
-                    if not same_open_pr(client, state):
-                        return "skip: PR changed before retry"
-                    client.api(f"actions/runs/{run_id}/rerun", method="POST")
-                    return "rerun: cancelled queued attempt and requested all jobs"
-                sleep(5)
-            return "skip: cancellation did not finish"
         by_name = {job.get("name"): job for job in jobs}
-        if (
-            by_name.get(CANDIDATE, {}).get("status") in ("in_progress", "completed")
-            or any(
-                by_name.get(name, {}).get("status") == "completed"
-                and by_name[name].get("conclusion") != "success"
-                for name in OTHER_JOBS
-            )
-        ):
-            return "skip: macOS started/finished or a gate failed"
-        sleep(min(POLL_SECONDS, max(0, deadline - now())))
+        if by_name.get(CANDIDATE, {}).get("status") in ("in_progress", "completed"):
+            return "ok: macOS started or finished"
+        if any(by_name.get(name, {}).get("status") == "completed"
+               and by_name[name].get("conclusion") != "success"
+               for name in OTHER_JOBS):
+            return "skip: source or offline checks failed"
+        if not candidate_waiting(jobs, now()):
+            sleep(min(POLL_SECONDS, max(0, deadline - now())))
+            continue
+        if not same_open_pr(client, run):
+            return "skip: PR closed, forked, or head changed"
+        fresh = client.api(f"actions/runs/{run_id}")
+        fresh_jobs = client.api(f"actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
+        if (not run_is_target(fresh, run_id)
+                or fresh.get("run_attempt") != attempt
+                or fresh.get("status") == "completed"
+                or not candidate_waiting(fresh_jobs, now())):
+            return "skip: macOS started or run changed on recheck"
+        if attempt == MAX_ATTEMPTS:
+            if alert:
+                alert(run_id, "第三次排队超过 180 秒")
+            return "alert: third macOS queue window elapsed; no more retries"
+        client.api(f"actions/runs/{run_id}/cancel", method="POST")
+        cancelled = False
+        for _ in range(30):
+            state = client.api(f"actions/runs/{run_id}")
+            if not run_is_target(state, run_id) or state["run_attempt"] != attempt:
+                return "skip: attempt changed during cancellation"
+            if state.get("status") == "completed":
+                if state.get("conclusion") != "cancelled":
+                    return "skip: cancellation did not produce cancelled"
+                cancelled = True
+                break
+            sleep(5)
+        if not cancelled:
+            return "skip: cancellation did not finish"
+        if not same_open_pr(client, state):
+            return "skip: PR changed before retry"
+        client.api(f"actions/runs/{run_id}/rerun", method="POST")
+        retries += 1
+        print(f"QUEUE_RETRY_REQUESTED attempt={attempt + 1} run={run_id}")
+        # GitHub updates run_attempt asynchronously; wait for the next attempt.
+        # Keep monitoring this same run ID rather than expecting a fresh event.
+        sleep(POLL_SECONDS)
+    if alert and retries == 2:
+        alert(run_id, "监控已达到安全时间上限")
+        return "alert: monitor deadline after two retries"
     return "skip: monitor deadline"
-
 
 def main() -> int:
     if os.environ.get("GITHUB_REPOSITORY") != REPO:
@@ -168,7 +215,8 @@ def main() -> int:
     token = os.environ.get("GH_TOKEN")
     if not token:
         raise RuntimeError("watchdog requires job GITHUB_TOKEN actions:write")
-    outcome = monitor(GitHub(REPO, token), run_id)
+    outcome = monitor(GitHub(REPO, token), run_id,
+                      alert=lambda rid, reason: send_bark(os.environ.get("BARK_URL", ""), rid, reason))
     print(outcome)
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
