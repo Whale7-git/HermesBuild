@@ -1,23 +1,16 @@
 import SwiftUI
 import UIKit
 
-/// 会话列表：同一份内容既作主页，也作聊天里的侧栏。
+/// 原生会话侧栏：实例切换、搜索、归档和任务中心统一留在这里。
 /// 扁平分组（置顶 / 最近），发丝线分隔，不用卡片套卡片。
 struct SessionListPane: View {
-    enum Mode { case page, drawer }
-
     @EnvironmentObject var app: AppState
-    let mode: Mode
     let selectedID: String?
     let onSelect: (SessionSummary) -> Void
     let onNew: () -> Void
     let onSettings: () -> Void
     var onClose: (() -> Void)?
-    var onBrowseAll: (() -> Void)? = nil
-    var backToDrawer = false
-    var onBrowseAllInstances: (() -> Void)? = nil
-    var onBrowseAllTasks: (() -> Void)? = nil
-    var startSearching = false
+    var searchRequest: Int = 0
 
     @State private var query = ""
     @State private var showsSearch = false
@@ -94,7 +87,7 @@ struct SessionListPane: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if mode == .drawer && app.instances.count > 1 {
+            if app.instances.count > 1 {
                 instanceStrip
             }
             // Two obvious first actions, instead of making new users decode
@@ -196,7 +189,7 @@ struct SessionListPane: View {
         // 横屏与未来 iPad：内容最多 640 并居中，不把行拉成一条长带。
         .frame(maxWidth: 640)
         .frame(maxWidth: .infinity)
-        .background(mode == .drawer ? AppTheme.softFill : AppTheme.canvas)
+        .background(AppTheme.softFill)
         .alert("重命名会话", isPresented: Binding(
             get: { renameTarget != nil },
             set: { if !$0 { renameTarget = nil; renameScope = nil } }
@@ -260,10 +253,11 @@ struct SessionListPane: View {
         // 撤销信息在 AppState 上，新建的列表页同样能看到这条提示。
         .onAppear {
             if !app.lastArchiveUndo.isEmpty { presentUndo() }
-            if startSearching && !selecting {
-                showsSearch = true
-                searchFocused = true
-            }
+        }
+        .onChange(of: searchRequest) { _, _ in
+            guard !selecting else { return }
+            showsSearch = true
+            searchFocused = true
         }
         .onChange(of: app.lastArchiveUndo) { _, targets in
             if targets.isEmpty { dismissUndo() } else { presentUndo() }
@@ -427,24 +421,14 @@ struct SessionListPane: View {
 
     private var header: some View {
         HStack(spacing: 4) {
-            if mode == .page, let onClose {
-                Button(action: onClose) { ChromeIcon(symbol: "chevron.left") }
-                     .accessibilityLabel(backToDrawer ? "返回侧栏" : "返回聊天")
-            }
             VStack(alignment: .leading, spacing: 0) {
-                Text(mode == .drawer ? "Hermes" : "对话")
+                Text("Hermes")
                     .font(.title2.weight(.semibold)).tracking(-0.5)
                 // The compact instance rail already owns switching in drawer
                 // mode. Don't repeat a long raw URL under the title: it
                 // consumes an entire navigation row on a 340pt canvas.
-                if mode != .drawer || app.instances.count <= 1 {
+                if app.instances.count <= 1 {
                     Menu {
-                        if mode == .page && app.instances.count > 1, let onBrowseAllInstances {
-                            Button("全部实例", systemImage: "square.stack.3d.up") {
-                                onBrowseAllInstances()
-                            }
-                            Divider()
-                        }
                         ForEach(Array(app.instances.enumerated()), id: \.element.id) { index, instance in
                             Button { app.switchTo(index) } label: {
                                 if index == app.activeIndex { Label(instance.name, systemImage: "checkmark") }
@@ -473,12 +457,6 @@ struct SessionListPane: View {
             Menu {
                 Button("全部对话", systemImage: "bubble.left.and.bubble.right") { cancelSearch(); resetFilters() }
                     .disabled(selecting)
-                if mode == .drawer, let onBrowseAll {
-                    Button("展开会话管理", systemImage: "rectangle.expand.vertical") {
-                        onBrowseAll()
-                    }
-                    .disabled(selecting)
-                }
                 Button("置顶会话", systemImage: "pin") { cancelSearch(); filterPinnedOnly = true; showArchived = false }
                     .disabled(selecting)
                 if supportsArchive {
@@ -492,13 +470,11 @@ struct SessionListPane: View {
                 Button("设置", systemImage: "gearshape", action: onSettings)
             } label: { ChromeIcon(symbol: "ellipsis") }
             .accessibilityLabel("对话筛选与管理")
-            if mode == .drawer {
-                Button { onClose?() } label: { ChromeIcon(symbol: "xmark") }
-                    .accessibilityLabel("关闭会话列表")
-            }
+            Button { onClose?() } label: { ChromeIcon(symbol: "xmark") }
+                .accessibilityLabel("关闭会话列表")
         }
         .buttonStyle(.plain)
-        .padding(.leading, mode == .page ? 12 : 24)
+        .padding(.leading, 24)
         .padding(.trailing, 12)
         .padding(.top, 10)
         .padding(.bottom, 8)
@@ -597,39 +573,6 @@ struct SessionListPane: View {
             }
             .disabled(app.creating)
             .accessibilityLabel("新建对话")
-
-            if mode == .drawer && app.instances.count > 1,
-               let onBrowseAllInstances {
-                Button(action: onBrowseAllInstances) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "square.stack.3d.up")
-                        Text("全部实例会话").font(.subheadline.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("浏览全部 Hermes 实例的会话")
-            }
-
-            if app.instances.count > 1, let onBrowseAllTasks {
-                Button(action: onBrowseAllTasks) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "list.bullet.rectangle.portrait")
-                        Text("全部实例任务").font(.subheadline.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("浏览全部 Hermes 实例的任务工作台")
-            }
 
             Button {
                 showsSearch = true
@@ -901,22 +844,17 @@ struct SessionListPane: View {
 
     private func rows(_ list: [SessionSummary]) -> some View {
         ForEach(list) { session in
-            SessionRowContainer(showsSeparator: mode == .page && session.id != list.last?.id) {
+            SessionRowContainer(showsSeparator: false) {
                 if selecting {
                     Button { toggleSelection(session) } label: { row(session) }
                         .buttonStyle(.plain)
                         .accessibilityAction(named: "选择") { toggleSelection(session) }
-                } else if mode == .drawer {
+                } else {
                     // Native session operations remain on long press. The
                     // visible drawer has a compact single-line conversation list.
                     Button { onSelect(session) } label: { drawerRow(session) }
                         .buttonStyle(.plain)
                         .contextMenu { menu(for: session) }
-                } else {
-                    Button { onSelect(session) } label: { row(session) }
-                        .buttonStyle(.plain)
-                        .contextMenu { menu(for: session) }
-                }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
