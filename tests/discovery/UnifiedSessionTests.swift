@@ -288,7 +288,42 @@ import Foundation
     expect(Date().timeIntervalSince(searchStart) < 0.40
            && searchTimeout.failures[badID] != nil,
            "WebUI full-body search also bounds uncooperative requests")
-    print("UNIFIED_DEADLINE_PASS noncooperative host and full-body search")
+    // build198: ten independently scoped hosts under the existing three-slot
+    // window. Failing hosts must release their browser slot on the deadline;
+    // a healthy host must publish without awaiting an unrelated failed GET.
+    let tenScopes = (0..<10).map { index in
+        UnifiedSessionIdentity(instanceID: UUID(),
+            endpointIdentity: "build198-host-\(index)",
+            accountScope: "build198-account-\(index)")
+    }
+    let tenSources = try tenScopes.enumerated().map { index, host -> UnifiedSessionSource in
+        let healthyRow = try row("ten-\(index)")
+        return UnifiedSessionSource(identity: host, instanceName: "Host \(index)",
+            cached: nil, load: {
+                if index % 3 == 0 {
+                    let delayed = Task.detached {
+                        try? await Task.sleep(nanoseconds: 170_000_000)
+                        return [healthyRow]
+                    }
+                    return await delayed.value
+                }
+                return [healthyRow]
+            }, searchFullBody: nil)
+    }
+    let tenCenter = UnifiedSessionModel(hostTimeoutNanoseconds: 30_000_000)
+    let tenStart = Date()
+    await tenCenter.start(sources: tenSources, query: "").value
+    expect(Date().timeIntervalSince(tenStart) < 0.50,
+           "ten-host browser window must finish after bounded independent host deadlines")
+    expect(tenCenter.records.count == 6 && tenCenter.failures.count == 4
+           && tenCenter.loading.isEmpty,
+           "six healthy hosts are visible and four unresponsive hosts have isolated errors")
+    expect(Set(tenCenter.records.map(\.identity)).count == 6
+           && Set(tenCenter.failures.keys).isDisjoint(
+               with: Set(tenCenter.records.map(\.identity))),
+           "instance/account identity prevents failure or record crossover")
+
+    print("UNIFIED_DEADLINE_PASS noncooperative host, full-body search and ten-host window")
 
     print("UNIFIED_REFRESH_PASS joined requests, stable rows, per-host retry, bounded GET/search")
 }

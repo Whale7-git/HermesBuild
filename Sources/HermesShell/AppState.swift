@@ -541,8 +541,14 @@ final class AppState: ObservableObject {
         sessionActionError = nil
         defer { if isCurrent(scope) { sessionActionBusy = false } }
         do {
-            try await requestAPI.setSessionModel(sessionID: sessionID, model: option.model, provider: option.providerID)
-            guard isCurrent(scope) else { return false }
+            try await requestAPI.setSessionModel(sessionID: sessionID,
+                                                 model: option.model, provider: option.providerID)
+            guard isCurrent(scope), !Task.isCancelled else { return false }
+            // HTTP 2xx does NOT prove the backend selected the requested
+            // provider. Do not write an optimistic local model identity.
+            let snapshot = try await requestAPI.history(sessionID: sessionID, before: nil)
+            guard isCurrent(scope), !Task.isCancelled else { return false }
+            try SessionModelConfirmation.verify(snapshot, sessionID: sessionID, option: option)
             invalidateListRefresh()
             loadingSessions = false
             applyModel(option, to: sessionID)

@@ -50,7 +50,9 @@ extension AppStateTests {
         assertTaskSnapshots(model, "rename subscript")
         precondition(model.taskSummaryRevision == revision, "rename is not a task change")
         await model.loadModels()
+        HermesAPI.confirmedModelHistory = true
         let switched = await model.setModel(model.modelCatalog!.options[0], for: "a")
+        HermesAPI.confirmedModelHistory = false
         precondition(switched)
         assertTaskSnapshots(model, "model subscript")
         precondition(model.taskSummaryRevision == revision, "model edit is not a task change")
