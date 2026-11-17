@@ -82,15 +82,23 @@ struct UnifiedSessionBrowser: View {
         }
     }
 
+    private func runEvidence(for record: UnifiedSessionRecord) -> UnifiedRunEvidence {
+        UnifiedRunEvidence.evaluate(
+            isStreaming: record.session.isStreaming,
+            lastSuccessfulList: center.lastSuccessfulListRefresh(for: record.identity),
+            failed: center.failures[record.identity] != nil,
+            now: taskEvidenceNow)
+    }
+
     private var visible: [UnifiedSessionRecord] {
-        let now = Date()
-        return center.records.filter { item in
+        center.records.filter { item in
             switch filter {
-            case 1: return item.session.isStreaming == true
+            case 1: return runEvidence(for: item) == .recentlyRunning
             case 2: return item.session.pinned == true
             case 3: return item.session.updatedDate.map {
-                now.timeIntervalSince($0) <= 7 * 24 * 60 * 60
+                taskEvidenceNow.timeIntervalSince($0) <= 7 * 24 * 60 * 60
             } ?? false
+            case 4: return runEvidence(for: item) == .historicalRunning
             default: return true
             }
         }
@@ -121,7 +129,6 @@ struct UnifiedSessionBrowser: View {
     /// Schedule only the next evidence expiry. No periodic network polling,
     /// and no per-second redraw while the user is reading the task list.
     private var nextEvidenceDeadline: Date? {
-        guard section == 1 else { return nil }
         let dates = app.instances.compactMap { instance -> Date? in
             let endpoint = ChatHistoryIdentity.instanceID(
                 id: instance.id, baseURL: instance.baseURL)
@@ -367,9 +374,10 @@ struct UnifiedSessionBrowser: View {
 
                 Picker("筛选", selection: $filter) {
                     Text("全部").tag(0)
-                    Text("运行中").tag(1)
+                    Text("最近运行").tag(1)
                     Text("置顶").tag(2)
                     Text("近7天").tag(3)
+                    Text("待核对").tag(4)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, AppTheme.pagePadding)
@@ -466,11 +474,19 @@ struct UnifiedSessionBrowser: View {
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(.primary)
                                     .lineLimit(2)
-                                if record.session.isStreaming == true {
+                                switch runEvidence(for: record) {
+                                case .recentlyRunning:
                                     Image(systemName: "circle.fill")
                                         .font(.system(size: 7))
                                         .foregroundStyle(.green)
-                                        .accessibilityLabel("运行中")
+                                        .accessibilityLabel("最近确认运行")
+                                case .historicalRunning:
+                                    Image(systemName: "clock.badge.questionmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .accessibilityLabel("历史运行记录，状态待核对")
+                                case .recentlyNotRunning, .unknown:
+                                    EmptyView()
                                 }
                                 if record.session.pinned == true {
                                     Image(systemName: "pin.fill")
@@ -535,7 +551,7 @@ struct UnifiedSessionBrowser: View {
             refreshTaskSnapshots()
         }
         .task(id: evidenceExpiryKey) {
-            guard section == 1, let deadline = nextEvidenceDeadline else { return }
+            guard let deadline = nextEvidenceDeadline else { return }
             do {
                 try await Task.sleep(nanoseconds: UInt64(
                     max(0, deadline.timeIntervalSinceNow) * 1_000_000_000))
@@ -544,10 +560,10 @@ struct UnifiedSessionBrowser: View {
             taskEvidenceNow = Date()
         }
         .onChange(of: center.loading) { _, loading in
-            if section == 1 && loading.isEmpty { taskEvidenceNow = Date() }
+            if loading.isEmpty { taskEvidenceNow = Date() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active && section == 1 {
+            if phase == .active {
                 taskEvidenceNow = Date()
                 refreshTaskSnapshots()
             }
