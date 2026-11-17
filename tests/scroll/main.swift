@@ -316,6 +316,40 @@ expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 270) == tr
        "new gesture succeeds after an interrupted and a cancelled gesture")
 expect(!rootOwner.claimed, "no owner leaks into the next interaction")
 
+// build202: browser and browser-selected chat keep the original route stack.
+// Their transient visual offsets can reset independently of the stable event
+// owner; a reversal must not unclaim an already-acquired browser swipe.
+var pageVisual = RootPageGestureState()
+pageVisual.update(startX: 150, horizontal: 120, vertical: 3)
+expect(pageVisual.claimed && pageVisual.translation == 120,
+       "full-card browser swipe acquires visual ownership")
+pageVisual.update(startX: 150, horizontal: -25, vertical: 65)
+expect(pageVisual.claimed && pageVisual.translation == 0,
+       "browser card clamps at zero instead of losing ownership on reversal")
+pageVisual.update(startX: 150, horizontal: 90, vertical: 45)
+expect(pageVisual.claimed && pageVisual.translation == 90,
+       "browser card can follow finger forward again after reversal")
+var pageOwner = RootPageGestureOwnership()
+pageOwner.changed(startX: 150, horizontal: 120, vertical: 3)
+pageOwner.changed(startX: 150, horizontal: -25, vertical: 65)
+expect(pageOwner.claimed && pageOwner.ended(width: 390, predictedTranslation: 280),
+       "page returns using stable event owner after visual reset")
+expect(!pageOwner.claimed, "browser event owner releases on completion")
+pageOwner.changed(startX: 150, horizontal: 12, vertical: 100)
+expect(!pageOwner.claimed && !pageOwner.ended(
+       width: 390, predictedTranslation: 300),
+       "vertical page list scrolling cannot return to another route")
+pageOwner.changed(startX: 150, horizontal: 110, vertical: 2)
+pageOwner.cancelled()
+expect(!pageOwner.ended(width: 390, predictedTranslation: 280),
+       "browser route/instance change cancels pending back")
+pageOwner.changed(startX: 150, horizontal: 110, vertical: 2)
+expect(!pageOwner.ended(width: 390, predictedTranslation: 70),
+       "partial browser swipe remains on its current page")
+pageOwner.changed(startX: 150, horizontal: 110, vertical: 2)
+expect(pageOwner.ended(width: 390, predictedTranslation: 280),
+       "next browser swipe works after cancellation")
+
 // build152: full-height card clipping must interpolate monotonically and
 // preserve a square, unshaded canvas at rest.
 let cardClosed = ChatCardPresentation.style(progress: 0)
