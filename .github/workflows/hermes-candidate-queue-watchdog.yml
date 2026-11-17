@@ -14,11 +14,11 @@ concurrency:
 
 jobs:
   watchdog:
-    name: Re-run queued first-attempt macOS candidate once
+    name: Retry macOS queue twice then Bark on third timeout
     if: >-
       ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.run_attempt == 1 && github.event.workflow_run.repository.full_name == github.repository }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 13
+    timeout-minutes: 21
     permissions:
       actions: write
       contents: read
@@ -28,7 +28,8 @@ jobs:
         with:
           persist-credentials: false
           ref: main
-      - name: Monitor queued candidate and re-run all jobs once
+      - name: Monitor three queue windows and notify on exhaustion
         env:
           GH_TOKEN: ${{ github.token }}
+          BARK_URL: ${{ secrets.BARK_URL }}
         run: python3 scripts/queued_candidate_watchdog.py
