@@ -24,6 +24,7 @@ struct RootView: View {
     /// The sheet belongs to the root, not to a horizontally moving page.
     @State private var taskCenterPresented = false
     @State private var taskCenterScope: String?
+    @State private var pendingTaskSheetSelection: (scope: String, sessionID: String)?
     @GestureState private var sessionBackDrag = RootPageGestureState()
     @StateObject private var unifiedCenter = UnifiedSessionModel()
     @State private var unifiedQuery = ""
@@ -137,8 +138,27 @@ struct RootView: View {
             .onAppear { synchronizeConversationVisibility() }
             .onDisappear { cancelNavigationGestures() }
             .sheet(isPresented: $taskCenterPresented, onDismiss: {
+                // Never move the underlying page during the sheet's native
+                // dismissal animation. Apply navigation only after it finishes.
+                let pending = pendingTaskSheetSelection
+                pendingTaskSheetSelection = nil
                 taskCenterScope = nil
                 cancelNavigationGestures()
+                if let pending,
+                   RootTaskSheetNavigation.canOpen(
+                       pendingScope: pending.scope, currentScope: homeScope,
+                       sessionAvailable: app.sessions.contains(where: {
+                           $0.sessionId == pending.sessionID
+                       })),
+                   let session = app.sessions.first(where: {
+                       $0.sessionId == pending.sessionID
+                   }) {
+                    browserSessionOpen = false
+                    browserOpen = false
+                    browserRoute = []
+                    sidebarOpen = false
+                    app.openSession(session)
+                }
             }) {
                 SessionTaskCenterView(
                     sessions: app.sessions,
@@ -146,18 +166,15 @@ struct RootView: View {
                     acknowledgements: app.acknowledgedTaskEntries,
                     onSelect: { session in
                         guard taskCenterScope == homeScope,
-                              let current = app.sessions.first(where: {
+                              app.sessions.contains(where: {
                                   $0.sessionId == session.sessionId
                               }) else {
                             taskCenterPresented = false
                             return
                         }
+                        pendingTaskSheetSelection = (
+                            scope: homeScope, sessionID: session.sessionId)
                         taskCenterPresented = false
-                        browserSessionOpen = false
-                        browserOpen = false
-                        browserRoute = []
-                        sidebarOpen = false
-                        app.openSession(current)
                     },
                     onAcknowledge: { sessionID, signal in
                         guard taskCenterScope == homeScope else { return }
@@ -770,6 +787,7 @@ struct RootView: View {
     private func presentTaskCenter() {
         guard !taskCenterPresented else { return }
         taskCenterScope = homeScope
+        pendingTaskSheetSelection = nil
         cancelNavigationGestures()
         taskCenterPresented = true
     }
