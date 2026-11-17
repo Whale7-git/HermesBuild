@@ -66,6 +66,23 @@ expect(RootNavigationModalPolicy.allowsGesture(
        taskCenterPresented: false, settingsPresented: false, needsLogin: false),
        "dismissal permits next distinct user gesture")
 
+expect(RootTaskSheetNavigation.canOpen(
+       pendingScope: "host|accountA", currentScope: "host|accountA",
+       sessionAvailable: true),
+       "task session opens only after sheet dismissed under same scope")
+expect(!RootTaskSheetNavigation.canOpen(
+       pendingScope: "host|accountA", currentScope: "host|accountB",
+       sessionAvailable: true),
+       "account change invalidates pending task navigation")
+expect(!RootTaskSheetNavigation.canOpen(
+       pendingScope: "host|accountA", currentScope: "other|accountA",
+       sessionAvailable: true),
+       "host switch invalidates pending task navigation")
+expect(!RootTaskSheetNavigation.canOpen(
+       pendingScope: "host|accountA", currentScope: "host|accountA",
+       sessionAvailable: false),
+       "session disappearance invalidates pending task navigation")
+
 
 // 1) 短距离离底不算脱离：手指轻碰不该停掉自动跟随
 state.update(distanceFromBottom: 60)
