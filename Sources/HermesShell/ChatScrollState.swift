@@ -153,28 +153,6 @@ enum ChatDrawerInteraction {
     }
 }
 
-/// One drag retains horizontal ownership after the initial direction test.
-/// Requiring shouldTrack() on EVERY update made a closing card snap to its
-/// fully open offset when the finger reversed at the left edge.
-struct ChatDrawerGestureState {
-    private(set) var claimed = false
-    private(set) var translation: Double = 0
-
-    mutating func update(startX: Double, horizontal: Double, vertical: Double,
-                         open: Bool, width: Double, allowFullCard: Bool = false) {
-        guard horizontal.isFinite, vertical.isFinite else { return }
-        if !claimed {
-            guard ChatDrawerInteraction.shouldTrack(
-                startX: startX, translationX: horizontal, translationY: vertical,
-                open: open, width: width, allowFullCard: allowFullCard) else { return }
-            claimed = true
-        }
-        // Once claimed, keep raw signed translation. The reveal policy clamps
-        // to [0, width] without transferring gesture ownership to text scroll.
-        translation = horizontal
-    }
-}
-
 /// Pure, bounded presentation math; the SwiftUI host owns the actual full-
 /// screen clip, safe-area padding, and interactive animation.
 enum ChatCardPresentation {
@@ -199,201 +177,52 @@ enum ChatCardPresentation {
     }
 }
 
-/// A distinct navigation state machine for a real page stacked above chat.
-/// Root drawer drag math must not be reused for this route: back reveals the
-/// previous conversation, whereas the drawer reveals the session manager.
-enum ChatPageBackInteraction {
-    static func shouldTrack(startX: Double, horizontal: Double, vertical: Double,
-                            allowFullCard: Bool = false) -> Bool {
-        guard startX.isFinite, horizontal.isFinite, vertical.isFinite else { return false }
-        return startX >= 0 && (allowFullCard || startX < 32)
-            && ChatBackAxisPolicy.claimsReturn(horizontal: horizontal, vertical: vertical)
-    }
-    static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
-        guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }
-        return predictedTranslation > width * 0.4
-    }
-}
-
-/// A single value is the authority for all visible root-level routes.
-/// This replaces independent, partially updated SwiftUI booleans. The browser
-/// remains mounted behind a selected chat so Back returns to the same list.
+/// One authoritative navigation state. There is no in-app browser stack:
+/// the native chat card opens and closes its mounted instance/session drawer.
 struct RootNavigationState: Equatable {
-    private(set) var drawerOpen = false
-    private(set) var browserRoute: [UnifiedBrowserPage] = []
-    private(set) var browserSource: UnifiedBrowserSource = .chat
-    private(set) var selectedBrowserChat = false
+    private(set) var sidebarOpen = false
 
-    var browserOpen: Bool { !browserRoute.isEmpty }
-    var browserAllInstances: Bool { browserRoute.last == .all }
-    var browserFromSingle: Bool { browserRoute.count > 1 }
+    mutating func showSidebar() { sidebarOpen = true }
+    mutating func hideSidebar() { sidebarOpen = false }
 
-    enum SwipeTarget: Equatable {
-        case openDrawer, closeDrawer, backFromBrowserChat, backFromBrowserPage
+    mutating func finishSwipe(width: Double, predictedTranslation: Double) {
+        sidebarOpen = ChatDrawerInteraction.finishOpen(
+            width: width, wasOpen: sidebarOpen, predictedTranslation: predictedTranslation)
     }
 
-    /// Visible page owns the gesture. A mounted background browser cannot
-    /// compete with the selected chat, and drawer return cannot pop a browser.
-    var swipeTarget: SwipeTarget {
-        if selectedBrowserChat { return .backFromBrowserChat }
-        if browserOpen { return .backFromBrowserPage }
-        return drawerOpen ? .closeDrawer : .openDrawer
-    }
-
-    mutating func openDrawer() {
-        guard !browserOpen || selectedBrowserChat else { return }
-        if selectedBrowserChat { dismissBrowser() }
-        drawerOpen = true
-    }
-
-    mutating func closeDrawer() { drawerOpen = false }
-
-    mutating func enterBrowser(_ path: [UnifiedBrowserPage],
-                              from source: UnifiedBrowserSource) {
-        guard !path.isEmpty else { return }
-        browserRoute = path
-        browserSource = source
-        selectedBrowserChat = false
-        // A drawer-launched browser returns to that same drawer.
-        drawerOpen = source == .drawer
-    }
-
-    mutating func openBrowserChat() {
-        guard browserOpen else { return }
-        selectedBrowserChat = true
-        drawerOpen = false
-    }
-
-    mutating func showSingleBrowser() {
-        guard browserOpen else { return }
-        browserRoute = [.single]
-        selectedBrowserChat = false
-    }
-
-    mutating func showAllBrowser() {
-        guard browserOpen, !selectedBrowserChat else { return }
-        if browserRoute.last != .all { browserRoute.append(.all) }
-    }
-
-    mutating func back() {
-        if selectedBrowserChat {
-            selectedBrowserChat = false
-        } else if browserRoute.count > 1 {
-            browserRoute.removeLast()
-        } else if browserOpen {
-            let destination = browserSource
-            dismissBrowser()
-            drawerOpen = destination == .drawer
-        }
-    }
-
-    mutating func dismissBrowser() {
-        browserRoute = []
-        selectedBrowserChat = false
-        drawerOpen = false
-    }
-
-    mutating func closeForSettingsOrNewChat() {
-        dismissBrowser()
-    }
-
-    /// The incoming draft has no parent conversation; never strand a hidden
-    /// browser route behind it.
-    mutating func retireForNewDraft(hasSession: Bool) {
-        if browserOpen && selectedBrowserChat && !hasSession { dismissBrowser() }
+    static func conversationVisible(active: Bool, sidebarOpen: Bool,
+                                    modalOpen: Bool, hasSession: Bool) -> Bool {
+        active && !sidebarOpen && !modalOpen && hasSession
     }
 }
 
-/// All root-card gestures use one axis and initial-claim contract. SwiftUI
-/// may reset @GestureState before onEnded is read; onEnded can safely re-check
-/// the final sample, without depending only on the transient property.
+/// One horizontal gesture owner across the entire chat/side-drawer surface.
+/// GestureState only drives the offset; a stable host-side ownership latch
+/// handles SwiftUI resetting GestureState before onEnded can read it.
 struct RootNavigationGesture: Equatable {
     private(set) var claimed = false
     private(set) var translation: Double = 0
 
-    static func canClaim(_ target: RootNavigationState.SwipeTarget,
-                         startX: Double, horizontal: Double,
-                         vertical: Double, width: Double) -> Bool {
-        switch target {
-        case .openDrawer:
-            return ChatDrawerInteraction.shouldTrack(
-                startX: startX, translationX: horizontal, translationY: vertical,
-                open: false, width: width, allowFullCard: true)
-        case .closeDrawer:
-            return ChatDrawerInteraction.shouldTrack(
-                startX: startX, translationX: horizontal, translationY: vertical,
-                open: true, width: width, allowFullCard: true)
-        case .backFromBrowserChat, .backFromBrowserPage:
-            return ChatPageBackInteraction.shouldTrack(
-                startX: startX, horizontal: horizontal, vertical: vertical,
-                allowFullCard: true)
-        }
+    static func canClaim(open: Bool, startX: Double,
+                         horizontal: Double, vertical: Double,
+                         width: Double) -> Bool {
+        ChatDrawerInteraction.shouldTrack(
+            startX: startX, translationX: horizontal, translationY: vertical,
+            open: open, width: width, allowFullCard: true)
     }
 
-    mutating func update(_ target: RootNavigationState.SwipeTarget,
-                         startX: Double, horizontal: Double,
-                         vertical: Double, width: Double) {
+    mutating func update(open: Bool, startX: Double,
+                         horizontal: Double, vertical: Double,
+                         width: Double) {
         guard horizontal.isFinite, vertical.isFinite else { return }
         if !claimed {
-            guard Self.canClaim(target, startX: startX, horizontal: horizontal,
-                                vertical: vertical, width: width) else { return }
+            guard Self.canClaim(open: open, startX: startX,
+                               horizontal: horizontal, vertical: vertical,
+                               width: width) else { return }
             claimed = true
         }
+        // Direction reversal after acquisition is still the SAME gesture.
         translation = horizontal
-    }
-
-    static func shouldComplete(_ target: RootNavigationState.SwipeTarget,
-                               width: Double, predicted: Double) -> Bool {
-        switch target {
-        case .openDrawer:
-            return ChatDrawerInteraction.finishOpen(
-                width: width, wasOpen: false, predictedTranslation: predicted)
-        case .closeDrawer:
-            return !ChatDrawerInteraction.finishOpen(
-                width: width, wasOpen: true, predictedTranslation: predicted)
-        case .backFromBrowserChat, .backFromBrowserPage:
-            return ChatPageBackInteraction.shouldDismiss(
-                width: width, predictedTranslation: predicted)
-        }
-    }
-}
-
-/// The root keeps an ordered browser stack and the actual parent surface.
-/// Switching Hermes backends never changes these navigation identities.
-/// Actual presented surface, not merely whether a browser route is retained.
-/// When a session is pushed from the browser, the browser stays mounted behind
-/// the chat, but must not suppress foreground conversation notifications.
-enum UnifiedBrowserPresentation {
-    /// The selected chat is above the mounted browser: its hamburger must
-    /// still work. A bare browser page cannot bypass its own back route.
-    static func canOpenSidebar(browserOpen: Bool, browserSessionOpen: Bool) -> Bool {
-        !browserOpen || browserSessionOpen
-    }
-
-    static func shouldRetireBrowserForNewDraft(browserOpen: Bool,
-                                               browserSessionOpen: Bool,
-                                               currentSessionID: String?) -> Bool {
-        browserOpen && browserSessionOpen && currentSessionID == nil
-    }
-
-    static func conversationVisible(active: Bool, sidebarOpen: Bool,
-                                    browserOpen: Bool, browserSessionOpen: Bool,
-                                    modalOpen: Bool, hasSession: Bool) -> Bool {
-        active && !sidebarOpen && (!browserOpen || browserSessionOpen)
-            && !modalOpen && hasSession
-    }
-}
-
-enum UnifiedBrowserPage: Equatable { case single, all }
-enum UnifiedBrowserSource: Equatable { case chat, drawer }
-
-enum UnifiedBrowserBackNavigation {
-    enum Destination: Equatable { case chat, drawer, singleInstance }
-
-    static func destination(route: [UnifiedBrowserPage],
-                            source: UnifiedBrowserSource) -> Destination {
-        if route.count > 1 { return .singleInstance }
-        return source == .drawer ? .drawer : .chat
     }
 }
 
