@@ -855,6 +855,7 @@ struct SessionListPane: View {
                     Button { onSelect(session) } label: { drawerRow(session) }
                         .buttonStyle(.plain)
                         .contextMenu { menu(for: session) }
+                }
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(role: .destructive) {
