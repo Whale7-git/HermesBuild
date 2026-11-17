@@ -392,6 +392,48 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         print("MODEL_SWITCH_READBACK_PASS success, mismatch, missing provider, network failure and scope race")
     }
 
+    @MainActor static func pendingRequestRestartTests() throws {
+        let host = HermesInstance(name: "Task recovery", baseURL: "https://task-restart.test")
+        try InstanceStore.save([host], credentials: credentials)
+        InstanceStore.activeID = host.id
+        let app = AppState(credentials: credentials)
+        let instanceScope = app.historyInstanceID
+        let accountScope = app.historyAccountScope
+        defer {
+            SessionTaskStore.remove(instanceID: instanceScope, accountScope: accountScope)
+        }
+        app.sessions = [.placeholder(id: "pending-long")]
+        app.approvalArrived(sessionID: "pending-long", requestID: "approval-1")
+        app.clarifyArrived(sessionID: "pending-long", requestID: "clarify-1")
+        app.setSessionTaskSignals(
+            (app.sessionTaskObservations["pending-long"]?.signals ?? []).union([.stopping]),
+            for: "pending-long")
+        let before = app.sessionTaskObservations["pending-long"]?.signals ?? []
+        precondition(before.isSuperset(of: [.waitingForApproval, .waitingForClarify, .stopping]),
+                     "different requests and STOP persist as separate local facts")
+
+        let reopened = AppState(credentials: credentials)
+        let restored = reopened.sessionTaskObservations["pending-long"]?.signals ?? []
+        precondition(restored == before && reopened.historyInstanceID == instanceScope
+                     && reopened.historyAccountScope == accountScope,
+                     "relaunch preserves waiting signals but not opaque message content")
+        // Request identities intentionally are NOT persisted. Resolving a
+        // post-restart request with no reconstructed request ledger cannot
+        // prove the whole run is done.
+        reopened.approvalResolved(sessionID: "pending-long", requestID: "approval-1")
+        let after = reopened.sessionTaskObservations["pending-long"]?.signals ?? []
+        precondition(after.isSuperset(of: [.waitingForApproval, .waitingForClarify,
+                                         .stopping, .needsVerification]),
+                     "late resolution after relaunch must keep other tasks and require verification")
+        let anotherHost = HermesInstance(name: "Unrelated", baseURL: "https://task-other.test")
+        if case .missing = reopened.unifiedTaskObservations(for: anotherHost) {
+            // Expected: an unconfigured host cannot access this account's facts.
+        } else {
+            preconditionFailure("task observations cannot be read from an unconfigured host")
+        }
+        print("TASK_RESTART_PASS persistent scoped facts; stale request resolution stays fail-closed")
+    }
+
     @MainActor static func instanceEditingTests() async throws {
         let gateway = HermesInstance(name: "Old", baseURL: "https://edit-gw.test",
                                      backend: .gateway, apiKey: "old-secret",
@@ -1253,6 +1295,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         try await homeCreateNavigationTests()
         try await webUIHomeModelTests()
         try await modelSwitchReadbackTests()
+        try pendingRequestRestartTests()
         try await unifiedSessionNavigationTests()
         try await refreshTests()
         try await instanceDeletionCacheTests()
