@@ -194,7 +194,7 @@ final class AppState: ObservableObject {
     /// Blocking request identities observed by this chat page. The model owns
     /// the cards; this set keeps the task-center signal until the last sibling
     /// request of that kind is resolved.
-    private var requestTaskSignals: Set<String> = []
+    private var requestTaskSignals: Set<SessionRequestSignalLedger.Key> = []
     /// 用户对「需要处理」任务的本地确认。只影响展示，不改动持久化信号。
     @Published private(set) var taskAcknowledgements: [TaskAcknowledgement] = [] {
         didSet { visibleTasksDirty = true }
@@ -367,10 +367,7 @@ final class AppState: ObservableObject {
         let instance = historyInstanceID
         let account = historyAccountScope
         if persisted.isEmpty {
-            requestTaskSignals = requestTaskSignals.filter { key in
-                let parts = key.split(separator: "\u{0}", omittingEmptySubsequences: false)
-                return parts.count != 3 || String(parts[1]) != sessionID
-            }
+            requestTaskSignals = requestTaskSignals.filter { $0.sessionID != sessionID }
         }
         let previousSignals = sessionTaskObservations[sessionID]?.signals ?? []
         guard persisted != previousSignals else { return }
@@ -389,41 +386,24 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Approval and clarify are separate blocking requests even when they
-    /// belong to the same session. Track their request identities so resolving
-    /// one does not remove the task-center fact for its siblings.
+    /// The ledger keeps one fact per exact request, even for two pending
+    /// approvals of the same type. Anonymous legacy events are conservative.
     private func setRequestTaskSignal(_ signal: SessionTaskSignal,
                                       sessionID: String, requestID: String?) {
-        guard requestID != nil else {
-            setSessionTaskSignals([signal], for: sessionID)
-            return
-        }
-        let key = requestSignalKey(signal, sessionID: sessionID, requestID: requestID)
-        requestTaskSignals.insert(key)
-        var signals = sessionTaskObservations[sessionID]?.signals ?? []
-        signals.insert(signal)
-        setSessionTaskSignals(signals, for: sessionID)
+        let updated = SessionRequestSignalLedger.arrived(
+            signal, sessionID: sessionID, requestID: requestID,
+            index: &requestTaskSignals,
+            current: sessionTaskObservations[sessionID]?.signals ?? [])
+        setSessionTaskSignals(updated, for: sessionID)
     }
 
     private func clearRequestTaskSignal(_ signal: SessionTaskSignal,
                                         sessionID: String, requestID: String?) {
-        guard requestID != nil else {
-            setSessionTaskSignals([], for: sessionID)
-            return
-        }
-        let key = requestSignalKey(signal, sessionID: sessionID, requestID: requestID)
-        requestTaskSignals.remove(key)
-        let sessionPrefix = [signal.rawValue, sessionID].joined(separator: "\u{0}") + "\u{0}"
-        if !requestTaskSignals.contains(where: { $0.hasPrefix(sessionPrefix) }) {
-            var signals = sessionTaskObservations[sessionID]?.signals ?? []
-            signals.remove(signal)
-            setSessionTaskSignals(signals, for: sessionID)
-        }
-    }
-
-    private func requestSignalKey(_ signal: SessionTaskSignal, sessionID: String,
-                                  requestID: String?) -> String {
-        [signal.rawValue, sessionID, requestID ?? ""].joined(separator: "\u{0}")
+        let updated = SessionRequestSignalLedger.resolved(
+            signal, sessionID: sessionID, requestID: requestID,
+            index: &requestTaskSignals,
+            current: sessionTaskObservations[sessionID]?.signals ?? [])
+        setSessionTaskSignals(updated, for: sessionID)
     }
 
     func openSession(_ session: SessionSummary) {
