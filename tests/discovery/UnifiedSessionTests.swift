@@ -268,7 +268,7 @@ import Foundation
     expect(hardTimeout.records.count == 4 && hardTimeout.failures[badID] != nil
            && hardTimeout.loading.isEmpty,
            "four healthy hosts complete despite one uncooperative timeout")
-    await hardTimeout.start(sources: quickHosts, query: "new-scope").value
+    await hardTimeout.start(sources: quickHosts, query: "").value
     try? await Task.sleep(nanoseconds: 720_000_000)
     expect(hardTimeout.records.count == 4
            && !hardTimeout.records.contains(where: { $0.identity == badID }),
