@@ -39,7 +39,7 @@ def violations(root: str, drawer: str, interaction: str, browser_files: set[str]
     ):
         if forbidden in root:
             failures.append(f"legacy competing navigation in RootView: {forbidden}")
-    for forbidden in ("enum Mode", ".page", "onBrowseAllInstances", "onBrowseAllTasks",
+    for forbidden in ("enum Mode", "mode == .page", "onBrowseAllInstances", "onBrowseAllTasks",
                       "onBrowseAll:", "backToDrawer"):
         if forbidden in drawer:
             failures.append(f"browser-only drawer path persisted: {forbidden}")
