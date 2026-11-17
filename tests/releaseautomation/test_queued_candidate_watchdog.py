@@ -1,5 +1,6 @@
 """Tests for queued-macOS cancellation/retry. No live API calls."""
 import importlib.util
+import datetime as dt
 from pathlib import Path
 import unittest
 
@@ -39,9 +40,11 @@ def example(status="queued", attempt=1, pr_state="open", sha=SHA,
 
 
 class FakeGitHub:
-    def __init__(self, run, jobs, pr, finish=True):
+    def __init__(self, run, jobs, pr, finish=True, clock=None):
         self.run, self.jobs, self.pr = run, jobs, pr
         self.operations, self.finish = [], finish
+        self.clock = clock
+        self.operation_times = []
 
     def api(self, path, method="GET"):
         if (path, method) == ("actions/runs/77", "GET"):
@@ -52,6 +55,8 @@ class FakeGitHub:
             return self.pr
         if (path, method) == ("actions/runs/77/cancel", "POST"):
             self.operations.append("cancel")
+            if self.clock is not None:
+                self.operation_times.append(("cancel", self.clock[0]))
             if self.finish:
                 self.run.update(status="completed", conclusion="cancelled")
             return {}
@@ -60,14 +65,19 @@ class FakeGitHub:
             self.run.update(status="in_progress", conclusion=None,
                             run_attempt=self.run["run_attempt"] + 1)
             self.operations.append("rerun")
+            if self.clock is not None:
+                self.operation_times.append(("rerun", self.clock[0]))
+                # GitHub creates a fresh queued job at each new attempt.
+                self.jobs[0]["created_at"] = dt.datetime.fromtimestamp(
+                    self.clock[0], dt.timezone.utc).isoformat()
             return {}
         raise AssertionError((path, method))
 
 
 def execute(**params):
     run, jobs, pr = example(**params)
-    client = FakeGitHub(run, jobs, pr)
     clock = [NOW]
+    client = FakeGitHub(run, jobs, pr, clock=clock)
     result = watchdog.monitor(
         client, 77, now=lambda: clock[0],
         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
@@ -84,7 +94,7 @@ class QueueWatchdogTests(unittest.TestCase):
         for status in ("in_progress", "completed"):
             with self.subTest(status=status):
                 result, client = execute(status=status)
-                self.assertTrue(result.startswith("skip:"))
+                self.assertEqual(result, "ok: macOS started or finished")
                 self.assertFalse(client.operations)
 
     def test_second_attempt_and_manual_runs_never_retry(self):
@@ -144,8 +154,8 @@ class QueueWatchdogTests(unittest.TestCase):
 
     def test_third_window_alerts_exactly_once(self):
         run, jobs, pr = example()
-        client = FakeGitHub(run, jobs, pr)
         clock = [NOW]
+        client = FakeGitHub(run, jobs, pr, clock=clock)
         signals = []
         result = watchdog.monitor(
             client, 77, now=lambda: clock[0],
@@ -156,6 +166,9 @@ class QueueWatchdogTests(unittest.TestCase):
         self.assertEqual(signals[0][0], 77)
         self.assertEqual(client.run["run_attempt"], 3)
         self.assertEqual(client.operations, ["cancel", "rerun", "cancel", "rerun"])
+        cancel_times = [t for op, t in client.operation_times if op == "cancel"]
+        self.assertGreaterEqual(cancel_times[1] - cancel_times[0], 180)
+        self.assertGreaterEqual(clock[0] - cancel_times[1], 180)
 
     def test_bark_payload_without_exposing_secret(self):
         from unittest.mock import patch
