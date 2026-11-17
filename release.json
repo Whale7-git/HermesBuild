@@ -1,5 +1,5 @@
 {
   "_note": "Single source of truth for the release identity. Resources/Info.plist must be synchronized manually. README.md's title and the release scope derive from this file.",
-  "version": "2.44.0",
-  "build": "198"
+  "version": "2.45.0",
+  "build": "199"
 }
