@@ -163,9 +163,13 @@ extension NativeChatView {
                                 guard changed, !Task.isCancelled, app.activeChangeToken == token,
                                       app.currentSessionID == sessionID else { return }
                                 model.setConfirmedModel(option.model, provider: option.providerID)
+                                // The server has now confirmed this exact model+
+                                // provider. Only then may the picker close.
+                                if !model.api.supportsReasoningEffort { showModelPicker = false }
                             }
                         },
                         onReload: { await app.loadModels(force: true) },
+                        errorMessage: app.sessionActionError,
                         reasoningEffort: model.api.supportsReasoningEffort
                             ? Binding(get: { model.requestedReasoningEffort ?? "" },
                                       set: { model.chooseReasoningEffort($0.isEmpty ? nil : $0) })
