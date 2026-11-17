@@ -129,10 +129,9 @@ struct SessionTaskCenterView: View {
                 }
                 .frame(minHeight: 64)
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    dismiss()
-                    onSelect(session)
-                }
+                // The presenting owner performs the single dismissal and
+                // the post-dismissal navigation. Do not dismiss twice here.
+                .onTapGesture { onSelect(session) }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(session.displayTitle)，\(summary.title)，\(summary.detail)")
                 .accessibilityHint("打开对应会话")

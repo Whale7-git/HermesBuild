@@ -199,6 +199,11 @@ extension NativeChatView {
     /// Both occupy the existing fixed 44pt header slot, so streaming status
     /// transitions cannot resize the transcript viewport.
     private var titleSwitchButton: some View {
+        Button {
+            // Reuse the existing tool/queue panel, preserving a 44pt fixed
+            // header slot across ready, streaming and recovery states.
+            showPanel(.task)
+        } label: {
         VStack(spacing: 2) {
             Text(currentTitle)
                 .font(.headline.weight(.semibold))
@@ -223,10 +228,18 @@ extension NativeChatView {
                     .foregroundStyle(model.activity == .ready ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-        .accessibilityElement(children: .combine)
+        .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(currentTitle)，\(statusLine)，查看任务与消息队列")
+        .accessibilityHint("双击查看当前会话运行、工具和排队状态")
     }
 
     private var recoveryMenuTitle: String {
