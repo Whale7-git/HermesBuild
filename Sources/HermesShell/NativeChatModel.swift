@@ -318,6 +318,9 @@ final class NativeChatModel: ObservableObject {
     /// Complete turns waiting behind the active response. A bounded list keeps
     /// follow-up work visible without allowing unbounded local memory growth.
     @Published var queuedTurns: [ChatQueuedTurn] = []
+    /// Runtime-only editor lease. No dispatch, reorder or delete while the
+    /// user is editing a queued turn. It is not an implicit user-pause toggle.
+    @Published var queueEditingTurnID: String?
     /// Restored or explicitly paused queues never auto-dispatch until the user
     /// resumes them. This protects an unsent turn across relaunch/cancellation.
     @Published var queueAutomaticDispatchPaused = false

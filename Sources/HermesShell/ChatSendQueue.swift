@@ -53,6 +53,22 @@ struct ChatQueuedTurn: Identifiable, Equatable {
 
     var isWaiting: Bool { delivery == .waiting }
 
+    /// In-place editing retains identity, attachments, ordering and the
+    /// original stream gate. No change is allowed to an uncertain POST.
+    func edited(composerText: String, attachmentOnlyText: String) -> ChatQueuedTurn? {
+        guard isWaiting else { return nil }
+        let typed = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty || !attachments.isEmpty else { return nil }
+        var next = self
+        next.composerText = composerText
+        next.text = typed.isEmpty ? attachmentOnlyText : typed
+        next.origin = typed.isEmpty ? .systemPlaceholder : .userInput
+        next.historyEnd = nil
+        next.knownIDs = []
+        next.submittedAt = nil
+        return next
+    }
+
     /// A restored or interrupted submission cannot be resent automatically.
     var needsReconcile: Bool { delivery == .uncertain || delivery == .submitting }
 
@@ -295,8 +311,8 @@ enum ChatQueueDispatchPlan: Equatable {
     case reconcile(index: Int)
 
     static func make(turns: [ChatQueuedTurn], completedStreamID: String?,
-                     paused: Bool) -> Self {
-        guard let first = turns.first else { return .blocked }
+                     paused: Bool, editing: Bool = false) -> Self {
+        guard !editing, let first = turns.first else { return .blocked }
         if first.needsReconcile { return .reconcile(index: 0) }
         guard first.delivery == .waiting else { return .blocked }
         if completedStreamID != nil && paused { return .blocked }

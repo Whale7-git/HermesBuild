@@ -196,15 +196,7 @@ extension NativeChatView {
         case .usage:
             ContextUsageView(usage: model.transcript.usage, contextStatus: model.transcript.contextStatus)
         case .queue:
-            ChatQueueManager(model: model) { turn in
-                guard turn.delivery != .submitting else { return }
-                model.removeQueuedTurn(id: turn.id)
-                syncedDraft = turn.composerText
-                draftSync = ChatComposerDraftSync(
-                    token: draftSync.token &+ 1, text: turn.composerText)
-                model.draft = turn.composerText
-                composerFocused = true
-            }
+            ChatQueueManager(model: model)
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         case .recovery:

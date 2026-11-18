@@ -4,7 +4,9 @@ import SwiftUI
 /// this view only supplies a complete, bounded surface for all queued turns.
 struct ChatQueueManager: View {
     @ObservedObject var model: NativeChatModel
-    var onEdit: (ChatQueuedTurn) -> Void
+    @State private var editingID: String?
+    @State private var editingText = ""
+    @State private var editingError = false
     @State private var confirmingClear = false
     @State private var recoveringID: String?
     @Environment(\.dismiss) private var dismiss
@@ -38,6 +40,7 @@ struct ChatQueueManager: View {
                             get: { !model.queueAutomaticDispatchPaused },
                             set: { model.setQueueAutomaticDispatchPaused(!$0) }))
                             .labelsHidden()
+                            .disabled(editingID != nil)
                             .accessibilityLabel("自动续发排队消息")
                     }
                     if model.queuePersistenceFailed {
@@ -74,7 +77,15 @@ struct ChatQueueManager: View {
                             .padding(.vertical, 8)
                     }
                     ForEach(Array(model.queuedTurns.enumerated()), id: \.element.id) { index, turn in
-                        queueRow(turn, index: index)
+                        if editingID == turn.id {
+                            queueEditor(turn, index: index)
+                                .moveDisabled(true)
+                                .deleteDisabled(true)
+                        } else {
+                            queueRow(turn, index: index)
+                                .moveDisabled(editingID != nil || turn.delivery != .waiting)
+                                .deleteDisabled(editingID != nil || turn.delivery == .submitting)
+                        }
                     }
                     .onMove(perform: move)
                     .onDelete(perform: delete)
@@ -93,11 +104,12 @@ struct ChatQueueManager: View {
                     Button("清空", role: .destructive) {
                         confirmingClear = true
                     }
-                    .disabled(model.queuedTurns.isEmpty)
+                    .disabled(model.queuedTurns.isEmpty || editingID != nil)
                 }
             }
             // Empty/uncertain states are List rows. They must not cover
             // the auto-dispatch switch, toolbar, or queue action buttons.
+            .onDisappear { cancelEditing() }
             .confirmationDialog("清空全部排队消息？", isPresented: $confirmingClear,
                                 titleVisibility: .visible) {
                 Button("清空 \(model.queuedTurns.count) 条消息", role: .destructive) {
@@ -141,12 +153,14 @@ struct ChatQueueManager: View {
             }
             HStack(spacing: 4) {
                 Button {
-                    onEdit(turn)
-                    dismiss()
+                    guard let snapshot = model.beginQueuedTurnEdit(id: turn.id) else { return }
+                    editingText = snapshot.composerText
+                    editingError = false
+                    editingID = snapshot.id
                 } label: {
                     Label("编辑", systemImage: "square.and.pencil")
                 }
-                .disabled(turn.delivery != .waiting)
+                .disabled(turn.delivery != .waiting || editingID != nil || recoveringID != nil)
                 .accessibilityHint(turn.delivery == .uncertain
                     ? "发送结果未确认；先核对并确认不存在后才能编辑"
                     : (turn.delivery == .submitting ? "正在提交，暂时不能编辑" : ""))
@@ -179,7 +193,7 @@ struct ChatQueueManager: View {
                           systemImage: turn.delivery == .uncertain
                               ? "arrow.clockwise" : "paperplane")
                 }
-                .disabled(turn.delivery == .submitting || recoveringID != nil
+                .disabled(turn.delivery == .submitting || recoveringID != nil || editingID != nil
                           || (turn.delivery != .uncertain && !canDispatch))
             }
             .font(.caption)
@@ -189,6 +203,57 @@ struct ChatQueueManager: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("第 \(index + 1) 条\(deliveryLabel(turn))")
+    }
+
+    @ViewBuilder
+    private func queueEditor(_ turn: ChatQueuedTurn, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑第 \(index + 1) 条排队消息")
+                .font(.subheadline.weight(.semibold))
+            TextEditor(text: $editingText)
+                .font(.body)
+                .frame(minHeight: 100, maxHeight: 220)
+                .accessibilityLabel("排队消息正文")
+            ForEach(Array(turn.attachments.enumerated()), id: \.offset) { _, attachment in
+                Label(attachment.name, systemImage: "paperclip")
+                    .font(.caption)
+            }
+            Text("保留原附件和队列位置。编辑期间暂停派发；若回复已结束，可在保存后手动发送。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if editingError {
+                Label("未能保存修改，原队列消息未被替换。请重试或取消。",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(AppTheme.warning)
+            }
+            HStack {
+                Button("取消", action: cancelEditing)
+                Spacer()
+                Button("保存修改") {
+                    guard let id = editingID else { return }
+                    if model.commitQueuedTurnEdit(id: id, composerText: editingText) {
+                        editingID = nil
+                        editingText = ""
+                        editingError = false
+                    } else {
+                        editingError = true
+                    }
+                }
+                .fontWeight(.semibold)
+                .disabled(editingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          && turn.attachments.isEmpty)
+            }
+            .buttonStyle(.borderless)
+            .frame(minHeight: 44)
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func cancelEditing() {
+        if let id = editingID { model.cancelQueuedTurnEdit(id: id) }
+        editingID = nil
+        editingText = ""
+        editingError = false
     }
 
     private func deliveryLabel(_ turn: ChatQueuedTurn) -> String {
