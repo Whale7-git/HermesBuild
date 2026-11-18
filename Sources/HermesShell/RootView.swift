@@ -21,6 +21,12 @@ struct RootView: View {
     @State private var browserRoute: [UnifiedBrowserPage] = []
     @State private var browserSource: UnifiedBrowserSource = .chat
     @State private var browserSessionOpen = false
+    private enum PageReturnTarget { case chat, browser }
+    // Persist interactive offset past GestureState reset and keep the
+    // outgoing top card mounted until its settling animation ends.
+    @State private var settlingPage: PageReturnTarget?
+    @State private var pageReturnOffset: CGFloat = 0
+    @State private var pageReturnTicket = UUID()
     /// The sheet belongs to the root, not to a horizontally moving page.
     @State private var taskCenterPresented = false
     @State private var taskCenterScope: String?
@@ -35,7 +41,7 @@ struct RootView: View {
     private var navigationGesturesAllowed: Bool {
         RootNavigationModalPolicy.allowsGesture(taskCenterPresented: taskCenterPresented,
             settingsPresented: app.showSettings, needsLogin: app.needsLogin)
-            && scenePhase == .active
+            && scenePhase == .active && settlingPage == nil
     }
     @GestureState private var browserBackDrag = RootPageGestureState()
     @State private var homeText = ""
@@ -99,6 +105,7 @@ struct RootView: View {
             }
             .onChange(of: taskCenterPresented) { _, _ in
                 cancelNavigationGestures()
+                synchronizeConversationVisibility()
             }
             .onChange(of: app.showSettings) { _, shown in
                 if shown {
@@ -256,8 +263,8 @@ struct RootView: View {
                 // Keep the drawer mounted behind the fully opaque chat canvas.
                 // Flipping opacity/hit-testing at exposed == 0 introduced a
                 // compositing and gesture hit-map discontinuity on left return.
-                .allowsHitTesting(sidebarOpen)
-                .accessibilityHidden(!sidebarOpen)
+                .allowsHitTesting(sidebarOpen && !browserOpen && settlingPage == nil)
+                .accessibilityHidden(!sidebarOpen || browserOpen)
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
@@ -377,16 +384,20 @@ struct RootView: View {
     /// browser is presented, while the card itself remains the swipe surface.
     private func chatCardLayer(size: CGSize, topInset: CGFloat, bottomInset: CGFloat,
                                progress: CGFloat, exposed: CGFloat) -> some View {
-    ChatCardContainer(
+    let sessionOffset = settlingPage == .chat
+        ? pageReturnOffset : CGFloat(ChatPageBackInteraction.offset(
+            width: Double(size.width), translation: sessionBackDrag.translation))
+    return ChatCardContainer(
         size: size, topInset: topInset, bottomInset: bottomInset,
         progress: browserSessionOpen
-            ? min(1, max(0, CGFloat(sessionBackDrag.translation) / max(1, size.width)))
+            ? min(1, max(0, sessionOffset / max(1, size.width)))
             : progress,
-        translation: browserSessionOpen ? CGFloat(sessionBackDrag.translation) : exposed,
+        translation: browserSessionOpen ? sessionOffset : exposed,
         reduceMotion: reduceMotion,
         showsDismissSurface: sidebarOpen && !browserSessionOpen,
         suppressVerticalScroll: browserSessionOpen
-            ? sessionBackDrag.claimed : (!browserOpen && sidebarGesture.claimed),
+            ? (sessionBackDrag.claimed || settlingPage == .chat)
+            : (!browserOpen && sidebarGesture.claimed),
         onDismiss: closeSidebar
     ) {
         Group {
@@ -396,9 +407,10 @@ struct RootView: View {
                 emptyConversation
             }
         }
-        .accessibilityHidden(sidebarOpen && !browserSessionOpen)
+        .accessibilityHidden((sidebarOpen || browserOpen) && !browserSessionOpen)
     }
     .zIndex(browserSessionOpen ? 3 : 0)
+    .allowsHitTesting(settlingPage == nil && (!browserOpen || browserSessionOpen))
     .simultaneousGesture(
         DragGesture(minimumDistance: 26)
             .updating($sessionBackDrag) { value, drag, _ in
@@ -423,11 +435,14 @@ struct RootView: View {
                     sessionBackOwner.cancelled()
                     return
                 }
-                if sessionBackOwner.ended(
+                let claimed = sessionBackOwner.claimed
+                let shouldReturn = sessionBackOwner.ended(
                     width: Double(size.width),
-                    predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                    // The browser remains mounted as the actual back destination.
-                    browserSessionOpen = false
+                    predictedTranslation: Double(value.predictedEndTranslation.width))
+                if claimed {
+                    settlePageReturn(.chat, width: size.width,
+                                     translation: value.translation.width,
+                                     shouldReturn: shouldReturn)
                 }
             }
     )
@@ -445,8 +460,10 @@ struct RootView: View {
             singleInstanceBrowser
         }
         .zIndex(1)
-        .allowsHitTesting(!browserSessionOpen)
-        .accessibilityHidden(browserSessionOpen)
+        // The previous browser is only a visual background; the top route
+        // alone receives hit testing and accessibility focus during a pan.
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
     }
 
@@ -454,14 +471,16 @@ struct RootView: View {
     private func activeBrowserLayer(size: CGSize, topInset: CGFloat,
                                     bottomInset: CGFloat) -> some View {
     if browserOpen {
-        let backProgress = min(1, max(0,
-            CGFloat(browserBackDrag.translation) / max(1, size.width)))
+        let browserOffset = settlingPage == .browser
+            ? pageReturnOffset : CGFloat(ChatPageBackInteraction.offset(
+                width: Double(size.width), translation: browserBackDrag.translation))
+        let backProgress = min(1, max(0, browserOffset / max(1, size.width)))
         ChatCardContainer(
             size: size, topInset: topInset, bottomInset: bottomInset,
-            progress: backProgress, translation: CGFloat(browserBackDrag.translation),
+            progress: backProgress, translation: browserOffset,
             reduceMotion: reduceMotion,
             showsDismissSurface: false,
-            suppressVerticalScroll: browserBackDrag.claimed,
+            suppressVerticalScroll: browserBackDrag.claimed || settlingPage == .browser,
             onDismiss: {}
         ) {
             if browserAllInstances {
@@ -520,17 +539,64 @@ struct RootView: View {
                         browserBackOwner.cancelled()
                         return
                     }
-                    if browserBackOwner.ended(
+                    let claimed = browserBackOwner.claimed
+                    let shouldReturn = browserBackOwner.ended(
                         width: Double(size.width),
-                        predictedTranslation: Double(value.predictedEndTranslation.width)) {
-                        backFromBrowser()
+                        predictedTranslation: Double(value.predictedEndTranslation.width))
+                    if claimed {
+                        settlePageReturn(.browser, width: size.width,
+                                         translation: value.translation.width,
+                                         shouldReturn: shouldReturn)
                     }
                 }
         )
         .zIndex(2)
-        .allowsHitTesting(!browserSessionOpen)
+        .allowsHitTesting(!browserSessionOpen && settlingPage == nil)
         .accessibilityHidden(browserSessionOpen)
     }
+    }
+
+    /// Hold z-order and route identity constant for the whole gesture
+    /// completion (including cancellation). Underlying content remains
+    /// mounted and never receives the in-flight tap/scroll.
+    private func settlePageReturn(_ target: PageReturnTarget, width: CGFloat,
+                                  translation: CGFloat, shouldReturn: Bool) {
+        guard settlingPage == nil, width.isFinite, width > 0 else { return }
+        if reduceMotion {
+            if shouldReturn {
+                if target == .chat { browserSessionOpen = false }
+                else { backFromBrowser() }
+            }
+            return
+        }
+        let ticket = UUID()
+        pageReturnTicket = ticket
+        let scope = homeScope
+        let route = browserRoute
+        withTransaction(Transaction(animation: nil)) {
+            settlingPage = target
+            pageReturnOffset = CGFloat(ChatPageBackInteraction.offset(
+                width: Double(width), translation: Double(translation)))
+        }
+        withAnimation(.easeOut(duration: 0.24), completionCriteria: .logicallyComplete) {
+            pageReturnOffset = shouldReturn ? width : 0
+        } completion: {
+            guard pageReturnTicket == ticket, settlingPage == target else { return }
+            let stillCurrent = scope == homeScope && route == browserRoute && browserOpen
+                && browserSessionOpen == (target == .chat)
+            // Removing the settled top card / changing its z-index must not
+            // start a second full-page transition or flash the old card.
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if shouldReturn && stillCurrent {
+                    if target == .chat { browserSessionOpen = false }
+                    else { backFromBrowser() }
+                }
+                settlingPage = nil
+                pageReturnOffset = 0
+            }
+        }
     }
 
     /// Keep a real page stack: pop the visible page. The original
@@ -798,6 +864,11 @@ struct RootView: View {
         drawerGestureOwner.cancelled()
         sessionBackOwner.cancelled()
         browserBackOwner.cancelled()
+        // A new scope, modal or inactive scene invalidates an old animation
+        // completion and cannot navigate the newly visible conversation.
+        pageReturnTicket = UUID()
+        settlingPage = nil
+        pageReturnOffset = 0
     }
 
     /// Planner suppression is only valid for an active app whose chat page is
@@ -809,7 +880,7 @@ struct RootView: View {
             sidebarOpen: sidebarOpen,
             browserOpen: browserOpen,
             browserSessionOpen: browserSessionOpen,
-            modalOpen: app.showSettings || app.needsLogin,
+            modalOpen: app.showSettings || app.needsLogin || taskCenterPresented,
             hasSession: app.currentSessionID != nil)
         app.setPresentationVisibility(
             appActive: scenePhase == .active,
