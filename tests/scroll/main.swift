@@ -483,6 +483,14 @@ expect(ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 2
        "decisive child-page swipe returns to mounted conversation")
 expect(!ChatPageBackInteraction.shouldDismiss(width: 390, predictedTranslation: 85),
        "partial child-page swipe cancels without destroying page state")
+expect(ChatPageBackInteraction.offset(width: 390, translation: 180) == 180,
+       "interactive return uses the actual finger translation")
+expect(ChatPageBackInteraction.offset(width: 390, translation: 520) == 390,
+       "settling card does not overshoot the viewport")
+expect(ChatPageBackInteraction.offset(width: 390, translation: -15) == 0,
+       "cancelled reverse drag returns to the original origin")
+expect(ChatPageBackInteraction.offset(width: .nan, translation: 100) == 0,
+       "invalid geometry cannot propagate into card offsets")
 
 // build187: toolbar/back gesture must follow the same stack, never
 // jump from a nested All Instances page straight to the chat.

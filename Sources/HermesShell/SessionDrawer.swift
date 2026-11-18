@@ -27,6 +27,7 @@ struct SessionListPane: View {
     @State private var filterPinnedOnly = false
     @State private var showArchived = false
     @State private var showTaskCenter = false
+    @State private var pendingLocalTaskSelection: (scope: String, sessionID: String)?
     @StateObject private var searchModel = SessionSearchModel()
     @StateObject private var archiveModel = SessionArchiveModel()
     @State private var renameTarget: SessionSummary?
@@ -97,16 +98,16 @@ struct SessionListPane: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            // Fixed search row, compact host rail and two adjacent global
+            // actions leave most of the sidebar to actual conversation rows.
+            if !selecting || showsSearch || searching {
+                searchField.disabled(selecting)
+            }
             if mode == .drawer && app.instances.count > 1 {
                 instanceStrip
             }
-            // Two obvious first actions, instead of making new users decode
-            // two unlabeled navigation icons. Search replaces this bar in-place.
-            if !selecting && !showsSearch && !searching {
+            if !selecting && !searching && !searchFocused {
                 quickActions
-            }
-            if showsSearch || searching {
-                searchField.disabled(selecting)
             }
             // 搜索时由搜索结果接管列表；筛选条收起，避免顶部留下整块空白。
             if selecting {
@@ -287,6 +288,7 @@ struct SessionListPane: View {
             batchDeletePresented = false; batchBusy = false
             showArchived = false
             showTaskCenter = false
+            pendingLocalTaskSelection = nil
             query = ""; searchFocused = false; showsSearch = false
             searchModel.cancel(); archiveModel.reset()
             dismissUndo()
@@ -297,14 +299,21 @@ struct SessionListPane: View {
             selectionScope = nil
             selectedSessionIDs.removeAll()
         }
-        .sheet(isPresented: $showTaskCenter) {
+        .sheet(isPresented: $showTaskCenter, onDismiss: {
+            let target = pendingLocalTaskSelection
+            pendingLocalTaskSelection = nil
+            if let target, target.scope == discoveryScope,
+               let session = app.sessions.first(where: { $0.sessionId == target.sessionID }) {
+                onSelect(session)
+            }
+        }) {
             SessionTaskCenterView(
                 sessions: app.sessions,
                 summaries: app.visibleTaskSummaries,
                 acknowledgements: app.acknowledgedTaskEntries,
                 onSelect: { session in
+                    pendingLocalTaskSelection = (discoveryScope, session.sessionId)
                     showTaskCenter = false
-                    onSelect(session)
                 },
                 onAcknowledge: { sessionID, signal in
                     app.acknowledgeTask(sessionID: sessionID, signal: signal)
@@ -473,6 +482,16 @@ struct SessionListPane: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
+            Button(action: onNew) {
+                if app.creating {
+                    ProgressView().controlSize(.small)
+                        .frame(width: 44, height: 44)
+                } else {
+                    ChromeIcon(symbol: "square.and.pencil")
+                }
+            }
+            .disabled(app.creating || selecting)
+            .accessibilityLabel("新建对话")
             Menu {
                 Button("全部对话", systemImage: "bubble.left.and.bubble.right") { cancelSearch(); resetFilters() }
                     .disabled(selecting)
@@ -565,7 +584,7 @@ struct SessionListPane: View {
                             .accessibilityValue(index == app.activeIndex ? "当前实例" : "点击切换")
                         }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, AppTheme.pagePadding)
                 }
                 .onAppear { reader.scrollTo(app.active.id, anchor: .center) }
                 .onChange(of: app.active.id) { _, id in
@@ -579,98 +598,82 @@ struct SessionListPane: View {
             }
         }
         .frame(height: 44)
-        .padding(.top, 4)
-        .padding(.bottom, 10)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
     }
 
-    /// Chat-first navigation: primary tasks are visible, advanced filters stay
-    /// in the overflow menu. These reuse the existing actions and search state.
+    /// Global browsing remains available, but uses one compact row rather
+    /// than two full-height actions. The instance task center has one owner.
     private var quickActions: some View {
-        VStack(spacing: 2) {
-            Button(action: onNew) {
-                HStack(spacing: 12) {
-                    if app.creating { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "square.and.pencil") }
-                    Text("新建对话").font(.subheadline.weight(.medium))
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 12)
-                .contentShape(Rectangle())
-            }
-            .disabled(app.creating)
-            .accessibilityLabel("新建对话")
-
-            if mode == .drawer && app.instances.count > 1,
-               let onBrowseAllInstances {
-                Button(action: onBrowseAllInstances) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "square.stack.3d.up")
-                        Text("全部实例会话").font(.subheadline.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption2)
-                            .foregroundStyle(.secondary)
+        VStack(spacing: 4) {
+            if app.instances.count > 1 {
+                HStack(spacing: 8) {
+                    if let onBrowseAllInstances {
+                        compactBrowseAction("全部会话", symbol: "square.stack.3d.up",
+                                            action: onBrowseAllInstances)
+                            .accessibilityLabel("浏览全部 Hermes 实例的会话")
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .accessibilityLabel("浏览全部 Hermes 实例的会话")
-            }
-
-            if app.instances.count > 1, let onBrowseAllTasks {
-                Button(action: onBrowseAllTasks) {
-                    HStack(spacing: 12) {
-                        Image(systemName: "list.bullet.rectangle.portrait")
-                        Text("全部实例任务").font(.subheadline.weight(.medium))
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.caption2)
-                            .foregroundStyle(.secondary)
+                    if let onBrowseAllTasks {
+                        compactBrowseAction("全部任务", symbol: "list.bullet.rectangle.portrait",
+                                            action: onBrowseAllTasks)
+                            .accessibilityLabel("浏览全部 Hermes 实例的任务工作台")
                     }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
                 }
-                .accessibilityLabel("浏览全部 Hermes 实例的任务工作台")
             }
-
-            Button {
-                showsSearch = true
-                searchFocused = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "magnifyingglass")
-                    Text("搜索会话").font(.subheadline.weight(.medium))
+            Button(action: presentTaskCenter) {
+                let summaries = app.visibleTaskSummaries
+                let attention = summaries.filter(\.needsAttention).count
+                HStack(spacing: 8) {
+                    Image(systemName: attention > 0 ? "exclamationmark.circle.fill" : "list.bullet.clipboard")
+                        .foregroundStyle(attention > 0 ? AppTheme.warning : Color.secondary)
+                    Text(attention > 0 ? "本实例 · \(attention) 项待处理" : "本实例任务中心")
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
                     Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 12)
-                .contentShape(Rectangle())
-            }
-            .accessibilityLabel("搜索会话")
-
-            Button { showTaskCenter = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "list.bullet.clipboard")
-                    Text("任务中心").font(.subheadline.weight(.medium))
-                    Spacer(minLength: 0)
-                    if !app.visibleTaskSummaries.isEmpty {
-                        Text("\(app.visibleTaskSummaries.count)")
+                    if !summaries.isEmpty {
+                        Text("\(summaries.count)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+                    Image(systemName: "chevron.right")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 12)
                 .contentShape(Rectangle())
             }
-            .accessibilityLabel("任务中心，查看运行及待处理会话")
+            .accessibilityLabel("本实例任务中心，查看运行及待处理会话")
         }
         .foregroundStyle(.primary)
         .buttonStyle(.plain)
-        .padding(.horizontal, AppTheme.pagePadding - 8)
-        .padding(.top, 2)
-        .padding(.bottom, 8)
+        .padding(.horizontal, AppTheme.pagePadding)
+        .padding(.bottom, 4)
+    }
+
+    private func compactBrowseAction(_ title: String, symbol: String,
+                                     action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: symbol).font(.body)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(AppTheme.surface,
+                        in: RoundedRectangle(cornerRadius: AppTheme.radiusM, style: .continuous))
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func presentTaskCenter() {
+        if let onShowTaskCenter { onShowTaskCenter() }
+        else {
+            pendingLocalTaskSelection = nil
+            showTaskCenter = true
+        }
     }
 
     /// 系统语义的搜索框：36pt 高、8pt 圆角、tertiarySystemFill 底，右侧「取消」清词并收键盘。
@@ -719,7 +722,7 @@ struct SessionListPane: View {
         // 固定 44pt 行高：右侧「取消」出现/消失都不会带动列表跳动。
         .frame(height: 44)
         .padding(.horizontal, AppTheme.pagePadding)
-        .padding(.bottom, 12)
+        .padding(.bottom, 4)
     }
 
     /// 清空关键词、收键盘；搜索退出后筛选条自动恢复。
@@ -819,50 +822,6 @@ struct SessionListPane: View {
         }
         .padding(.top, 56)
         .padding(.bottom, 24)
-    }
-
-    private var taskCenterRow: some View {
-        let summaries = app.visibleTaskSummaries
-        let attention = summaries.filter(\.needsAttention).count
-        return Button {
-            if let onShowTaskCenter { onShowTaskCenter() }
-            else { showTaskCenter = true }
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: attention > 0 ? "checklist.checked" : "waveform")
-                    .foregroundStyle(attention > 0 ? AppTheme.warning : AppTheme.accent)
-                    .frame(width: 36, height: 36)
-                    .background((attention > 0 ? AppTheme.warning : AppTheme.accent).opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(attention > 0 ? "\(attention) 个会话需要处理" : "查看全部运行任务")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(attention > 0 ? "轻点查看，继续处理未完成的事项" : "跨会话查看进度与完成情况")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                Text("\(summaries.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-            .background(AppTheme.softFill,
-                        in: RoundedRectangle(cornerRadius: AppTheme.radiusL, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .accessibilityLabel(
-            attention > 0 ? "\(attention) 个会话需要处理，打开任务中心" : "打开任务中心")
     }
 
     private func resetFilters() {

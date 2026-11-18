@@ -364,6 +364,55 @@ import Foundation
         model.disconnect()
     }
 
+    // build205: the queue's inline editor is independent of a current
+    // composer draft, keeps attachment refs and ordering, and cannot POST.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "queue-inline-editor", api: service)
+        await model.load()
+        let first = ChatQueuedTurn(id: "edit-first", text: "first", attachments: [image],
+                                   composerText: "first", origin: .userInput,
+                                   automaticAfterStreamID: "exact-run")
+        let second = ChatQueuedTurn(id: "edit-second", text: "second", attachments: [],
+                                    composerText: "second", origin: .userInput,
+                                    automaticAfterStreamID: "exact-run")
+        model.setQueuedTurns([first, second])
+        model.draft = "unrelated draft"
+        precondition(model.beginQueuedTurnEdit(id: first.id) == first)
+        precondition(model.beginQueuedTurnEdit(id: second.id) == nil)
+        precondition(ChatQueueDispatchPlan.make(turns: model.queuedTurns,
+            completedStreamID: "exact-run", paused: false, editing: true) == .blocked)
+        let blocked = await model.flushQueuedIfNeeded()
+        precondition(!blocked && service.startCalls == 0)
+        model.removeQueuedTurn(id: first.id)
+        model.setQueuedTurns([])
+        model.moveQueuedTurn(id: second.id, before: first.id)
+        precondition(model.queuedTurns == [first, second])
+        precondition(model.commitQueuedTurnEdit(id: first.id, composerText: "edited"))
+        precondition(model.queuedTurns.map(\.id) == [first.id, second.id])
+        precondition(model.queuedTurns[0].attachments == [image])
+        precondition(model.queuedTurns[0].text == "edited")
+        precondition(model.queuedTurns[0].automaticAfterStreamID == "exact-run")
+        precondition(model.draft == "unrelated draft" && model.queueEditingTurnID == nil)
+        precondition(service.startCalls == 0, "saving cannot submit the turn")
+
+        precondition(model.beginQueuedTurnEdit(id: second.id) != nil)
+        precondition(!model.commitQueuedTurnEdit(id: second.id, composerText: "  "))
+        model.cancelQueuedTurnEdit(id: second.id)
+        precondition(model.queuedTurns[1] == second)
+        var unknown = second
+        unknown.delivery = .uncertain
+        model.setQueuedTurns([unknown])
+        precondition(model.beginQueuedTurnEdit(id: unknown.id) == nil)
+        let attachmentOnly = first.edited(composerText: " ",
+            attachmentOnlyText: NativeChatModel.attachmentOnlyText)
+        precondition(attachmentOnly?.attachments == [image])
+        precondition(attachmentOnly?.origin == .systemPlaceholder)
+        precondition(attachmentOnly?.text == NativeChatModel.attachmentOnlyText)
+        precondition(model.draft == "unrelated draft")
+        model.disconnect()
+    }
+
     // Queue management preserves order, attachment payloads and the 20-turn
     // bound; manual dispatch bypasses the stream gate for the selected first row.
     do {

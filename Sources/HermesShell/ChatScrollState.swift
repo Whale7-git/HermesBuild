@@ -325,6 +325,14 @@ enum ChatPageBackInteraction {
         return startX >= 0 && (allowFullCard || startX < 32)
             && ChatBackAxisPolicy.claimsReturn(horizontal: horizontal, vertical: vertical)
     }
+    /// Clamp both the drag and the settling card to its viewport. A
+    /// completed return holds the original top page at this final offset
+    /// until the owner commits the route change.
+    static func offset(width: Double, translation: Double) -> Double {
+        guard width.isFinite, width > 0, translation.isFinite else { return 0 }
+        return min(width, max(0, translation))
+    }
+
     static func shouldDismiss(width: Double, predictedTranslation: Double) -> Bool {
         guard width.isFinite, width > 0, predictedTranslation.isFinite else { return false }
         return predictedTranslation > width * 0.4

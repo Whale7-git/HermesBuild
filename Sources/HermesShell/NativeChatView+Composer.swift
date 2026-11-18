@@ -95,19 +95,10 @@ extension NativeChatView {
                     if ready { await model.flushQueuedIfNeeded() }
                 }
             },
-            onEditQueuedTurn: { id in
-                guard let turn = model.queuedTurns.first(where: { $0.id == id }) else { return }
-                model.removeQueuedTurn(id: id)
-                syncedDraft = turn.composerText
-                draftSync = ChatComposerDraftSync(
-                    token: draftSync.token &+ 1, text: turn.composerText)
-                model.draft = turn.composerText
-                // P1：把已上传的附件一并恢复回输入区，否则编辑后再次发送时
-                // 附件静默丢失——队列项里存的是服务端引用，不需要重新上传。
-                if !turn.attachments.isEmpty {
-                    attachments.restoreReady(turn.attachments)
-                }
-                composerFocused = true
+            onEditQueuedTurn: { _ in
+                // Edit in the queue itself, never replace a separate draft.
+                composerFocused = false
+                showQueueManager = true
             },
             onManageQueue: {
                 composerFocused = false

@@ -166,7 +166,7 @@ extension NativeChatModel {
         // must never be dispatched again from a foreground/load callback.
         switch ChatQueueDispatchPlan.make(
             turns: queuedTurns, completedStreamID: completedStreamID,
-            paused: queueAutomaticDispatchPaused) {
+            paused: queueAutomaticDispatchPaused, editing: queueEditingTurnID != nil) {
         case .blocked:
             return false
         case .reconcile:
@@ -228,6 +228,7 @@ extension NativeChatModel {
     }
 
     func removeQueuedTurn(id: String) {
+        guard queueEditingTurnID == nil else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery != .submitting else { return }
         queuedTurns.remove(at: index)
@@ -251,7 +252,8 @@ extension NativeChatModel {
     /// Restored turns use the pre-POST boundary persisted by version 4. Legacy
     /// queue records without evidence stay locked.
     func prepareQueuedTurnForRetry(id: String) async -> Bool {
-        guard !running, !submitting, !loading, !syncing, !reconciling,
+        guard queueEditingTurnID == nil,
+              !running, !submitting, !loading, !syncing, !reconciling,
               queuedTurns.first?.id == id,
               queuedTurns.first?.delivery == .uncertain else { return false }
 
@@ -330,7 +332,45 @@ extension NativeChatModel {
         persistQueue()
     }
 
+    func beginQueuedTurnEdit(id: String) -> ChatQueuedTurn? {
+        guard queueEditingTurnID == nil,
+              let turn = queuedTurns.first(where: { $0.id == id && $0.isWaiting })
+        else { return nil }
+        queueEditingTurnID = id
+        return turn
+    }
+
+    func cancelQueuedTurnEdit(id: String) {
+        guard queueEditingTurnID == id else { return }
+        queueEditingTurnID = nil
+    }
+
+    func commitQueuedTurnEdit(id: String, composerText: String) -> Bool {
+        guard queueEditingTurnID == id,
+              let index = queuedTurns.firstIndex(where: { $0.id == id }),
+              let edited = queuedTurns[index].edited(
+                  composerText: composerText, attachmentOnlyText: Self.attachmentOnlyText)
+        else { return false }
+        var next = queuedTurns
+        next[index] = edited
+        // Do not replace the old row until the edited queue has persisted.
+        guard let data = ChatSendQueueCodec.encode(next) else {
+            recordLocalWrite(.failed(.encoding), kind: .queue)
+            return false
+        }
+        let result = draftStore?.saveQueued(data) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .queue)
+            return false
+        }
+        queuedTurns = next
+        queueSaveFailed = false
+        queueEditingTurnID = nil
+        return true
+    }
+
     func updateQueuedTurn(id: String, text: String) -> Bool {
+        guard queueEditingTurnID == nil else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = queuedTurns.firstIndex(where: { $0.id == id }) else {
             return false
@@ -366,7 +406,7 @@ extension NativeChatModel {
     }
 
     func moveQueuedTurn(id: String, before targetID: String) {
-        guard id != targetID,
+        guard queueEditingTurnID == nil, id != targetID,
               let source = queuedTurns.firstIndex(where: { $0.id == id }),
               let target = queuedTurns.firstIndex(where: { $0.id == targetID }) else { return }
         var next = queuedTurns
@@ -378,6 +418,7 @@ extension NativeChatModel {
     }
 
     func setQueuedTurns(_ turns: [ChatQueuedTurn]) {
+        guard queueEditingTurnID == nil else { return }
         guard turns.count <= ChatQueuedTurn.maximumCount,
               Set(turns.map(\.id)).count == turns.count,
               !turns.contains(where: { $0.delivery == .submitting }) else { return }
@@ -435,6 +476,7 @@ extension NativeChatModel {
     }
 
     func markQueuedTurnForManualDispatch(id: String) {
+        guard queueEditingTurnID == nil else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery == .waiting else { return }
         queuedTurns[index].automaticAfterStreamID = nil

@@ -24,6 +24,7 @@ enum ChatPanel: Identifiable {
 
 enum ChatPanelAction {
     case settings, newSession, find, select(SessionSummary), locateTool(String), export(fullHistory: Bool)
+    case locateMessage(String), latestMessage
 }
 
 /// The current conversation's task detail. Cross-session discovery belongs on
