@@ -123,6 +123,12 @@
     "tests/verify_source.py"
   ],
   "added": [
+    ".agents/skills/ios-design-audit/SKILL.md",
+    ".agents/skills/ios-interaction-audit/SKILL.md",
+    ".agents/skills/ios-performance-diagnostics/SKILL.md",
+    ".agents/skills/ios-quality-review/SKILL.md",
+    ".agents/skills/ios-regression-guard/SKILL.md",
+    ".agents/skills/ios-state-reliability/SKILL.md",
     ".gitattributes",
     ".github/pull_request_template.md",
     ".github/workflows/hermes-candidate-queue-watchdog.yml",
@@ -221,6 +227,7 @@
     "docs/github-collaboration.md",
     "docs/home-build181.md",
     "docs/perf-baseline-build131.json",
+    "docs/quality-baseline-build205.md",
     "docs/runtime-safety-build179.md",
     "docs/sse-contract.md",
     "ios-ci-project.yml",
@@ -511,6 +518,12 @@
     "xtool.yml"
   ],
   "hashes": {
+    ".agents/skills/ios-design-audit/SKILL.md": "fa32bcd914786ae15a4382c822a057d8ef9be184d97541e43be42182b32b1231",
+    ".agents/skills/ios-interaction-audit/SKILL.md": "3df5877f35863c3b5ea25787816c0cbade2f603bf4c9e46d2c7192213f7cc671",
+    ".agents/skills/ios-performance-diagnostics/SKILL.md": "680a0827f681a649dfde3d8cf0f0260187b97fdefa9b2b706a3f6ac391d3b72b",
+    ".agents/skills/ios-quality-review/SKILL.md": "f0b97697d61a2894c882d56c3906dfa86ba40508fd1cd5a719ec64e747056f02",
+    ".agents/skills/ios-regression-guard/SKILL.md": "8a3a5f998ebf02cf06685edfa3a84aa763d705588289952aa2df90954e8c35e2",
+    ".agents/skills/ios-state-reliability/SKILL.md": "7ed5b3b1c1575f6d46316e7c5ae2f89c72f20b4d7bdeaffc57a55e57506abe9f",
     ".gitattributes": "9788d0e6cd3af8c37e4fb2aeaaf816111d8f2d534bbd95554922375036366fb1",
     ".github/pull_request_template.md": "c0795e475694da16dc4ed3c90372efec069cdcd77a97433d226d6b5e1ae1868c",
     ".github/workflows/hermes-candidate-queue-watchdog.yml": "be8249ff09744c184ebaa41876e4f22eb433c10c65aef9933284e132c7b0eb87",
@@ -685,6 +698,7 @@
     "docs/github-collaboration.md": "802abe095a49872edbd896961c4d5cfaea72b87167ec1e8b398f2ea0878c9811",
     "docs/home-build181.md": "1565724a9afc9981e1a110451c0cba4a4a6faeab4f782c550575276af56424da",
     "docs/perf-baseline-build131.json": "2d3fcf8a17f30a6617fceb0141e33b889b9dc44263b74235c975c49deeeabc1d",
+    "docs/quality-baseline-build205.md": "ae55a28851b760b3929372c08a4de47c0e261f58ebe7faaf2944f961cac00e35",
     "docs/runtime-safety-build179.md": "be04a06e84c1f5765acbcfa2f013a32df75d0cd9ef477a091dd69b71ad9c8eaa",
     "docs/sse-contract.md": "9abe7f1d4c28033191cf15f954c759311f7ef8efb904a20021f263613d1ba43e",
     "ios-ci-project.yml": "8bd8c60b8262ff03a2ca6fcecb1a6ce8034bbb16d8c7fa96014f696cb9c12bd9",
