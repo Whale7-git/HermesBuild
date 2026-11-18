@@ -27,12 +27,15 @@ struct ChatQueueManager: View {
                             .foregroundStyle(model.queueAutomaticDispatchPaused
                                              ? AppTheme.warning : AppTheme.success)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(model.queueAutomaticDispatchPaused
-                                 ? "自动续发已暂停" : "自动续发已开启")
+                            Text(editingID != nil ? "编辑中 · 暂停派发"
+                                 : (model.queueAutomaticDispatchPaused
+                                    ? "自动续发已暂停" : "自动续发已开启"))
                                 .font(.subheadline.weight(.semibold))
-                            Text(model.queueAutomaticDispatchPaused
-                                 ? "可以调整或发送队列，不会在回复结束后自动发下一条。"
-                                 : "当前回复结束后，将按顺序自动发送。")
+                            Text(editingID != nil
+                                 ? "保存或取消不会自动发送这条消息。"
+                                 : (model.queueAutomaticDispatchPaused
+                                      ? "可以调整或发送队列，不会在回复结束后自动发下一条。"
+                                      : "当前回复结束后，将按顺序自动发送。"))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 4)

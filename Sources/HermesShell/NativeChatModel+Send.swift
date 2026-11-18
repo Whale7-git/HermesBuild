@@ -476,6 +476,7 @@ extension NativeChatModel {
     }
 
     func markQueuedTurnForManualDispatch(id: String) {
+        guard queueEditingTurnID == nil else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery == .waiting else { return }
         queuedTurns[index].automaticAfterStreamID = nil

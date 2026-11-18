@@ -51,6 +51,10 @@ def violations(contents: dict[str, str]) -> list[str]:
             "taskCenterScope == homeScope",
             "pendingTaskSheetSelection = (",
             "RootTaskSheetNavigation.canOpen(",
+            "settlePageReturn(.chat",
+            "settlePageReturn(.browser",
+            "pageReturnTicket == ticket",
+            "modalOpen: app.showSettings || app.needsLogin || taskCenterPresented",
             "SessionTaskCenterView(",
         ),
         "SessionDrawer.swift": (
@@ -65,6 +69,11 @@ def violations(contents: dict[str, str]) -> list[str]:
             "SessionTaskCenterView(",
             "var onShowTaskCenter: (() -> Void)?",
             "if let onShowTaskCenter { onShowTaskCenter() }",
+            "Button(action: presentTaskCenter)",
+            "compactBrowseAction(\"全部会话\"",
+            "compactBrowseAction(\"全部任务\"",
+            "searchField.disabled(selecting)",
+            "pendingLocalTaskSelection",
         ),
         "UnifiedSessionBrowser.swift": (
             "struct UnifiedSessionBrowser: View",
@@ -132,6 +141,20 @@ def violations(contents: dict[str, str]) -> list[str]:
             "if model.queuedTurns.first?.delivery == .uncertain {",
             "自动续发",
             ".confirmationDialog(",
+            "queueEditor(turn, index: index)",
+            "model.beginQueuedTurnEdit(",
+            "model.commitQueuedTurnEdit(",
+            "model.cancelQueuedTurnEdit(",
+        ),
+        "NativeChatView+Panels.swift": (
+            "dismissPanel(then: .locateMessage(id))",
+            "dismissPanel(then: .latestMessage)",
+            "ChatQueueManager(model: model)",
+        ),
+        "NativeChatModel+Send.swift": (
+            "editing: queueEditingTurnID != nil",
+            "func beginQueuedTurnEdit(",
+            "func commitQueuedTurnEdit(",
         ),
         "NativeChatView+MessageList.swift": (
             "private var jumpBar: some View",
@@ -164,6 +187,10 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("Navigation: full-screen empty overlay intercepts actions")
     if ".overlay {\n                if model.queuedTurns.isEmpty" in contents.get("ChatQueueManager.swift", ""):
         failures.append("Queue: full-screen empty overlay intercepts auto-dispatch controls")
+    if "Button { showTaskCenter = true }" in contents.get("SessionDrawer.swift", ""):
+        failures.append("Drawer: root task center is bypassed")
+    if "model.removeQueuedTurn(id: turn.id)" in contents.get("NativeChatView+Panels.swift", ""):
+        failures.append("Queue: edit must never remove turn or replace composer draft")
     return failures
 
 
@@ -175,6 +202,7 @@ def main() -> int:
         "StableChatScrollView+Coordinator.swift",
         "SessionTaskCenterView.swift", "ChatNavigation.swift", "ChatQueueManager.swift",
         "NativeChatView+MessageList.swift",
+        "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
@@ -221,6 +249,17 @@ def main() -> int:
          "Button { showMessageNavigation = true }"),
         ("unread reading badge", "NativeChatView+MessageList.swift",
          "Text(\"新回复\")"),
+        ("settled browser return", "RootView.swift", "settlePageReturn(.browser"),
+        ("root-owned quick task action", "SessionDrawer.swift",
+         "Button(action: presentTaskCenter)"),
+        ("compact global browse action", "SessionDrawer.swift",
+         "compactBrowseAction(\"全部会话\""),
+        ("deferred message location", "NativeChatView+Panels.swift",
+         "dismissPanel(then: .locateMessage(id))"),
+        ("queue editing lease", "NativeChatModel+Send.swift",
+         "editing: queueEditingTurnID != nil"),
+        ("in-place queue editor", "ChatQueueManager.swift",
+         "model.commitQueuedTurnEdit("),
     )
     for description, filename, fragment in cases:
         if fragment not in contents[filename]:

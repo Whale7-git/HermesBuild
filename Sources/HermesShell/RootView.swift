@@ -21,7 +21,7 @@ struct RootView: View {
     @State private var browserRoute: [UnifiedBrowserPage] = []
     @State private var browserSource: UnifiedBrowserSource = .chat
     @State private var browserSessionOpen = false
-    private enum PageReturnTarget { case chat, browser }
+    private enum PageReturnTarget: Equatable { case chat, browser }
     // Persist interactive offset past GestureState reset and keep the
     // outgoing top card mounted until its settling animation ends.
     @State private var settlingPage: PageReturnTarget?
