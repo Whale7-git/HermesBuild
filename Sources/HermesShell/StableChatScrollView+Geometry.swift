@@ -20,6 +20,11 @@ extension ChatScrollController {
         for id in attached { position(id) }
         let viewport = Double(scrollView.bounds.height)
         let baseBottom = frames.last?.bottom ?? 0
+        // A missing frame may only be a transient height measurement. A
+        // missing transcript ID, however, must release its viewport reserve.
+        if let id = turnReading.rowID, itemByID[id] == nil {
+            turnReading.reset()
+        }
         let focusedTop = turnReading.rowID.flatMap { frame(for: $0)?.top }
         let turnTarget = turnReading.target(
             contentBottom: baseBottom, rowTop: focusedTop, viewport: viewport,

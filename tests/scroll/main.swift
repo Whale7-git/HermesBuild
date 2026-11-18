@@ -586,6 +586,12 @@ expect(turnReading.target(contentBottom: 240, rowTop: 140, viewport: 800) == 140
        "new user prompt stays at top")
 expect(turnReading.target(contentBottom: 700, rowTop: 140, viewport: 800) == 140,
        "short reply does not move the user's question")
+expect(turnReading.target(contentBottom: 700, rowTop: nil, viewport: 800) == nil,
+       "temporary missing measurement defers offset updates")
+expect(turnReading.rowID == "m-user-1" && turnReading.phase == .focusingTurn,
+       "missing frame never destroys focused user-turn intent")
+expect(turnReading.target(contentBottom: 700, rowTop: 140, viewport: 800) == 140,
+       "focused turn resumes after measurement becomes available")
 expect(turnReading.target(contentBottom: 700, rowTop: 140, viewport: 400) == 140,
        "keyboard shrink alone does not trigger reply follow")
 expect(turnReading.target(contentBottom: 760, rowTop: 140, viewport: 400,
