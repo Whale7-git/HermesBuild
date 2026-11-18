@@ -1119,5 +1119,42 @@ import Foundation
                      "read-only history is not authoritative delivery evidence")
     }
 
+    // Q205-01/02 and build206: refusing an in-flight clear must preserve
+    // recovery evidence; the warning expires on a successful mutation.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "queue-clear-feedback", api: service)
+        await model.load()
+        let pending = ChatQueuedTurn(id: "submitting-queue", text: "keep",
+            attachments: [image], composerText: "keep", origin: .userInput,
+            automaticAfterStreamID: nil)
+        model.setQueuedTurns([pending])
+        model.queuedTurns[0].delivery = .submitting
+        model.setQueuedTurns([])
+        precondition(model.queuedTurns.count == 1
+                     && model.queuedTurns[0].id == pending.id
+                     && model.queuedTurns[0].attachments == [image])
+        precondition(model.queueClearRefusal?.contains("正在发送") == true,
+                     "in-flight refusal must be visible to queue UI")
+        model.queuedTurns[0].delivery = .waiting
+        model.setQueuedTurns([])
+        precondition(model.queuedTurns.isEmpty && model.queueClearRefusal == nil,
+                     "a successful clear retires stale refusal feedback")
+        model.setQueueAutomaticDispatchPaused(true)
+        model.uncertain = true // An unresolved POST is the reason for recovery lock.
+        model.pauseQueueForRecovery()
+        model.setQueueAutomaticDispatchPaused(false)
+        precondition(model.queueRecoveryPaused && model.queueAutomaticDispatchPaused
+                     && !model.queueUserPaused,
+                     "recovery lock cannot be overridden by user-resume intent")
+        model.disconnect()
+    }
+    precondition(!QueueEditorExitPolicy.needsDiscardConfirmation(
+        editingID: nil, original: "a", current: "b"))
+    precondition(!QueueEditorExitPolicy.needsDiscardConfirmation(
+        editingID: "turn", original: "same", current: "same"))
+    precondition(QueueEditorExitPolicy.needsDiscardConfirmation(
+        editingID: "turn", original: "original", current: "edited"))
+
     print("SEND_SAFETY_PASS complete queue payload, no overwrite, persistence, steer lock, interrupt verification, cancellation, approval identity and clarify reply contract")
 }

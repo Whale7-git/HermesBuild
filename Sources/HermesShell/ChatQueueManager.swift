@@ -4,8 +4,11 @@ import SwiftUI
 /// this view only supplies a complete, bounded surface for all queued turns.
 struct ChatQueueManager: View {
     @ObservedObject var model: NativeChatModel
+    var onRecovery: (() -> Void)? = nil
     @State private var editingID: String?
     @State private var editingText = ""
+    @State private var editingOriginalText = ""
+    @State private var confirmDiscardEdit = false
     @State private var editingError = false
     @State private var confirmingClear = false
     @State private var recoveringID: String?
@@ -16,6 +19,14 @@ struct ChatQueueManager: View {
         model.canSend && !model.running && !model.loading && !model.readOnly && !model.stopping
     }
     private var queueStatus: ChatQueueStatus { ChatQueueStatus(turns: model.queuedTurns) }
+    private var hasSubmittingTurn: Bool {
+        model.queuedTurns.contains { $0.delivery == .submitting }
+    }
+    private var hasUnsavedEdit: Bool {
+        QueueEditorExitPolicy.needsDiscardConfirmation(
+            editingID: editingID, original: editingOriginalText, current: editingText)
+    }
+    private var recoveryLocked: Bool { model.queueRecoveryPaused }
 
     var body: some View {
         NavigationStack {
@@ -28,14 +39,17 @@ struct ChatQueueManager: View {
                                              ? AppTheme.warning : AppTheme.success)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(editingID != nil ? "编辑中 · 暂停派发"
-                                 : (model.queueAutomaticDispatchPaused
-                                    ? "自动续发已暂停" : "自动续发已开启"))
+                                 : (recoveryLocked ? "恢复安全锁定 · 暂停续发"
+                                    : (model.queueAutomaticDispatchPaused
+                                        ? "自动续发已暂停" : "自动续发已开启")))
                                 .font(.subheadline.weight(.semibold))
                             Text(editingID != nil
                                  ? "保存或取消不会自动发送这条消息。"
-                                 : (model.queueAutomaticDispatchPaused
-                                      ? "可以调整或发送队列，不会在回复结束后自动发下一条。"
-                                      : "当前回复结束后，将按顺序自动发送。"))
+                                 : (recoveryLocked
+                                    ? "仍有运行或发送结果待核对。自动续发锁定不会覆盖你的手动暂停设置。"
+                                    : (model.queueAutomaticDispatchPaused
+                                        ? "已按你的设置手动暂停自动续发。"
+                                        : "当前回复结束后，将按顺序自动发送。")))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 4)
@@ -43,8 +57,24 @@ struct ChatQueueManager: View {
                             get: { !model.queueAutomaticDispatchPaused },
                             set: { model.setQueueAutomaticDispatchPaused(!$0) }))
                             .labelsHidden()
-                            .disabled(editingID != nil)
+                            .disabled(editingID != nil || recoveryLocked)
                             .accessibilityLabel("自动续发排队消息")
+                            .accessibilityHint(recoveryLocked
+                                ? "必须先核对运行与发送状态，不能解除恢复安全锁定"
+                                : (editingID != nil ? "请先保存或取消队列编辑" : ""))
+                    }
+                    if recoveryLocked, let onRecovery {
+                        Button("查看恢复状态", systemImage: "checkmark.shield") {
+                            onRecovery()
+                        }
+                        .disabled(editingID != nil)
+                        .frame(minHeight: 44, alignment: .leading)
+                        .accessibilityHint("打开只读核对与恢复中心，不自动重发消息")
+                    }
+                    if let refusal = model.queueClearRefusal {
+                        Label(refusal, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.warning)
                     }
                     if model.queuePersistenceFailed {
                         Label("队列写入失败；当前改动重启后可能丢失。",
@@ -71,6 +101,11 @@ struct ChatQueueManager: View {
                         }
                         .frame(maxWidth: .infinity, minHeight: 140)
                         .listRowBackground(Color.clear)
+                    }
+                    if hasSubmittingTurn {
+                        Label("有消息正在提交，暂不能清空队列；发送结果确认后可重试。",
+                              systemImage: "lock.shield")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if model.queuedTurns.first?.delivery == .uncertain {
                         Label("首条消息的发送结果未确认。先核对会话，确认没有这条后再重试，避免重复执行。",
@@ -101,18 +136,28 @@ struct ChatQueueManager: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("完成") { dismiss() }
+                    Button("完成") { requestDismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("清空", role: .destructive) {
                         confirmingClear = true
                     }
-                    .disabled(model.queuedTurns.isEmpty || editingID != nil)
+                    .disabled(model.queuedTurns.isEmpty || editingID != nil || hasSubmittingTurn)
                 }
             }
             // Empty/uncertain states are List rows. They must not cover
             // the auto-dispatch switch, toolbar, or queue action buttons.
+            .interactiveDismissDisabled(editingID != nil)
             .onDisappear { cancelEditing() }
+            .alert("未保存队列修改", isPresented: $confirmDiscardEdit) {
+                Button("继续编辑", role: .cancel) {}
+                Button("放弃修改", role: .destructive) {
+                    cancelEditing()
+                    dismiss()
+                }
+            } message: {
+                Text("排队消息的编辑还没有保存。放弃不会删除原队列条目或附件。")
+            }
             .confirmationDialog("清空全部排队消息？", isPresented: $confirmingClear,
                                 titleVisibility: .visible) {
                 Button("清空 \(model.queuedTurns.count) 条消息", role: .destructive) {
@@ -158,6 +203,7 @@ struct ChatQueueManager: View {
                 Button {
                     guard let snapshot = model.beginQueuedTurnEdit(id: turn.id) else { return }
                     editingText = snapshot.composerText
+                    editingOriginalText = snapshot.composerText
                     editingError = false
                     editingID = snapshot.id
                 } label: {
@@ -237,6 +283,7 @@ struct ChatQueueManager: View {
                     if model.commitQueuedTurnEdit(id: id, composerText: editingText) {
                         editingID = nil
                         editingText = ""
+                        editingOriginalText = ""
                         editingError = false
                     } else {
                         editingError = true
@@ -252,11 +299,22 @@ struct ChatQueueManager: View {
         .padding(.vertical, 6)
     }
 
+    private func requestDismiss() {
+        if hasUnsavedEdit {
+            confirmDiscardEdit = true
+            return
+        }
+        cancelEditing()
+        dismiss()
+    }
+
     private func cancelEditing() {
         if let id = editingID { model.cancelQueuedTurnEdit(id: id) }
         editingID = nil
         editingText = ""
+        editingOriginalText = ""
         editingError = false
+        confirmDiscardEdit = false
     }
 
     private func deliveryLabel(_ turn: ChatQueuedTurn) -> String {

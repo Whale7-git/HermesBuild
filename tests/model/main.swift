@@ -78,6 +78,7 @@ var transcriptPublications = 0
         runQueuePresentationTests()
         await runSendModeTests()
         try await runSendSafetyTests()
+        try await testRetiredPostCompletions()
         try await phaseTransitionTests()
         let foregroundService = FakeChatService()
         let foregroundModel = NativeChatModel(sessionID:"foreground",api:foregroundService)
@@ -704,4 +705,109 @@ enum CacheTestError: Error { case unauthorized }
     func stopNativeTurn(streamID:String) async throws {
         try await withCheckedThrowingContinuation { pending = $0 }
     }
+}
+
+
+// Q205-04: a non-cooperative transport may complete after disconnect,
+// authentication expiry or a newer phase has taken ownership. No live server.
+@MainActor final class RetiredPostTestService: NativeChatService {
+    var pending: CheckedContinuation<String, Error>?
+    var startCalls = 0
+    func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
+        let session: [String: Any] = ["session_id": sessionID,
+                                      "messages": [], "read_only": false]
+        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject:
+            ["session": session]))
+    }
+    func startNativeTurn(sessionID: String, text: String) async throws -> String {
+        startCalls += 1
+        return try await withCheckedThrowingContinuation { pending = $0 }
+    }
+    func stopNativeTurn(streamID: String) async throws {}
+    func streamNativeTurn(streamID: String, lastEventID: String?,
+                          onFrame: (SSEFrame) async throws -> Bool) async throws {
+        try await Task.sleep(nanoseconds: 30_000_000_000)
+    }
+}
+
+@MainActor func testRetiredPostCompletions() async throws {
+    for accepted in [true, false] {
+        let service = RetiredPostTestService()
+        let model = NativeChatModel(sessionID: "late-post-auth", api: service)
+        await model.load()
+        model.draft = "old request"
+        let request = Task { await model.send() }
+        try await ModelTests.eventually { service.pending != nil }
+        let oldPendingID = model.pendingSend?.id
+        model.disconnect()
+        // The authenticated presentation has retired this generation.
+        model.transition(to: .needsLogin)
+        model.draft = "new unsent draft"
+        let continuation = service.pending!
+        service.pending = nil
+        if accepted { continuation.resume(returning: "old-run") }
+        else { continuation.resume(throwing: URLError(.networkConnectionLost)) }
+        _ = await request.value
+        precondition(model.phase == .needsLogin && model.streamID == nil,
+                     "retired POST cannot clear a newer authentication phase")
+        precondition(model.draft == "new unsent draft",
+                     "retired POST cannot delete a newer draft")
+        precondition(model.pendingSend?.id == oldPendingID && oldPendingID != nil,
+                     "retired POST retains pre-POST evidence for GET reconciliation")
+        precondition(service.startCalls == 1 && !model.canSend,
+                     "retired callback must not unlock or replay POST")
+        model.disconnect()
+    }
+    for accepted in [true, false] {
+        let service = RetiredPostTestService()
+        let model = NativeChatModel(sessionID: "late-post-new-run", api: service)
+        await model.load()
+        model.draft = "old request"
+        let request = Task { await model.send() }
+        try await ModelTests.eventually { service.pending != nil }
+        model.disconnect()
+        model.suspended = false
+        // Inject the new generation/phase explicitly; callbacks arriving
+        // late must not touch current stream identity even if uncancellable.
+        model.streamID = "current-run"
+        model.transition(to: .streaming(connected: true))
+        model.draft = "new draft"
+        let continuation = service.pending!
+        service.pending = nil
+        if accepted { continuation.resume(returning: "obsolete-run") }
+        else { continuation.resume(throwing: URLError(.timedOut)) }
+        _ = await request.value
+        precondition(model.phase == .streaming(connected: true)
+                     && model.streamID == "current-run",
+                     "retired POST cannot detach an unrelated active run")
+        precondition(model.draft == "new draft" && service.startCalls == 1,
+                     "retired callback cannot reset current composer or resubmit")
+        model.disconnect()
+    }
+    // Even a successfully accepted but retired queued POST must keep its
+    // durable queue evidence and require read-only reconciliation.
+    do {
+        let service = RetiredPostTestService()
+        let model = NativeChatModel(sessionID: "late-queued-post", api: service)
+        await model.load()
+        let queued = ChatQueuedTurn(id: "queued-late", text: "pending",
+            attachments: [], composerText: "pending", origin: .userInput,
+            automaticAfterStreamID: nil)
+        model.setQueuedTurns([queued])
+        let dispatch = Task { await model.flushQueuedIfNeeded() }
+        try await ModelTests.eventually { service.pending != nil }
+        model.disconnect()
+        model.transition(to: .needsLogin)
+        let continuation = service.pending!
+        service.pending = nil
+        continuation.resume(returning: "accepted-but-retired")
+        _ = await dispatch.value
+        precondition(model.queuedTurns.first?.id == queued.id
+                     && model.queuedTurns.first?.delivery == .uncertain,
+                     "late acceptance must not erase the queue's delivery evidence")
+        precondition(service.startCalls == 1 && !model.canSend,
+                     "retired queue must remain locked until explicit reconciliation")
+        model.disconnect()
+    }
+    print("MODEL_PASS delayed POST success/failure cannot mutate new auth or run")
 }

@@ -6,6 +6,14 @@ import Foundation
 /// Persisted records use the same JSON shape as the old single-slot queue, so
 /// an update can recover a queue written by build117 without turning an image
 /// message into a text-only placeholder.
+/// Pure UI exit policy, testable without presenting a UIKit sheet.
+enum QueueEditorExitPolicy {
+    static func needsDiscardConfirmation(editingID: String?,
+                                         original: String, current: String) -> Bool {
+        editingID != nil && original != current
+    }
+}
+
 struct ChatQueuedTurn: Identifiable, Equatable {
     static let maximumCount = 20
     /// Only IDs newer than the saved history boundary matter for recovery.
