@@ -171,6 +171,19 @@ def violations(contents: dict[str, str]) -> list[str]:
     root = contents.get("RootView.swift", "")
     chrome = contents.get("NativeChatView+Chrome.swift", "")
     chat = contents.get("NativeChatView.swift", "")
+    unified = contents.get("UnifiedSessionBrowser.swift", "")
+    if "@Binding var taskSearch: String" not in unified or (
+            "taskSearch: $unifiedTaskQuery" not in root):
+        failures.append("Browser task query must be owned by the root navigation state")
+    geometry = contents.get("StableChatScrollView+Geometry.swift", "")
+    if "itemByID[id] == nil" not in geometry or "turnReading.reset()" not in geometry:
+        failures.append("Focused turn must retire when its transcript ID disappears")
+    if "guard let rowTop else { return nil }" not in contents.get("ChatScrollState.swift", ""):
+        failures.append("Temporary missing row geometry must preserve focus")
+    composer = contents.get("ChatComposer.swift", "")
+    if ".accessibilityHint(hint)" not in composer or (
+            "ChatComposerFeedbackPolicy.sendHint(" not in composer):
+        failures.append("Composer disabled actions must provide a state reason")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
@@ -215,7 +228,8 @@ def main() -> int:
         "SessionTaskCenterView.swift", "ChatNavigation.swift", "ChatQueueManager.swift",
         "NativeChatView+MessageList.swift",
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
-        "ChatMessageViews.swift",
+        "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
+        "ChatComposer.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
