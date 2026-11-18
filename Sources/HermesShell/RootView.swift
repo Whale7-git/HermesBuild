@@ -34,6 +34,9 @@ struct RootView: View {
     @GestureState private var sessionBackDrag = RootPageGestureState()
     @StateObject private var unifiedCenter = UnifiedSessionModel()
     @State private var unifiedQuery = ""
+    // Task search belongs to the browser navigation owner, not its
+    // conditional SwiftUI page, so returning from a chat keeps the filter.
+    @State private var unifiedTaskQuery = ""
     @State private var unifiedFilter = 0
     @State private var unifiedSection = 0
     private var browserAllInstances: Bool { browserRoute.last == .all }
@@ -487,6 +490,7 @@ struct RootView: View {
                 UnifiedSessionBrowser(
                     center: unifiedCenter,
                     query: $unifiedQuery,
+                    taskSearch: $unifiedTaskQuery,
                     filter: $unifiedFilter,
                     section: $unifiedSection,
                     onClose: backFromBrowser,

@@ -466,8 +466,14 @@ struct ChatTurnReadingState {
                          viewport: Double, allowGrowth: Bool = true) -> Double? {
         guard rowID != nil else { return nil }
         guard contentBottom.isFinite, contentBottom >= 0,
-              viewport.isFinite, viewport > 0,
-              let rowTop, rowTop.isFinite, rowTop >= 0 else {
+              viewport.isFinite, viewport > 0 else {
+            reset()
+            return nil
+        }
+        // A temporarily unmeasured row is still a valid reading target.
+        // The geometry owner retires focus only if its transcript ID vanishes.
+        guard let rowTop else { return nil }
+        guard rowTop.isFinite, rowTop >= 0 else {
             reset()
             return nil
         }

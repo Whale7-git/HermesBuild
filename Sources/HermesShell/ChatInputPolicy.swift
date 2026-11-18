@@ -31,3 +31,25 @@ enum ChatComposerActionPolicy {
 
     static func showsStop(running: Bool) -> Bool { running }
 }
+
+/// Accessibility feedback for disabled composer actions. This does not
+/// interpret server status or authorize sending: the existing canSend gate
+/// and draft/IME policy remain authoritative.
+enum ChatComposerFeedbackPolicy {
+    static func sendHint(readOnly: Bool, loading: Bool, stopping: Bool,
+                         composing: Bool, canSend: Bool, hasContent: Bool) -> String {
+        if readOnly { return "当前会话只读，无法发送消息" }
+        if stopping { return "正在等待服务端确认停止，暂不能发送" }
+        if loading { return "正在读取会话，请稍后发送" }
+        if composing { return "输入法正在组合文字，请先完成输入" }
+        if !canSend { return "当前连接或运行状态暂不允许发送，请先核对状态" }
+        if !hasContent { return "请输入文字或添加附件" }
+        return "发送当前消息"
+    }
+
+    static func stopHint(stopping: Bool, canStop: Bool) -> String {
+        if stopping { return "已请求停止，等待服务端确认终态" }
+        if !canStop { return "当前连接未就绪，暂不能请求停止" }
+        return "请求停止当前回复；需等待服务端确认"
+    }
+}

@@ -491,11 +491,18 @@ struct ChatComposer: View {
                         hasReadyAttachments: hasReadyAttachments) {
                         actionButton(symbol: "arrow.up", enabled: sendEnabled,
                                      label: running ? "发送（\(sendMode.label)）" : "发送消息",
+                                     hint: ChatComposerFeedbackPolicy.sendHint(
+                                        readOnly: readOnly, loading: loading,
+                                        stopping: stopping, composing: composing,
+                                        canSend: canSend,
+                                        hasContent: !trimmed.isEmpty || hasReadyAttachments),
                                      action: submit)
                     }
                     if ChatComposerActionPolicy.showsStop(running: running) {
                         actionButton(symbol: "stop.fill", enabled: canStop && !stopping,
                                      label: stopping ? "正在停止" : (canStop ? "停止生成" : "等待连接后可停止"),
+                                     hint: ChatComposerFeedbackPolicy.stopHint(
+                                        stopping: stopping, canStop: canStop),
                                      busy: stopping) {
                             stopTick += 1
                             onStop()
@@ -613,7 +620,8 @@ struct ChatComposer: View {
     }
 
     private func actionButton(symbol: String, enabled: Bool, label: String,
-                              busy: Bool = false, action: @escaping () -> Void) -> some View {
+                              hint: String = "", busy: Bool = false,
+                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Group {
                 if busy { ProgressView().controlSize(.small) }
@@ -633,6 +641,7 @@ struct ChatComposer: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(label)
+        .accessibilityHint(hint)
     }
 
     private func receiveMetrics(_ metrics: ChatDraftMetrics) {
