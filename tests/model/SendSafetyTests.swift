@@ -1141,6 +1141,7 @@ import Foundation
         precondition(model.queuedTurns.isEmpty && model.queueClearRefusal == nil,
                      "a successful clear retires stale refusal feedback")
         model.setQueueAutomaticDispatchPaused(true)
+        model.uncertain = true // An unresolved POST is the reason for recovery lock.
         model.pauseQueueForRecovery()
         model.setQueueAutomaticDispatchPaused(false)
         precondition(model.queueRecoveryPaused && model.queueAutomaticDispatchPaused
