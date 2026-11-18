@@ -205,7 +205,7 @@ extension NativeChatView {
         case .usage:
             ContextUsageView(usage: model.transcript.usage, contextStatus: model.transcript.contextStatus)
         case .queue:
-            ChatQueueManager(model: model)
+            ChatQueueManager(model: model, onRecovery: { showPanel(.recovery) })
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         case .recovery:

@@ -234,11 +234,12 @@ struct ChatMessageRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(minHeight: 32)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(internalNoticeExpanded ? "收起后台消息" : "展开后台消息")
+            .accessibilityValue(internalNoticeExpanded ? "已展开" : "已折叠")
             if internalNoticeExpanded {
                 Text(backgroundBody ?? message.content)
                     .font(.footnote)
