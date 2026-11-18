@@ -95,6 +95,15 @@ extension NativeChatView {
         case .select(let session): app.openSession(session)
         case .export(let fullHistory): exportTranscript(fullHistory: fullHistory)
         case .locateTool(let id): locateTaskTool(id)
+        case .locateMessage(let id):
+            guard items.contains(where: { $0.id == id }) else {
+                showToast("消息当前不可定位，请刷新历史后重试")
+                return
+            }
+            if cellStates[id]?.collapsed == true { cellStates[id]?.collapsed = false }
+            navigate(to: id)
+        case .latestMessage:
+            goToLatest(animated: true)
         case .find:
             restoreCancelled = true; restoringReading = false; showFind = true
             scheduleFind(.queryChanged, jump: false)
@@ -212,11 +221,8 @@ extension NativeChatView {
                 canLoadOlder: model.olderOffset > 0 && !model.loading && !model.running
                     && !model.reconciling && model.cachedHistoryDate == nil && !model.olderLimitReached,
                 onLoadOlder: { await model.loadOlder() },
-                onSelect: { id in
-                    if cellStates[id]?.collapsed == true { cellStates[id]?.collapsed = false }
-                    navigate(to: id)
-                },
-                onLatest: { goToLatest(animated: true) }
+                onSelect: { id in dismissPanel(then: .locateMessage(id)) },
+                onLatest: { dismissPanel(then: .latestMessage) }
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)

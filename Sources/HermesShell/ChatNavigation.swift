@@ -109,10 +109,7 @@ struct ChatNavigationView: View {
         NavigationStack {
             List {
                 Section {
-                    Button {
-                        onLatest()
-                        dismiss()
-                    } label: {
+                    Button(action: onLatest) {
                         Label("回到最新消息", systemImage: "arrow.down.to.line")
                             .frame(minHeight: 44)
                     }
@@ -144,10 +141,7 @@ struct ChatNavigationView: View {
                         .listRowBackground(Color.clear)
                     }
                     ForEach(filtered) { node in
-                        Button {
-                            onSelect(node.id)
-                            dismiss()
-                        } label: {
+                        Button { onSelect(node.id) } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Label {
                                     Text(node.preview)
