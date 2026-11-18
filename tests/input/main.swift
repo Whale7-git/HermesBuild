@@ -64,4 +64,24 @@ expect(ChatComposerActionPolicy.showsSend(running: true, sendEnabled: false,
                                           hasReadyAttachments: true)
        && ChatComposerActionPolicy.showsStop(running: true),
        "attachments do not obscure stop while running")
+for (readOnly, loading, stopping, composing, canSend, hasContent, token) in [
+    (true, false, false, false, true, true, "只读"),
+    (false, false, true, false, true, true, "停止"),
+    (false, true, false, false, true, true, "读取"),
+    (false, false, false, true, true, true, "输入法"),
+    (false, false, false, false, false, true, "核对状态"),
+    (false, false, false, false, true, false, "附件"),
+    (false, false, false, false, true, true, "发送当前")
+] {
+    let hint = ChatComposerFeedbackPolicy.sendHint(
+        readOnly: readOnly, loading: loading, stopping: stopping,
+        composing: composing, canSend: canSend, hasContent: hasContent)
+    expect(hint.contains(token), "composer hint respects \(token) condition")
+}
+expect(ChatComposerFeedbackPolicy.stopHint(stopping: true, canStop: false).contains("确认终态"),
+       "stop acknowledgement must not be described as completed")
+expect(ChatComposerFeedbackPolicy.stopHint(stopping: false, canStop: false).contains("连接"),
+       "unavailable stop explains connection gating")
+expect(ChatComposerFeedbackPolicy.stopHint(stopping: false, canStop: true).contains("请求停止"),
+       "available stop describes a request, not guaranteed terminal")
 print("CHAT_INPUT_POLICY_PASS \(checks) assertions (UIKit/IME routing requires device testing)")
