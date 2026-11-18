@@ -617,6 +617,18 @@ extension NativeChatModel {
             let active = try await api.startNativeTurn(sessionID:sessionID, text:text,
                 attachments:attachments,
                 reasoningEffort:api.supportsReasoningEffort ? requestedReasoningEffort : nil)
+            // A non-cooperative HTTP completion can arrive after a different
+            // session/authentication phase has taken ownership. Never publish
+            // its bubble, draft, stream ID or terminal phase into that newer UI.
+            // Return not-accepted to the queue owner: it must retain an
+            // uncertain durable row, even when the old server accepted POST.
+            // Manual sends keep their pre-POST PendingSend for GET-only review.
+            if generation != revision &&
+               (phase != .submitting || pendingSend?.id != pendingID) {
+                RuntimeLogRecorder.shared.record(.warning, "send",
+                    "retired POST success retained for read-only reconciliation")
+                return SubmitResult(accepted: false, completed: true)
+            }
             noteRunRecoveryState()
             RuntimeLogRecorder.shared.record(.info, "send", "post ok stream=\(active)")
             // Persist a separate accepted-run receipt before discarding the
@@ -657,7 +669,11 @@ extension NativeChatModel {
             // POST 失败时页面可能已经切走/刷新：失配就只做本地收尾，
             // 不把旧请求的 error/draft/notice 写回新会话的状态。
             guard generation == revision else {
-                transition(to: .idle)
+                // A different phase or submission must never be reset by an
+                // old failure. The durable pending record stays fail-closed.
+                if phase == .submitting && pendingSend?.id == pendingID {
+                    transition(to: .idle)
+                }
                 return SubmitResult(accepted: false, completed: true)
             }
             self.error = error.localizedDescription

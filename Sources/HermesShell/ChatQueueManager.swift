@@ -23,7 +23,8 @@ struct ChatQueueManager: View {
         model.queuedTurns.contains { $0.delivery == .submitting }
     }
     private var hasUnsavedEdit: Bool {
-        editingID != nil && editingText != editingOriginalText
+        QueueEditorExitPolicy.needsDiscardConfirmation(
+            editingID: editingID, original: editingOriginalText, current: editingText)
     }
     private var recoveryLocked: Bool { model.queueRecoveryPaused }
 
@@ -148,7 +149,7 @@ struct ChatQueueManager: View {
             // the auto-dispatch switch, toolbar, or queue action buttons.
             .interactiveDismissDisabled(editingID != nil)
             .onDisappear { cancelEditing() }
-            .confirmationDialog("未保存队列修改", isPresented: $confirmDiscardEdit) {
+            .alert("未保存队列修改", isPresented: $confirmDiscardEdit) {
                 Button("继续编辑", role: .cancel) {}
                 Button("放弃修改", role: .destructive) {
                     cancelEditing()

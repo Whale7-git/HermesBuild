@@ -185,6 +185,18 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("Task center: duplicate dismiss path returned")
     if ".overlay {\n                if filtered.isEmpty" in contents.get("ChatNavigation.swift", ""):
         failures.append("Navigation: full-screen empty overlay intercepts actions")
+    queue = contents.get("ChatQueueManager.swift", "")
+    notice = contents.get("ChatMessageViews.swift", "")
+    disclosure = notice.split("private var internalNoticeBubble: some View {")[-1].split("private var userBubble: some View {")[0]
+    for token in ("model.queueClearRefusal", "hasSubmittingTurn",
+                  "model.queueRecoveryPaused", "onRecovery()",
+                  "interactiveDismissDisabled(editingID != nil)",
+                  "QueueEditorExitPolicy.needsDiscardConfirmation(",
+                  ".alert(\"未保存队列修改\""):
+        if token not in queue:
+            failures.append(f"Queue: missing safety/feedback contract {token}")
+    if ".frame(minHeight: 44)" not in disclosure:
+        failures.append("Internal disclosure: needs a 44pt interactive target")
     if ".overlay {\n                if model.queuedTurns.isEmpty" in contents.get("ChatQueueManager.swift", ""):
         failures.append("Queue: full-screen empty overlay intercepts auto-dispatch controls")
     if "Button { showTaskCenter = true }" in contents.get("SessionDrawer.swift", ""):
@@ -203,6 +215,7 @@ def main() -> int:
         "SessionTaskCenterView.swift", "ChatNavigation.swift", "ChatQueueManager.swift",
         "NativeChatView+MessageList.swift",
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
+        "ChatMessageViews.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
