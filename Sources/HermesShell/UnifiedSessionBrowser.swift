@@ -16,9 +16,9 @@ struct UnifiedSessionBrowser: View {
 
     @ObservedObject var center: UnifiedSessionModel
     @Binding var query: String
+    @Binding var taskSearch: String
     @Binding var filter: Int
     @Binding var section: Int
-    @State private var taskSearch = ""
     @State private var navigationError: String?
     @State private var userRefreshing = false
     /// Read other hosts' persisted facts only on entering a task scope, not
@@ -28,13 +28,15 @@ struct UnifiedSessionBrowser: View {
 
     /// Explicit initializer: @EnvironmentObject is injected by the parent,
     /// while the root-owned model and bindings are supplied by RootView.
-    init(center: UnifiedSessionModel, query: Binding<String>, filter: Binding<Int>,
+    init(center: UnifiedSessionModel, query: Binding<String>,
+         taskSearch: Binding<String>, filter: Binding<Int>,
          section: Binding<Int>, onClose: @escaping () -> Void, backToSingleInstance: Bool,
          backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
          onOpenCurrentTaskCenter: @escaping () -> Void,
          onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
         self.center = center
         self._query = query
+        self._taskSearch = taskSearch
         self._filter = filter
         self._section = section
         self.onClose = onClose
