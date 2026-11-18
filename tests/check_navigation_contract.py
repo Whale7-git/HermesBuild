@@ -149,7 +149,7 @@ def violations(contents: dict[str, str]) -> list[str]:
         "NativeChatView+Panels.swift": (
             "dismissPanel(then: .locateMessage(id))",
             "dismissPanel(then: .latestMessage)",
-            "ChatQueueManager(model: model)",
+            "ChatQueueManager(model: model, onRecovery:",
         ),
         "NativeChatModel+Send.swift": (
             "editing: queueEditingTurnID != nil",

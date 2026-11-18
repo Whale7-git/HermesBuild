@@ -784,5 +784,30 @@ enum CacheTestError: Error { case unauthorized }
                      "retired callback cannot reset current composer or resubmit")
         model.disconnect()
     }
+    // Even a successfully accepted but retired queued POST must keep its
+    // durable queue evidence and require read-only reconciliation.
+    do {
+        let service = RetiredPostTestService()
+        let model = NativeChatModel(sessionID: "late-queued-post", api: service)
+        await model.load()
+        let queued = ChatQueuedTurn(id: "queued-late", text: "pending",
+            attachments: [], composerText: "pending", origin: .userInput,
+            automaticAfterStreamID: nil)
+        model.setQueuedTurns([queued])
+        let dispatch = Task { await model.flushQueuedIfNeeded() }
+        try await ModelTests.eventually { service.pending != nil }
+        model.disconnect()
+        model.transition(to: .needsLogin)
+        let continuation = service.pending!
+        service.pending = nil
+        continuation.resume(returning: "accepted-but-retired")
+        _ = await dispatch.value
+        precondition(model.queuedTurns.first?.id == queued.id
+                     && model.queuedTurns.first?.delivery == .uncertain,
+                     "late acceptance must not erase the queue's delivery evidence")
+        precondition(service.startCalls == 1 && !model.canSend,
+                     "retired queue must remain locked until explicit reconciliation")
+        model.disconnect()
+    }
     print("MODEL_PASS delayed POST success/failure cannot mutate new auth or run")
 }
