@@ -80,6 +80,8 @@ struct ImagePreviewActions: View {
     let sharing: Bool
     let save: () -> Void
     let share: () -> Void
+    /// The saved asset may be a downsampled preview when original bytes failed.
+    var savedLabel: String = "已保存到相册"
 
     var body: some View {
         HStack(spacing: 12) {
@@ -92,7 +94,7 @@ struct ImagePreviewActions: View {
                 actionIcon(saved ? "checkmark" : "square.and.arrow.down", busy: saving)
             }
             .disabled(saved || saving || sharing)
-            .accessibilityLabel(saving ? "正在保存图片" : saved ? "已保存到相册" : "保存原图")
+            .accessibilityLabel(saving ? "正在保存图片" : saved ? savedLabel : "保存原图")
         }
         .buttonStyle(.plain)
         .padding(16)
