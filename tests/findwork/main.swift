@@ -41,6 +41,13 @@ expect(before.map(\.rowID) == ["old"], "worker reads original snapshot")
 let updated = await engine.find("needle", in: [documents[0], .init(id: "tail", text: "live needle"),
                                               .init(id: "new", text: "needle")])
 expect(updated.map(\.rowID) == ["old", "tail", "new"], "cached documents update with live tail and new rows")
+let detail = await engine.findDetailed("needle", in: [ChatConversationSearch.Document(
+    id: "bounded", text: String(repeating: "needle ", count: 301))])
+expect(detail.hits.count == 300 && detail.hasMoreMatches,
+       "actor worker forwards actual truncation to UI")
+let invalidDetail = await engine.findDetailed(String(repeating: "a", count: 513), in: documents)
+expect(invalidDetail.queryTooLong && invalidDetail.hits.isEmpty,
+       "actor worker distinguishes invalid query from zero results")
 let count = await engine.cachedDocumentCount
 expect(count <= 2, "rendered search cache obeys hard document budget")
 let replacedHits = await engine.find("missing", in: [.init(id: "tail", text: "missing")])
