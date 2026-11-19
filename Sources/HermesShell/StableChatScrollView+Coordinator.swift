@@ -689,12 +689,21 @@ extension ChatScrollController {
         if navigationTarget?.findOrdinal != nil { navigationTarget = nil }
     }
 
-    @objc func persistReadingPosition() {
+    /// Snapshot the *visible* row and row-relative offset without persisting it.
+    /// Search uses this transient value so an exploratory jump cannot overwrite
+    /// the normal resume bookmark of this conversation.
+    func captureCurrentReadingPosition() -> ChatReadingPosition? {
         guard navigationTarget == nil, let anchor = captureAnchors().first(where: {
             itemByID[$0.id] != nil
-        }) else { return }
-        current?.onReadingPosition(ChatReadingPosition(rowID: anchor.id,
-            offsetInRow: max(0, anchor.offsetInRow), following: policy.following && !navigationDetached))
+        }) else { return nil }
+        return ChatReadingPosition(rowID: anchor.id,
+            offsetInRow: max(0, anchor.offsetInRow),
+            following: policy.following && !navigationDetached)
+    }
+
+    @objc func persistReadingPosition() {
+        guard let position = captureCurrentReadingPosition() else { return }
+        current?.onReadingPosition(position)
     }
 
     @objc func backgroundTapped() { current?.onBackgroundTap() }
