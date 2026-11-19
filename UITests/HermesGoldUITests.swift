@@ -1,0 +1,72 @@
+import XCTest
+
+final class HermesGoldUITests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
+    /// Gold 1: the real session row must open a functioning chat composer.
+    func test01ConnectionAndSessionList() {
+        let app = HermesUITestHarness.launchAndConnect()
+        HermesUITestHarness.openSession(app)
+    }
+
+    /// Gold 2: UI sends a single message and observes scripted SSE completion.
+    func test02SendStreamAndComplete() {
+        let app = HermesUITestHarness.launchAndConnect()
+        HermesUITestHarness.openSession(app)
+        let editor = app.textViews.matching(
+            NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("UI test: one message")
+        let send = app.buttons["发送消息"]
+        XCTAssertTrue(send.waitForExistence(timeout: 15), "Send control missing")
+        XCTAssertTrue(send.isEnabled)
+        send.tap()
+        let text = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS[cd] %@", "第二段回复已送达")).firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 30),
+                      "Scripted SSE text never reached the rendered transcript")
+        XCTAssertTrue(app.buttons["发送消息"].waitForExistence(timeout: 30),
+                      "Finished Run did not restore the idle Send state")
+    }
+
+    /// Gold 3: contentOffset must change in a real rendered long-answer reader.
+    func test03ReaderProgressAdvancesOnSwipe() {
+        let app = HermesUITestHarness.launchAndConnect()
+        HermesUITestHarness.openSession(app)
+        let thread = app.scrollViews.firstMatch
+        XCTAssertTrue(thread.waitForExistence(timeout: 10),
+                      "Chat transcript has no UIScrollView")
+        let more = app.buttons["本条回复的更多操作"].firstMatch
+        for _ in 0..<18 {
+            if more.exists { break }
+            thread.swipeUp()
+        }
+        XCTAssertTrue(more.waitForExistence(timeout: 8),
+                      "A completed long reply has no actions")
+        more.tap()
+        let read = app.buttons["专注阅读"]
+        XCTAssertTrue(read.waitForExistence(timeout: 8),
+                      "Reader option is not wired to the visible reply toolbar")
+        read.tap()
+        XCTAssertTrue(app.navigationBars["阅读模式"].waitForExistence(timeout: 12),
+                      "Reader sheet did not open")
+        let progress = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "阅读进度 ")).firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10),
+                      "Reader does not expose its progress")
+        func percent() -> Int {
+            Int(progress.label.filter { $0.isNumber }) ?? -1
+        }
+        let before = percent()
+        XCTAssertGreaterThanOrEqual(before, 0)
+        let reader = app.scrollViews.firstMatch
+        XCTAssertTrue(reader.exists, "Reader has no UIScrollView")
+        for _ in 0..<4 { reader.swipeUp() }
+        XCTAssertGreaterThan(percent(), before,
+                             "Four reader swipes did not increase reading progress")
+    }
+}
