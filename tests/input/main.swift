@@ -60,6 +60,33 @@ expect(ChatComposerActionPolicy.showsSend(running: true, sendEnabled: true,
                                           hasReadyAttachments: false)
        && ChatComposerActionPolicy.showsStop(running: true),
        "typed running composer offers both send and stop")
+expect(ChatComposerActionPolicy.reservesSendSlot(running: true, sendEnabled: false,
+                                                hasReadyAttachments: false),
+       "empty running draft reserves inert send slot to keep Stop fixed")
+expect(!ChatComposerActionPolicy.reservesSendSlot(running: true, sendEnabled: true,
+                                                 hasReadyAttachments: false),
+       "first typed character replaces reserved slot without adding control width")
+expect(!ChatComposerActionPolicy.reservesSendSlot(running: true, sendEnabled: false,
+                                                 hasReadyAttachments: true),
+       "ready attachments replace reserved slot with disabled send affordance")
+expect(!ChatComposerActionPolicy.reservesSendSlot(running: false, sendEnabled: false,
+                                                 hasReadyAttachments: false),
+       "idle composer never shows an extra blank slot")
+expect(ChatReadingShortcutPolicy.showInline(
+           text: String(repeating: "长", count: 1000), isStreaming: false, showsCopy: true),
+       "long completed answer exposes direct reader shortcut")
+expect(!ChatReadingShortcutPolicy.showInline(
+           text: String(repeating: "短", count: 999), isStreaming: false, showsCopy: true),
+       "short answer keeps compact copy quote more toolbar")
+expect(!ChatReadingShortcutPolicy.showInline(
+           text: String(repeating: "x", count: 1000), isStreaming: true, showsCopy: true),
+       "streaming output does not gain a reader button while expanding")
+expect(!ChatReadingShortcutPolicy.showInline(
+           text: String(repeating: "x", count: 1000), isStreaming: false, showsCopy: false),
+       "tool-only or restricted row does not gain a reader button")
+expect(ChatReadingShortcutPolicy.showInline(
+           text: String(repeating: "👩🏽‍💻", count: 170), isStreaming: false, showsCopy: true),
+       "UTF-16 threshold handles emoji clusters without treating graphemes as code units")
 expect(ChatComposerActionPolicy.showsSend(running: true, sendEnabled: false,
                                           hasReadyAttachments: true)
        && ChatComposerActionPolicy.showsStop(running: true),

@@ -300,6 +300,36 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "matchCount == 0 || searching || searchQueryTooLong"):
         if token not in reader:
             failures.append(f"Reader interaction regression: {token}")
+    # build216: composer action geometry stays stable as the first character
+    # arrives during generation; no new request/queue semantics are introduced.
+    composerPolicy = contents.get("ChatInputPolicy.swift", "")
+    shortcutPolicy = contents.get("ChatReadingShortcutPolicy.swift", "")
+    messageList = contents.get("NativeChatView+MessageList.swift", "")
+    for token in ("reservesSendSlot(", "running && !showsSend("):
+        if token not in composerPolicy:
+            failures.append(f"Running Send/Stop geometry policy missing: {token}")
+    for token in ("ChatComposerActionPolicy.reservesSendSlot(",
+                  ".accessibilityHidden(true)", ".allowsHitTesting(false)",
+                  "if !readOnly && running {",
+                  ".lineLimit(quoteExpanded ? 8 : 2)",
+                  "AppTheme.radiusComposer"):
+        if token not in composer:
+            failures.append(f"Chat composer polish/IME stability missing: {token}")
+    for token in ("minimumUTF16Length = 1000", "!isStreaming && showsCopy"):
+        if token not in shortcutPolicy:
+            failures.append(f"Inline reading shortcut must stay bounded: {token}")
+    for token in ("ChatReadingShortcutPolicy.showInline(",
+                  ".accessibilityLabel(\"专注阅读这条长回复\")",
+                  "Button(\"专注阅读\"", "Button(action: onCopyReply)",
+                  "Button(action: onQuote)"):
+        if token not in toolViews:
+            failures.append(f"Long-answer toolbar lost an action: {token}")
+    for token in ("scroll.hasUnreadContent ? AppTheme.selectionFill : AppTheme.surface",
+                  ".accessibilityValue(scroll.hasUnreadContent",
+                  ".animation(reduceMotion ? nil : .easeOut(duration: 0.16)",
+                  ".frame(height: 48, alignment: .bottom)"):
+        if token not in messageList:
+            failures.append(f"Unread action must stay outside transcript geometry: {token}")
     # build215: history image preview must use the same scoped authorization
     # as its original-byte save/share route, never silently fall back to cookies.
     strip = contents.get("AttachmentStrip.swift", "")
@@ -400,6 +430,7 @@ def main() -> int:
         "ChatComposer.swift", "SessionSearchView.swift",
         "ChatToolSummary.swift", "ChatConversationSearch.swift", "ChatFindBar.swift",
         "ChatMessageReader.swift", "ChatReaderOutline.swift",
+        "ChatReadingShortcutPolicy.swift", "ChatInputPolicy.swift",
         "AttachmentStrip.swift", "AttachmentOverview.swift", "AttachmentCatalog.swift",
         "AttachmentProgressPresentation.swift", "ImagePreviewActions.swift", "AttachmentViews.swift",
         "NativeChatView+Composer.swift",
@@ -446,6 +477,12 @@ def main() -> int:
          "if model.queuedTurns.isEmpty {"),
         ("status action", "NativeChatView+Chrome.swift",
          "showPanel(.task)"),
+        ("stable running stop slot", "ChatComposer.swift",
+         "ChatComposerActionPolicy.reservesSendSlot("),
+        ("direct long reader", "ChatMessageViews.swift",
+         "ChatReadingShortcutPolicy.showInline("),
+        ("unread geometry isolation", "NativeChatView+MessageList.swift",
+         ".frame(height: 48, alignment: .bottom)"),
         ("reading navigation action", "NativeChatView+MessageList.swift",
          "Button { showMessageNavigation = true }"),
         ("unread reading badge", "NativeChatView+MessageList.swift",
