@@ -437,6 +437,97 @@ struct AttachmentStrip: View {
     }
 }
 
+/// A compact, metadata-backed media surface for the attachment overview.
+/// Visible tiles alone load thumbnails; tapping opens a single, scoped gallery
+/// whose adjacent pages load only when selected.
+struct AttachmentMediaItem: Identifiable {
+    let id: String
+    let rowID: String
+    let image: HistoryAttachment
+}
+
+struct AttachmentMediaGrid: View {
+    let items: [AttachmentMediaItem]
+    let baseURL: URL
+    let sessionID: String
+    let accountScope: String
+    let authorization: AttachmentAuthorization
+    let imageRatios: ImageRatioSnapshot
+    let onLocate: (String) -> Void
+    @StateObject private var interaction = AttachmentInteractionController()
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 44), spacing: 7),
+              count: dynamicTypeSize.isAccessibilitySize ? 1 : 3)
+    }
+    private var scope: String {
+        accountScope + "|" + baseURL.absoluteString + "|" + sessionID + "|media-overview"
+    }
+    private var images: [HistoryAttachment] { items.map(\.image) }
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 7) {
+            ForEach(items) { media in
+                InlineImageView(
+                    raw: media.image.path, baseURL: baseURL, sessionID: sessionID,
+                    ratio: imageRatios.ratio(for: media.image.path),
+                    onTap: { _ in open(media.image) }, ratioScope: accountScope,
+                    tile: true, authorization: authorization)
+                    .contextMenu {
+                        Button("定位到原消息", systemImage: "arrow.turn.up.left") {
+                            onLocate(media.rowID)
+                        }
+                        Button("复制图片路径", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = media.image.path
+                        }
+                    }
+                    .accessibilityHint("点按查看图片，长按可以定位原消息")
+                    .overlay(alignment: .topLeading) {
+                        if interaction.state.failure?.ticket.itemID == media.id {
+                            Button("重试打开") { open(media.image) }
+                                .font(.caption2).padding(6).frame(minHeight: 44)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                    }
+            }
+        }
+        .onAppear { interaction.activate(scope: scope) }
+        .onChange(of: scope) { _, next in interaction.activate(scope: next) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, interaction.state.pending != nil { interaction.retire() }
+            else if phase == .active { interaction.activate(scope: scope) }
+        }
+        .onDisappear { interaction.retire() }
+        .sheet(item: $interaction.presentation) { route in
+            if route.intent == .image {
+                NavigationStack {
+                    HistoryAttachmentGallery(
+                        items: route.images.isEmpty ? [route.item] : route.images,
+                        selectedID: route.item.id, baseURL: route.baseURL,
+                        sessionID: route.sessionID, authorization: route.authorization,
+                        accountScope: accountScope)
+                        .background(AttachmentLifetimeKeeper(lifetime: route.lifetime)
+                            .frame(width: 0, height: 0))
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { interaction.requestDismissal(id: route.id) }
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    private func open(_ item: HistoryAttachment) {
+        interaction.start(item, intent: .image, baseURL: baseURL,
+                          sessionID: sessionID, images: images,
+                          authorization: authorization)
+    }
+}
+
 private struct AttachmentQuickLook: UIViewControllerRepresentable {
     let url: URL
     let lifetime: AttachmentPresentationLifetime
