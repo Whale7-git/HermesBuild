@@ -12,6 +12,12 @@ enum UnifiedBrowserScrollPolicy {
         failures.contains { anchor.hasPrefix($0.recordIDPrefix) }
     }
 
+    static func shouldCapture(userOwnsScroll: Bool, id: String?,
+                              available: [String]) -> Bool {
+        guard userOwnsScroll, let id else { return false }
+        return available.contains(id)
+    }
+
     static func reconcile(anchor: String?, index: Int, available: [String],
                           resolved: Bool,
                           failedSources: Set<UnifiedSessionIdentity> = []) -> String? {

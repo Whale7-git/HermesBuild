@@ -182,6 +182,55 @@ import Foundation
                "full refresh completion includes both hosts with one GET each")
     }
 
+    // build209: mixed three-host completion must not treat one successful
+    // host as proof that another host's bookmarked row was deleted.
+    do {
+        let first = UnifiedSessionIdentity(instanceID: UUID(),
+            endpointIdentity: "209-a", accountScope: "first")
+        let missing = UnifiedSessionIdentity(instanceID: UUID(),
+            endpointIdentity: "209-b", accountScope: "second")
+        let third = UnifiedSessionIdentity(instanceID: UUID(),
+            endpointIdentity: "209-c", accountScope: "third")
+        let f = UnifiedFixture()
+        let sourceA = f.held(first, name: "A")
+        let sourceB = f.held(missing, name: "B")
+        let sourceC = f.held(third, name: "C")
+        let center = UnifiedSessionModel()
+        let saved = UnifiedSessionRecord(identity: missing, instanceName: "B",
+            session: try row("old-bookmark"), excerpt: nil,
+            matchedFullBody: false).id
+        let started = center.start(sources: [sourceA, sourceB, sourceC], query: "")
+        await spin { f.waiting.count == 3 }
+        f.waiting.removeValue(forKey: first.instanceID)!
+            .resume(returning: [try row("healthy-A")])
+        f.waiting.removeValue(forKey: missing.instanceID)!
+            .resume(throwing: URLError(.timedOut))
+        f.waiting.removeValue(forKey: third.instanceID)!
+            .resume(returning: [try row("healthy-C")])
+        await started.value
+        let available = center.records.map(\.id)
+        expect(center.hasResolvedSnapshot && center.failures[missing] != nil
+               && center.loading.isEmpty && available.count == 2,
+               "three-host snapshot is partially successful, with a failed source")
+        expect(UnifiedBrowserScrollPolicy.reconcile(anchor: saved, index: 1,
+               available: available, resolved: center.hasResolvedSnapshot,
+               failedSources: Set(center.failures.keys)) == saved,
+               "mixed success/timeout keeps the absent failed host's bookmark")
+        let retry = Task { await center.retry(source: sourceB, query: "") }
+        await spin { f.waiting[missing.instanceID] != nil }
+        f.waiting.removeValue(forKey: missing.instanceID)!
+            .resume(returning: [try row("confirmed-new")])
+        await retry.value
+        let freshRows = center.records.map(\.id)
+        let after = UnifiedBrowserScrollPolicy.reconcile(
+            anchor: saved, index: 1, available: freshRows,
+            resolved: center.hasResolvedSnapshot,
+            failedSources: Set(center.failures.keys))
+        expect(center.failures[missing] == nil && after != nil && after != saved
+               && freshRows.contains(after!),
+               "successful retry may fall back only after the old row is confirmed gone")
+    }
+
     // After leaving and re-entering a fresh cache, retry must still work
     // even though cancel() has intentionally cleared the old requestKey.
     do {

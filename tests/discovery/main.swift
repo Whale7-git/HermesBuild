@@ -64,6 +64,15 @@ expect(UnifiedBrowserScrollPolicy.reconcile(
         anchor: failingRow, index: 1, available: [],
         resolved: true, failedSources: [failing]) == failingRow,
         "failure with no loaded rows cannot certify an empty result")
+    expect(!UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: false, id: healthyRow, available: [healthyRow]),
+        "programmatic restore or reflow never overwrites a saved bookmark")
+    expect(UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: true, id: healthyRow, available: [healthyRow]),
+        "a user-driven visible row may update its section's bookmark")
+    expect(!UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: true, id: failingRow, available: [healthyRow]),
+        "stale rows outside the current list are never recorded")
 }
 
 func expect(_ value: @autoclosure () -> Bool, _ message: String) {

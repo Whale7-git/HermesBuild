@@ -381,8 +381,10 @@ struct UnifiedSessionBrowser: View {
         // SwiftUI also publishes scrollPosition changes caused by restored
         // frames, filtering and refresh. Only a real user interaction may
         // overwrite the root-owned reading bookmark.
-        guard userOwnsScroll, let id,
-              let index = visibleScrollIDs.firstIndex(of: id) else { return }
+        let available = visibleScrollIDs
+        guard UnifiedBrowserScrollPolicy.shouldCapture(
+            userOwnsScroll: userOwnsScroll, id: id, available: available),
+              let id, let index = available.firstIndex(of: id) else { return }
         if section == 1 {
             taskScrollAnchor = id
             taskScrollIndex = index
