@@ -16,7 +16,8 @@ struct AttachmentOverview: View {
     @State private var query = ""
     @State private var filter = 0
     @State private var loading = false
-    @State private var shown = 20
+    @State private var shownFiles = 20
+    @State private var shownImages = 24
     @State private var catalog: [AttachmentCatalog.Entry]
     /// 上一次「加载更早历史」的结果提示；nil 表示还没加载过。
     /// 总览按 messages.reversed() 排列，更早的条目落在列表末尾，
@@ -38,21 +39,39 @@ struct AttachmentOverview: View {
         let reachedEnd: Bool
     }
 
-    private func paths(_ entry: AttachmentCatalog.Entry) -> [String] {
+    /// The index has stable row+path IDs even if earlier history is prepended;
+    /// classification and URL safety still pass through the existing parser.
+    private var mediaItems: [AttachmentMediaItem] {
+        AttachmentMediaIndex.candidates(catalog).compactMap { candidate in
+            guard let attachment = HistoryAttachment.parse([candidate.path], baseURL: baseURL).first,
+                  attachment.kind == .image,
+                  query.isEmpty || attachment.label.localizedCaseInsensitiveContains(query)
+            else { return nil }
+            let image = HistoryAttachment(id: candidate.id, path: attachment.path,
+                label: attachment.label, isRemote: attachment.isRemote, kind: attachment.kind)
+            return AttachmentMediaItem(id: candidate.id, rowID: candidate.rowID, image: image)
+        }
+    }
+
+    private func filePaths(_ entry: AttachmentCatalog.Entry) -> [String] {
         HistoryAttachment.parse(entry.paths, baseURL: baseURL).filter {
-            (filter == 0 || (filter == 1 ? $0.kind == .image : $0.kind != .image))
-                && (query.isEmpty || $0.label.localizedCaseInsensitiveContains(query))
+            $0.kind != .image &&
+                (query.isEmpty || $0.label.localizedCaseInsensitiveContains(query))
         }.map(\.id)
     }
 
-    private var matching: [AttachmentCatalog.Entry] { catalog.filter { !paths($0).isEmpty } }
+    private var matchingFiles: [AttachmentCatalog.Entry] {
+        catalog.filter { !filePaths($0).isEmpty }
+    }
     private var canLoad: Bool {
         model.olderOffset > 0 && !model.olderLimitReached && !model.uncertain && !model.running && !model.loading && !model.syncing
             && !model.submitting && !model.reconciling && model.cachedHistoryDate == nil
     }
 
     var body: some View {
-        NavigationStack {
+        let media = filter == 2 ? [] : mediaItems
+        let files = filter == 1 ? [] : matchingFiles
+        return NavigationStack {
             List {
                 Section {
                     Picker("附件类型", selection: $filter) {
@@ -65,14 +84,37 @@ struct AttachmentOverview: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                if matching.isEmpty {
+                if media.isEmpty && files.isEmpty {
                     ContentUnavailableView(query.isEmpty ? "暂无符合条件的附件" : "未找到附件",
-                        systemImage: "paperclip", description: Text("可切换筛选，或加载更早历史。"))
+                        systemImage: "paperclip",
+                        description: Text("可切换筛选，或加载更早历史。"))
                 }
 
-                ForEach(Array(matching.prefix(shown))) { entry in
+                if !media.isEmpty {
                     Section {
-                        AttachmentStrip(paths: paths(entry), name: "overview-" + entry.id,
+                        AttachmentMediaGrid(
+                            items: Array(media.prefix(shownImages)), baseURL: baseURL,
+                            sessionID: sessionID, accountScope: scope,
+                            authorization: authorization, imageRatios: ratios,
+                            onLocate: { id in
+                                onLocate(id)
+                                dismiss()
+                            })
+                            .listRowInsets(EdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10))
+                        if media.count > shownImages {
+                            Button("显示更多图片") { shownImages += 24 }
+                                .frame(minHeight: 44)
+                        }
+                    } header: {
+                        Text("图片 · \(media.count)")
+                    } footer: {
+                        Text("按需加载可见缩略图；长按可定位原消息，外部图片需单独确认。")
+                    }
+                }
+
+                ForEach(Array(files.prefix(shownFiles))) { entry in
+                    Section {
+                        AttachmentStrip(paths: filePaths(entry), name: "overview-" + entry.id,
                             baseURL: baseURL, sessionID: sessionID, authorization: authorization,
                             imageRatios: ratios, imageRatioScope: scope)
                         Button {
@@ -93,8 +135,8 @@ struct AttachmentOverview: View {
                     }
                 }
 
-                if matching.count > shown {
-                    Button("显示更多已载入附件") { shown += 20 }.frame(minHeight: 44)
+                if files.count > shownFiles {
+                    Button("显示更多文件") { shownFiles += 20 }.frame(minHeight: 44)
                 }
                 if model.olderOffset > 0 {
                     Section {
@@ -106,9 +148,10 @@ struct AttachmentOverview: View {
                                 await model.loadOlder()
                                 loading = false
                                 refreshCatalog()
-                                // 新条目在列表末尾，落在 prefix(shown) 之外；
-                                // 回到第一页并给出计数，按钮才有可见效果。
-                                shown = 20
+                                // Earlier entries append after the visible media/file budgets.
+                                // Reset the viewport windows and report the actual loaded delta.
+                                shownFiles = 20
+                                shownImages = 24
                                 loadOutcome = LoadOutcome(
                                     added: max(0, catalog.count - before),
                                     reachedEnd: model.olderOffset <= 0)
@@ -139,8 +182,12 @@ struct AttachmentOverview: View {
             .navigationTitle("会话附件")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "搜索附件名称")
-            .onChange(of: query) { _, _ in shown = 20 }
-            .onChange(of: filter) { _, _ in shown = 20 }
+            .onChange(of: query) { _, _ in
+                shownFiles = 20; shownImages = 24
+            }
+            .onChange(of: filter) { _, _ in
+                shownFiles = 20; shownImages = 24
+            }
             .onChange(of: model.olderOffset) { _, _ in refreshCatalog() }
             .onChange(of: model.transcript.messages.count) { _, _ in refreshCatalog() }
             .toolbar {
