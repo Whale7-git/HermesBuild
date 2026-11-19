@@ -3,9 +3,51 @@ import Foundation
 import Combine
 #endif
 
-/// A read-only fallback for a browser bookmark whose target disappeared.
-/// Do not jump while a query is unresolved; after refresh choose the nearest
-/// surviving row by previous index. Session and task bookmarks are independent.
+/// iOS 18 scroll events converted into a platform-independent ownership
+/// contract, so gesture, momentum and refresh ordering can be tested offline.
+enum UnifiedBrowserScrollEvent {
+    case interacting
+    case decelerating
+    case idle
+}
+
+struct UnifiedBrowserScrollOwnership {
+    private(set) var userOwnsScroll = false
+    private(set) var deferredReconcile = false
+
+    /// An in-progress user drag and its momentum share ownership. Only the
+    /// final idle transition releases it and requests deferred reconciliation.
+    mutating func receive(_ event: UnifiedBrowserScrollEvent) -> Bool {
+        switch event {
+        case .interacting:
+            userOwnsScroll = true
+            return false
+        case .decelerating:
+            // Momentum remains user-owned only if there was an actual drag.
+            return false
+        case .idle:
+            let flush = userOwnsScroll && deferredReconcile
+            userOwnsScroll = false
+            deferredReconcile = false
+            return flush
+        }
+    }
+
+    /// A list or evidence refresh must not take offset ownership mid-gesture.
+    mutating func datasetChanged() -> Bool {
+        guard userOwnsScroll else { return true }
+        deferredReconcile = true
+        return false
+    }
+
+    mutating func reset() {
+        userOwnsScroll = false
+        deferredReconcile = false
+    }
+}
+
+/// A read-only fallback for a missing browser target. Session and task
+/// bookmarks remain independent and failed hosts are not treated as deletion.
 enum UnifiedBrowserScrollPolicy {
     static func onFailedSource(_ anchor: String,
                                failures: Set<UnifiedSessionIdentity>) -> Bool {
@@ -20,13 +62,18 @@ enum UnifiedBrowserScrollPolicy {
 
     static func reconcile(anchor: String?, index: Int, available: [String],
                           resolved: Bool,
-                          failedSources: Set<UnifiedSessionIdentity> = []) -> String? {
+                          failedSources: Set<UnifiedSessionIdentity> = [],
+                          retainedSourceIDs: Set<String> = []) -> String? {
         guard let anchor else { return nil }
         if available.contains(anchor) { return anchor }
         // The snapshot may be partially resolved: never replace a bookmark
         // from a failed host with an unrelated successful host's row. A later
         // successful host-specific retry can legitimately retire it.
-        guard resolved, !onFailedSource(anchor, failures: failedSources) else {
+        // A task can drop out of the derived task list when its evidence
+        // expires even though its underlying session remains present. Preserve
+        // the bookmark instead of falsely treating this as session deletion.
+        guard resolved, !onFailedSource(anchor, failures: failedSources),
+              !retainedSourceIDs.contains(anchor) else {
             return anchor
         }
         guard !available.isEmpty else { return nil }

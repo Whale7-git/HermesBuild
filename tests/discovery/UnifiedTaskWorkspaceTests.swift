@@ -97,6 +97,24 @@ import Foundation
         states: [a: .init(observations: [:], lastSuccessfulList: now, failed: false)],
         now: now)
     expect(ended.isEmpty, "completed and unknown idle sessions do not flood the task center")
+    // build210: task evidence can disappear while the underlying session is
+    // still present. Treat that as a derived-list change, not session deletion.
+    let endedSession = UnifiedSessionRecord(identity: a, instanceName: "NAS",
+        session: try session("same", streaming: false),
+        excerpt: nil, matchedFullBody: false)
+    let expiredTask = UnifiedTaskWorkspace.entries(
+        records: [endedSession],
+        states: [a: .init(observations: [:], lastSuccessfulList: now,
+                         failed: false)], now: now)
+    expect(expiredTask.isEmpty, "fresh non-running status removes derived task")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: sameA.id, index: 0, available: expiredTask.map(\.id),
+        resolved: true, retainedSourceIDs: [endedSession.id]) == sameA.id,
+        "a derived task disappearing preserves its underlying session bookmark")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: sameA.id, index: 0, available: [sameB.id],
+        resolved: true, retainedSourceIDs: []) == sameB.id,
+        "confirmed session removal allows nearest surviving task row fallback")
 
     let expiry = UnifiedTaskWorkspace.nextEvidenceExpiry(
         lastSuccess: [now.addingTimeInterval(-100),
