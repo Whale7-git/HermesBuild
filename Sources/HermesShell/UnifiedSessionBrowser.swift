@@ -766,10 +766,17 @@ struct UnifiedSessionBrowser: View {
                 if scrollOwnership.datasetChanged() { reconcileScrollBookmark() }
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                taskEvidenceNow = Date()
-                refreshTaskSnapshots()
+        .onChange(of: scenePhase) { oldPhase, phase in
+            guard phase == .active, oldPhase != .active else { return }
+            taskEvidenceNow = Date()
+            refreshTaskSnapshots()
+            // The existing .task(id:) is not restarted by a scene transition.
+            // Revalidate only expired per-host snapshots; keep current rows
+            // and the root-owned scroll bookmarks while requests run.
+            if let run = center.refreshIfNeeded(
+                sources: sources(), query: requestQuery,
+                maxAge: ForegroundListRefreshPolicy.freshnessWindow) {
+                Task { await run.value }
             }
         }
         .onDisappear { center.cancel() }

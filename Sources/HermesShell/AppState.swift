@@ -28,6 +28,34 @@ struct SessionRefreshPolicy: Equatable {
     static let standard = SessionRefreshPolicy(totalTimeout: 45)
 }
 
+/// Foreground collection refresh policy shared by the root and any mounted
+/// scoped discovery page. No network or UI state lives in this value type.
+/// A rapid inactive -> active bounce must not create repeated list requests.
+/// Failed refreshes are still retryable after the short attempt cooldown.
+struct ForegroundListRefreshPolicy {
+    static let freshnessWindow: TimeInterval = 12
+    static let attemptCooldown: TimeInterval = 12
+
+    private(set) var attemptScope: String?
+    private(set) var attemptedAt: Date?
+
+    mutating func shouldRefresh(wasActive: Bool, isActive: Bool, scope: String,
+                                lastSuccess: Date?, now: Date = Date()) -> Bool {
+        guard !wasActive, isActive, !scope.isEmpty else { return false }
+        if attemptScope == scope, let attemptedAt {
+            let age = now.timeIntervalSince(attemptedAt)
+            if age >= 0 && age < Self.attemptCooldown { return false }
+        }
+        if let lastSuccess {
+            let age = now.timeIntervalSince(lastSuccess)
+            if age >= 0 && age < Self.freshnessWindow { return false }
+        }
+        attemptScope = scope
+        attemptedAt = now
+        return true
+    }
+}
+
 struct SessionRefreshTimeout: Error {}
 
 /// 认证探测与会话列表读取的唯一入口。

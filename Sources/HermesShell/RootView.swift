@@ -11,6 +11,7 @@ struct RootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sidebarOpen = false
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
+    @State private var foregroundListPolicy = ForegroundListRefreshPolicy()
     @State private var drawerGestureOwner = RootDrawerGestureOwnership()
     @State private var sessionBackOwner = RootPageGestureOwnership()
     @State private var browserBackOwner = RootPageGestureOwnership()
@@ -366,9 +367,21 @@ struct RootView: View {
                 openPendingNotificationTarget()
             }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { oldPhase, phase in
             guard phase == .active else { return }
             openPendingNotificationTarget()
+            // The chat can stay mounted while its host's collection ages in
+            // background. Refresh the collection without replacing the chat,
+            // draft, search filters or scroll bookmarks.
+            let scope = homeScope
+            guard !app.needsLogin, !app.needsInstanceSetup,
+                  foregroundListPolicy.shouldRefresh(
+                      wasActive: oldPhase == .active, isActive: true, scope: scope,
+                      lastSuccess: app.lastSessionRefresh) else { return }
+            Task { @MainActor in
+                guard scope == homeScope, scenePhase == .active else { return }
+                await app.refresh()
+            }
         }
         .onAppear { openPendingNotificationTarget() }
         .onReceive(NotificationCenter.default.publisher(for: GatewayBackend.runsChanged)) { event in
