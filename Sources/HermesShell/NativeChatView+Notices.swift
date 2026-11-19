@@ -11,7 +11,10 @@ extension NativeChatView {
 
     var showsNoticeBar: Bool {
         guard !noticeBarDismissed, !showsFullPageFailure else { return false }
-        return model.error != nil || model.cachedHistoryDate != nil || model.uncertain
+        // An ordinary confirmed disk snapshot is already on screen. Its
+        // authoritative GET must run, but the healthy cache/sync transition
+        // is not a warning and must not insert a yellow row on every open.
+        return model.error != nil || model.uncertain
             || (model.hasPendingSend && !model.submitting) || model.runRecoveryNoticeShown
             || model.localPersistenceIssue != nil || model.queuePersistenceFailed
     }
@@ -416,7 +419,9 @@ extension NativeChatView {
             return "本轮后台恢复记录未能保存；当前页面不会重复发送，重启 App 后可能需要重新核对。"
         }
         if model.authenticationRequired { return model.activity.title }
-        if model.cachedHistoryDate != nil { return model.error == nil ? model.activity.title : "联网核对失败 · 显示本地历史" }
+        if model.cachedHistoryDate != nil && model.error != nil {
+            return "联网核对失败 · 显示本地历史"
+        }
         if model.hasPendingSend { return model.notice ?? "发送结果待核对 · 文字和附件已保留" }
         if model.uncertain { return model.notice ?? "后台状态待核对，不会自动重发消息" }
         return model.error ?? model.activity.title

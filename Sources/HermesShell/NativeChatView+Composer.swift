@@ -71,6 +71,13 @@ extension NativeChatView {
             ),
             readOnlyMessage: model.cachedHistoryDate != nil
                 ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil,
+            // Silent verified cache warmup; the editor still stays read-only
+            // until the server GET establishes authority. Keep all problems
+            // visible as actionable, persistent UI states.
+            quietReadOnlyNotice: model.cachedHistoryDate != nil && model.syncing
+                && model.error == nil && !model.uncertain && !model.hasPendingSend
+                && !model.authenticationRequired && !model.runRecoveryNoticeShown
+                && model.localPersistenceIssue == nil && !model.queuePersistenceFailed,
             sendMode: Binding(get: { model.sendMode }, set: { model.sendMode = $0 }),
             queuedText: model.queuedText,
             canSendQueued: model.canSend,
