@@ -184,6 +184,29 @@ def violations(contents: dict[str, str]) -> list[str]:
     if ".accessibilityHint(hint)" not in composer or (
             "ChatComposerFeedbackPolicy.sendHint(" not in composer):
         failures.append("Composer disabled actions must provide a state reason")
+    browser = contents.get("UnifiedSessionBrowser.swift", "")
+    refreshList = contents.get("SessionSearchView.swift", "")
+    model = contents.get("UnifiedSessionModel.swift", "")
+    for token in ("sessionScrollAnchor: $unifiedSessionScrollAnchor",
+                  "taskScrollAnchor: $unifiedTaskScrollAnchor",
+                  ".onChange(of: unifiedBrowseIdentity)", "unifiedSessionScrollIndex = 0",
+                  "unifiedTaskScrollIndex = 0"):
+        if token not in root:
+            failures.append(f"Cross-instance browsing: missing root bookmark contract {token}")
+    for token in ("SessionRefreshList(scrollID: $visibleScrollID",
+                  "UnifiedBrowserScrollPolicy.reconcile(",
+                  ".id(record.id)", ".id(entry.id)",
+                  ".onChange(of: taskSearch)", ".onChange(of: filter)"):
+        if token not in browser:
+            failures.append(f"Cross-instance browsing: missing stable scroll contract {token}")
+    if ".scrollTargetLayout()" not in refreshList or (
+            ".scrollPosition(id: scrollID" not in refreshList):
+        failures.append("Cross-instance browser must use target-aware row scroll restoration")
+    if "enum UnifiedBrowserScrollPolicy" not in model:
+        failures.append("Missing scoped bookmark fallback policy")
+    composer = contents.get("ChatComposer.swift", "")
+    if ".frame(width: 44, height: 44)" not in composer:
+        failures.append("Quote remove action must retain a 44pt touch target")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
@@ -229,7 +252,7 @@ def main() -> int:
         "NativeChatView+MessageList.swift",
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
         "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
-        "ChatComposer.swift",
+        "ChatComposer.swift", "SessionSearchView.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)

@@ -417,13 +417,16 @@ struct ChatComposer: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.caption.weight(.semibold))
-                            .frame(width: 32, height: 32)
+                            // Keep the glyph compact but make the whole
+                            // control safely tappable in the composer.
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityLabel("移除引用")
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 2)
                 .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                 .padding(.horizontal, 11)
                 .padding(.top, 7)

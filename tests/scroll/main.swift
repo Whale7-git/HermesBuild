@@ -647,6 +647,46 @@ for i in 0..<150 {
            "manual reading ignores stream growth, even after many tool updates")
 }
 
+// build208: 160 streamed tool/Markdown measurements, history prepend and
+// keyboard reflow must preserve one focused turn until genuine user reading.
+var interleavedTurn = ChatTurnReadingState()
+interleavedTurn.focus(rowID: "question-208", rowTop: 400,
+                      contentBottom: 520, viewport: 600)
+var interleavedBottom = 520.0
+for event in 0..<160 {
+    if event.isMultiple(of: 23) {
+        expect(interleavedTurn.target(contentBottom: interleavedBottom,
+                                      rowTop: nil, viewport: 600) == nil,
+               "temporarily unmeasured focused row defers rather than resets")
+        expect(interleavedTurn.rowID == "question-208",
+               "a tool render cannot retire the user's focused message")
+    }
+    interleavedBottom += 12
+    let result = interleavedTurn.target(contentBottom: interleavedBottom,
+                                        rowTop: 400, viewport: 600)
+    expect(result != nil && result!.isFinite,
+           "tool output growth retains finite reading geometry")
+}
+let beforePrepend = interleavedTurn.target(contentBottom: interleavedBottom,
+                                           rowTop: 400, viewport: 600)!
+let afterPrepend = interleavedTurn.target(contentBottom: interleavedBottom + 250,
+                                          rowTop: 650, viewport: 600,
+                                          allowGrowth: false)
+expect(afterPrepend == beforePrepend + 250,
+       "prepending history shifts the focused anchor rather than counting new output")
+expect(interleavedTurn.target(contentBottom: interleavedBottom + 250,
+                               rowTop: 650, viewport: 345,
+                               allowGrowth: false) == afterPrepend,
+       "keyboard resize never creates synthetic reply growth")
+interleavedTurn.userBeganReading()
+for step in 0..<160 {
+    expect(interleavedTurn.target(contentBottom: interleavedBottom + 260 + Double(step),
+                                   rowTop: 650, viewport: 345) == nil,
+           "manual reading must not be recaptured by a growing tool timeline")
+}
+expect(interleavedTurn.phase == .manualReading,
+       "long interleaved streams keep explicit manual reading intent")
+
 // build180: status-bar-to-top is a manual reading action, not a new
 // streamed-growth focus command. Simulate 180 changing tool heights after it.
 var statusBarReading = ChatTurnReadingState()
