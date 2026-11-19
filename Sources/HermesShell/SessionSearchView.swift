@@ -8,10 +8,11 @@ struct SessionRefreshList<Content: View>: View {
     /// Only the cross-instance browser opts into a target-aware scroll view.
     /// Existing single-instance lists retain native List presentation.
     let scrollID: Binding<String?>?
-    let onUserScroll: (() -> Void)?
+    let onUserScroll: ((UnifiedBrowserScrollEvent) -> Void)?
 
     init(scrollID: Binding<String?>? = nil,
-         onUserScroll: (() -> Void)? = nil, refresh: @escaping () async -> Void,
+         onUserScroll: ((UnifiedBrowserScrollEvent) -> Void)? = nil,
+         refresh: @escaping () async -> Void,
          @ViewBuilder content: () -> Content) {
         self.scrollID = scrollID
         self.onUserScroll = onUserScroll
@@ -31,7 +32,12 @@ struct SessionRefreshList<Content: View>: View {
             // iOS 18: distinguish a finger-driven scroll from the programmatic
             // .scrollPosition animation, without stealing the list's gesture.
             .onScrollPhaseChange { _, phase in
-                if phase == .interacting { onUserScroll?() }
+                switch phase {
+                case .interacting: onUserScroll?(.interacting)
+                case .decelerating: onUserScroll?(.decelerating)
+                case .idle: onUserScroll?(.idle)
+                default: break // tracking and programmatic animations do not claim ownership
+                }
             }
             .scrollBounceBehavior(.always, axes: .vertical)
             .scrollDismissesKeyboard(.interactively)
