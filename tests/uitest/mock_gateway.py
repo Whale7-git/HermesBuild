@@ -43,6 +43,7 @@ class GatewayState:
             self.sessions = fixture("sessions.json")["data"]
             self.history = fixture("history.json")["sessions"]
             self.events = fixture("stream.json")["events"]
+            self.stream_delay_ms = 30
             self.run_count = 0
             self.message_count = 1000
             self.runs = {}
@@ -272,11 +273,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 for event in frames:
+                    with self.state.lock:
+                        step_delay = self.state.stream_delay_ms
                     seq = event.pop("id")
                     payload = json.dumps(event, ensure_ascii=False)
                     self.wfile.write(f"id: {seq}\ndata: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                    time.sleep(0.03)
+                    time.sleep(step_delay / 1000.0)
                 self.state.finish_run(run_id)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -309,7 +312,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
         if method == "GET" and path == "/v1/files/by-path":
             requested = query.get("path", [""])[0]
-            if requested != "/ui-test/ui-image.png":
+            if requested != "/ui-test/ui-image.png" and not re.fullmatch(
+                    r"/ui-test/photo-[1-5]\.png", requested):
                 return self.json_response(404, {"error": {"message": "fixture image unavailable"}})
             self.send_response(200)
             self.send_header("Content-Type", "image/png")
@@ -336,6 +340,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/__control/reset":
             self.state.reset()
             return self.json_response(200, {"reset": True})
+        if method == "POST" and path == "/__control/stream":
+            payload = self.body_json()
+            delay = payload.get("frame_delay_ms")
+            if not isinstance(delay, int) or not 0 <= delay <= 5000:
+                return self.json_response(400, {"error": {"message": "invalid frame_delay_ms"}})
+            with self.state.lock:
+                self.state.stream_delay_ms = delay
+            return self.json_response(200, {"frame_delay_ms": delay})
         if method == "POST" and path == "/__control/stub":
             payload = self.body_json()
             target_method = str(payload.get("method", "GET")).upper()

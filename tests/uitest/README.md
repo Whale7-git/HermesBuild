@@ -10,6 +10,7 @@ Check: python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
 - POST /v1/runs/{id}/stop, POST /v1/files, GET /v1/files/by-path
 - GET /api/model/options
 - POST /__control/stub with {"method":"GET","path":"/api/sessions","status":429,"body":{"error":{"message":"Rate limited"}}} or {"disconnect":true}, optional "delay_ms"
+- POST /__control/stream with {"frame_delay_ms":2000} for bounded, deterministic slow generation
 - GET /__control/log, POST /__control/reset
 
 All unknown routes return **501 MOCK_UNKNOWN_ROUTE** and are separately recorded. The request log exposes only presence/scheme of Authorization and cookie presence, never actual values, message bodies or user credentials. No uploaded files are written to disk. The synthetic PNG is embedded in the test server.

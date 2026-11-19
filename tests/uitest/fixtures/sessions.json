@@ -9,6 +9,16 @@
       "model": "hermes-ui-test",
       "source": "ui_test",
       "preview": "可滚动长回答"
+    },
+    {
+      "id": "ui-media-session",
+      "title": "UI 图片验收",
+      "started_at": 1795150010,
+      "last_active": 1795150020,
+      "message_count": 2,
+      "model": "hermes-ui-test",
+      "source": "ui_test",
+      "preview": "五张图片图集"
     }
   ],
   "has_more": false

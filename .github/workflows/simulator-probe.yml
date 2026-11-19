@@ -10,7 +10,7 @@ on:
         required: false
         default: gold
         type: choice
-        options: [gold, audit, all]
+        options: [gold, audit, regression, all]
   schedule:
     - cron: "17 2 * * *"
   # Temporary one-shot development trigger; remove before main merge.
@@ -76,6 +76,7 @@ jobs:
           case "$REQUESTED_SUITE" in
             gold) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
             audit) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
+            regression) selection="-only-testing:HermesUITests/HermesRegressionUITests" ;;
             all) selection="" ;;
             *) echo "Unsupported suite $REQUESTED_SUITE" >&2; exit 2 ;;
           esac

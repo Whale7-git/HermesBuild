@@ -58,14 +58,14 @@ enum HermesUITestHarness {
         return app
     }
 
-    static func openSession(_ app: XCUIApplication,
+    static func openSession(_ app: XCUIApplication, title selectedTitle: String = sessionTitle,
                             file: StaticString = #filePath,
                             line: UInt = #line) {
         let drawer = app.buttons["打开会话侧栏"]
         if drawer.waitForExistence(timeout: 6) { drawer.tap() }
         let row = app.buttons.containing(
-            NSPredicate(format: "label CONTAINS[cd] %@", sessionTitle)).firstMatch
-        let title = app.staticTexts[sessionTitle]
+            NSPredicate(format: "label CONTAINS[cd] %@", selectedTitle)).firstMatch
+        let title = app.staticTexts[selectedTitle]
         let target = row.waitForExistence(timeout: 12) ? row : title
         XCTAssertTrue(target.waitForExistence(timeout: 12),
                       "Mock session must be visible in the actual session list",

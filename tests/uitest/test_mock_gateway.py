@@ -129,6 +129,28 @@ class GatewayContractTests(unittest.TestCase):
         status, _ = self.decoded("GET", "/api/sessions")
         self.assertEqual(status, 200)
 
+    def test_media_gallery_fixture_and_stream_timing_control(self):
+        code, sessions = self.decoded("GET", "/api/sessions")
+        self.assertEqual(code, 200)
+        self.assertIn("ui-media-session", [row["id"] for row in sessions["data"]])
+        code, messages = self.decoded(
+            "GET", "/api/sessions/ui-media-session/messages?order=oldest&offset=0&limit=10")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(messages["data"][1]["attachments"]), 5)
+        code, png, headers = self.request(
+            "GET", "/v1/files/by-path?path=%2Fui-test%2Fphoto-4.png")
+        self.assertEqual(code, 200)
+        self.assertTrue(png.startswith(b"\x89PNG"))
+        code, stream = self.decoded("POST", "/__control/stream", {
+            "frame_delay_ms": 2000,
+        })
+        self.assertEqual(code, 200)
+        self.assertEqual(stream["frame_delay_ms"], 2000)
+        code, _ = self.decoded("POST", "/__control/stream", {
+            "frame_delay_ms": 9000,
+        })
+        self.assertEqual(code, 400)
+
     def test_control_rejects_self_stub(self):
         status, _ = self.decoded("POST", "/__control/stub", {
             "path": "/__control/log", "status": 200})
