@@ -43,10 +43,9 @@ final class HermesRegressionUITests: XCTestCase {
         let scroll = app.scrollViews.firstMatch
         XCTAssertTrue(scroll.waitForExistence(timeout: 10))
         let cover = find(app, button: "查看全部5张图片，从第4张开始", scroll: scroll)
-        let source = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label CONTAINS[cd] %@", "UI 图集测试：5 张图片")).firstMatch
-        XCTAssertTrue(source.exists, "Gallery must have a source reply")
-        let before = source.frame.midY
+        // Measure the *same thumbnail target* before and after dismissal,
+        // rather than an outer Textual container that can aggregate many rows.
+        let before = cover.frame.midY
         cover.tap()
         XCTAssertFalse(cover.isHittable,
                        "The gallery overlay must block taps into the transcript")
@@ -60,7 +59,7 @@ final class HermesRegressionUITests: XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 8), "Gallery lacks an exit")
         done.tap()
         XCTAssertTrue(cover.waitForExistence(timeout: 10))
-        XCTAssertEqual(source.frame.midY, before, accuracy: 3.0,
+        XCTAssertEqual(cover.frame.midY, before, accuracy: 3.0,
                        "Closing a media overlay moved the reader's source row")
         XCTAssertTrue(cover.isHittable)
     }
