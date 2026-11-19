@@ -22,6 +22,7 @@ struct UnifiedSessionBrowser: View {
     @Binding var sessionScrollIndex: Int
     @Binding var taskScrollIndex: Int
     @State private var visibleScrollID: String?
+    @State private var userOwnsScroll = false
     @Binding var filter: Int
     @Binding var section: Int
     @State private var navigationError: String?
@@ -329,31 +330,59 @@ struct UnifiedSessionBrowser: View {
         section == 1 ? taskEntries.map(\.id) : visible.map(\.id)
     }
 
+    private var failedScrollSources: Set<UnifiedSessionIdentity> {
+        Set(center.failures.keys)
+    }
+
+    private var waitingForBookmarkHost: Bool {
+        guard let anchor = section == 1 ? taskScrollAnchor : sessionScrollAnchor else {
+            return false
+        }
+        return !visibleScrollIDs.contains(anchor)
+            && UnifiedBrowserScrollPolicy.onFailedSource(
+                anchor, failures: failedScrollSources)
+    }
+
     private func reconcileScrollBookmark() {
         guard center.hasResolvedSnapshot, center.loading.isEmpty else { return }
+        let available = visibleScrollIDs
         if section == 1 {
             let next = UnifiedBrowserScrollPolicy.reconcile(
-                anchor: taskScrollAnchor, index: taskScrollIndex,
-                available: visibleScrollIDs, resolved: true)
-            if next != taskScrollAnchor { taskScrollAnchor = next; visibleScrollID = next }
+                anchor: taskScrollAnchor, index: taskScrollIndex, available: available,
+                resolved: true, failedSources: failedScrollSources)
+            if next != taskScrollAnchor {
+                userOwnsScroll = false
+                taskScrollAnchor = next
+                visibleScrollID = next
+            }
         } else {
             let next = UnifiedBrowserScrollPolicy.reconcile(
-                anchor: sessionScrollAnchor, index: sessionScrollIndex,
-                available: visibleScrollIDs, resolved: true)
-            if next != sessionScrollAnchor { sessionScrollAnchor = next; visibleScrollID = next }
+                anchor: sessionScrollAnchor, index: sessionScrollIndex, available: available,
+                resolved: true, failedSources: failedScrollSources)
+            if next != sessionScrollAnchor {
+                userOwnsScroll = false
+                sessionScrollAnchor = next
+                visibleScrollID = next
+            }
         }
     }
 
     private func restoreScrollBookmark() {
+        userOwnsScroll = false
         let saved = section == 1 ? taskScrollAnchor : sessionScrollAnchor
         visibleScrollID = UnifiedBrowserScrollPolicy.reconcile(
             anchor: saved, index: section == 1 ? taskScrollIndex : sessionScrollIndex,
             available: visibleScrollIDs,
-            resolved: center.hasResolvedSnapshot && center.loading.isEmpty)
+            resolved: center.hasResolvedSnapshot && center.loading.isEmpty,
+            failedSources: failedScrollSources)
     }
 
     private func rememberScrollBookmark(_ id: String?) {
-        guard let id, let index = visibleScrollIDs.firstIndex(of: id) else { return }
+        // SwiftUI also publishes scrollPosition changes caused by restored
+        // frames, filtering and refresh. Only a real user interaction may
+        // overwrite the root-owned reading bookmark.
+        guard userOwnsScroll, let id,
+              let index = visibleScrollIDs.firstIndex(of: id) else { return }
         if section == 1 {
             taskScrollAnchor = id
             taskScrollIndex = index
@@ -470,11 +499,21 @@ struct UnifiedSessionBrowser: View {
 
             }
 
-            SessionRefreshList(scrollID: $visibleScrollID, refresh: {
+            SessionRefreshList(scrollID: $visibleScrollID,
+                               onUserScroll: { userOwnsScroll = true },
+                               refresh: {
                 // Join an in-flight identical request rather than replacing it.
                 let run = center.start(sources: sources(), query: requestQuery)
                 await run.value
             }) {
+                if waitingForBookmarkHost {
+                    Label("原浏览位置所在实例暂不可用；已保留位置，重试后尝试恢复。",
+                          systemImage: "arrow.uturn.backward.circle")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.warning)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .padding(.vertical, 6)
+                }
                 if let navigationError {
                     Label(navigationError, systemImage: "exclamationmark.triangle")
                         .font(.footnote).foregroundStyle(.orange)
@@ -653,22 +692,29 @@ struct UnifiedSessionBrowser: View {
             restoreScrollBookmark()
         }
         .onChange(of: query) { _, _ in
+            userOwnsScroll = false
             sessionScrollAnchor = nil
             sessionScrollIndex = 0
             if section == 0 { visibleScrollID = nil }
         }
         .onChange(of: taskSearch) { _, _ in
+            userOwnsScroll = false
             taskScrollAnchor = nil
             taskScrollIndex = 0
             if section == 1 { visibleScrollID = nil }
         }
         .onChange(of: filter) { _, _ in
+            userOwnsScroll = false
             sessionScrollAnchor = nil
             sessionScrollIndex = 0
             if section == 0 { visibleScrollID = nil }
         }
-        .onChange(of: visibleScrollIDs) { _, _ in reconcileScrollBookmark() }
+        .onChange(of: visibleScrollIDs) { _, _ in
+            userOwnsScroll = false
+            reconcileScrollBookmark()
+        }
         .onChange(of: center.loading) { _, loading in
+            if !loading.isEmpty { userOwnsScroll = false }
             if loading.isEmpty {
                 taskEvidenceNow = Date()
                 reconcileScrollBookmark()

@@ -7,11 +7,22 @@ import Combine
 /// Do not jump while a query is unresolved; after refresh choose the nearest
 /// surviving row by previous index. Session and task bookmarks are independent.
 enum UnifiedBrowserScrollPolicy {
+    static func onFailedSource(_ anchor: String,
+                               failures: Set<UnifiedSessionIdentity>) -> Bool {
+        failures.contains { anchor.hasPrefix($0.recordIDPrefix) }
+    }
+
     static func reconcile(anchor: String?, index: Int, available: [String],
-                          resolved: Bool) -> String? {
+                          resolved: Bool,
+                          failedSources: Set<UnifiedSessionIdentity> = []) -> String? {
         guard let anchor else { return nil }
         if available.contains(anchor) { return anchor }
-        guard resolved else { return anchor }
+        // The snapshot may be partially resolved: never replace a bookmark
+        // from a failed host with an unrelated successful host's row. A later
+        // successful host-specific retry can legitimately retire it.
+        guard resolved, !onFailedSource(anchor, failures: failedSources) else {
+            return anchor
+        }
         guard !available.isEmpty else { return nil }
         return available[min(max(0, index), available.count - 1)]
     }
@@ -23,6 +34,13 @@ struct UnifiedSessionIdentity: Hashable {
     let instanceID: UUID
     let endpointIdentity: String
     let accountScope: String
+
+    /// Identical length-prefixed identity used in every row ID.
+    /// Prefix matching is unambiguous even with unusual endpoint URLs.
+    var recordIDPrefix: String {
+        [instanceID.uuidString, endpointIdentity, accountScope]
+            .map { "\($0.utf8.count):\($0)" }.joined()
+    }
 
     func matches(instanceID: UUID, endpointIdentity: String, accountScope: String) -> Bool {
         self.instanceID == instanceID && self.endpointIdentity == endpointIdentity
@@ -38,10 +56,9 @@ struct UnifiedSessionRecord: Identifiable {
     let matchedFullBody: Bool
 
     var id: String {
-        // Length-prefixed tuple avoids ambiguity when server session IDs contain separators.
-        let parts = [identity.instanceID.uuidString, identity.endpointIdentity,
-                     identity.accountScope, session.sessionId]
-        return parts.map { "\($0.utf8.count):\($0)" }.joined()
+        // Preserve the existing identity format exactly.
+        let sessionID = session.sessionId
+        return identity.recordIDPrefix + "\(sessionID.utf8.count):\(sessionID)"
     }
 }
 
