@@ -27,3 +27,21 @@ enum AttachmentGridPlan {
     static func visibleCount(_ count: Int) -> Int { min(4, max(0, count)) }
     static func overflow(_ count: Int) -> Int { max(0, count - 4) }
 }
+
+
+/// Stable attachment identities for the overview's cross-message media gallery.
+/// Identical paths in different messages remain distinct gallery entries, and
+/// adding older pages never renumbers already displayed images.
+enum AttachmentMediaIndex {
+    struct Candidate: Identifiable, Equatable {
+        let rowID: String
+        let path: String
+        var id: String { "\(rowID.utf8.count):\(rowID)\(path)" }
+    }
+
+    static func candidates(_ catalog: [AttachmentCatalog.Entry]) -> [Candidate] {
+        catalog.flatMap { entry in
+            entry.paths.map { Candidate(rowID: entry.rowID, path: $0) }
+        }
+    }
+}
