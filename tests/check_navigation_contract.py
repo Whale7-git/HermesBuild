@@ -211,8 +211,21 @@ def violations(contents: dict[str, str]) -> list[str]:
             failures.append(f"Browser scroll ownership: missing {token}")
     if "userOwnsScroll, id: id" not in browser:
         failures.append("Browser must gate bookmark writes on user-initiated scroll")
-    if ".onScrollPhaseChange" not in refreshList or "phase == .interacting" not in refreshList:
-        failures.append("Cross-instance scroll owner must distinguish gestures from animations")
+    for token in ("handleScrollEvent(_ event: UnifiedBrowserScrollEvent)",
+                  "scrollOwnership.receive(event)", "scrollOwnership.datasetChanged()",
+                  "rememberScrollBookmark(visibleScrollID)",
+                  "retainedSourceIDs: retainedTaskSourceIDs",
+                  "waitingForTaskEvidence"):
+        if token not in browser:
+            failures.append(f"Browser scroll lifecycle: missing {token}")
+    if ".onScrollPhaseChange" not in refreshList or (
+            "case .interacting:" not in refreshList or
+            "case .decelerating:" not in refreshList or
+            "case .idle:" not in refreshList):
+        failures.append("Cross-instance scroll must report drag, momentum and idle")
+    if "struct UnifiedBrowserScrollOwnership" not in model or (
+            "deferredReconcile" not in model):
+        failures.append("Browser scroll ownership model must defer refresh until idle")
     if "onFailedSource(_ anchor" not in model:
         failures.append("Missing per-identity partial-failure bookmark protection")
     composer = contents.get("ChatComposer.swift", "")

@@ -73,6 +73,49 @@ expect(UnifiedBrowserScrollPolicy.reconcile(
     expect(!UnifiedBrowserScrollPolicy.shouldCapture(
         userOwnsScroll: true, id: failingRow, available: [healthyRow]),
         "stale rows outside the current list are never recorded")
+
+    // build210: programmatic offset animations never claim the user's anchor.
+    var ownership = UnifiedBrowserScrollOwnership()
+    expect(!ownership.userOwnsScroll && ownership.datasetChanged(),
+           "initial programmatic refresh may reconcile normally")
+    expect(!ownership.receive(.idle) && !ownership.userOwnsScroll,
+           "programmatic animation settling does not create user ownership")
+    expect(!ownership.receive(.decelerating) && !ownership.userOwnsScroll,
+           "momentum without a prior finger drag cannot capture a bookmark")
+
+    expect(!ownership.receive(.interacting) && ownership.userOwnsScroll,
+           "finger drag claims browser offset ownership")
+    expect(UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: ownership.userOwnsScroll, id: "b", available: bookmarks),
+        "drag-time scroll position may update the current section")
+    expect(!ownership.datasetChanged() && ownership.deferredReconcile,
+           "a refresh during a finger drag defers programmatic restoration")
+    expect(!ownership.receive(.decelerating) && ownership.userOwnsScroll,
+           "inertial deceleration remains part of the user's scroll")
+    expect(!ownership.datasetChanged() && ownership.deferredReconcile,
+           "late host refresh during momentum remains deferred")
+    expect(UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: ownership.userOwnsScroll, id: "d", available: bookmarks),
+        "final momentum position is captured before idle releases ownership")
+    expect(ownership.receive(.idle) && !ownership.userOwnsScroll
+           && !ownership.deferredReconcile,
+           "idle flushes pending refresh exactly once after capturing final row")
+    expect(!ownership.receive(.idle) && ownership.datasetChanged(),
+           "subsequent programmatic layout changes may reconcile but not recapture")
+    expect(!UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: ownership.userOwnsScroll, id: "a", available: bookmarks),
+        "post-gesture programmatic position cannot overwrite the user's bookmark")
+
+    // A short drag has no momentum; a route/identity reset cancels old tasks.
+    expect(!ownership.receive(.interacting), "new drag begins without a flush")
+    expect(!ownership.datasetChanged(), "a short dragging refresh stays deferred")
+    ownership.reset()
+    expect(!ownership.receive(.idle) && !ownership.userOwnsScroll
+           && !ownership.deferredReconcile,
+           "switching route, search or account retires old gesture ownership")
+    expect(!ownership.receive(.interacting)
+           && !ownership.receive(.idle) && !ownership.userOwnsScroll,
+           "short drag without momentum commits at the final idle transition")
 }
 
 func expect(_ value: @autoclosure () -> Bool, _ message: String) {

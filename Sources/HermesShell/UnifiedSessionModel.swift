@@ -3,9 +3,6 @@ import Foundation
 import Combine
 #endif
 
-/// A read-only fallback for a browser bookmark whose target disappeared.
-/// Do not jump while a query is unresolved; after refresh choose the nearest
-/// surviving row by previous index. Session and task bookmarks are independent.
 /// iOS 18 scroll events converted into a platform-independent ownership
 /// contract, so gesture, momentum and refresh ordering can be tested offline.
 enum UnifiedBrowserScrollEvent {
@@ -49,6 +46,8 @@ struct UnifiedBrowserScrollOwnership {
     }
 }
 
+/// A read-only fallback for a missing browser target. Session and task
+/// bookmarks remain independent and failed hosts are not treated as deletion.
 enum UnifiedBrowserScrollPolicy {
     static func onFailedSource(_ anchor: String,
                                failures: Set<UnifiedSessionIdentity>) -> Bool {
