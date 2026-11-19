@@ -29,6 +29,15 @@ enum ChatComposerActionPolicy {
         !running || sendEnabled || hasReadyAttachments
     }
 
+    /// Keep the Send slot's geometry alive while a running assistant has no
+    /// draft to send. Typing the first character must not shift the Stop button.
+    /// This is visual only: no hidden control can dispatch a request.
+    static func reservesSendSlot(running: Bool, sendEnabled: Bool,
+                                 hasReadyAttachments: Bool) -> Bool {
+        running && !showsSend(running: running, sendEnabled: sendEnabled,
+                              hasReadyAttachments: hasReadyAttachments)
+    }
+
     static func showsStop(running: Bool) -> Bool { running }
 }
 

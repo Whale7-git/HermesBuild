@@ -1,4 +1,4 @@
-# Hermes 2.51.0 / build215
+# Hermes 2.52.0 / build216
 
 Hermes 是原生 iOS 客户端，支持多实例、流式聊天、历史会话、附件和本地草稿恢复。为兼容现有工程，Swift package、target 和 product 仍保留 `HermesShell` 名称。
 

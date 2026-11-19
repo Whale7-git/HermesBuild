@@ -143,7 +143,7 @@ run selectionpublication -swift-version 6 Vendor/Textual/Sources/Textual/Interna
 run clientaudit "$S/AttachmentHistory.swift" "$S/Models.swift" "$S/CookieDomainPolicy.swift" tests/clientaudit/main.swift
 run runtimelog "$S/RuntimeLogStorage.swift" tests/runtimelog/main.swift
 run runtimerecorder -parse-as-library "$S/RuntimeLogStorage.swift" "$S/RuntimeLogRecorder.swift" tests/runtimerecorder/main.swift
-run input "$S/ChatInputPolicy.swift" tests/input/main.swift
+run input "$S/ChatInputPolicy.swift" "$S/ChatReadingShortcutPolicy.swift" tests/input/main.swift
 run quote "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatComposerInsertion.swift" "$S/ChatQuote.swift" tests/quote/main.swift
 run slashcommand "$S/ChatSlashCommand.swift" tests/slashcommand/main.swift
 run historycache -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatHistoryStore.swift" tests/historycache/main.swift

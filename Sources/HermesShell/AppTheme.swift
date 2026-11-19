@@ -33,6 +33,9 @@ enum AppTheme {
     static let radiusL: CGFloat = 16
     static let radiusXL: CGFloat = 24
     static let radiusSheet: CGFloat = 28
+    static let radiusComposer: CGFloat = 27
+    static let radiusQuote: CGFloat = 12
+    static let minimumTouchSize: CGFloat = 44
 
     static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
     static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—" }

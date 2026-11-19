@@ -22,6 +22,17 @@ expect(!ownership.owns(pageB), "account switch invalidates pending pagination co
 
 var state = ChatScrollState()
 expect(state.following, "starts following the tail")
+var unreadVisualState = ChatScrollState()
+unreadVisualState.update(distanceFromBottom: 180)
+expect(!unreadVisualState.following && !unreadVisualState.hasUnreadContent,
+       "reading earlier history starts with no unread badge")
+unreadVisualState.receivedAssistantUpdate()
+unreadVisualState.receivedAssistantUpdate()
+expect(unreadVisualState.hasUnreadContent && !unreadVisualState.following,
+       "multiple stream updates collapse to one stable unread indicator")
+unreadVisualState.jumpToLatest()
+expect(unreadVisualState.following && !unreadVisualState.hasUnreadContent,
+       "explicit return-to-latest resets unread without changing send state")
 // build203: geometry reports are NOT user intent. In a long transcript,
 // opening/closing the keyboard can make the measured distance temporarily 0
 // even while the reader was intentionally detached.
