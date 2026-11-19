@@ -732,7 +732,7 @@
     "tests/credentials/main.swift": "2c202b205db976d3f23da2b1cb2ff7f6f0160cb3b75f8537738d514da4f4460d",
     "tests/discovery/UnifiedSessionTests.swift": "372365c69e1a20a189a7f397bfe9fe42f2cebac39e49923e4358836c4f6089b0",
     "tests/discovery/UnifiedTaskWorkspaceTests.swift": "90a9dbb5919a9513cc54759fb40b59d4e64143b3f0c3f3de1bc2ab644051da4c",
-    "tests/discovery/main.swift": "affaa171004f8d2a8b8181c5a83f4d5b1be18cd99c42998e90af6393c821cc60",
+    "tests/discovery/main.swift": "c742c7735538266e22098a470c1332aa630f54f0e9539b7dda2ec087963ab3df",
     "tests/drafts/main.swift": "13f5f263c0beb52ad8c83ef873a489b0c2cfb3ac6c417bbfebffbea4846dd1b0",
     "tests/experience/main.swift": "8f764e06ed4dd715cb2ce45bbb58a844893ad628b4520eb6da362a9a317eaf5b",
     "tests/gateway/main.swift": "801ceb8540d363240c86229df62de2021289a9ffc189474c5bfc65b424eac55f",
