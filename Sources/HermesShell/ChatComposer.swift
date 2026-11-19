@@ -414,14 +414,16 @@ struct ChatComposer: View {
                             Text(quoteReference.preview)
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                                .lineLimit(quoteExpanded ? nil : 2)
+                                // An expanded quotation remains a preview;
+                                // an unbounded quote can push the editor offscreen.
+                                .lineLimit(quoteExpanded ? 8 : 2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(quoteExpanded ? "收起引用内容" : "展开引用内容")
                         .accessibilityValue(quoteExpanded ? "已展开" : "已折叠")
-                        .accessibilityHint("仅展开预览，不会修改要发送的引用")
+                        .accessibilityHint("展开最多八行预览，不会修改要发送的完整引用")
                     }
                     Button {
                         self.quoteReference = nil
@@ -440,7 +442,7 @@ struct ChatComposer: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 2)
-                .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
+                .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: AppTheme.radiusQuote))
                 .padding(.horizontal, 11)
                 .padding(.top, 7)
             }
@@ -519,6 +521,16 @@ struct ChatComposer: View {
                                         hasContent: !trimmed.isEmpty || hasReadyAttachments),
                                      action: submit)
                     }
+                    // Running without a draft: keep the inert 44pt send slot
+                    // so Stop stays at the same x-position once typing begins.
+                    if ChatComposerActionPolicy.reservesSendSlot(
+                        running: running, sendEnabled: sendEnabled,
+                        hasReadyAttachments: hasReadyAttachments) {
+                        Color.clear.frame(width: AppTheme.minimumTouchSize,
+                                          height: AppTheme.minimumTouchSize)
+                            .accessibilityHidden(true)
+                            .allowsHitTesting(false)
+                    }
                     if ChatComposerActionPolicy.showsStop(running: running) {
                         actionButton(symbol: "stop.fill", enabled: canStop && !stopping,
                                      label: stopping ? "正在停止" : (canStop ? "停止生成" : "等待连接后可停止"),
@@ -534,7 +546,9 @@ struct ChatComposer: View {
                 .padding(.trailing, 7)
                 .padding(.bottom, 2)
             }
-            if !readOnly && running && (!trimmed.isEmpty || hasReadyAttachments) {
+            // The mode row belongs to the running turn, not the first
+            // keystroke: it must not add/remove 44pt while the user types.
+            if !readOnly && running {
                 HStack {
                     sendModePicker
                     Spacer(minLength: 0)
@@ -544,9 +558,9 @@ struct ChatComposer: View {
             }
         }
         .background(AppTheme.surface,
-                    in: RoundedRectangle(cornerRadius: 27, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AppTheme.radiusComposer, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 27, style: .continuous)
+            RoundedRectangle(cornerRadius: AppTheme.radiusComposer, style: .continuous)
                 .strokeBorder(focused && !readOnly ? AppTheme.accent.opacity(0.26)
                               : AppTheme.hairline.opacity(0.6), lineWidth: 0.75)
                 .allowsHitTesting(false)
@@ -656,7 +670,7 @@ struct ChatComposer: View {
                 .foregroundStyle(enabled ? AppTheme.onAction : Color.secondary)
                 .frame(width: 34, height: 34)
                 .background(enabled ? AppTheme.action : AppTheme.softFill, in: Circle())
-                .frame(width: 44, height: 44)
+                .frame(width: AppTheme.minimumTouchSize, height: AppTheme.minimumTouchSize)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
