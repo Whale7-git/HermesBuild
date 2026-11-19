@@ -255,6 +255,28 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "goToLatest(animated: true)"):
         if token not in contents.get("NativeChatView+MessageList.swift", ""):
             failures.append(f"Search/reading return path: missing {token}")
+    # build212: every foreground collection must refresh under a scoped,
+    # throttled owner, not solely through drawer manual-refresh buttons.
+    for token in ("foregroundListPolicy.shouldRefresh(", "await app.refresh()",
+                  "guard scope == homeScope, scenePhase == .active"):
+        if token not in root:
+            failures.append(f"Foreground home refresh lifecycle missing: {token}")
+    if "struct ForegroundListRefreshPolicy" not in contents.get("AppState.swift", ""):
+        failures.append("Missing instance/account scoped foreground refresh policy")
+    if ".onChange(of: scenePhase)" not in contents.get("SessionDrawer.swift", "") or (
+            "foregroundDiscoveryPolicy.shouldRefresh(" not in contents.get("SessionDrawer.swift", "")):
+        failures.append("Search/archive pane must refresh on foreground resume")
+    if "maxAge: ForegroundListRefreshPolicy.freshnessWindow" not in browser:
+        failures.append("Unified browser must refresh stale host snapshots after resume")
+    cacheNotice = contents.get("NativeChatView+Notices.swift", "")
+    cacheComposer = contents.get("NativeChatView+Composer.swift", "")
+    composerView = contents.get("ChatComposer.swift", "")
+    if "model.error != nil || model.cachedHistoryDate != nil" in cacheNotice:
+        failures.append("Healthy cache verification must not force a warning banner")
+    if "quietReadOnlyNotice: model.cachedHistoryDate != nil && model.syncing" not in cacheComposer:
+        failures.append("Healthy cache verification should not force composer warning line")
+    if "if readOnly && !quietReadOnlyNotice" not in composerView:
+        failures.append("Only routine cached verification may silence read-only notice")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
@@ -301,7 +323,8 @@ def main() -> int:
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
         "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
         "ChatComposer.swift", "SessionSearchView.swift",
-        "ChatToolSummary.swift",
+        "ChatToolSummary.swift", "NativeChatView+Composer.swift",
+        "NativeChatView+Notices.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)

@@ -46,6 +46,9 @@ struct ChatComposer: View {
     var attachments: AnyView? = nil
     var attachmentMenu: AnyView? = nil
     var readOnlyMessage: String? = nil
+    /// Hide the routine cache-verification banner, not the read-only gate.
+    /// Auth failures, uncertain sends and local persistence failures remain visible.
+    var quietReadOnlyNotice = false
     /// 运行中发送语义；由模型持有，输入栏只负责切换。
     @Binding var sendMode: ChatSendMode
     /// 排队中的那条：显示在输入框上方，让用户知道它还等着发。
@@ -92,6 +95,7 @@ struct ChatComposer: View {
          onSend: @escaping (String) -> Void, onStop: @escaping () -> Void,
          onAttach: @escaping () -> Void, attachments: AnyView? = nil, attachmentMenu: AnyView? = nil,
          readOnlyMessage: String? = nil,
+         quietReadOnlyNotice: Bool = false,
          sendMode: Binding<ChatSendMode>, queuedText: String? = nil, canSendQueued: Bool = false,
          onSendQueued: @escaping () -> Void = {},
          queuedTurns: [ChatQueuedTurn] = [], onSendQueuedTurn: @escaping (String) -> Void = { _ in },
@@ -125,6 +129,7 @@ struct ChatComposer: View {
         self.attachments = attachments
         self.attachmentMenu = attachmentMenu
         self.readOnlyMessage = readOnlyMessage
+        self.quietReadOnlyNotice = quietReadOnlyNotice
         _sendMode = sendMode
         self.queuedText = queuedText
         self.canSendQueued = canSendQueued
@@ -166,7 +171,7 @@ struct ChatComposer: View {
                 else if let queuedText { queuedNotice(queuedText) }
             }
             if let contextPressure { contextPressureNotice(contextPressure) }
-            if readOnly { readOnlyNotice }
+            if readOnly && !quietReadOnlyNotice { readOnlyNotice }
             inputCard
         }
         .background(AppTheme.canvas)

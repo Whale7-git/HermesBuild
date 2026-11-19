@@ -7,6 +7,7 @@ struct SessionListPane: View {
     enum Mode { case page, drawer }
 
     @EnvironmentObject var app: AppState
+    @Environment(\.scenePhase) private var scenePhase
     let mode: Mode
     let selectedID: String?
     let onSelect: (SessionSummary) -> Void
@@ -47,6 +48,7 @@ struct SessionListPane: View {
     @State private var selectionScope: String?
     @State private var batchDeletePresented = false
     @State private var confirmClearDamagedTaskState = false
+    @State private var foregroundDiscoveryPolicy = ForegroundListRefreshPolicy()
     @State private var batchBusy = false
     @FocusState private var searchFocused: Bool
 
@@ -267,6 +269,23 @@ struct SessionListPane: View {
             if startSearching && !selecting {
                 showsSearch = true
                 searchFocused = true
+            }
+        }
+        .onChange(of: scenePhase) { oldPhase, phase in
+            guard phase == .active, searching || showArchived else { return }
+            let scope = discoveryScope
+            let capturedQuery = query
+            let archived = showArchived
+            let sectionKey = searching ? "|search:\(query)" : "|archive"
+            guard foregroundDiscoveryPolicy.shouldRefresh(
+                wasActive: oldPhase == .active, isActive: true,
+                scope: scope + sectionKey, lastSuccess: nil) else { return }
+            Task { @MainActor in
+                guard scenePhase == .active, discoveryScope == scope,
+                      query == capturedQuery, showArchived == archived else { return }
+                // Search/archive own independent query models: refreshing the
+                // home list alone cannot update either result set.
+                if searching || showArchived { await refreshCurrentList() }
             }
         }
         .onChange(of: app.lastArchiveUndo) { _, targets in
