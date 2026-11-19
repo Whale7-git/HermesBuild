@@ -22,7 +22,7 @@ struct UnifiedSessionBrowser: View {
     @Binding var sessionScrollIndex: Int
     @Binding var taskScrollIndex: Int
     @State private var visibleScrollID: String?
-    @State private var userOwnsScroll = false
+    @State private var scrollOwnership = UnifiedBrowserScrollOwnership()
     @Binding var filter: Int
     @Binding var section: Int
     @State private var navigationError: String?
@@ -334,6 +334,16 @@ struct UnifiedSessionBrowser: View {
         Set(center.failures.keys)
     }
 
+    private var retainedTaskSourceIDs: Set<String> {
+        Set(center.records.map(\.id))
+    }
+
+    private var waitingForTaskEvidence: Bool {
+        guard section == 1, let anchor = taskScrollAnchor else { return false }
+        return !visibleScrollIDs.contains(anchor)
+            && retainedTaskSourceIDs.contains(anchor)
+    }
+
     private var waitingForBookmarkHost: Bool {
         guard let anchor = section == 1 ? taskScrollAnchor : sessionScrollAnchor else {
             return false
@@ -344,18 +354,20 @@ struct UnifiedSessionBrowser: View {
     }
 
     private func reconcileScrollBookmark() {
-        guard center.hasResolvedSnapshot, center.loading.isEmpty else { return }
+        guard !scrollOwnership.userOwnsScroll,
+              center.hasResolvedSnapshot, center.loading.isEmpty else { return }
         let available = visibleScrollIDs
         if section == 1 {
             let next = UnifiedBrowserScrollPolicy.reconcile(
                 anchor: taskScrollAnchor, index: taskScrollIndex, available: available,
-                resolved: true, failedSources: failedScrollSources)
+                resolved: true, failedSources: failedScrollSources,
+                retainedSourceIDs: retainedTaskSourceIDs)
             if next != taskScrollAnchor {
-                userOwnsScroll = false
+                scrollOwnership.reset()
                 taskScrollAnchor = next
                 visibleScrollID = next
             } else if let next, available.contains(next),
-                      !userOwnsScroll, visibleScrollID != next {
+                      !scrollOwnership.userOwnsScroll, visibleScrollID != next {
                 // A failed host may return with the very same bookmarked row.
                 // The view's transient fallback position must not block a
                 // delayed restore after that row becomes measurable again.
@@ -366,35 +378,48 @@ struct UnifiedSessionBrowser: View {
                 anchor: sessionScrollAnchor, index: sessionScrollIndex, available: available,
                 resolved: true, failedSources: failedScrollSources)
             if next != sessionScrollAnchor {
-                userOwnsScroll = false
+                scrollOwnership.reset()
                 sessionScrollAnchor = next
                 visibleScrollID = next
             } else if let next, available.contains(next),
-                      !userOwnsScroll, visibleScrollID != next {
+                      !scrollOwnership.userOwnsScroll, visibleScrollID != next {
                 visibleScrollID = next
             }
         }
     }
 
     private func restoreScrollBookmark() {
-        userOwnsScroll = false
+        scrollOwnership.reset()
         let saved = section == 1 ? taskScrollAnchor : sessionScrollAnchor
         visibleScrollID = UnifiedBrowserScrollPolicy.reconcile(
             anchor: saved, index: section == 1 ? taskScrollIndex : sessionScrollIndex,
             available: visibleScrollIDs,
             resolved: center.hasResolvedSnapshot && center.loading.isEmpty,
-            failedSources: failedScrollSources)
+            failedSources: failedScrollSources,
+            retainedSourceIDs: section == 1 ? retainedTaskSourceIDs : [])
     }
 
-    private func rememberScrollBookmark(_ id: String?) {
+    private func handleScrollEvent(_ event: UnifiedBrowserScrollEvent) {
+        if case .idle = event, scrollOwnership.userOwnsScroll {
+            // Commit the final momentum row before releasing user ownership.
+            rememberScrollBookmark(visibleScrollID)
+        }
+        if scrollOwnership.receive(event) {
+            reconcileScrollBookmark()
+        }
+    }
+
+    private func rememberScrollBookmark(_ id: String?, in targetSection: Int? = nil) {
         // SwiftUI also publishes scrollPosition changes caused by restored
         // frames, filtering and refresh. Only a real user interaction may
         // overwrite the root-owned reading bookmark.
-        let available = visibleScrollIDs
+        let target = targetSection ?? section
+        let available = target == 1 ? taskEntries.map(\.id) : visible.map(\.id)
         guard UnifiedBrowserScrollPolicy.shouldCapture(
-            userOwnsScroll: userOwnsScroll, id: id, available: available),
+            userOwnsScroll: scrollOwnership.userOwnsScroll, id: id,
+            available: available),
               let id, let index = available.firstIndex(of: id) else { return }
-        if section == 1 {
+        if target == 1 {
             taskScrollAnchor = id
             taskScrollIndex = index
         } else {
@@ -511,7 +536,7 @@ struct UnifiedSessionBrowser: View {
             }
 
             SessionRefreshList(scrollID: $visibleScrollID,
-                               onUserScroll: { userOwnsScroll = true },
+                               onUserScroll: handleScrollEvent,
                                refresh: {
                 // Join an in-flight identical request rather than replacing it.
                 let run = center.start(sources: sources(), query: requestQuery)
@@ -522,6 +547,14 @@ struct UnifiedSessionBrowser: View {
                           systemImage: "arrow.uturn.backward.circle")
                         .font(.caption)
                         .foregroundStyle(AppTheme.warning)
+                        .padding(.horizontal, AppTheme.pagePadding)
+                        .padding(.vertical, 6)
+                }
+                if waitingForTaskEvidence {
+                    Label("原任务条目暂不符合当前证据或筛选条件；已保留位置，不代表任务结束。",
+                          systemImage: "clock.badge.questionmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, AppTheme.pagePadding)
                         .padding(.vertical, 6)
                 }
@@ -699,36 +732,38 @@ struct UnifiedSessionBrowser: View {
         .onChange(of: visibleScrollID) { _, newValue in
             rememberScrollBookmark(newValue)
         }
-        .onChange(of: section) { _, _ in
+        .onChange(of: section) { oldSection, _ in
+            rememberScrollBookmark(visibleScrollID, in: oldSection)
             restoreScrollBookmark()
         }
         .onChange(of: query) { _, _ in
-            userOwnsScroll = false
+            scrollOwnership.reset()
             sessionScrollAnchor = nil
             sessionScrollIndex = 0
             if section == 0 { visibleScrollID = nil }
         }
         .onChange(of: taskSearch) { _, _ in
-            userOwnsScroll = false
+            scrollOwnership.reset()
             taskScrollAnchor = nil
             taskScrollIndex = 0
             if section == 1 { visibleScrollID = nil }
         }
         .onChange(of: filter) { _, _ in
-            userOwnsScroll = false
+            scrollOwnership.reset()
             sessionScrollAnchor = nil
             sessionScrollIndex = 0
             if section == 0 { visibleScrollID = nil }
         }
         .onChange(of: visibleScrollIDs) { _, _ in
-            userOwnsScroll = false
-            reconcileScrollBookmark()
+            if scrollOwnership.datasetChanged() { reconcileScrollBookmark() }
+        }
+        .onChange(of: failedScrollSources) { _, _ in
+            if scrollOwnership.datasetChanged() { reconcileScrollBookmark() }
         }
         .onChange(of: center.loading) { _, loading in
-            if !loading.isEmpty { userOwnsScroll = false }
             if loading.isEmpty {
                 taskEvidenceNow = Date()
-                reconcileScrollBookmark()
+                if scrollOwnership.datasetChanged() { reconcileScrollBookmark() }
             }
         }
         .onChange(of: scenePhase) { _, phase in
