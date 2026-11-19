@@ -125,7 +125,7 @@ run timeline "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatToolSummar
 run scroll "$S/ChatScrollState.swift" tests/scroll/main.swift
 run scrollgeometry "$S/ChatViewportLayout.swift" "$S/ChatGeometryPlan.swift" tests/scrollgeometry/main.swift
 run viewport "$S/ChatViewportLayout.swift" tests/viewport/main.swift
-run conversationreading -swift-version 6 "$S/ChatReadingPosition.swift" "$S/ChatConversationSearch.swift" "$S/ChatViewportLayout.swift" tests/conversationreading/main.swift
+run conversationreading -swift-version 6 "$S/ChatReadingPosition.swift" "$S/ChatConversationSearch.swift" "$S/ChatFindHighlight.swift" "$S/ChatReaderOutline.swift" "$S/ChatViewportLayout.swift" tests/conversationreading/main.swift
 run findhighlight "$S/ChatFindHighlight.swift" tests/findhighlight/main.swift
 run findwork -swift-version 6 "$S/ChatConversationSearch.swift" "$S/ChatFindHighlight.swift" tests/findwork/main.swift
 run transcriptexport "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/TranscriptExporter.swift" tests/transcriptexport/main.swift

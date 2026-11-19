@@ -245,7 +245,7 @@ def violations(contents: dict[str, str]) -> list[str]:
                   ".accessibilityHint(detail)", "复制本轮已加载的回复",
                   "引用回复", "本条回复的更多操作",
                   "Button(\"专注阅读\"", "Button(\"选择本条原文\"",
-                  "Button(\"复制为 Markdown\"", "Button(\"分享整轮回答\""):
+                  "Button(\"复制本条为 Markdown\"", "Button(\"分享本轮已加载回复\""):
         if token not in toolViews:
             failures.append(f"Chat actions/tool status visibility: missing {token}")
     if "static func statusLine(" not in toolLogic:
@@ -285,6 +285,21 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "olderLimitReached", "canReturnToOrigin"):
         if token not in findbar:
             failures.append(f"Search toolbar missing explicit state/action: {token}")
+    # build214: reader chapter navigation must use rendered Markdown headings,
+    # bounded highlighter ordinals, and explicit reader-owned scroll commands.
+    reader = contents.get("ChatMessageReader.swift", "")
+    outline = contents.get("ChatReaderOutline.swift", "")
+    for token in ("presentationIntent", "utf16Ranges(of: title",
+                  "activeOffset", "sections(in markdown:"):
+        if token not in outline:
+            failures.append(f"Reader outline must use visible Markdown text: {token}")
+    for token in ("showOutline", "chapterJump", "ReaderScrollView(",
+                  "ChatReaderOutline.sections(in: source)", "onChapterNavigationDone",
+                  "hasMoreSearchMatches", "searchQueryTooLong",
+                  "ChatFindHighlight.characterRanges(of: query, in: plain, limit: 301)",
+                  "matchCount == 0 || searching || searchQueryTooLong"):
+        if token not in reader:
+            failures.append(f"Reader interaction regression: {token}")
     # build212: every foreground collection must refresh under a scoped,
     # throttled owner, not solely through drawer manual-refresh buttons.
     for token in ("foregroundListPolicy.shouldRefresh(", "await app.refresh()",
@@ -354,6 +369,7 @@ def main() -> int:
         "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
         "ChatComposer.swift", "SessionSearchView.swift",
         "ChatToolSummary.swift", "ChatConversationSearch.swift", "ChatFindBar.swift",
+        "ChatMessageReader.swift", "ChatReaderOutline.swift",
         "NativeChatView+Composer.swift",
         "NativeChatView+Notices.swift",
     )

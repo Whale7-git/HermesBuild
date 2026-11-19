@@ -37,6 +37,13 @@ struct ChatMessageReader: View {
     @State private var matchCount = 0
     @State private var searching = false
     @State private var searchTask: Task<Void, Never>?
+    @State private var hasMoreSearchMatches = false
+    @State private var searchQueryTooLong = false
+    @State private var outline: [ChatReaderOutline.Section] = []
+    @State private var showOutline = false
+    @State private var queuedChapter: ChatReaderOutline.Section?
+    @State private var chapterJump: ChatReaderOutline.Section?
+    @State private var chapterNotice: String?
     @State private var scroll = ChatReaderScrollSnapshot()
     @State private var restoreNotice = false
 
@@ -49,8 +56,13 @@ struct ChatMessageReader: View {
             ReaderScrollView(
                 initialPosition: initialPosition,
                 replyText: replyText,
-                findQuery: showFind ? findQuery : "",
-                activeFindOrdinal: activeFindOrdinal,
+                findQuery: chapterJump?.title ?? (showFind ? findQuery : ""),
+                activeFindOrdinal: chapterJump?.ordinal ?? activeFindOrdinal,
+                isChapterJump: chapterJump != nil,
+                onChapterNavigationDone: { succeeded in
+                    chapterJump = nil
+                    if !succeeded { chapterNotice = "暂时无法精确定位该章节" }
+                },
                 onPositionChange: { snapshot in
                     scroll = snapshot
                     onPositionChange(snapshot)
@@ -60,8 +72,8 @@ struct ChatMessageReader: View {
                     NativeMarkdownView(
                         text: replyText,
                         cacheable: true,
-                        findQuery: showFind ? findQuery : "",
-                        activeFindOrdinal: activeFindOrdinal)
+                        findQuery: chapterJump?.title ?? (showFind ? findQuery : ""),
+                        activeFindOrdinal: chapterJump?.ordinal ?? activeFindOrdinal)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: 720, alignment: .leading)
@@ -92,6 +104,14 @@ struct ChatMessageReader: View {
                     Button("完成") { dismiss() }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if !outline.isEmpty {
+                        Button {
+                            showOutline = true
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                        .accessibilityLabel("查看回答章节目录")
+                    }
                     Button {
                         withAnimation(.easeOut(duration: 0.18)) {
                             showFind.toggle()
@@ -122,12 +142,63 @@ struct ChatMessageReader: View {
                     .accessibilityLabel("分享全文")
                 }
             }
+            .sheet(isPresented: $showOutline, onDismiss: {
+                guard let chapter = queuedChapter else { return }
+                queuedChapter = nil
+                if showFind {
+                    closeSearch()
+                    showFind = false
+                }
+                chapterNotice = nil
+                chapterJump = chapter
+            }) {
+                NavigationStack {
+                    List(outline) { section in
+                        Button {
+                            queuedChapter = section
+                            showOutline = false
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text(section.title)
+                                    .font(section.level == 1 ? .headline : .subheadline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(2)
+                                Spacer(minLength: 8)
+                                Image(systemName: "arrow.turn.down.right")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                            }
+                            .padding(.leading, CGFloat(max(0, section.level - 1)) * 10)
+                            .frame(minHeight: 44, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("第 \(section.id + 1) 章，\(section.title)")
+                        .accessibilityHint("跳转到回答中的对应标题")
+                    }
+                    .navigationTitle("回答目录")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("完成") { showOutline = false }
+                        }
+                    }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+            }
             .sheet(item: $sharingFile) { file in
                 ShareSheet(items: [file.url], lifetime: file.lifetime) {
                     sharingFile = nil
                 }
             }
             .onChange(of: findQuery) { _, _ in scheduleSearch(reset: true) }
+            .task(id: replyText) {
+                let source = replyText
+                let sections = await Task.detached(priority: .utility) {
+                    ChatReaderOutline.sections(in: source)
+                }.value
+                guard !Task.isCancelled else { return }
+                outline = sections
+            }
             .onAppear {
                 guard initialPosition != nil else { return }
                 restoreNotice = true
@@ -166,6 +237,11 @@ struct ChatMessageReader: View {
                             .foregroundStyle(AppTheme.accent)
                             .lineLimit(1)
                     }
+                    if let chapterNotice {
+                        Text(chapterNotice)
+                            .font(.caption2).foregroundStyle(AppTheme.warning)
+                            .lineLimit(1)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -183,8 +259,8 @@ struct ChatMessageReader: View {
                     .font(.subheadline)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .submitLabel(.next)
-                    .onSubmit { stepFind(1) }
+                    .submitLabel(.search)
+                    .onSubmit { stepFind(0) }
                 if !findQuery.isEmpty {
                     Button {
                         findQuery = ""
@@ -202,9 +278,11 @@ struct ChatMessageReader: View {
             if searching {
                 ProgressView().controlSize(.small).frame(width: 54)
             } else {
-                Text(matchCount == 0 ? "0" : "\(findOrdinal + 1)/\(matchCount)")
+                Text(searchQueryTooLong ? "过长"
+                     : (matchCount == 0 ? "0"
+                        : "\(findOrdinal + 1)/\(matchCount)" + (hasMoreSearchMatches ? "+" : "")))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(matchCount == 0 && !findQuery.isEmpty
+                    .foregroundStyle((searchQueryTooLong || matchCount == 0 && !findQuery.isEmpty)
                                      ? AppTheme.warning : Color.secondary)
                     .frame(minWidth: 42)
                     .accessibilityLabel(findMatchAccessibilityLabel)
@@ -212,15 +290,15 @@ struct ChatMessageReader: View {
 
             Button { stepFind(-1) } label: {
                 Image(systemName: "chevron.up")
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             }
-            .disabled(matchCount == 0)
+            .disabled(matchCount == 0 || searching || searchQueryTooLong)
             .accessibilityLabel("上一处匹配")
             Button { stepFind(1) } label: {
                 Image(systemName: "chevron.down")
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             }
-            .disabled(matchCount == 0)
+            .disabled(matchCount == 0 || searching || searchQueryTooLong)
             .accessibilityLabel("下一处匹配")
         }
         .buttonStyle(.plain)
@@ -286,15 +364,17 @@ struct ChatMessageReader: View {
 
     private var findMatchAccessibilityLabel: String {
         if searching { return "正在查找" }
+        if searchQueryTooLong { return "关键词超过 512 个 UTF-16 单元" }
         if findQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "尚未输入查找内容"
         }
         if matchCount == 0 { return "没有匹配" }
-        return "第 \(findOrdinal + 1) 处，共 \(matchCount) 处"
+        return "第 \(findOrdinal + 1) 处，显示 \(matchCount) 处"
+            + (hasMoreSearchMatches ? "，还有更多匹配" : "")
     }
 
     private func stepFind(_ direction: Int) {
-        guard matchCount > 0 else { return }
+        guard !searching, !searchQueryTooLong, matchCount > 0 else { return }
         findOrdinal = (findOrdinal + direction + matchCount) % matchCount
         UIAccessibility.post(notification: .announcement,
                              argument: "第 \(findOrdinal + 1) 处，共 \(matchCount) 处")
@@ -306,6 +386,8 @@ struct ChatMessageReader: View {
         findQuery = ""
         matchCount = 0
         findOrdinal = 0
+        hasMoreSearchMatches = false
+        searchQueryTooLong = false
         searching = false
     }
 
@@ -315,9 +397,21 @@ struct ChatMessageReader: View {
         guard !query.isEmpty else {
             matchCount = 0
             findOrdinal = 0
+            hasMoreSearchMatches = false
+            searchQueryTooLong = false
             searching = false
             return
         }
+        guard query.utf16.count <= 512 else {
+            matchCount = 0
+            findOrdinal = 0
+            hasMoreSearchMatches = false
+            searchQueryTooLong = true
+            searching = false
+            return
+        }
+        searchQueryTooLong = false
+        hasMoreSearchMatches = false
         searching = true
         matchCount = 0
         findOrdinal = 0
@@ -331,16 +425,20 @@ struct ChatMessageReader: View {
             guard !Task.isCancelled,
                   query == findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             else { return }
-            let nextCount = ChatFindHighlight.characterRanges(of: query, in: plain).count
+            let total = ChatFindHighlight.characterRanges(of: query, in: plain, limit: 301).count
+            let nextCount = min(300, total)
+            let more = total > 300
             guard !Task.isCancelled,
                   query == findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             else { return }
             matchCount = nextCount
+            hasMoreSearchMatches = more
             if reset || findOrdinal >= matchCount { findOrdinal = 0 }
             searching = false
             UIAccessibility.post(
                 notification: .announcement,
-                argument: matchCount == 0 ? "没有匹配" : "找到 \(matchCount) 处匹配")
+                argument: matchCount == 0 ? "没有匹配"
+                    : (more ? "超过 300 处匹配，已显示前 300 处" : "找到 \(matchCount) 处匹配"))
         }
     }
 }
@@ -375,6 +473,8 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
     let replyText: String
     let findQuery: String
     let activeFindOrdinal: Int?
+    let isChapterJump: Bool
+    let onChapterNavigationDone: (Bool) -> Void
     let onPositionChange: (ChatReaderScrollSnapshot) -> Void
     let onPositionPersist: (ChatReaderScrollSnapshot) -> Void
     @ViewBuilder let content: () -> Content
@@ -382,6 +482,7 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(initialPosition: initialPosition, replyText: replyText,
                     findQuery: findQuery, activeFindOrdinal: activeFindOrdinal,
+                    onChapterNavigationDone: onChapterNavigationDone,
                     onPositionChange: onPositionChange,
                     onPositionPersist: onPositionPersist)
     }
@@ -415,7 +516,9 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
         context.coordinator.host?.rootView = content()
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.onPositionPersist = onPositionPersist
-        context.coordinator.updateFind(query: findQuery, ordinal: activeFindOrdinal)
+        context.coordinator.onChapterNavigationDone = onChapterNavigationDone
+        context.coordinator.updateFind(query: findQuery, ordinal: activeFindOrdinal,
+                                       isChapterJump: isChapterJump)
     }
 
     static func dismantleUIView(_ scrollView: UIScrollView, coordinator: Coordinator) {
@@ -428,6 +531,7 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
         let replyText: String
         var onPositionChange: (ChatReaderScrollSnapshot) -> Void
         var onPositionPersist: (ChatReaderScrollSnapshot) -> Void
+        var onChapterNavigationDone: (Bool) -> Void
         var host: UIHostingController<Content>?
         private var restoreTarget: Double?
         private var contentSizeObservation: NSKeyValueObservation?
@@ -439,15 +543,18 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
         private var pendingFindOrdinal: Int?
         private var findRetries = 0
         private var findRetryScheduled = false
+        private var chapterPending = false
 
         init(initialPosition: ChatReaderPosition?, replyText: String,
              findQuery: String, activeFindOrdinal: Int?,
+             onChapterNavigationDone: @escaping (Bool) -> Void,
              onPositionChange: @escaping (ChatReaderScrollSnapshot) -> Void,
              onPositionPersist: @escaping (ChatReaderScrollSnapshot) -> Void) {
             self.initialPosition = initialPosition
             self.replyText = replyText
             self.onPositionChange = onPositionChange
             self.onPositionPersist = onPositionPersist
+            self.onChapterNavigationDone = onChapterNavigationDone
             self.lastFindQuery = findQuery
             self.lastFindOrdinal = activeFindOrdinal
         }
@@ -522,12 +629,18 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
             }
         }
 
-        func updateFind(query: String, ordinal: Int?) {
-            guard query != lastFindQuery || ordinal != lastFindOrdinal else { return }
+        func updateFind(query: String, ordinal: Int?, isChapterJump: Bool) {
+            guard query != lastFindQuery || ordinal != lastFindOrdinal
+                      || isChapterJump != chapterPending else { return }
             lastFindQuery = query
             lastFindOrdinal = ordinal
             findRetries = 0
             pendingFindOrdinal = ordinal
+            chapterPending = isChapterJump
+            if isChapterJump && restoreTarget != nil {
+                userInterruptedRestore = true
+                finishRestoring()
+            }
             guard !query.isEmpty, ordinal != nil else { return }
             DispatchQueue.main.async { [weak self] in self?.applyPendingFind() }
         }
@@ -547,6 +660,12 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
             pendingFindOrdinal = nil
             scrollView.setContentOffset(
                 CGPoint(x: 0, y: min(maximum, max(0, desired))), animated: true)
+            if chapterPending {
+                chapterPending = false
+                DispatchQueue.main.async { [weak self] in
+                    self?.onChapterNavigationDone(true)
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self, weak scrollView] in
                 guard let self, let scrollView else { return }
                 self.persistCurrentPosition(in: scrollView)
@@ -554,10 +673,18 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
         }
 
         private func retryFind() {
-            guard !findRetryScheduled, pendingFindOrdinal != nil, findRetries < 40 else {
+            guard pendingFindOrdinal != nil else { return }
+            guard findRetries < 40 else {
                 pendingFindOrdinal = nil
+                if chapterPending {
+                    chapterPending = false
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onChapterNavigationDone(false)
+                    }
+                }
                 return
             }
+            guard !findRetryScheduled else { return }
             findRetryScheduled = true
             findRetries += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -577,6 +704,13 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            if chapterPending {
+                chapterPending = false
+                pendingFindOrdinal = nil
+                DispatchQueue.main.async { [weak self] in
+                    self?.onChapterNavigationDone(true)
+                }
+            }
             if restoreTarget != nil {
                 userInterruptedRestore = true
                 finishRestoring()

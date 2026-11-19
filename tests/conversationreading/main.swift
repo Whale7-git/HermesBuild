@@ -16,6 +16,36 @@ expect(ChatConversationSearch.find("cafe", in: docs).count == 2, "diacritic-inse
 expect(ChatConversationSearch.find("你好", in: docs).count == 3, "Chinese occurrences")
 expect(ChatConversationSearch.find(".*", in: docs).count == 1, "literal search")
 expect(ChatConversationSearch.find("missing", in: docs).isEmpty, "no match")
+#if canImport(Darwin)
+let outlineSource = """
+# Overview
+
+Some text about Overview, before a second heading.
+
+## Details
+
+One paragraph.
+
+## Details
+
+More data.
+
+```swift
+# Not a chapter
+```
+"""
+let chapters = ChatReaderOutline.sections(in: outlineSource)
+expect(chapters.map(\.title) == ["Overview", "Details", "Details"],
+       "reader outline includes only rendered headings and keeps repeated titles")
+expect(chapters.map(\.level) == [1, 2, 2],
+       "reader outline preserves heading nesting levels")
+expect(chapters.map(\.ordinal) == [0, 0, 1],
+       "repeated headings resolve to the correct visible-text occurrence")
+expect(ChatReaderOutline.sections(in: "body without headings").isEmpty,
+       "reader hides chapter control when there are no headings")
+expect(ChatReaderOutline.sections(in: outlineSource, limit: 1).count == 1,
+       "reader outline respects the count budget")
+#endif
 expect(ChatConversationSearch.find("你好", in: docs, limit: 2).count == 2, "bounded results")
 let exactLimit = [ChatConversationSearch.Document(id: "exact", text: String(repeating: "x ", count: 300))]
 let extraLimit = [ChatConversationSearch.Document(id: "extra", text: String(repeating: "x ", count: 301))]

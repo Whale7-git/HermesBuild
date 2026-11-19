@@ -362,17 +362,19 @@ struct ChatMessageRow: View {
             Button("选择本条原文", systemImage: "selection.pin.in.out") {
                 selectedMessageText = MessageSelectionText(text: message.content)
             }
-            Button("复制本条全文", systemImage: "doc.on.doc") { copy() }
-            Button("复制为 Markdown", systemImage: "text.badge.checkmark") {
+            Button("复制本条原文", systemImage: "doc.on.doc") { copy() }
+            Button("复制本条为 Markdown", systemImage: "text.badge.checkmark") {
                 copyMarkdown()
             }
             if showsCopy {
-                Button("复制整轮过程", systemImage: "text.page.badge.magnifyingglass") {
+                Divider()
+                Button("复制本轮已加载过程", systemImage: "text.page.badge.magnifyingglass") {
                     onCopyProcess()
                 }
-                Button("分享整轮回答", systemImage: "square.and.arrow.up") {
+                Button("分享本轮已加载回复", systemImage: "square.and.arrow.up") {
                     onShareReply()
                 }
+                Divider()
                 Button("在分支重新生成", systemImage: "arrow.clockwise", action: onRegenerate)
                     .disabled(!actionsEnabled || !canForkAtMessage)
                     .accessibilityHint(forkAtMessageHint)
@@ -383,7 +385,7 @@ struct ChatMessageRow: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("本条回复的更多操作")
-        .accessibilityHint("选择原文、专注阅读、复制 Markdown 或分享")
+        .accessibilityHint("专注阅读、选择原文、复制本条或分享已加载的回复")
     }
 
     private func copy() {
@@ -391,7 +393,7 @@ struct ChatMessageRow: View {
 
     }
 
-    /// 「复制这条为 Markdown」：本轮工具一起带出；不含标题与用量。
+    /// 「复制本条为 Markdown」包含发送者等单条元数据；不额外拉取工具历史。
     /// `onCopy` 在本行只收文本，Toast 文案由上游 `MessageListView` 统一给。
     private func copyMarkdown() {
         onCopy(TranscriptExporter.markdown(for: message))
