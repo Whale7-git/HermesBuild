@@ -15,32 +15,57 @@ enum ChatConversationSearch {
         let snippet: String
         var id: String { "\(rowID):\(location)" }
     }
-    /// Literal, case/diacritic-insensitive search of loaded message bodies only.
-    /// UTF-16 offsets are confined to NSString and snippets never split graphemes.
+    struct Result: Sendable {
+        let hits: [Hit]
+        /// True only when the (limit + 1)th match was actually observed.
+        let hasMoreMatches: Bool
+        let queryTooLong: Bool
+    }
+
+    /// Compatibility entry point for callers that only need loaded-window hits.
     static func find(_ query: String, in documents: [Document], limit: Int = 300) -> [Hit] {
+        findDetailed(query, in: documents, limit: limit).hits
+    }
+
+    /// Search the loaded message window, not unpaged server history.
+    /// UTF-16 offsets stay inside NSString; snippets preserve grapheme boundaries.
+    static func findDetailed(_ query: String, in documents: [Document], limit: Int = 300) -> Result {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty, term.utf16.count <= 512, limit > 0 else { return [] }
+        guard !term.isEmpty, limit > 0 else {
+            return Result(hits: [], hasMoreMatches: false, queryTooLong: false)
+        }
+        guard term.utf16.count <= 512 else {
+            return Result(hits: [], hasMoreMatches: false, queryTooLong: true)
+        }
         var hits: [Hit] = []
         for document in documents {
-            if Task.isCancelled { break }
+            if Task.isCancelled {
+                return Result(hits: [], hasMoreMatches: false, queryTooLong: false)
+            }
             let source = searchableText(document) as NSString
             var start = 0
-            while start < source.length && hits.count < limit {
-                if Task.isCancelled { return [] }
+            while start < source.length {
+                if Task.isCancelled {
+                    return Result(hits: [], hasMoreMatches: false, queryTooLong: false)
+                }
                 let range = source.range(of: term, options: [.caseInsensitive, .diacriticInsensitive],
                     range: NSRange(location: start, length: source.length - start))
                 guard range.location != NSNotFound, range.length > 0 else { break }
+                // Exact-limit is not proof of truncation; the extra match is.
+                if hits.count == limit {
+                    return Result(hits: hits, hasMoreMatches: true, queryTooLong: false)
+                }
                 let lower = max(0, range.location - 32)
                 let upper = min(source.length, NSMaxRange(range) + 64)
-                let excerpt = source.rangeOfComposedCharacterSequences(for: NSRange(location: lower, length: upper - lower))
+                let excerpt = source.rangeOfComposedCharacterSequences(
+                    for: NSRange(location: lower, length: upper - lower))
                 let text = source.substring(with: excerpt).replacingOccurrences(of: "\n", with: " ")
                 hits.append(Hit(rowID: document.id, location: range.location,
                     snippet: (lower > 0 ? "…" : "") + text + (upper < source.length ? "…" : "")))
                 start = NSMaxRange(range)
             }
-            if hits.count >= limit { break }
         }
-        return hits
+        return Result(hits: hits, hasMoreMatches: false, queryTooLong: false)
     }
 
     /// Use the same Foundation parser as the visible Markdown document. Source
@@ -110,8 +135,17 @@ actor ChatFindWorker {
     }
 
     func find(_ query: String, in documents: [ChatConversationSearch.Document]) -> [ChatConversationSearch.Hit] {
+        findDetailed(query, in: documents).hits
+    }
+
+    func findDetailed(_ query: String, in documents: [ChatConversationSearch.Document]) -> ChatConversationSearch.Result {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty, term.utf16.count <= 512 else { return [] }
+        guard !term.isEmpty else {
+            return .init(hits: [], hasMoreMatches: false, queryTooLong: false)
+        }
+        guard term.utf16.count <= 512 else {
+            return .init(hits: [], hasMoreMatches: false, queryTooLong: true)
+        }
         let currentIDs = Set(documents.map(\.id))
         for id in Array(cache.keys) where !currentIDs.contains(id) {
             if let old = cache.removeValue(forKey: id) { bytes -= old.cost }
@@ -119,7 +153,7 @@ actor ChatFindWorker {
         var prepared: [ChatConversationSearch.Document] = []
         prepared.reserveCapacity(documents.count)
         for document in documents {
-            if Task.isCancelled { return [] }
+            if Task.isCancelled { return .init(hits: [], hasMoreMatches: false, queryTooLong: false) }
             let plain: String
             if let entry = cache[document.id], entry.document.text == document.text,
                entry.document.markdown == document.markdown {
@@ -139,7 +173,7 @@ actor ChatFindWorker {
             }
             prepared.append(.init(id: document.id, text: plain))
         }
-        return ChatConversationSearch.find(term, in: prepared)
+        return ChatConversationSearch.findDetailed(term, in: prepared)
     }
 }
 
