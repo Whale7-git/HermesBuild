@@ -28,8 +28,10 @@ enum AttachmentProgressPresentation {
         guard let expected = expectedBytes, expected > 0 else {
             return "正在下载 · 已接收 " + bytes(received)
         }
-        let percentage = min(100, max(0,
-            Int((Double(received) / Double(expected) * 100).rounded(.down))))
+        // Clamp *before* converting to Int. Malformed expected lengths must
+        // never overflow the progress presentation.
+        let ratio = (Double(received) / Double(expected) * 100).rounded(.down)
+        let percentage = Int(min(100.0, max(0.0, ratio)))
         return "正在下载 \(percentage)% · " + bytes(received) + " / " + bytes(expected)
     }
 
