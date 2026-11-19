@@ -12,7 +12,7 @@ extension NativeChatView {
                 canLoadOlder: model.canLoadOlderHistory && !isLoadingOlder,
                 loadingOlder: isLoadingOlder, olderLimitReached: model.olderLimitReached,
                 canReturnToOrigin: findOrigin != nil, onStep: stepFind,
-                onLoadOlder: loadOlderForFind, onReturnToOrigin: returnToFindOrigin,
+                onLoadOlder: { loadOlderForFind() }, onReturnToOrigin: returnToFindOrigin,
                 onClose: closeFind)
         }
     }

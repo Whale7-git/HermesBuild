@@ -669,7 +669,7 @@
     "Sources/HermesShell/NativeChatModel+Stream.swift": "c0e6aba5764fbdf471b4022ae9ee80edb3329785c3db1026253c6d727ca60ece",
     "Sources/HermesShell/NativeChatService.swift": "0e456390fd4eea8c58aa5d1b7cb91f6d06928641bd312be2bc39f6e96ea88439",
     "Sources/HermesShell/NativeChatView.swift": "c7b778cd794c62f245ed42be7efd37bb951a0dcf73faf88614b23835a879aa9d",
-    "Sources/HermesShell/NativeChatView+Chrome.swift": "ef8287c77530b12467c12f74fb73673e141577d5df466cfe38bbff8068f49e46",
+    "Sources/HermesShell/NativeChatView+Chrome.swift": "b8980c6e69f96ec9f9a06d0e6912c26181d60e88dd2157e07f1c57c10e14990f",
     "Sources/HermesShell/NativeChatView+Composer.swift": "e595f2f5fbb4b8b20803912184c23aa13ca05535573c999f41e8624f3cbb6e01",
     "Sources/HermesShell/NativeChatView+MessageList.swift": "c658063c9d7888e32ed43f4bbb2467e8ef85aea3cdcf1897444cbdfd2487fd7e",
     "Sources/HermesShell/NativeChatView+Notices.swift": "6a3016ad85c30523db923080e34f7d527d697786e554cdebdbd4ceb253212730",
