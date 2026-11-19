@@ -267,6 +267,7 @@ extension NativeChatView {
             .buttonStyle(.plain)
             .frame(minWidth: 44, minHeight: 44)
             .accessibilityLabel("浏览会话关键节点")
+            .accessibilityHint("在独立目录中按关键节点浏览，不改变当前回复状态")
             Button { goToLatest(animated: true) } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.down")
@@ -278,7 +279,8 @@ extension NativeChatView {
                 .foregroundStyle(.primary)
                 .padding(.horizontal, scroll.hasUnreadContent ? 12 : 0)
                 .frame(minWidth: 38, minHeight: 38)
-                .background(AppTheme.surface, in: Capsule())
+                .background(scroll.hasUnreadContent ? AppTheme.selectionFill : AppTheme.surface,
+                            in: Capsule())
                 .overlay(Capsule().strokeBorder(
                     scroll.hasUnreadContent ? AppTheme.accent.opacity(0.55)
                                             : AppTheme.hairline.opacity(0.75),
@@ -287,11 +289,15 @@ extension NativeChatView {
             .buttonStyle(.plain)
             .frame(minHeight: 44)
             .accessibilityLabel(scroll.hasUnreadContent ? "有新回复，回到最新消息" : "回到最新消息")
+            .accessibilityValue(scroll.hasUnreadContent ? "有未读新内容" : "正在阅读历史")
         }
         .padding(.trailing, 14)
         .padding(.bottom, 4)
         .frame(maxWidth: .infinity, alignment: .trailing)
         .frame(height: 48, alignment: .bottom)
+        // Animate only the indicator treatment; never the transcript viewport.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16),
+                   value: scroll.hasUnreadContent)
         // No safeAreaInset or full-width translucent mask over live text.
         .transition(.opacity)
     }
