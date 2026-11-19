@@ -13,6 +13,9 @@ on:
         options: [gold, audit, all]
   schedule:
     - cron: "17 2 * * *"
+  # Temporary one-shot development trigger; remove before main merge.
+  push:
+    branches: [chore/ui-xcuitest-core]
 
 permissions:
   contents: read
