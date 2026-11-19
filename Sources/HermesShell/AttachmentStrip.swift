@@ -388,8 +388,10 @@ struct AttachmentStrip: View {
                         ProgressView(value: min(1, Double(interaction.state.receivedBytes) / Double(total)))
                             .frame(maxWidth: 80)
                     } else { ProgressView().controlSize(.small) }
-                    Text("正在下载 · \(byteLabel(interaction.state.receivedBytes))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(AttachmentProgressPresentation.downloadText(
+                        receivedBytes: interaction.state.receivedBytes,
+                        expectedBytes: interaction.state.expectedBytes))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     Spacer(minLength: 0)
                     Button("取消") { interaction.cancel() }.frame(minWidth: 44, minHeight: 44)
                 }
@@ -417,10 +419,6 @@ struct AttachmentStrip: View {
             }
             .buttonStyle(.plain)
         }
-    }
-
-    private func byteLabel(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     private func kindLabel(_ kind: AttachmentKind) -> String {
@@ -658,6 +656,14 @@ private struct HistoryAttachmentPreview: View {
         }
         .onChange(of: isActive) { _, active in if !active { retireWork() } }
         .onDisappear { retireWork(); image = nil }
+        .onChange(of: sourceIdentity) { _, _ in
+            retireWork()
+            image = nil
+            errorMessage = nil
+            saved = false
+            saveNotice = nil
+            approvedExternalSource = nil
+        }
         .sheet(item: $sharing.file) { file in
             ShareSheet(items: [file.url], lifetime: file.lifetime) { sharing.file = nil }
         }
