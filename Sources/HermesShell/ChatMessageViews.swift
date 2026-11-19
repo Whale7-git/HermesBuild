@@ -627,12 +627,10 @@ struct ChatToolGroup: View {
                         .font(.footnote)
                         .foregroundStyle(running ? AppTheme.accent : (failed ? AppTheme.warning : (unresolved ? Color.secondary : AppTheme.success)))
                     VStack(alignment: .leading, spacing: 2) {
-                        // 折叠行只占一行：标题 + 摘要合在一起。
-                        //
-                        // 原先是 title 一行、summary 再一行（footnote + caption2），
-                        // 一轮工具调用在时间线里就占两行高度，回复越长这类行越多，
-                        // 视觉上像「每段工具后面都拖一条尾巴」。摘要本身是补充信息，
-                        // 同一行放得下就够；放不下用 `lineLimit(1)` 截断，展开仍可看全。
+                        // Normal tool groups remain a single quiet line.
+                        // Errors, uncertain status and accessibility sizes
+                        // receive a second, bounded detail line. The expanded
+                        // group always exposes complete tool results.
                         Text(needsDetails || summary.isEmpty ? title : "\(title) · \(summary)")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(failed ? AppTheme.warning : Color.secondary)

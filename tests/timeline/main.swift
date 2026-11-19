@@ -175,6 +175,12 @@ check(ChatToolSummary.title(syntheticTools, allowsRunning: true).contains("工�
       "running tool stays visible in summary despite an earlier failed tool")
 check(ChatToolSummary.summary(syntheticTools, allowsRunning: true) == "active-write",
       "current tool name stays in collapsed 180-item summary")
+check(ChatToolSummary.statusLine(syntheticTools, allowsRunning: true)
+      == "178 成功 · 1 失败 · 1 执行中",
+      "long running tool timeline shows precise success/failure/pending counts")
+check(ChatToolSummary.statusLine(syntheticTools, allowsRunning: false)
+      == "178 成功 · 1 失败 · 1 待核对",
+      "a disconnected 180-tool timeline never labels old unfinished calls as active")
 check(ChatExecutionPresentation.title(messageCount: 3, toolItems: syntheticTools,
                                       allowsRunning: false).contains("失败"),
       "finalized failed process does not claim success")

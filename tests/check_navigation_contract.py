@@ -238,6 +238,23 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "quoteExpanded.toggle()", "收起引用内容", "展开引用内容"):
         if token not in composer:
             failures.append(f"Composer narrow/large text accessibility contract missing: {token}")
+    toolViews = contents.get("ChatMessageViews.swift", "")
+    toolLogic = contents.get("ChatToolSummary.swift", "")
+    for token in ("ChatToolSummary.statusLine(items, allowsRunning: allowsRunning)",
+                  "dynamicTypeSize.isAccessibilitySize",
+                  ".accessibilityHint(detail)", "复制本轮已加载的回复",
+                  "引用回复", "本条回复的更多操作",
+                  "Button(\"专注阅读\"", "Button(\"选择本条原文\"",
+                  "Button(\"复制为 Markdown\"", "Button(\"分享整轮回答\""):
+        if token not in toolViews:
+            failures.append(f"Chat actions/tool status visibility: missing {token}")
+    if "static func statusLine(" not in toolLogic:
+        failures.append("Tool summaries must retain verified success/failure/unknown counts")
+    for token in ("func navigate(to id:", "func restoreReadingPosition(",
+                  "private var jumpBar: some View",
+                  "goToLatest(animated: true)"):
+        if token not in contents.get("NativeChatView+MessageList.swift", ""):
+            failures.append(f"Search/reading return path: missing {token}")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
@@ -284,6 +301,7 @@ def main() -> int:
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
         "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
         "ChatComposer.swift", "SessionSearchView.swift",
+        "ChatToolSummary.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
     baseline_errors = violations(contents)
