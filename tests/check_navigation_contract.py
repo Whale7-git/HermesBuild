@@ -256,7 +256,7 @@ def violations(contents: dict[str, str]) -> list[str]:
         if token not in contents.get("NativeChatView+MessageList.swift", ""):
             failures.append(f"Search/reading return path: missing {token}")
     # build212: every foreground collection must refresh under a scoped,
-    // throttled owner, not solely through drawer manual-refresh buttons.
+    # throttled owner, not solely through drawer manual-refresh buttons.
     for token in ("foregroundListPolicy.shouldRefresh(", "await app.refresh()",
                   "guard scope == homeScope, scenePhase == .active"):
         if token not in root:
