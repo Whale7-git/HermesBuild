@@ -78,10 +78,10 @@ struct ImagePreviewActions: View {
     let saved: Bool
     let saving: Bool
     let sharing: Bool
-    let save: () -> Void
-    let share: () -> Void
     /// The saved asset may be a downsampled preview when original bytes failed.
     var savedLabel: String = "已保存到相册"
+    let save: () -> Void
+    let share: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
