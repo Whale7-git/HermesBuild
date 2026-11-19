@@ -25,6 +25,54 @@ expect(UnifiedBrowserScrollPolicy.reconcile(
 expect(UnifiedBrowserScrollPolicy.reconcile(
     anchor: nil, index: 1, available: bookmarks, resolved: true) == nil,
     "new query or account has no inherited scroll bookmark")
+
+    let failing = UnifiedSessionIdentity(
+        instanceID: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+        endpointIdentity: "http://failing-host:8000", accountScope: "account-f")
+    let healthy = UnifiedSessionIdentity(
+        instanceID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
+        endpointIdentity: "http://healthy-host:8000", accountScope: "account-h")
+    let sameSessionDifferentAccount = UnifiedSessionIdentity(
+        instanceID: failing.instanceID,
+        endpointIdentity: failing.endpointIdentity, accountScope: "other-account")
+    let failingRow = failing.recordIDPrefix + "11:session-xyz"
+    let healthyRow = healthy.recordIDPrefix + "11:session-xyz"
+    let alienAccountRow = sameSessionDifferentAccount.recordIDPrefix + "11:session-xyz"
+    expect(UnifiedBrowserScrollPolicy.onFailedSource(failingRow, failures: [failing]),
+           "a failed source is identified by complete host/endpoint/account scope")
+    expect(!UnifiedBrowserScrollPolicy.onFailedSource(healthyRow, failures: [failing])
+           && !UnifiedBrowserScrollPolicy.onFailedSource(
+               alienAccountRow, failures: [failing]),
+           "identical server session IDs and hosts with other accounts do not collide")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: failingRow, index: 1, available: [healthyRow],
+        resolved: true, failedSources: [failing]) == failingRow,
+        "one successful host never replaces a failed host's bookmark")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: failingRow, index: 1, available: [healthyRow],
+        resolved: true, failedSources: [healthy]) == healthyRow,
+        "unrelated host failures do not block a verified old-host deletion fallback")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: failingRow, index: 1, available: [healthyRow],
+        resolved: true, failedSources: []) == healthyRow,
+        "successful host retry without old session can release bookmark")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: failingRow, index: 1, available: [failingRow, healthyRow],
+        resolved: true, failedSources: [failing]) == failingRow,
+        "a row still present in cache must retain its exact position on failure")
+    expect(UnifiedBrowserScrollPolicy.reconcile(
+        anchor: failingRow, index: 1, available: [],
+        resolved: true, failedSources: [failing]) == failingRow,
+        "failure with no loaded rows cannot certify an empty result")
+    expect(!UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: false, id: healthyRow, available: [healthyRow]),
+        "programmatic restore or reflow never overwrites a saved bookmark")
+    expect(UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: true, id: healthyRow, available: [healthyRow]),
+        "a user-driven visible row may update its section's bookmark")
+    expect(!UnifiedBrowserScrollPolicy.shouldCapture(
+        userOwnsScroll: true, id: failingRow, available: [healthyRow]),
+        "stale rows outside the current list are never recorded")
 }
 
 func expect(_ value: @autoclosure () -> Bool, _ message: String) {

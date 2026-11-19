@@ -687,6 +687,22 @@ for step in 0..<160 {
 expect(interleavedTurn.phase == .manualReading,
        "long interleaved streams keep explicit manual reading intent")
 
+// build209: a later user drag must remain authoritative across hundreds
+// of late Markdown, folded tool, pagination and viewport updates.
+var sourceFailureReader = ChatTurnReadingState()
+sourceFailureReader.focus(rowID: "209-user", rowTop: 220,
+                          contentBottom: 340, viewport: 750)
+sourceFailureReader.userBeganReading()
+for event in 0..<225 {
+    let row: Double? = event.isMultiple(of: 17) ? nil : 220 + Double(event % 9)
+    let viewport = event.isMultiple(of: 3) ? 350.0 : 750.0
+    let result = sourceFailureReader.target(
+        contentBottom: 900 + Double(event * 14), rowTop: row,
+        viewport: viewport, allowGrowth: !event.isMultiple(of: 5))
+    expect(result == nil && sourceFailureReader.phase == .manualReading,
+           "manual reading stays detached during long tools, reflow and history loads")
+}
+
 // build180: status-bar-to-top is a manual reading action, not a new
 // streamed-growth focus command. Simulate 180 changing tool heights after it.
 var statusBarReading = ChatTurnReadingState()

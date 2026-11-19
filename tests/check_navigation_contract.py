@@ -204,6 +204,17 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("Cross-instance browser must use target-aware row scroll restoration")
     if "enum UnifiedBrowserScrollPolicy" not in model:
         failures.append("Missing scoped bookmark fallback policy")
+    for token in ("failedSources: failedScrollSources",
+                  "UnifiedBrowserScrollPolicy.shouldCapture(",
+                  "waitingForBookmarkHost", "visibleScrollID != next"):
+        if token not in browser:
+            failures.append(f"Browser scroll ownership: missing {token}")
+    if "userOwnsScroll, id: id" not in browser:
+        failures.append("Browser must gate bookmark writes on user-initiated scroll")
+    if ".onScrollPhaseChange" not in refreshList or "phase == .interacting" not in refreshList:
+        failures.append("Cross-instance scroll owner must distinguish gestures from animations")
+    if "onFailedSource(_ anchor" not in model:
+        failures.append("Missing per-identity partial-failure bookmark protection")
     composer = contents.get("ChatComposer.swift", "")
     if ".frame(width: 44, height: 44)" not in composer:
         failures.append("Quote remove action must retain a 44pt touch target")
