@@ -65,7 +65,7 @@ jobs:
           xcrun simctl bootstatus "$DEVICE" -b
 
       - name: Generate UI test project
-        run: xcodegen generate --spec ios-ci-project.yml --project HermesShellCI.xcodeproj
+        run: xcodegen generate --spec ios-ci-project.yml
 
       - name: Run real iOS UI gestures
         shell: bash
