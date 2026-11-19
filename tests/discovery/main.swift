@@ -4,6 +4,29 @@ import FoundationNetworking
 #endif
 
 var checks = 0
+
+private func browserScrollPolicyTests() {
+    let bookmarks = ["a", "b", "c", "d"]
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: "c", index: 2, available: bookmarks, resolved: true) == "c",
+    "refresh retains an existing visible session or task row")
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: "c", index: 2, available: ["a", "d"], resolved: false) == "c",
+    "unresolved loading must not replace the saved row")
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: "c", index: 2, available: ["a", "b", "d"], resolved: true) == "d",
+    "missing row falls back to nearest surviving index")
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: "c", index: 8, available: ["a", "b"], resolved: true) == "b",
+    "fallback clamps an old index to the refreshed list")
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: "c", index: 2, available: [], resolved: true) == nil,
+    "empty resolved results clear an invalid bookmark")
+expect(UnifiedBrowserScrollPolicy.reconcile(
+    anchor: nil, index: 1, available: bookmarks, resolved: true) == nil,
+    "new query or account has no inherited scroll bookmark")
+}
+
 func expect(_ value: @autoclosure () -> Bool, _ message: String) {
     checks += 1
     if !value() { print("FAIL: \(message)"); exit(1) }
@@ -238,6 +261,7 @@ func expect(_ value: @autoclosure () -> Bool, _ message: String) {
         }
         do { _ = try ArchivedSessionPage(data: Data(#"{"sessions":[],"archived_count":10,"archived_limit":2,"archived_offset":0}"#.utf8)); expect(false, "nonadvancing archive page cannot silently finish") }
         catch { expect(true, "nonadvancing archive page rejected") }
+        browserScrollPolicyTests()
         try await refreshTests()
         try await unifiedSessionTests()
         try await unifiedRefreshTests()
