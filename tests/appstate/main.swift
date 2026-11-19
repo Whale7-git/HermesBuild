@@ -637,7 +637,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         let model = AppState(credentials: credentials)
         let decoder = JSONDecoder()
         func row(_ sid: String, running: Bool) throws -> SessionSummary {
-            let data = Data("{\"session_id\":\"\\(sid)\",\"title\":\"Test\",\"is_streaming\":\\(running)}".utf8)
+            let data = Data("{\"session_id\":\"\(sid)\",\"title\":\"Test\",\"is_streaming\":\(running)}".utf8)
             return try decoder.decode(SessionSummary.self, from: data)
         }
         // First successful list is the evidence baseline; a session that is

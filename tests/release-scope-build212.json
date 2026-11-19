@@ -718,7 +718,7 @@
     "scripts/verify-candidate.py": "364ae99aa76722f3481646d450c7a969a59abbe01308b2680653be25992a5216",
     "scripts/write-candidate-report.py": "4014baab0d2cd62a3666af63320aac393198b03a7d94abb0cd744a6ee5644cb6",
     "tests/appstate/TaskCacheTests.swift": "829509e880039b160ed4d7eb9c88d9753b3be0f9810d07a03c53773355b8ffc6",
-    "tests/appstate/main.swift": "38ecf224f8e53ce1ef4d1ca8da455cdd81bb63c4bbeb00f7b590572236abca3f",
+    "tests/appstate/main.swift": "7f0d9e4bc8526aa5677014b33bb1bef5c2fd87e3863b234d0e4e2e877a4f538e",
     "tests/attachments/PreviewTests.swift": "e5b4b0fee40883385d8034ca124d5109c96ab8aeeae2510275bcd123638a65f4",
     "tests/attachments/iOSContracts.swift": "7c40292722444597724cb31b97e0a22a1bf43f8063101d7f9d1d5324bd1c8906",
     "tests/attachments/main.swift": "2a342c651b8198abf309aaeab6cdba4f2f1f11ecee559d538d97e5e057a0e18a",
