@@ -1,0 +1,25 @@
+{
+  "events": [
+    {
+      "id": "1",
+      "event": "run.started",
+      "run_id": "ui-run-1"
+    },
+    {
+      "id": "2",
+      "event": "message.delta",
+      "delta": "UI 自动化测试：第一段回复。 "
+    },
+    {
+      "id": "3",
+      "event": "message.delta",
+      "delta": "第二段回复已送达。"
+    },
+    {
+      "id": "4",
+      "event": "run.completed",
+      "status": "completed",
+      "completed": true
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "data": [
+    {
+      "id": "ui-session-1",
+      "title": "UI 验收会话",
+      "started_at": 1795150000,
+      "last_active": 1795150010,
+      "message_count": 2,
+      "model": "hermes-ui-test",
+      "source": "ui_test",
+      "preview": "可滚动长回答"
+    }
+  ],
+  "has_more": false
+}
