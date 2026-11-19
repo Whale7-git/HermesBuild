@@ -698,6 +698,7 @@ struct SecureAttachmentPreview: View {
     @State private var originalTooLarge = false
     @State private var saving = false
     @State private var saved = false
+    @State private var saveNotice: String?
     @State private var saveError: String?
     @State private var saveTask: Task<Void, Never>?
     @State private var saveGeneration = UUID()
@@ -753,6 +754,7 @@ struct SecureAttachmentPreview: View {
     @ViewBuilder private var saveOverlay: some View {
         VStack(alignment:.trailing, spacing:8) {
             ImagePreviewActions(saved: saved, saving: saving, sharing: sharing.preparing,
+                savedLabel: saveNotice ?? "已保存到相册",
                 save: saveOriginal, share: {
                     let cached = originalData
                     sharing.prepare(name: attachment.name) {
@@ -760,6 +762,12 @@ struct SecureAttachmentPreview: View {
                         return try await loader.imageData(sessionID:sessionID, attachment:attachment)
                     }
                 })
+            if let saveNotice {
+                Text(saveNotice)
+                    .font(.caption2)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
             if originalTooLarge {
                 Text("原图较大，保存时会重新下载")
                     .font(.caption2)
@@ -771,7 +779,7 @@ struct SecureAttachmentPreview: View {
 
     private func saveOriginal() {
         guard !saving, !saved, let displayed = image else { return }
-        saving = true; saveError = nil
+        saving = true; saveError = nil; saveNotice = nil
         let cached = originalData
         let generation = saveGeneration
         saveTask = Task {
@@ -808,8 +816,8 @@ struct SecureAttachmentPreview: View {
                 try Task.checkCancellation()
                 guard generation == saveGeneration else { return }
                 saved = true
-                UIAccessibility.post(notification: .announcement,
-                                     argument: savedOriginal ? "原图已保存到相册" : "已保存预览图到相册")
+                saveNotice = savedOriginal ? "原图已保存到相册" : "已保存预览图到相册"
+                UIAccessibility.post(notification: .announcement, argument: saveNotice)
             } catch is CancellationError {
             } catch {
                 if generation == saveGeneration, !Task.isCancelled { saveError = error.localizedDescription }

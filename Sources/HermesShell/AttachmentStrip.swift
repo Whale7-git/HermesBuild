@@ -268,7 +268,7 @@ struct AttachmentStrip: View {
                 NavigationStack {
                     HistoryAttachmentGallery(items: route.images.isEmpty ? [route.item] : route.images,
                         selectedID: route.item.id, baseURL: route.baseURL, sessionID: route.sessionID,
-                        authorization: route.authorization)
+                        authorization: route.authorization, accountScope: imageRatioScope)
                         .background(AttachmentLifetimeKeeper(lifetime: route.lifetime).frame(width: 0, height: 0))
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar { ToolbarItem(placement: .confirmationAction) {
@@ -388,8 +388,10 @@ struct AttachmentStrip: View {
                         ProgressView(value: min(1, Double(interaction.state.receivedBytes) / Double(total)))
                             .frame(maxWidth: 80)
                     } else { ProgressView().controlSize(.small) }
-                    Text("正在下载 · \(byteLabel(interaction.state.receivedBytes))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(AttachmentProgressPresentation.downloadText(
+                        receivedBytes: interaction.state.receivedBytes,
+                        expectedBytes: interaction.state.expectedBytes))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     Spacer(minLength: 0)
                     Button("取消") { interaction.cancel() }.frame(minWidth: 44, minHeight: 44)
                 }
@@ -419,10 +421,6 @@ struct AttachmentStrip: View {
         }
     }
 
-    private func byteLabel(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-
     private func kindLabel(_ kind: AttachmentKind) -> String {
         switch kind {
         case .image: return "图片"
@@ -434,6 +432,97 @@ struct AttachmentStrip: View {
         case .document: return "文档"
         case .other: return "文件"
         }
+    }
+}
+
+/// A compact, metadata-backed media surface for the attachment overview.
+/// Visible tiles alone load thumbnails; tapping opens a single, scoped gallery
+/// whose adjacent pages load only when selected.
+struct AttachmentMediaItem: Identifiable {
+    let id: String
+    let rowID: String
+    let image: HistoryAttachment
+}
+
+struct AttachmentMediaGrid: View {
+    let items: [AttachmentMediaItem]
+    let baseURL: URL
+    let sessionID: String
+    let accountScope: String
+    let authorization: AttachmentAuthorization
+    let imageRatios: ImageRatioSnapshot
+    let onLocate: (String) -> Void
+    @StateObject private var interaction = AttachmentInteractionController()
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 44), spacing: 7),
+              count: dynamicTypeSize.isAccessibilitySize ? 1 : 3)
+    }
+    private var scope: String {
+        accountScope + "|" + baseURL.absoluteString + "|" + sessionID + "|media-overview"
+    }
+    private var images: [HistoryAttachment] { items.map(\.image) }
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 7) {
+            ForEach(items) { media in
+                InlineImageView(
+                    raw: media.image.path, baseURL: baseURL, sessionID: sessionID,
+                    ratio: imageRatios.ratio(for: media.image.path),
+                    onTap: { _ in open(media.image) }, ratioScope: accountScope,
+                    tile: true, authorization: authorization)
+                    .contextMenu {
+                        Button("定位到原消息", systemImage: "arrow.turn.up.left") {
+                            onLocate(media.rowID)
+                        }
+                        Button("复制图片路径", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = media.image.path
+                        }
+                    }
+                    .accessibilityHint("点按查看图片，长按可以定位原消息")
+                    .overlay(alignment: .topLeading) {
+                        if interaction.state.failure?.ticket.itemID == media.id {
+                            Button("重试打开") { open(media.image) }
+                                .font(.caption2).padding(6).frame(minHeight: 44)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                    }
+            }
+        }
+        .onAppear { interaction.activate(scope: scope) }
+        .onChange(of: scope) { _, next in interaction.activate(scope: next) }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background, interaction.state.pending != nil { interaction.retire() }
+            else if phase == .active { interaction.activate(scope: scope) }
+        }
+        .onDisappear { interaction.retire() }
+        .sheet(item: $interaction.presentation) { route in
+            if route.intent == .image {
+                NavigationStack {
+                    HistoryAttachmentGallery(
+                        items: route.images.isEmpty ? [route.item] : route.images,
+                        selectedID: route.item.id, baseURL: route.baseURL,
+                        sessionID: route.sessionID, authorization: route.authorization,
+                        accountScope: accountScope)
+                        .background(AttachmentLifetimeKeeper(lifetime: route.lifetime)
+                            .frame(width: 0, height: 0))
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("完成") { interaction.requestDismissal(id: route.id) }
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    private func open(_ item: HistoryAttachment) {
+        interaction.start(item, intent: .image, baseURL: baseURL,
+                          sessionID: sessionID, images: images,
+                          authorization: authorization)
     }
 }
 
@@ -473,19 +562,20 @@ private struct AttachmentLifetimeKeeper: UIViewRepresentable {
     }
 }
 
-private struct HistoryAttachmentGallery: View {
+struct HistoryAttachmentGallery: View {
     let items: [HistoryAttachment]
     let selectedID: String
     let baseURL: URL
     let sessionID: String
     /// 预览/下载该走哪种认证：网关实例没有 cookie，必须带 Bearer。
     var authorization: AttachmentAuthorization = .cookieOnly
+    var accountScope: String = ""
 
     var body: some View {
         ImageGallery(entries: items.map { .init(id: $0.id, title: $0.label) }, selectedID: selectedID) { entry, active in
             if let item = items.first(where: { $0.id == entry.id }) {
                 HistoryAttachmentPreview(path: item.path, baseURL: baseURL, sessionID: sessionID,
-                                authorization: authorization, isActive: active)
+                                authorization: authorization, accountScope: accountScope, isActive: active)
             }
         }
     }
@@ -496,6 +586,7 @@ private struct HistoryAttachmentPreview: View {
     let baseURL: URL
     let sessionID: String
     var authorization: AttachmentAuthorization = .cookieOnly
+    var accountScope: String = ""
     var isActive = true
     @StateObject private var sharing = ImageOriginalShare()
     @State private var image: UIImage?
@@ -506,11 +597,47 @@ private struct HistoryAttachmentPreview: View {
     @State private var attempt = 0
     @State private var saveTask: Task<Void, Never>?
     @State private var saveGeneration = UUID()
+    /// Consent belongs to an exact source, account and session. Page swipes
+    /// cannot silently grant third-party network access to another image.
+    @State private var approvedExternalSource: String?
+    @State private var saveNotice: String?
+
+    private var sourceIdentity: String {
+        "\(accountScope)|\(baseURL.absoluteString)|\(sessionID)|\(path)"
+    }
+    private var isExternalImage: Bool {
+        guard InlineImageKind.isHTTP(path) else { return false }
+        guard let policy = try? AttachmentPreviewPolicy(
+            baseURL: baseURL, authorization: authorization) else { return true }
+        return policy.internalFilePath(from: path) == nil
+    }
+    private var awaitingConsent: Bool {
+        isExternalImage && approvedExternalSource != sourceIdentity
+    }
 
     var body: some View {
         Group {
-            if let image {
-                ZoomableImagePage(image: image, accessibilityLabel: "附件图片") { saveButton(image) }
+            if awaitingConsent {
+                ContentUnavailableView {
+                    Label("第三方图片", systemImage: "hand.tap")
+                } description: {
+                    Text("此图片位于其他网站。确认后仅加载当前图片，不向第三方发送实例密钥。")
+                } actions: {
+                    Button("加载此图片") { approvedExternalSource = sourceIdentity }
+                        .frame(minHeight: 44)
+                }
+            } else if let image {
+                ZoomableImagePage(image: image, accessibilityLabel: "附件图片") {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        saveButton(image)
+                        if let saveNotice {
+                            Text(saveNotice)
+                                .font(.caption).padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .accessibilityLabel(saveNotice)
+                        }
+                    }
+                }
                 // 保存不做成 toolbar 项：这个 sheet 的外层已经用 .confirmationAction
                 // 放了「完成」，同一位置会把子视图的 .topBarTrailing 覆盖掉，真机上
                 // 表现为右上角只剩一个「完成」。改成浮层后不依赖 toolbar 合并，
@@ -523,12 +650,20 @@ private struct HistoryAttachmentPreview: View {
                 }
             } else { ProgressView("正在读取…") }
         }
-        .task(id: "\(baseURL.absoluteString)|\(sessionID)|\(path)|\(attempt)|\(isActive)") {
-            guard isActive else { image = nil; return }
+        .task(id: "\(sourceIdentity)|\(attempt)|\(isActive)|\(awaitingConsent)") {
+            guard isActive, !awaitingConsent else { image = nil; return }
             await load()
         }
         .onChange(of: isActive) { _, active in if !active { retireWork() } }
         .onDisappear { retireWork(); image = nil }
+        .onChange(of: sourceIdentity) { _, _ in
+            retireWork()
+            image = nil
+            errorMessage = nil
+            saved = false
+            saveNotice = nil
+            approvedExternalSource = nil
+        }
         .sheet(item: $sharing.file) { file in
             ShareSheet(items: [file.url], lifetime: file.lifetime) { sharing.file = nil }
         }
@@ -543,7 +678,9 @@ private struct HistoryAttachmentPreview: View {
     private func load() async {
         image = nil; errorMessage = nil
         do {
-            let decoded = try await RemoteImageLoader.shared.load(path: path, baseURL: baseURL, sessionID: sessionID)
+            let decoded = try await RemoteImageLoader.shared.load(
+                path: path, baseURL: baseURL, sessionID: sessionID,
+                accountScope: accountScope, authorization: authorization)
             try Task.checkCancellation()
             image = decoded
         } catch is CancellationError {
@@ -554,6 +691,7 @@ private struct HistoryAttachmentPreview: View {
     /// 视觉是 44pt 圆，点按区域由 padding 保证不贴边。
     private func saveButton(_ image: UIImage) -> some View {
         ImagePreviewActions(saved: saved, saving: saving, sharing: sharing.preparing,
+            savedLabel: saveNotice ?? "已保存到相册",
             save: { save(image) },
             share: { sharing.prepare(name: (path as NSString).lastPathComponent) { try await originalBytes() } })
     }
@@ -565,7 +703,7 @@ private struct HistoryAttachmentPreview: View {
 
     private func save(_ image: UIImage) {
         guard !saving, !saved else { return }
-        saving = true; saveError = nil
+        saving = true; saveError = nil; saveNotice = nil
         let generation = saveGeneration
         saveTask = Task {
             do {
@@ -596,9 +734,8 @@ private struct HistoryAttachmentPreview: View {
                 try Task.checkCancellation()
                 guard generation == saveGeneration else { return }
                 saved = true
-                // 回退路径必须说清存的是预览图，不能让用户以为拿到了原图。
-                UIAccessibility.post(notification: .announcement,
-                                     argument: savedOriginal ? "原图已保存到相册" : "已保存预览图到相册")
+                saveNotice = savedOriginal ? "原图已保存到相册" : "已保存预览图到相册"
+                UIAccessibility.post(notification: .announcement, argument: saveNotice)
             } catch is CancellationError {
             } catch {
                 if generation == saveGeneration, !Task.isCancelled { saveError = error.localizedDescription }

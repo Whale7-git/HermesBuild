@@ -21,6 +21,20 @@ enum AttachmentProgressPresentation {
         progress?.fraction != nil
     }
 
+    /// Download progress uses the same known-size rule as uploads.
+    /// Unknown or invalid expected bytes must never fabricate a percentage.
+    static func downloadText(receivedBytes: Int, expectedBytes: Int?) -> String {
+        let received = max(0, receivedBytes)
+        guard let expected = expectedBytes, expected > 0 else {
+            return "正在下载 · 已接收 " + bytes(received)
+        }
+        // Clamp *before* converting to Int. Malformed expected lengths must
+        // never overflow the progress presentation.
+        let ratio = (Double(received) / Double(expected) * 100).rounded(.down)
+        let percentage = Int(min(100.0, max(0.0, ratio)))
+        return "正在下载 \(percentage)% · " + bytes(received) + " / " + bytes(expected)
+    }
+
     /// 节流：整数百分比变化才值得刷新 UI。
     ///
     /// 传输回调可能每几 KB 就来一次；按字节比较会让整棵子树反复失效。

@@ -300,6 +300,36 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "matchCount == 0 || searching || searchQueryTooLong"):
         if token not in reader:
             failures.append(f"Reader interaction regression: {token}")
+    # build215: history image preview must use the same scoped authorization
+    # as its original-byte save/share route, never silently fall back to cookies.
+    strip = contents.get("AttachmentStrip.swift", "")
+    overview = contents.get("AttachmentOverview.swift", "")
+    catalog = contents.get("AttachmentCatalog.swift", "")
+    progress = contents.get("AttachmentProgressPresentation.swift", "")
+    imageActions = contents.get("ImagePreviewActions.swift", "")
+    attachmentViews = contents.get("AttachmentViews.swift", "")
+    for token in ("accountScope: accountScope, authorization: authorization",
+                  "guard isActive, !awaitingConsent else",
+                  "approvedExternalSource != sourceIdentity",
+                  "AttachmentPresentationGate.shared.reserve",
+                  "AttachmentMediaGrid: View", "LazyVGrid(columns: columns",
+                  "AttachmentLifetimeKeeper(lifetime: route.lifetime)"):
+        if token not in strip:
+            failures.append(f"Media authentication/lifetime/consent regression: {token}")
+    for token in ("AttachmentMediaIndex.candidates(catalog)",
+                  "AttachmentMediaGrid(", "matchingFiles",
+                  "shownImages = 24", "onLocate(id)", "await model.loadOlder()"):
+        if token not in overview:
+            failures.append(f"Attachment overview navigation or budget regression: {token}")
+    if "var id: String { \"\\(rowID.utf8.count):\\(rowID)\\(path)\" }" not in catalog:
+        failures.append("Media gallery must not conflate duplicate paths across messages")
+    for token in ("static func downloadText(", "Int(min(100.0, max(0.0, ratio)))"):
+        if token not in progress:
+            failures.append(f"Attachment progress bounds regression: {token}")
+    if "saved ? savedLabel : \"保存原图\"" not in imageActions:
+        failures.append("Image save result cannot hide preview-only fallback")
+    if "saveNotice = savedOriginal ? \"原图已保存到相册\" : \"已保存预览图到相册\"" not in attachmentViews:
+        failures.append("Composer photo preview must disclose downsampled save")
     # build212: every foreground collection must refresh under a scoped,
     # throttled owner, not solely through drawer manual-refresh buttons.
     for token in ("foregroundListPolicy.shouldRefresh(", "await app.refresh()",
@@ -370,6 +400,8 @@ def main() -> int:
         "ChatComposer.swift", "SessionSearchView.swift",
         "ChatToolSummary.swift", "ChatConversationSearch.swift", "ChatFindBar.swift",
         "ChatMessageReader.swift", "ChatReaderOutline.swift",
+        "AttachmentStrip.swift", "AttachmentOverview.swift", "AttachmentCatalog.swift",
+        "AttachmentProgressPresentation.swift", "ImagePreviewActions.swift", "AttachmentViews.swift",
         "NativeChatView+Composer.swift",
         "NativeChatView+Notices.swift",
     )
@@ -425,6 +457,12 @@ def main() -> int:
          "compactBrowseAction(\"全部会话\""),
         ("deferred message location", "NativeChatView+Panels.swift",
          "dismissPanel(then: .locateMessage(id))"),
+        ("preview auth forwarding", "AttachmentStrip.swift",
+         "accountScope: accountScope, authorization: authorization"),
+        ("gallery external consent", "AttachmentStrip.swift",
+         "guard isActive, !awaitingConsent else"),
+        ("overview lazy media", "AttachmentOverview.swift",
+         "AttachmentMediaGrid("),
         ("queue editing lease", "NativeChatModel+Send.swift",
          "editing: queueEditingTurnID != nil"),
         ("in-place queue editor", "ChatQueueManager.swift",
