@@ -231,6 +231,13 @@ def violations(contents: dict[str, str]) -> list[str]:
     composer = contents.get("ChatComposer.swift", "")
     if ".frame(width: 44, height: 44)" not in composer:
         failures.append("Quote remove action must retain a 44pt touch target")
+    if ".fixedSize(horizontal: true, vertical: false)" in composer:
+        failures.append("Composer model button must shrink before 44pt send/stop controls")
+    for token in ("dynamicTypeSize.isAccessibilitySize ? 5 : 12",
+                  ".layoutPriority(-1)", ".minimumScaleFactor(0.85)",
+                  "quoteExpanded.toggle()", "收起引用内容", "展开引用内容"):
+        if token not in composer:
+            failures.append(f"Composer narrow/large text accessibility contract missing: {token}")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
