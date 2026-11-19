@@ -17,6 +17,11 @@ struct UnifiedSessionBrowser: View {
     @ObservedObject var center: UnifiedSessionModel
     @Binding var query: String
     @Binding var taskSearch: String
+    @Binding var sessionScrollAnchor: String?
+    @Binding var taskScrollAnchor: String?
+    @Binding var sessionScrollIndex: Int
+    @Binding var taskScrollIndex: Int
+    @State private var visibleScrollID: String?
     @Binding var filter: Int
     @Binding var section: Int
     @State private var navigationError: String?
@@ -29,14 +34,21 @@ struct UnifiedSessionBrowser: View {
     /// Explicit initializer: @EnvironmentObject is injected by the parent,
     /// while the root-owned model and bindings are supplied by RootView.
     init(center: UnifiedSessionModel, query: Binding<String>,
-         taskSearch: Binding<String>, filter: Binding<Int>,
-         section: Binding<Int>, onClose: @escaping () -> Void, backToSingleInstance: Bool,
+         taskSearch: Binding<String>,
+         sessionScrollAnchor: Binding<String?>, taskScrollAnchor: Binding<String?>,
+         sessionScrollIndex: Binding<Int>, taskScrollIndex: Binding<Int>,
+         filter: Binding<Int>, section: Binding<Int>,
+         onClose: @escaping () -> Void, backToSingleInstance: Bool,
          backToDrawer: Bool, onSingleInstance: @escaping () -> Void,
          onOpenCurrentTaskCenter: @escaping () -> Void,
          onSelect: @escaping (UnifiedSessionRecord) -> Bool) {
         self.center = center
         self._query = query
         self._taskSearch = taskSearch
+        self._sessionScrollAnchor = sessionScrollAnchor
+        self._taskScrollAnchor = taskScrollAnchor
+        self._sessionScrollIndex = sessionScrollIndex
+        self._taskScrollIndex = taskScrollIndex
         self._filter = filter
         self._section = section
         self.onClose = onClose
@@ -306,9 +318,48 @@ struct UnifiedSessionBrowser: View {
                     .accessibilityLabel("\(entry.record.session.displayTitle)，"
                                         + "\(entry.record.instanceName)，\(entry.status)，\(entry.evidence)")
                     .accessibilityHint("打开此实例中的原生会话，核对并处理任务")
+                    .id(entry.id)
                     Divider().padding(.horizontal, AppTheme.pagePadding)
                 }
             }
+        }
+    }
+
+    private var visibleScrollIDs: [String] {
+        section == 1 ? taskEntries.map(\.id) : visible.map(\.id)
+    }
+
+    private func reconcileScrollBookmark() {
+        guard center.hasResolvedSnapshot, center.loading.isEmpty else { return }
+        if section == 1 {
+            let next = UnifiedBrowserScrollPolicy.reconcile(
+                anchor: taskScrollAnchor, index: taskScrollIndex,
+                available: visibleScrollIDs, resolved: true)
+            if next != taskScrollAnchor { taskScrollAnchor = next; visibleScrollID = next }
+        } else {
+            let next = UnifiedBrowserScrollPolicy.reconcile(
+                anchor: sessionScrollAnchor, index: sessionScrollIndex,
+                available: visibleScrollIDs, resolved: true)
+            if next != sessionScrollAnchor { sessionScrollAnchor = next; visibleScrollID = next }
+        }
+    }
+
+    private func restoreScrollBookmark() {
+        let saved = section == 1 ? taskScrollAnchor : sessionScrollAnchor
+        visibleScrollID = UnifiedBrowserScrollPolicy.reconcile(
+            anchor: saved, index: section == 1 ? taskScrollIndex : sessionScrollIndex,
+            available: visibleScrollIDs,
+            resolved: center.hasResolvedSnapshot && center.loading.isEmpty)
+    }
+
+    private func rememberScrollBookmark(_ id: String?) {
+        guard let id, let index = visibleScrollIDs.firstIndex(of: id) else { return }
+        if section == 1 {
+            taskScrollAnchor = id
+            taskScrollIndex = index
+        } else {
+            sessionScrollAnchor = id
+            sessionScrollIndex = index
         }
     }
 
@@ -419,7 +470,7 @@ struct UnifiedSessionBrowser: View {
 
             }
 
-            SessionRefreshList(refresh: {
+            SessionRefreshList(scrollID: $visibleScrollID, refresh: {
                 // Join an in-flight identical request rather than replacing it.
                 let run = center.start(sources: sources(), query: requestQuery)
                 await run.value
@@ -555,6 +606,7 @@ struct UnifiedSessionBrowser: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(record.session.displayTitle)，实例 \(record.instanceName)")
+                    .id(record.id)
                     Divider().padding(.horizontal, AppTheme.pagePadding)
                 }
                 }
@@ -593,8 +645,34 @@ struct UnifiedSessionBrowser: View {
             guard !Task.isCancelled else { return }
             taskEvidenceNow = Date()
         }
+        .onAppear { restoreScrollBookmark() }
+        .onChange(of: visibleScrollID) { _, newValue in
+            rememberScrollBookmark(newValue)
+        }
+        .onChange(of: section) { _, _ in
+            restoreScrollBookmark()
+        }
+        .onChange(of: query) { _, _ in
+            sessionScrollAnchor = nil
+            sessionScrollIndex = 0
+            if section == 0 { visibleScrollID = nil }
+        }
+        .onChange(of: taskSearch) { _, _ in
+            taskScrollAnchor = nil
+            taskScrollIndex = 0
+            if section == 1 { visibleScrollID = nil }
+        }
+        .onChange(of: filter) { _, _ in
+            sessionScrollAnchor = nil
+            sessionScrollIndex = 0
+            if section == 0 { visibleScrollID = nil }
+        }
+        .onChange(of: visibleScrollIDs) { _, _ in reconcileScrollBookmark() }
         .onChange(of: center.loading) { _, loading in
-            if loading.isEmpty { taskEvidenceNow = Date() }
+            if loading.isEmpty {
+                taskEvidenceNow = Date()
+                reconcileScrollBookmark()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {

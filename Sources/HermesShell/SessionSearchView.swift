@@ -5,26 +5,44 @@ import SwiftUI
 struct SessionRefreshList<Content: View>: View {
     let refresh: () async -> Void
     let content: Content
+    /// Only the cross-instance browser opts into a target-aware scroll view.
+    /// Existing single-instance lists retain native List presentation.
+    let scrollID: Binding<String?>?
 
-    init(refresh: @escaping () async -> Void, @ViewBuilder content: () -> Content) {
+    init(scrollID: Binding<String?>? = nil, refresh: @escaping () async -> Void,
+         @ViewBuilder content: () -> Content) {
+        self.scrollID = scrollID
         self.refresh = refresh
         self.content = content()
     }
 
-    var body: some View {
-        List {
-            content
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+    @ViewBuilder var body: some View {
+        if let scrollID {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    content
+                }
+                .scrollTargetLayout()
+            }
+            .scrollPosition(id: scrollID, anchor: .top)
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable { await refresh() }
+        } else {
+            List {
+                content
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            .listStyle(.plain)
+            .listRowSpacing(4)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
+            .scrollBounceBehavior(.always, axes: .vertical)
+            .scrollDismissesKeyboard(.interactively)
+            .refreshable { await refresh() }
         }
-        .listStyle(.plain)
-        .listRowSpacing(4)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 0)
-        .scrollBounceBehavior(.always, axes: .vertical)
-        .scrollDismissesKeyboard(.interactively)
-        .refreshable { await refresh() }
     }
 }
 

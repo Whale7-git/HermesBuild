@@ -3,6 +3,20 @@ import Foundation
 import Combine
 #endif
 
+/// A read-only fallback for a browser bookmark whose target disappeared.
+/// Do not jump while a query is unresolved; after refresh choose the nearest
+/// surviving row by previous index. Session and task bookmarks are independent.
+enum UnifiedBrowserScrollPolicy {
+    static func reconcile(anchor: String?, index: Int, available: [String],
+                          resolved: Bool) -> String? {
+        guard let anchor else { return nil }
+        if available.contains(anchor) { return anchor }
+        guard resolved else { return anchor }
+        guard !available.isEmpty else { return nil }
+        return available[min(max(0, index), available.count - 1)]
+    }
+}
+
 /// All three values must match before a cross-instance result can navigate.
 /// A Session ID alone is not globally unique, even between two Gateway hosts.
 struct UnifiedSessionIdentity: Hashable {

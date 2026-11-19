@@ -37,6 +37,10 @@ struct RootView: View {
     // Task search belongs to the browser navigation owner, not its
     // conditional SwiftUI page, so returning from a chat keeps the filter.
     @State private var unifiedTaskQuery = ""
+    @State private var unifiedSessionScrollAnchor: String?
+    @State private var unifiedTaskScrollAnchor: String?
+    @State private var unifiedSessionScrollIndex = 0
+    @State private var unifiedTaskScrollIndex = 0
     @State private var unifiedFilter = 0
     @State private var unifiedSection = 0
     private var browserAllInstances: Bool { browserRoute.last == .all }
@@ -56,6 +60,18 @@ struct RootView: View {
     @State private var boundHomeDraft: (scope: String, store: ChatDraftStore)?
 
     private var homeScope: String { app.historyInstanceID + "|" + app.historyAccountScope }
+
+    /// Account retirement, endpoint edits and instance removal invalidate
+    /// global browser bookmarks; ordinary active-instance switching does not.
+    private var unifiedBrowseIdentity: String {
+        app.instances.map { instance in
+            let endpoint = ChatHistoryIdentity.instanceID(id: instance.id,
+                                                          baseURL: instance.baseURL)
+            let account = ChatHistoryIdentity.accountScope(instanceID: endpoint)
+            return [instance.id.uuidString, endpoint, account]
+                .map { "\($0.utf8.count):\($0)" }.joined()
+        }.joined(separator: "|")
+    }
 
     private var homeDraftStore: ChatDraftStore {
         let instanceID = app.historyInstanceID
@@ -123,6 +139,16 @@ struct RootView: View {
                     taskCenterPresented = false
                 }
                 synchronizeConversationVisibility()
+            }
+            .onChange(of: unifiedBrowseIdentity) { _, _ in
+                unifiedQuery = ""
+                unifiedTaskQuery = ""
+                unifiedFilter = 0
+                unifiedSessionScrollAnchor = nil
+                unifiedTaskScrollAnchor = nil
+                unifiedSessionScrollIndex = 0
+                unifiedTaskScrollIndex = 0
+                unifiedCenter.cancel()
             }
             .onChange(of: homeScope) { _, _ in
                 // A token/account change can invalidate a task-sheet identity
@@ -491,6 +517,10 @@ struct RootView: View {
                     center: unifiedCenter,
                     query: $unifiedQuery,
                     taskSearch: $unifiedTaskQuery,
+                    sessionScrollAnchor: $unifiedSessionScrollAnchor,
+                    taskScrollAnchor: $unifiedTaskScrollAnchor,
+                    sessionScrollIndex: $unifiedSessionScrollIndex,
+                    taskScrollIndex: $unifiedTaskScrollIndex,
                     filter: $unifiedFilter,
                     section: $unifiedSection,
                     onClose: backFromBrowser,
