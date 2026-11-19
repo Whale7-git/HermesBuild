@@ -588,6 +588,87 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         print("UNIFIED_NAV_PASS exact host/account/session routing and isolated snapshots")
     }
 
+    @MainActor static func foregroundListPolicyTests() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = base.addingTimeInterval(-120)
+        let fresh = base.addingTimeInterval(-2)
+        var policy = ForegroundListRefreshPolicy()
+        precondition(!policy.shouldRefresh(
+            wasActive: true, isActive: true, scope: "account-A",
+            lastSuccess: old, now: base),
+            "active-to-active redraw does not refresh")
+        precondition(!policy.shouldRefresh(
+            wasActive: true, isActive: false, scope: "account-A",
+            lastSuccess: old, now: base),
+            "background transition itself never starts network work")
+        precondition(!policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "account-A",
+            lastSuccess: fresh, now: base),
+            "rapid app bounce reuses a fresh authoritative list")
+        precondition(policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "account-A",
+            lastSuccess: old, now: base),
+            "return from background after stale list schedules one refresh")
+        precondition(!policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "account-A",
+            lastSuccess: nil, now: base.addingTimeInterval(3)),
+            "failed or in-flight foreground attempt has cooldown")
+        precondition(policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "account-B",
+            lastSuccess: nil, now: base.addingTimeInterval(3)),
+            "another instance/account scope is never suppressed by A's cooldown")
+        precondition(policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "account-A",
+            lastSuccess: nil, now: base.addingTimeInterval(16)),
+            "a failed attempt remains retryable after cooldown")
+        precondition(!policy.shouldRefresh(
+            wasActive: false, isActive: true, scope: "",
+            lastSuccess: nil, now: base.addingTimeInterval(50)),
+            "invalid/retired scope never starts a list request")
+        print("FOREGROUND_POLICY_PASS scope, stale state, app bounce, failure cooldown")
+    }
+
+    @MainActor static func completionRefreshTests() async throws {
+        let host = HermesInstance(name: "Completion", baseURL: "https://completion-212.test")
+        try InstanceStore.save([host], credentials: credentials)
+        InstanceStore.activeID = host.id
+        HermesAPI.heldLists = [host.baseURL]
+        defer { HermesAPI.heldLists = [] }
+        let model = AppState(credentials: credentials)
+        let decoder = JSONDecoder()
+        func row(_ sid: String, running: Bool) throws -> SessionSummary {
+            let data = Data("{\"session_id\":\"\\(sid)\",\"title\":\"Test\",\"is_streaming\":\\(running)}".utf8)
+            return try decoder.decode(SessionSummary.self, from: data)
+        }
+        // First successful list is the evidence baseline; a session that is
+        // already idle cannot be manufactured into a completion notification.
+        let first = Task { await model.refresh() }
+        await spin { HermesAPI.pendingLists[host.baseURL] != nil }
+        HermesAPI.pendingLists.removeValue(forKey: host.baseURL)!
+            .resume(returning: [try row("observed-running", running: true),
+                                try row("idle-no-evidence", running: false)])
+        await first.value
+        precondition(model.completedSessionIDs.isEmpty,
+                     "first snapshot alone cannot infer any new completion")
+        let second = Task { await model.refresh() }
+        await spin { HermesAPI.pendingLists[host.baseURL] != nil }
+        HermesAPI.pendingLists.removeValue(forKey: host.baseURL)!
+            .resume(returning: [try row("observed-running", running: false),
+                                try row("idle-no-evidence", running: false)])
+        await second.value
+        precondition(model.completedSessionIDs == Set(["observed-running"]),
+                     "only a recorded streaming->not-streaming transition earns the blue dot")
+        let third = Task { await model.refresh() }
+        await spin { HermesAPI.pendingLists[host.baseURL] != nil }
+        HermesAPI.pendingLists.removeValue(forKey: host.baseURL)!
+            .resume(returning: [try row("observed-running", running: false),
+                                try row("idle-no-evidence", running: false)])
+        await third.value
+        precondition(model.completedSessionIDs == Set(["observed-running"]),
+                     "repeated authoritative idle snapshots cannot manufacture new completion")
+        print("FOREGROUND_COMPLETION_PASS known transition, unknown state, idempotent refresh")
+    }
+
     @MainActor static func refreshTests() async throws {
         let a = HermesInstance(name: "Refresh A", baseURL: "https://refresh-a.test")
         let b = HermesInstance(name: "Refresh B", baseURL: "https://refresh-b.test")
@@ -1308,7 +1389,9 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         try await modelSwitchReadbackTests()
         try pendingRequestRestartTests()
         try await unifiedSessionNavigationTests()
+        foregroundListPolicyTests()
         try await refreshTests()
+        try await completionRefreshTests()
         try await instanceDeletionCacheTests()
         try await sessionRefreshPolicyTests()
         try await sessionRefreshFeedbackTests()
