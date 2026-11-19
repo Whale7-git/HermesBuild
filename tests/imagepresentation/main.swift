@@ -223,4 +223,19 @@ check(ChatToolSummary.title([tool("a"), tool("b"), tool("c", done: false)], allo
 check(ChatToolSummary.title([tool("a", isError: true), tool("b", isError: true)]) == "2 项 · 2 个失败",
       "several failures count individually")
 check(ChatToolSummary.title([]) == "", "an empty group has no title")
+
+check(ChatToolSummary.statusLine([]) == "", "no fictitious status for empty tool groups")
+check(ChatToolSummary.statusLine([tool("one"), tool("two")]) == "",
+      "all-success groups remain a single compact line")
+check(ChatToolSummary.statusLine([tool("a"), tool("b", done: false), tool("c", isError: true)])
+      == "1 成功 · 1 失败 · 1 待核对",
+      "mixed settled/error/unknown tools have honest independent counts")
+check(ChatToolSummary.statusLine([tool("a", done: false), tool("b", isError: true)],
+                                 allowsRunning: true) == "1 失败 · 1 执行中",
+      "only live progress may label unsettled tools as executing")
+check(ChatToolSummary.statusLine([tool("a", done: false), tool("b", isError: true)],
+                                 allowsRunning: false) == "1 失败 · 1 待核对",
+      "disconnected or historical tools are not mislabeled live")
+check(ChatToolSummary.statusLine([tool("error", done: false, isError: true)]) == "1 失败",
+      "error overrides an unset done bit")
 print("IMAGE_PRESENTATION_PASS placeholder/layout/isolation/summary; SwiftUI hit areas, VoiceOver and real row heights require device")
