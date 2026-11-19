@@ -77,6 +77,7 @@ struct ChatComposer: View {
     @AppStorage("chatReturnSends") private var returnSends = true
     /// A-04：动画必须响应「减弱动态效果」。
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(initialDraft: String, draftSync: ChatComposerDraftSync = ChatComposerDraftSync(),
          insertion: ChatComposerInsertion = ChatComposerInsertion(),
@@ -402,13 +403,20 @@ struct ChatComposer: View {
                         Text("引用 \(quoteReference.author)")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                        Text(quoteReference.preview)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(quoteExpanded ? nil : 2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .onTapGesture { quoteExpanded.toggle() }
+                        Button {
+                            quoteExpanded.toggle()
+                        } label: {
+                            Text(quoteReference.preview)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(quoteExpanded ? nil : 2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(quoteExpanded ? "收起引用内容" : "展开引用内容")
+                        .accessibilityValue(quoteExpanded ? "已展开" : "已折叠")
+                        .accessibilityHint("仅展开预览，不会修改要发送的引用")
                     }
                     Button {
                         self.quoteReference = nil
@@ -459,7 +467,8 @@ struct ChatComposer: View {
             .padding(.bottom, 0)
 
             if !readOnly {
-                HStack(alignment: .center, spacing: 12) {
+                HStack(alignment: .center,
+                       spacing: dynamicTypeSize.isAccessibilitySize ? 5 : 12) {
                     Group {
                         if let attachmentMenu { attachmentMenu }
                         else {
@@ -472,23 +481,27 @@ struct ChatComposer: View {
                         }
                     }
                     .frame(width: 44, height: 44)
-                    Spacer(minLength: 12)
+                    Spacer(minLength: 0)
                     Button(action: onChooseModel) {
                         HStack(spacing: 4) {
                             Text(modelLabel)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                .minimumScaleFactor(0.85)
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 10, weight: .semibold))
                         }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
+                        // Allow the model title to yield horizontal space to
+                        // the fixed 44pt send/stop targets on narrow phones.
                         .frame(maxWidth: 114, minHeight: 44)
-                        .fixedSize(horizontal: true, vertical: false)
                         .contentShape(Rectangle())
                     }
+                    .layoutPriority(-1)
                     .buttonStyle(.plain)
                     .accessibilityLabel("切换模型，当前\(modelLabel)")
+                    .accessibilityHint("打开模型选择；长名称在按钮中可能显示省略号")
                     if ChatComposerActionPolicy.showsSend(
                         running: running, sendEnabled: sendEnabled,
                         hasReadyAttachments: hasReadyAttachments) {

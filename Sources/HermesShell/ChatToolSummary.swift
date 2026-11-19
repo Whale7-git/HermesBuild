@@ -33,6 +33,28 @@ enum ChatToolSummary {
         return hidden > 0 ? joined + " +\(hidden)" : joined
     }
 
+    /// A compact status line used when an execution needs attention.
+    /// A tool that hasn't reported done/error is never declared successful.
+    /// Do not describe these as the terminal status of the whole Run.
+    static func statusLine(_ items: [Item], allowsRunning: Bool = false) -> String {
+        var success = 0
+        var failed = 0
+        var unresolved = 0
+        for item in items {
+            if item.isError { failed += 1 }
+            else if item.done { success += 1 }
+            else { unresolved += 1 }
+        }
+        guard failed > 0 || unresolved > 0 else { return "" }
+        var labels: [String] = []
+        if success > 0 { labels.append("\(success) 成功") }
+        if failed > 0 { labels.append("\(failed) 失败") }
+        if unresolved > 0 {
+            labels.append("\(unresolved) \(allowsRunning ? "执行中" : "待核对")")
+        }
+        return labels.joined(separator: " · ")
+    }
+
     /// 折叠态标题：用用户语言说明结果，不把失败合并成"完成"。
     static func title(_ items: [Item], allowsRunning: Bool = false) -> String {
         guard !items.isEmpty else { return "" }

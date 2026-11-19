@@ -333,6 +333,7 @@ struct ChatMessageRow: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("复制本轮已加载的回复")
+            .accessibilityHint("复制当前已加载的回复；不自动加载历史内容")
             Button(action: onQuote) {
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
@@ -346,6 +347,7 @@ struct ChatMessageRow: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("引用回复")
+            .accessibilityHint("将本条回复作为草稿引用，不立即发送")
         }
         Menu {
             Button("专注阅读", systemImage: "text.page", action: onOpenReader)
@@ -381,6 +383,7 @@ struct ChatMessageRow: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("本条回复的更多操作")
+        .accessibilityHint("选择原文、专注阅读、复制 Markdown 或分享")
     }
 
     private func copy() {
@@ -596,6 +599,7 @@ struct ChatToolGroup: View {
     @Binding var expanded: Bool
     @Binding var expandedToolIDs: Set<String>
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var running: Bool { allowsRunning && tools.contains { !$0.done && !$0.isError } }
     private var failed: Bool { tools.contains(where: \.isError) }
@@ -609,6 +613,11 @@ struct ChatToolGroup: View {
         let items = summaryItems
         let title = ChatToolSummary.title(items, allowsRunning: allowsRunning)
         let summary = ChatToolSummary.summary(items, allowsRunning: allowsRunning)
+        let status = ChatToolSummary.statusLine(items, allowsRunning: allowsRunning)
+        let needsDetails = expanded || dynamicTypeSize.isAccessibilitySize
+            || !status.isEmpty && (failed || !running)
+        let detail = status.isEmpty ? summary
+            : (summary.isEmpty ? status : "\(status) · \(summary)")
         return VStack(alignment: .leading, spacing: 0) {
             Button {
                 expanded.toggle()
@@ -618,16 +627,20 @@ struct ChatToolGroup: View {
                         .font(.footnote)
                         .foregroundStyle(running ? AppTheme.accent : (failed ? AppTheme.warning : (unresolved ? Color.secondary : AppTheme.success)))
                     VStack(alignment: .leading, spacing: 2) {
-                        // 折叠行只占一行：标题 + 摘要合在一起。
-                        //
-                        // 原先是 title 一行、summary 再一行（footnote + caption2），
-                        // 一轮工具调用在时间线里就占两行高度，回复越长这类行越多，
-                        // 视觉上像「每段工具后面都拖一条尾巴」。摘要本身是补充信息，
-                        // 同一行放得下就够；放不下用 `lineLimit(1)` 截断，展开仍可看全。
-                        Text(summary.isEmpty ? title : "\(title) · \(summary)")
+                        // Normal tool groups remain a single quiet line.
+                        // Errors, uncertain status and accessibility sizes
+                        // receive a second, bounded detail line. The expanded
+                        // group always exposes complete tool results.
+                        Text(needsDetails || summary.isEmpty ? title : "\(title) · \(summary)")
                             .font(.footnote.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(failed ? AppTheme.warning : Color.secondary)
                             .lineLimit(1)
+                        if needsDetails && !detail.isEmpty {
+                            Text(detail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
                     .layoutPriority(1)
                     Spacer(minLength: 6)
@@ -642,7 +655,7 @@ struct ChatToolGroup: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(title)。\(expanded ? "收起" : "展开")详情")
-            .accessibilityHint(summary)
+            .accessibilityHint(detail)
 
             if expanded {
                 VStack(spacing: 0) {
@@ -705,6 +718,9 @@ struct ChatProcessRow: View {
             messageCount: group.messages.count, toolItems: items, allowsRunning: allowsRunning)
         let subtitle = ChatExecutionPresentation.detail(
             messageCount: group.messages.count, toolItems: items, allowsRunning: allowsRunning)
+        let status = ChatToolSummary.statusLine(items, allowsRunning: allowsRunning)
+        let detail = status.isEmpty ? subtitle
+            : (subtitle.isEmpty ? status : "\(status) · \(subtitle)")
         return VStack(alignment: .leading, spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 9) {
@@ -725,8 +741,10 @@ struct ChatProcessRow: View {
                             .foregroundStyle(running ? AppTheme.accent
                                              : (failed ? AppTheme.warning : Color.secondary))
                             .lineLimit(1)
-                        if !subtitle.isEmpty && (expanded || dynamicTypeSize.isAccessibilitySize) {
-                            Text(subtitle)
+                        if !detail.isEmpty
+                           && (expanded || dynamicTypeSize.isAccessibilitySize
+                               || failed || (!running && unresolved)) {
+                            Text(detail)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -744,7 +762,7 @@ struct ChatProcessRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(title)。\(expanded ? "收起" : "展开")详情")
-            .accessibilityHint("\(subtitle)。最终回答在下方")
+            .accessibilityHint("\(detail)。最终回答在下方")
 
             if expanded {
                 VStack(alignment: .leading, spacing: 10) {
