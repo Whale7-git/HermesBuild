@@ -349,6 +349,26 @@ struct ChatMessageRow: View {
             .accessibilityLabel("引用回复")
             .accessibilityHint("将本条回复作为草稿引用，不立即发送")
         }
+        // A long completed reply warrants one direct reading affordance.
+        // Short replies stay at the original compact Copy/Quote/More layout.
+        if ChatReadingShortcutPolicy.showInline(
+            text: message.content, isStreaming: isStreaming, showsCopy: showsCopy) {
+            Button(action: onOpenReader) {
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        Label("阅读", systemImage: "text.page")
+                            .frame(minHeight: AppTheme.minimumTouchSize)
+                    } else {
+                        Image(systemName: "text.page")
+                            .frame(minWidth: AppTheme.minimumTouchSize,
+                                   minHeight: AppTheme.minimumTouchSize)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel("专注阅读这条长回复")
+            .accessibilityHint("在独立阅读界面查看回答和章节目录")
+        }
         Menu {
             Button("专注阅读", systemImage: "text.page", action: onOpenReader)
             Divider()
