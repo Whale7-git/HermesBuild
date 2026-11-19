@@ -69,6 +69,19 @@ AttachmentRequestAuthentication.apply(to: &webUIDownloadRequest,
 check(webUIDownloadRequest.value(forHTTPHeaderField: "Authorization") == nil
       && webUIDownloadRequest.value(forHTTPHeaderField: "Cookie")?.contains("session=webui-login") == true,
       "WebUI image/download uses cookie without forwarding Gateway Bearer")
+// One consistent authorization policy must serve inline thumbnails,
+ // fullscreen previews and original-byte operations for this Gateway session.
+let gatewayPreviewPolicy = try AttachmentPreviewPolicy(
+    baseURL: baseURL, authorization: .bearer("gateway-key"))
+let galleryAttachment = UploadedAttachment(
+    name: "image.png", path: "/state/attachments/s1/image.png",
+    size: 5, mime: "image/png", isImage: true)
+let galleryRequest = try gatewayPreviewPolicy.request(
+    sessionID: "s1", attachment: galleryAttachment)
+check(galleryRequest.value(forHTTPHeaderField: "Authorization") == "Bearer gateway-key",
+      "Gateway fullsize preview request uses same scoped Bearer as original bytes")
+check(galleryRequest.value(forHTTPHeaderField: "Cookie") == nil,
+      "Gateway image preview never silently inherits WebUI cookies")
 let missingGatewayKey = AttachmentAuthorization.bearer("")
 check(missingGatewayKey.requiresBearer && missingGatewayKey.header == nil
       && missingGatewayKey != .cookieOnly,

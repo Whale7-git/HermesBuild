@@ -56,6 +56,24 @@ struct AttachProgressTests {
     // 都写成 `length >= 0 ? Int(length) : nil`，负数已经归一成 nil。
     // 所以这里不断言负数行为——断言一个不可达状态只会制造假缺陷。
 
+    // MARK: - 下载进度：未知总量不编造百分比，已知总量展示边界
+    let unknownDownload = AttachmentProgressPresentation.downloadText(
+        receivedBytes: 4096, expectedBytes: nil)
+    expect(unknownDownload.contains("正在下载") && unknownDownload.contains("已接收"),
+           "下载总量未知时只报告已接收字节数")
+    expect(!unknownDownload.contains("%"), "未知下载总量不能出现百分比")
+    expect(AttachmentProgressPresentation.downloadText(
+        receivedBytes: 512, expectedBytes: 1024).contains("50%"),
+        "下载量已知时显示真实进度")
+    expect(!AttachmentProgressPresentation.downloadText(
+        receivedBytes: 20, expectedBytes: 0).contains("%"),
+        "零或无效总量不可伪造下载进度")
+    expect(AttachmentProgressPresentation.downloadText(
+        receivedBytes: Int.max, expectedBytes: 1).contains("100%"),
+        "异常接收字节数不会使进度转换溢出")
+    expect(AttachmentProgressPresentation.downloadText(
+        receivedBytes: -5, expectedBytes: nil).contains("已接收"),
+        "异常负接收值按零处理")
     // MARK: - 尚未开始
 
     expect(AttachmentProgressPresentation.text(for: nil) == nil, "无进度时不显示文案")

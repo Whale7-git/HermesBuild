@@ -44,6 +44,19 @@ import Foundation
         check(catalog.map(\.id) == ["c", "a"], "overview orders attachment-bearing messages newest first")
         check(catalog.last?.paths == ["a.png"], "overview de-duplicates only within one message")
         check(catalog.first?.rowID == "m-c", "overview uses the transcript's actual row identity")
+        let mediaCandidates = AttachmentMediaIndex.candidates(catalog)
+        check(mediaCandidates.map(\.path) == ["a.png", "b.pdf", "a.png"],
+              "overview preserves the newest-first message ordering for paths")
+        let repeated = mediaCandidates.filter { $0.path == "a.png" }
+        check(repeated.count == 2 && repeated[0].id != repeated[1].id,
+              "repeated image paths in different messages have independent stable IDs")
+        let extended = AttachmentMediaIndex.candidates(catalog + [
+            AttachmentCatalog.Entry(id: "older", role: "user", timestamp: nil, paths: ["old.png"])
+        ])
+        check(Array(extended.prefix(mediaCandidates.count)) == mediaCandidates,
+              "loading older media does not renumber the visible image entries")
+        check(mediaCandidates.first?.rowID == "m-c",
+              "media item navigation refers to the exact source message")
 
         var batch = AttachmentBatch(sessionID: "edit", maxTotalBytes: 12)
         let id = try batch.append(name: "original.png", mime: "image/png", data: Data([1, 2, 3]))
