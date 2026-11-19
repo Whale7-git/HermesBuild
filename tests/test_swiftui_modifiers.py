@@ -75,6 +75,21 @@ Button { dismiss() } label: {
                                      f'Image(systemName: "xmark")\n        {modifier}')
                 self.assertEqual(ui_interaction_offenses(large, "Example.swift"), [])
 
+    def test_native_toolbar_symbol_is_not_a_bare_hit_region(self):
+        toolbar = """
+.toolbar {
+    ToolbarItemGroup(placement: .topBarTrailing) {
+        Button { copy() } label: {
+            Image(systemName: "doc.on.doc")
+        }
+    }
+}
+"""
+        self.assertEqual(ui_interaction_offenses(toolbar, "Reader.swift"), [])
+        self.assertEqual(len(ui_interaction_offenses(
+            toolbar.replace("ToolbarItemGroup(placement: .topBarTrailing) {", "Group {"),
+            "Reader.swift")), 1)
+
     def test_unprotected_animation_fails_even_with_unrelated_reduce_motion(self):
         source = '''@Environment(\\.accessibilityReduceMotion) var reduceMotion
 func reveal() {

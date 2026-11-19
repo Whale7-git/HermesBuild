@@ -133,11 +133,27 @@ def ui_interaction_offenses(source: str, filename: str = "") -> list[tuple[int, 
     clean = mask_non_code(source)
     results: list[tuple[int, str]] = []
 
+    # Native navigation toolbar items are sized and hit-tested by UIKit.
+    # A bare Image in ToolbarItem or ToolbarItemGroup must NOT be treated
+    # like an ordinary body Button; the original scan produced 5 false
+    # positives in ChatMessageReader/ModelPicker, all inside toolbar groups.
+    native_toolbar_ranges: list[tuple[int, int]] = []
+    for toolbar in re.finditer(r'\bToolbarItem(?:Group)?\s*\([^{}]*\)\s*\{', clean):
+        open_at = toolbar.end() - 1
+        depth = 0
+        for j in range(open_at, len(clean)):
+            depth += (clean[j] == '{') - (clean[j] == '}')
+            if depth == 0:
+                native_toolbar_ranges.append((open_at, j))
+                break
+
     # Button { action } label: { Image(systemName: "...") } is visibly
     # under-sized without sizing or padding either inside or immediately
     # outside the label. Do not flag composite labels, custom ButtonStyles,
     # or views whose real hit frame cannot be inferred lexically.
     for found in re.finditer(r'}\s*label:\s*{', clean):
+        if any(start <= found.start() <= end for start, end in native_toolbar_ranges):
+            continue
         prefix = clean[max(0, found.start() - 400):found.start()]
         if not re.search(r'\bButton\s*(?:\([^{}]*\))?\s*{', prefix):
             continue
