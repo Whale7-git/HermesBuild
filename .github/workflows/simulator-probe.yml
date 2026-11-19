@@ -1,62 +1,119 @@
-name: simulator-probe
+name: Hermes iOS Simulator UI regression
 
-# Read-only probe: can a GitHub-hosted macos-26 runner boot an iOS Simulator?
-# Nothing here touches the release chain. Delete this file once answered.
-
+# The old read-only probe proved simulator boot. Extend it instead of creating a duplicate.
+# Never runs automatically for pull requests; it cannot publish an IPA.
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "gold, audit, or all"
+        required: false
+        default: gold
+        type: choice
+        options: [gold, audit, all]
+  schedule:
+    - cron: "17 2 * * *"
 
 permissions:
   contents: read
 
+concurrency:
+  group: hermes-ui-simulator-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  probe:
+  simulator:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
-      - name: Toolchain
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain and XcodeGen
+        shell: bash
         run: |
-          set -x
-          sw_vers
-          uname -m
+          set -euo pipefail
+          (command -v xcodegen >/dev/null || brew install xcodegen)
+          xcodegen --version
           xcodebuild -version
-          xcode-select -p
+          xcrun simctl list runtimes
 
-      - name: Installed runtimes
-        run: xcrun simctl list runtimes
+      - name: Launch isolated mock Gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
+          python3 tests/uitest/mock_gateway.py --port 8765 > "$RUNNER_TEMP/mock-gateway.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mock.pid"
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8765/api/sessions >/dev/null; then break; fi
+            sleep 0.2
+          done
+          curl --fail --silent http://127.0.0.1:8765/api/sessions | python3 -m json.tool
 
-      - name: Available devices
-        run: xcrun simctl list devices available
-
-      - name: Boot a simulator and screenshot it
+      - name: Select and boot available iOS iPhone
+        shell: bash
         run: |
           set -euo pipefail
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next(i["udid"] for r,v in sorted(d.items()) if "iOS" in r for i in v if i.get("isAvailable") and "iPhone" in i["name"]))')
           echo "DEVICE=$DEVICE" >> "$GITHUB_ENV"
-          echo "picked device: $DEVICE"
           xcrun simctl boot "$DEVICE"
           xcrun simctl bootstatus "$DEVICE" -b
-          xcrun simctl list devices | grep -i booted || true
-          sleep 5
-          xcrun simctl io "$DEVICE" screenshot "$RUNNER_TEMP/probe.png"
-          ls -l "$RUNNER_TEMP/probe.png"
-          file "$RUNNER_TEMP/probe.png"
 
-      - name: Prove the device runs code
+      - name: Generate UI test project
+        run: xcodegen generate --spec ios-ci-project.yml --project HermesShellCI.xcodeproj
+
+      - name: Run real iOS UI gestures
+        shell: bash
+        env:
+          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'gold' }}
         run: |
           set -euo pipefail
-          xcrun simctl spawn "$DEVICE" launchctl list | head -5
-          xcrun simctl getenv "$DEVICE" HOME
+          case "$REQUESTED_SUITE" in
+            gold) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
+            audit) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
+            all) selection="" ;;
+            *) echo "Unsupported suite $REQUESTED_SUITE" >&2; exit 2 ;;
+          esac
+          xcodebuild test \
+            -project HermesShellCI.xcodeproj \
+            -scheme HermesShell \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/HermesUITests.xcresult" \
+            $selection CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-ui.log"
+          echo "### Hermes iOS UI: $REQUESTED_SUITE" >> "$GITHUB_STEP_SUMMARY"
+          echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
+          echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Shutdown
+      - name: Collect redacted Gateway requests
         if: always()
-        run: xcrun simctl shutdown all || true
+        shell: bash
+        run: |
+          curl --max-time 5 --silent http://127.0.0.1:8765/__control/log \
+            > "$RUNNER_TEMP/mock-requests.json" || true
 
-      - name: Upload screenshot
+      - name: Preserve UI failures and xcresult
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulator-probe-screenshot
-          path: ${{ runner.temp }}/probe.png
+          name: hermes-ui-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/HermesUITests.xcresult
+            ${{ runner.temp }}/xcodebuild-ui.log
+            ${{ runner.temp }}/mock-gateway.log
+            ${{ runner.temp }}/mock-requests.json
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 7
+
+      - name: Shutdown Simulator and fixture
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/mock.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/mock.pid")" 2>/dev/null || true
+          fi
+          xcrun simctl shutdown all || true
