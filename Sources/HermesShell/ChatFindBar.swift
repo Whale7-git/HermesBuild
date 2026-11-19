@@ -72,7 +72,7 @@ struct ChatFindBar: View {
             HStack(spacing: 8) {
                 if loadingOlder { ProgressView().controlSize(.small) }
                 Button(action: { focused = false; onLoadOlder() }) {
-                    Label("查找更早历史", systemImage: "clock.arrow.circlepath")
+                    Label(olderLimitReached ? "已达历史上限" : "查找更早历史", systemImage: "clock.arrow.circlepath")
                         .font(.caption.weight(.medium))
                         .frame(minHeight: 44)
                 }

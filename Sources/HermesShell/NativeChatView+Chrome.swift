@@ -363,7 +363,7 @@ extension NativeChatView {
     }
 
     private func stepFind(_ direction: Int) {
-        guard !findHits.isEmpty else { return }
+        guard !finding, !findQueryTooLong, !findHits.isEmpty else { return }
         findIndex = (findIndex + direction + findHits.count) % findHits.count
         let id = findHits[findIndex].rowID
         if cellStates[id]?.collapsed == true { cellStates[id]?.collapsed = false }

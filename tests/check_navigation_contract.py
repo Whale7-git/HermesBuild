@@ -266,7 +266,8 @@ def violations(contents: dict[str, str]) -> list[str]:
         if token not in search:
             failures.append(f"Search result correctness missing: {token}")
     for token in ("loadOlderForFind()", "captureCurrentReadingPosition()",
-                  "returnToFindOrigin()", "beginFind()"):
+                  "returnToFindOrigin()", "beginFind()",
+                  "guard !finding, !findQueryTooLong, !findHits.isEmpty"):
         if token not in chrome:
             failures.append(f"Search navigation owner missing: {token}")
     for token in ("findHasMoreMatches", "findQueryTooLong", "findOrigin"):
