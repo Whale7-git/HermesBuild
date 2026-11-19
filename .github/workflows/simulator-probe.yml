@@ -64,8 +64,27 @@ jobs:
           xcrun simctl boot "$DEVICE"
           xcrun simctl bootstatus "$DEVICE" -b
 
-      - name: Generate UI test project
-        run: xcodegen generate --spec ios-ci-project.yml
+      - name: Generate UI test project with simulator-only bundle metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The production Info.plist intentionally lacks CFBundleIdentifier.
+          # Simulator installation requires it; never mutate the checked-in plist.
+          cp Resources/Info.plist "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.whale7.hermes" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string HermesShell" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          spec = Path("ios-ci-project.yml")
+          original = spec.read_text(encoding="utf-8")
+          old = "INFOPLIST_FILE: Resources/Info.plist"
+          assert original.count(old) == 1
+          replacement = f"INFOPLIST_FILE: {os.environ['RUNNER_TEMP']}/HermesSimulator-Info.plist"
+          spec.write_text(original.replace(old, replacement), encoding="utf-8")
+          PY
+          xcodegen generate --spec ios-ci-project.yml
 
       - name: Run real iOS UI gestures
         shell: bash
