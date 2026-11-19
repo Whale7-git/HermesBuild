@@ -18,7 +18,8 @@
     {
       "id": "4",
       "event": "run.completed",
-      "status": "completed"
+      "status": "completed",
+      "completed": true
     }
   ]
 }
