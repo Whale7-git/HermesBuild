@@ -637,6 +637,10 @@ private struct ReaderScrollView<Content: View>: UIViewRepresentable {
             findRetries = 0
             pendingFindOrdinal = ordinal
             chapterPending = isChapterJump
+            if isChapterJump && restoreTarget != nil {
+                userInterruptedRestore = true
+                finishRestoring()
+            }
             guard !query.isEmpty, ordinal != nil else { return }
             DispatchQueue.main.async { [weak self] in self?.applyPendingFind() }
         }
