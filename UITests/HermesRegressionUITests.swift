@@ -86,7 +86,7 @@ final class HermesRegressionUITests: XCTestCase {
     /// A running turn must not move the Stop hit target when the first
     /// character is typed into the still-editable composer.
     func testStopLocationStableWhenTypingDuringRun() {
-        control("/__control/stream", json: ["frame_delay_ms": 2000])
+        control("/__control/stream", json: ["frame_delay_ms": 3500])
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         let editor = app.textViews.matching(
@@ -113,25 +113,38 @@ final class HermesRegressionUITests: XCTestCase {
     /// Forced backend errors must become readable UI feedback rather than
     /// exposing raw transport JSON. A failing case is a product bug, not a
     /// reason to special-case the mock or weaken the assertion.
-    func test429ProducesHumanReadableMessage() {
+    private func expectReadableError(_ code: Int, phrase: String) {
         control("/__control/stub", json: [
-            "method": "POST", "path": "/v1/runs", "status": 429,
-            "body": ["error": ["message": "请求过于频繁，请稍后重试"]]
+            "method": "POST", "path": "/v1/runs", "status": code,
+            "body": ["error": ["message": phrase]]
         ])
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         let editor = app.textViews.matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
-        editor.typeText("Trigger scripted 429")
+        editor.typeText("Trigger scripted error")
         let send = app.buttons["发送消息"]
         XCTAssertTrue(send.waitForExistence(timeout: 10))
         send.tap()
         let message = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label CONTAINS[cd] %@", "请稍后重试")).firstMatch
-        XCTAssertTrue(message.waitForExistence(timeout: 12),
-                      "HTTP 429 produced no readable user-facing error")
+            NSPredicate(format: "label CONTAINS[cd] %@", phrase)).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 14),
+                      "HTTP \(code) produced no readable user-facing feedback")
         XCTAssertFalse(message.label.contains("\"error\""),
-                       "The app displayed a raw JSON error object")
+                       "The app displayed raw JSON instead of a localized message")
+    }
+
+    func test413ProducesHumanReadableMessage() {
+        expectReadableError(413, phrase: "消息过大，请缩短后重试")
+    }
+
+    func test429ProducesHumanReadableMessage() {
+        expectReadableError(429, phrase: "请求过于频繁，请稍后重试")
+    }
+
+    func test500ProducesHumanReadableMessage() {
+        expectReadableError(500, phrase: "服务器暂时不可用")
     }
 }
