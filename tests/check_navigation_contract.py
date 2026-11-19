@@ -300,6 +300,23 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "matchCount == 0 || searching || searchQueryTooLong"):
         if token not in reader:
             failures.append(f"Reader interaction regression: {token}")
+    # UI test infrastructure: only prove current executable connections.
+    # Do NOT require allowsHitTesting(false) on interactive media overlays:
+    # the "+N" overlay is intentionally the only hit-testing owner, while its
+    # underlying tile has allowsHitTesting(!covered).
+    attachmentStrip = contents.get("AttachmentStrip.swift", "")
+    composerSource = contents.get("ChatComposer.swift", "")
+    replySource = contents.get("ChatMessageViews.swift", "")
+    for token in ("let covered = index == 3",
+                  ".allowsHitTesting(!covered)", "Button { start(item, .image) }"):
+        if token not in attachmentStrip:
+            failures.append(f"Attachment overlay touch owner missing: {token}")
+    for token in ("AppTheme.minimumTouchSize", "ChatComposerActionPolicy.reservesSendSlot(",
+                  "actionButton(symbol: \"arrow.up\"", "actionButton(symbol: \"stop.fill\""):
+        if token not in composerSource:
+            failures.append(f"Send/Stop shared control geometry missing: {token}")
+    if "ChatReadingShortcutPolicy.showInline(" not in replySource:
+        failures.append("Reader shortcut policy exists but is not wired into the reply toolbar")
     # build216: composer action geometry stays stable as the first character
     # arrives during generation; no new request/queue semantics are introduced.
     composerPolicy = contents.get("ChatInputPolicy.swift", "")

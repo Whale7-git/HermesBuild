@@ -113,28 +113,144 @@ def offenses(source: str) -> list[tuple[int, str]]:
     return bad
 
 
+# Known build216 findings are intentionally NOT changed by the test-only PR.
+# An explicit call-site allowlist keeps prior behavior, while a newly added
+# unguarded animation fails. Each entry is an issue for a separate product PR.
+REVIEWED_LEGACY_ANIMATIONS = {
+    ("ChatMessageReader.swift", "withAnimation(.easeOut(duration: 0.18))"),
+    ("RootView.swift", "withAnimation(.easeOut(duration: 0.24), completionCriteria: .logicallyComplete)"),
+    ("SessionDrawer.swift", "withAnimation(.easeOut(duration: 0.2))"),
+    ("SessionDrawer.swift", "withAnimation(.easeIn(duration: 0.2))"),
+}
+
+
+def ui_interaction_offenses(source: str, filename: str = "") -> list[tuple[int, str]]:
+    """Conservative high-confidence UI diagnostics; never guess a view's frame.
+
+    Hit regions from composed overlays/padding and inferred hosting height
+    require XCUITest. Only an actually bare icon-only label is flagged here.
+    """
+    clean = mask_non_code(source)
+    results: list[tuple[int, str]] = []
+
+    # Native navigation toolbar items are sized and hit-tested by UIKit.
+    # A bare Image in ToolbarItem or ToolbarItemGroup must NOT be treated
+    # like an ordinary body Button; the original scan produced 5 false
+    # positives in ChatMessageReader/ModelPicker, all inside toolbar groups.
+    native_toolbar_ranges: list[tuple[int, int]] = []
+    for toolbar in re.finditer(r'\bToolbarItem(?:Group)?\s*\([^{}]*\)\s*\{', clean):
+        open_at = toolbar.end() - 1
+        depth = 0
+        for j in range(open_at, len(clean)):
+            depth += (clean[j] == '{') - (clean[j] == '}')
+            if depth == 0:
+                native_toolbar_ranges.append((open_at, j))
+                break
+
+    # Button { action } label: { Image(systemName: "...") } is visibly
+    # under-sized without sizing or padding either inside or immediately
+    # outside the label. Do not flag composite labels, custom ButtonStyles,
+    # or views whose real hit frame cannot be inferred lexically.
+    for found in re.finditer(r'}\s*label:\s*{', clean):
+        if any(start <= found.start() <= end for start, end in native_toolbar_ranges):
+            continue
+        prefix = clean[max(0, found.start() - 400):found.start()]
+        if not re.search(r'\bButton\s*(?:\([^{}]*\))?\s*{', prefix):
+            continue
+        start = found.end() - 1
+        depth, end = 0, start
+        for end in range(start, len(clean)):
+            depth += (clean[end] == '{') - (clean[end] == '}')
+            if depth == 0:
+                break
+        if depth:
+            continue
+        inside = clean[start + 1:end].strip()
+        # A single SF Symbol, optionally styled but never sized, is the
+        # only shape whose hit area we can confidently reject from source.
+        if not re.match(r'^Image\s*\(\s*systemName\s*:', inside):
+            continue
+        if inside.count('Image(') != 1 or any(t in inside for t in (
+            'HStack', 'VStack', 'ZStack', 'Group', 'Text(', 'if ', 'Button(')):
+            continue
+        trailing = clean[end + 1:end + 260].split('\n\n', 1)[0]
+        sizing = inside + trailing
+        if any(t in sizing for t in ('.frame(', '.padding(', '.contentShape(')):
+            continue
+        # Avoid declaring an involved label when there are further nested
+        # closures; audit these visually through XCUITest instead.
+        if '{' in inside or '}' in inside:
+            continue
+        results.append((source.count('\n', 0, found.start()) + 1,
+                        "bare SF Symbol Button label lacks a declared hit region"))
+
+    # File-wide presence of accessibilityReduceMotion is NOT sufficient:
+    # detect each unguarded literal animation constructor separately.
+    for found in re.finditer(r'\bwithAnimation\s*\(\s*\.[A-Za-z]\w*', clean):
+        line = source.count('\n', 0, found.start()) + 1
+        snippet = source[found.start():].split('\n', 1)[0].strip()
+        if any(snippet.startswith(signature) for file, signature in
+               REVIEWED_LEGACY_ANIMATIONS if file == filename):
+            continue
+        results.append((line, "withAnimation uses an unguarded literal animation; use reduceMotion ? nil : ..."))
+
+    # A UIScrollView-hosted SwiftUI view with neither explicit height nor
+    # manual contentSize is a *risk*, not proof that scrolling is broken.
+    # Its existing reader instance is documented as a baseline finding;
+    # UI tests must measure actual contentOffset before a product fix.
+    if (filename != "ChatMessageReader.swift"
+            and 'UIHostingController' in clean and 'scrollView.addSubview(host.view)' in clean
+            and 'contentLayoutGuide' in clean
+            and 'heightAnchor.constraint' not in clean
+            and 'scrollView.contentSize' not in clean):
+        idx = clean.index('scrollView.addSubview(host.view)')
+        results.append((source.count('\n', 0, idx) + 1,
+                        "hosted scroll content has no explicit size source; verify geometry"))
+
+    return results
+
+
 def check(paths: list[Path]) -> int:
     issues = 0
     for path in paths:
-        for line, modifier in offenses(path.read_text(encoding='utf-8')):
+        source = path.read_text(encoding='utf-8')
+        for line, modifier in offenses(source):
             print(f'{path}:{line}: control-flow brace followed by {modifier}; '
                   'wrap branches in Group { ... } before applying a modifier',
                   file=sys.stderr)
             issues += 1
+        for line, reason in ui_interaction_offenses(source, path.name):
+            print(f'{path}:{line}: {reason}', file=sys.stderr)
+            issues += 1
     if issues:
         print(f'SWIFTUI_MODIFIER_GATE_FAIL: {issues} unsafe modifier(s)', file=sys.stderr)
         return 1
-    print(f'swiftui_modifier_gate: pass ({len(paths)} Swift source files)')
+    print(f'SCAN_PASS swiftui_modifier_gate ({len(paths)} Swift source files)')
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('paths', nargs='*', type=Path,
-                    help='Swift source files; default: Sources/HermesShell')
+                    help='Swift files, directory names or shell globs; default: Sources/HermesShell')
     args = ap.parse_args()
     root = Path(__file__).resolve().parents[1]
-    paths = args.paths or sorted((root / 'Sources/HermesShell').rglob('*.swift'))
+    # Github Actions invokes this with no args; local users can pass shell
+    # globs, directories, or literal files without getting a vacuous pass.
+    paths = []
+    if args.paths:
+        import glob
+        for candidate in args.paths:
+            text = str(candidate)
+            if any(ch in text for ch in '*?['):
+                paths.extend(Path(item) for item in glob.glob(text, recursive=True))
+            elif candidate.is_dir():
+                paths.extend(candidate.rglob('*.swift'))
+            else:
+                paths.append(candidate)
+    else:
+        paths = list((root / 'Sources/HermesShell').rglob('*.swift'))
+    paths = sorted({p for p in paths if p.is_file() and p.suffix == '.swift'})
     if not paths:
         ap.error('no Swift files found (refusing a vacuous pass)')
     return check(paths)
