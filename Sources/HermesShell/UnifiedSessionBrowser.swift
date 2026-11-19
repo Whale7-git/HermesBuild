@@ -354,6 +354,12 @@ struct UnifiedSessionBrowser: View {
                 userOwnsScroll = false
                 taskScrollAnchor = next
                 visibleScrollID = next
+            } else if let next, available.contains(next),
+                      !userOwnsScroll, visibleScrollID != next {
+                // A failed host may return with the very same bookmarked row.
+                // The view's transient fallback position must not block a
+                // delayed restore after that row becomes measurable again.
+                visibleScrollID = next
             }
         } else {
             let next = UnifiedBrowserScrollPolicy.reconcile(
@@ -362,6 +368,9 @@ struct UnifiedSessionBrowser: View {
             if next != sessionScrollAnchor {
                 userOwnsScroll = false
                 sessionScrollAnchor = next
+                visibleScrollID = next
+            } else if let next, available.contains(next),
+                      !userOwnsScroll, visibleScrollID != next {
                 visibleScrollID = next
             }
         }

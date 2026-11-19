@@ -206,8 +206,8 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("Missing scoped bookmark fallback policy")
     for token in ("failedSources: failedScrollSources",
                   "UnifiedBrowserScrollPolicy.shouldCapture(",
-                  "guard userOwnsScroll", "waitingForBookmarkHost"):
-        if token not in browser and token != "guard userOwnsScroll":
+                  "waitingForBookmarkHost", "visibleScrollID != next"):
+        if token not in browser:
             failures.append(f"Browser scroll ownership: missing {token}")
     if "userOwnsScroll, id: id" not in browser:
         failures.append("Browser must gate bookmark writes on user-initiated scroll")
