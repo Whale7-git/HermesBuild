@@ -107,6 +107,9 @@ struct NativeChatView: View {
     @State var showFind = false
     @State var findQuery = ""
     @State var findHits: [ChatConversationSearch.Hit] = []
+    @State var findHasMoreMatches = false
+    @State var findQueryTooLong = false
+    @State var findOrigin: ChatReadingPosition?
     @State var findIndex = 0
     @State var finding = false
     @State var findTask: Task<Void, Never>?
@@ -452,7 +455,7 @@ struct NativeChatView: View {
         .onChange(of: attachments.errorMessage) { _, value in
             if let value { showToast(value) }
         }
-        .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: true) }
+        .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: false) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in
             let settled = Set(paths)
@@ -481,6 +484,12 @@ struct NativeChatView: View {
         observationContent
         .onChange(of: app.activeChangeToken) { _, _ in
             retirePagination()
+            scheduleFind(.cancelled, jump: false)
+            showFind = false
+            findOrigin = nil
+            findHits = []
+            findHasMoreMatches = false
+            findQueryTooLong = false
             controllerBox.value?.turnReading.reset()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil

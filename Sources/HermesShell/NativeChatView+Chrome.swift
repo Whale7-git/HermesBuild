@@ -6,8 +6,14 @@ extension NativeChatView {
     var findBar: some View {
         if showFind {
             ChatFindBar(query: $findQuery, count: findHits.count, index: findIndex,
-                searching: finding, snippet: findHits.indices.contains(findIndex) ? findHits[findIndex].snippet : nil,
-                onStep: stepFind, onClose: closeFind)
+                searching: finding,
+                snippet: findHits.indices.contains(findIndex) ? findHits[findIndex].snippet : nil,
+                hasMoreMatches: findHasMoreMatches, queryTooLong: findQueryTooLong,
+                canLoadOlder: model.canLoadOlderHistory && !isLoadingOlder,
+                loadingOlder: isLoadingOlder, olderLimitReached: model.olderLimitReached,
+                canReturnToOrigin: findOrigin != nil, onStep: stepFind,
+                onLoadOlder: { loadOlderForFind() }, onReturnToOrigin: returnToFindOrigin,
+                onClose: closeFind)
         }
     }
 
@@ -96,11 +102,7 @@ extension NativeChatView {
                     showAttachments = true
                 } label: { Label("会话附件", systemImage: "photo.on.rectangle.angled") }
                 Button {
-                    composerFocused = false
-                    restoreCancelled = true
-                    restoringReading = false
-                    showFind = true
-                    scheduleFind(.queryChanged, jump: false)
+                    beginFind()
                 } label: { Label("在当前会话查找", systemImage: "magnifyingglass") }
                 Button {
                     composerFocused = false
@@ -265,11 +267,42 @@ extension NativeChatView {
         showFind && findHits.indices.contains(findIndex) ? findHits[findIndex].rowID : nil
     }
 
+    private func beginFind() {
+        guard !showFind else { return }
+        composerFocused = false
+        restoreCancelled = true
+        restoringReading = false
+        // Capture what is actually visible, never a possibly stale disk bookmark.
+        findOrigin = controllerBox.value?.captureCurrentReadingPosition()
+        findHasMoreMatches = false
+        findQueryTooLong = false
+        showFind = true
+        scheduleFind(.queryChanged, jump: false)
+    }
+
+    private func returnToFindOrigin() {
+        guard let origin = findOrigin else { return }
+        closeFind()
+        restoreCancelled = false
+        if origin.following {
+            goToLatest(animated: false)
+        } else if items.contains(where: { $0.id == origin.rowID }) {
+            navigate(to: origin.rowID, offset: origin.offsetInRow)
+        } else {
+            // Only a user-selected return may page toward a missing bookmark.
+            Task { await restoreReadingPosition(origin) }
+        }
+    }
+
     private func closeFind() {
         scheduleFind(.cancelled, jump: false)
         showFind = false
         findQuery = ""
         findHits = []
+        findIndex = 0
+        findHasMoreMatches = false
+        findQueryTooLong = false
+        findOrigin = nil
         finding = false
     }
 
@@ -292,7 +325,8 @@ extension NativeChatView {
             guard showFind else { return }
             let query = findQuery
             guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                finding = false; findHits = []; findIndex = 0; return
+                finding = false; findHits = []; findIndex = 0
+                findHasMoreMatches = false; findQueryTooLong = false; return
             }
             finding = true
             let ticket = findWork.begin()
@@ -307,15 +341,20 @@ extension NativeChatView {
                                                         markdown: $0.role != "user")
                     }
                     let engine = findWorker
-                    let worker = Task.detached(priority: .userInitiated) { await engine.find(query, in: documents) }
-                    let result = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+                    let worker = Task.detached(priority: .userInitiated) {
+                        await engine.findDetailed(query, in: documents)
+                    }
+                    let result = await withTaskCancellationHandler(operation: { await worker.value },
+                        onCancel: { worker.cancel() })
                     guard !Task.isCancelled, showFind, query == findQuery,
                           findWork.ticket == ticket else { return }
                     let old = findHits.indices.contains(findIndex) ? findHits[findIndex].id : nil
-                    findHits = result
-                    findIndex = result.firstIndex(where: { $0.id == old }) ?? 0
+                    findHits = result.hits
+                    findHasMoreMatches = result.hasMoreMatches
+                    findQueryTooLong = result.queryTooLong
+                    findIndex = result.hits.firstIndex(where: { $0.id == old }) ?? 0
                     finding = false
-                    if shouldJump && !result.isEmpty { stepFind(0) }
+                    if shouldJump && !result.hits.isEmpty { stepFind(0) }
                     shouldJump = false
                 } while findWork.completeSearch(ticket)
                 findTask = nil
@@ -324,7 +363,7 @@ extension NativeChatView {
     }
 
     private func stepFind(_ direction: Int) {
-        guard !findHits.isEmpty else { return }
+        guard !finding, !findQueryTooLong, !findHits.isEmpty else { return }
         findIndex = (findIndex + direction + findHits.count) % findHits.count
         let id = findHits[findIndex].rowID
         if cellStates[id]?.collapsed == true { cellStates[id]?.collapsed = false }

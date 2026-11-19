@@ -255,6 +255,36 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "goToLatest(animated: true)"):
         if token not in contents.get("NativeChatView+MessageList.swift", ""):
             failures.append(f"Search/reading return path: missing {token}")
+    # build213: search must be user-navigated, scoped, and capped accurately.
+    search = contents.get("ChatConversationSearch.swift", "")
+    findbar = contents.get("ChatFindBar.swift", "")
+    chrome = contents.get("NativeChatView+Chrome.swift", "")
+    chat = contents.get("NativeChatView.swift", "")
+    reading = contents.get("NativeChatView+MessageList.swift", "")
+    coordinator = contents.get("StableChatScrollView+Coordinator.swift", "")
+    for token in ("findDetailed(", "hasMoreMatches: true", "queryTooLong: true"):
+        if token not in search:
+            failures.append(f"Search result correctness missing: {token}")
+    for token in ("loadOlderForFind()", "captureCurrentReadingPosition()",
+                  "returnToFindOrigin()", "beginFind()",
+                  "guard !finding, !findQueryTooLong, !findHits.isEmpty"):
+        if token not in chrome:
+            failures.append(f"Search navigation owner missing: {token}")
+    for token in ("findHasMoreMatches", "findQueryTooLong", "findOrigin"):
+        if token not in chat:
+            failures.append(f"Search local state missing: {token}")
+    if "scheduleFind(.queryChanged, jump: false)" not in chat:
+        failures.append("Typing search terms must not automatically move the viewport")
+    if "controllerBox.value?.cancelFindNavigation()" not in reading:
+        failures.append("User scroll must cancel pending search navigation")
+    if "func loadOlderForFind()" not in reading:
+        failures.append("Manual search paging must reuse the existing history owner")
+    if "func captureCurrentReadingPosition()" not in coordinator:
+        failures.append("Search origin must be captured from actual UIKit geometry")
+    for token in ("hasMoreMatches", "queryTooLong", "onLoadOlder", "onReturnToOrigin",
+                  "olderLimitReached", "canReturnToOrigin"):
+        if token not in findbar:
+            failures.append(f"Search toolbar missing explicit state/action: {token}")
     # build212: every foreground collection must refresh under a scoped,
     # throttled owner, not solely through drawer manual-refresh buttons.
     for token in ("foregroundListPolicy.shouldRefresh(", "await app.refresh()",
@@ -323,7 +353,8 @@ def main() -> int:
         "NativeChatView+Panels.swift", "NativeChatModel+Send.swift",
         "ChatMessageViews.swift", "StableChatScrollView+Geometry.swift",
         "ChatComposer.swift", "SessionSearchView.swift",
-        "ChatToolSummary.swift", "NativeChatView+Composer.swift",
+        "ChatToolSummary.swift", "ChatConversationSearch.swift", "ChatFindBar.swift",
+        "NativeChatView+Composer.swift",
         "NativeChatView+Notices.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}

@@ -17,6 +17,22 @@ expect(ChatConversationSearch.find("你好", in: docs).count == 3, "Chinese occu
 expect(ChatConversationSearch.find(".*", in: docs).count == 1, "literal search")
 expect(ChatConversationSearch.find("missing", in: docs).isEmpty, "no match")
 expect(ChatConversationSearch.find("你好", in: docs, limit: 2).count == 2, "bounded results")
+let exactLimit = [ChatConversationSearch.Document(id: "exact", text: String(repeating: "x ", count: 300))]
+let extraLimit = [ChatConversationSearch.Document(id: "extra", text: String(repeating: "x ", count: 301))]
+let exactly300 = ChatConversationSearch.findDetailed("x", in: exactLimit)
+expect(exactly300.hits.count == 300 && !exactly300.hasMoreMatches,
+       "exactly 300 is a complete result, not inferred truncation")
+let beyond300 = ChatConversationSearch.findDetailed("x", in: extraLimit)
+expect(beyond300.hits.count == 300 && beyond300.hasMoreMatches,
+       "301st match must be observed to mark a capped result")
+let noBudget = ChatConversationSearch.findDetailed("x", in: docs, limit: 0)
+expect(noBudget.hits.isEmpty && !noBudget.hasMoreMatches, "zero budget is not truncated")
+let tooLong = ChatConversationSearch.findDetailed(String(repeating: "x", count: 513), in: docs)
+expect(tooLong.hits.isEmpty && tooLong.queryTooLong,
+       "invalid query is explicit rather than an apparent zero-hit result")
+let normalFind = ChatConversationSearch.findDetailed("cafe", in: docs)
+expect(!normalFind.queryTooLong && normalFind.hits.count == 2,
+       "normal diacritic search retains existing matching semantics")
 expect(ChatConversationSearch.find("你好", in: docs, limit: 0).isEmpty, "zero budget")
 expect(ChatConversationSearch.find(String(repeating: "x", count: 513), in: docs).isEmpty, "bounded query")
 expect(ChatConversationSearch.find("Hermes", in: docs).first?.snippet.contains("👨‍👩‍👧‍👦") == true, "emoji preserved")

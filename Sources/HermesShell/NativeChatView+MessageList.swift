@@ -95,6 +95,8 @@ extension NativeChatView {
                     if !restoringReading && !showFind { readingStore.save(value) }
                 },
                 onUserScroll: {
+                    // A finger gesture takes ownership from any pending find jump.
+                    controllerBox.value?.cancelFindNavigation()
                     restoreCancelled = true
                     restoringReading = false
                     // A manual history gesture overrides both an in-flight
@@ -201,6 +203,13 @@ extension NativeChatView {
             controllerBox.value?.notePaginationEnded()
             isLoadingOlder = false
         }
+    }
+
+    /// Search pages only by explicit user request. This delegates to the exact
+    /// same pagination owner as scroll-to-top, never a second concurrent GET.
+    func loadOlderForFind() {
+        guard showFind else { return }
+        loadOlderIfNeeded()
     }
 
     private var emptyState: some View {
