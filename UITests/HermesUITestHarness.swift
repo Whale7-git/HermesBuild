@@ -26,7 +26,7 @@ enum HermesUITestHarness {
             link.tap()
 
             let add = app.buttons["添加实例"]
-            if !add.waitForExistence(timeout: 5) {
+            if !(add.waitForExistence(timeout: 5) && add.isHittable) {
                 // Retry the navigation only when we are STILL on Settings,
                 // not when the connection form is already present.
                 if !app.navigationBars["连接与账号"].exists
@@ -34,7 +34,7 @@ enum HermesUITestHarness {
                     link.tap()
                 }
             }
-            if !add.waitForExistence(timeout: 6) {
+            if !(add.waitForExistence(timeout: 6) && add.isHittable) {
                 // Form sections can be lazy on a small Simulator: materialize
                 // the lower button by scrolling the actual settings collection.
                 if app.collectionViews.firstMatch.exists {
