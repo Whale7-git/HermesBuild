@@ -112,11 +112,6 @@ jobs:
             all) selection="" ;;
             *) echo "Unsupported suite $REQUESTED_SUITE" >&2; exit 2 ;;
           esac
-          # Only the branch-local push trigger narrows validation to setup.
-          # workflow_dispatch and the scheduled job retain their selected suites.
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            selection="-only-testing:HermesUITests/HermesGoldUITests/test01ConnectionAndSessionList"
-          fi
           xcodebuild test \
             -project HermesShellCI.xcodeproj \
             -scheme HermesShell \
