@@ -856,7 +856,7 @@
     "tests/w3w4/TaskObservation.swift": "1d484155cecf48e824a93426abfb2b8af30e6bd59b3db043f385ec9f06302e35",
     "UITests/HermesAccessibilityUITests.swift": "f581c3445a079b4e1527a1a525c609091d2d93767276c47d518cba78b85e3d3b",
     "UITests/HermesGoldUITests.swift": "12f8a8ba57ff75733d50892b599d40fd0d040e33186af8e7e8fd18bb7dbcbb78",
-    "UITests/HermesUITestHarness.swift": "7bd2a213af6a032a351e56bb512b7a1cf190df0ca7ee64c093a473a15ef6ec67",
+    "UITests/HermesUITestHarness.swift": "b4a292c9e6529de985c587ba695d6085adec95c3bdb85768cc8536767386c234",
     "Vendor/Textual/HERMES-PATCHES.md": "ce180e809418ed456386075a52e86e35c7039f435d664bbfe5fe72e4d423f1a5",
     "Vendor/Textual/patches/01-Package.swift.patch": "6fbb430eb927923d613d6de067880266d7ebe44c4d429393813b50bfcff41d01",
     "Vendor/Textual/patches/02-Sources_Textual_Internal_Attachment_WithAttachments.swift.patch": "e2ef06485022b0269ddbf2cfe8062cb97ac9ed831e812c7112b29be53bcdfae2",

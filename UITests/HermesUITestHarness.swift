@@ -48,8 +48,9 @@ enum HermesUITestHarness {
                 XCTContext.runActivity(named: "Connection settings navigation") {
                     $0.add(image)
                 }
+                let onConnectionPage = app.navigationBars["连接与账号"].exists
                 XCTFail("Add-instance action not hittable; connection page: "
-                        + "\(app.navigationBars[\"连接与账号\"].exists)",
+                        + "\(onConnectionPage)",
                         file: file, line: line)
                 return app
             }
