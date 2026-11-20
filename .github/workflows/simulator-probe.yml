@@ -74,6 +74,18 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.whale7.hermes" "$RUNNER_TEMP/HermesSimulator-Info.plist"
           /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string HermesShell" "$RUNNER_TEMP/HermesSimulator-Info.plist"
           /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          # Simulator-only access group; do not modify product App entitlements.
+          cat > "$RUNNER_TEMP/HermesSimulator.entitlements" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>application-identifier</key><string>com.whale7.hermes</string>
+            <key>keychain-access-groups</key>
+            <array><string>com.whale7.hermes</string></array>
+          </dict>
+          </plist>
+          PLIST
           python3 - <<'PY'
           import os
           from pathlib import Path
@@ -81,7 +93,9 @@ jobs:
           original = spec.read_text(encoding="utf-8")
           old = "INFOPLIST_FILE: Resources/Info.plist"
           assert original.count(old) == 1
-          replacement = f"INFOPLIST_FILE: {os.environ['RUNNER_TEMP']}/HermesSimulator-Info.plist"
+          temp = os.environ["RUNNER_TEMP"]
+          replacement = (f"INFOPLIST_FILE: {temp}/HermesSimulator-Info.plist\n"
+                         f"        CODE_SIGN_ENTITLEMENTS: {temp}/HermesSimulator.entitlements")
           spec.write_text(original.replace(old, replacement), encoding="utf-8")
           PY
           xcodegen generate --spec ios-ci-project.yml
@@ -110,11 +124,35 @@ jobs:
             -destination "platform=iOS Simulator,id=$DEVICE" \
             -parallel-testing-enabled NO \
             -resultBundlePath "$RUNNER_TEMP/HermesUITests.xcresult" \
-            $selection CODE_SIGNING_ALLOWED=NO \
+            $selection CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-ui.log"
           echo "### Hermes iOS UI: $REQUESTED_SUITE" >> "$GITHUB_STEP_SUMMARY"
           echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
           echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect actual simulator signing entitlements
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -path '*/Build/Products/Debug-iphonesimulator/HermesShell.app' \
+            -type d -print -quit 2>/dev/null || true)
+          if [[ -n "$APP" ]]; then
+            if codesign -d --entitlements :- "$APP" \
+              > "$RUNNER_TEMP/simulator-signed-entitlements.plist" \
+              2> "$RUNNER_TEMP/simulator-sign-inspection.log"; then
+              echo "Simulator-only Keychain signing entitlements:"
+              /usr/libexec/PlistBuddy -c 'Print :application-identifier' \
+                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
+              /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups' \
+                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
+            else
+              echo "Simulator App signing/entitlement inspection failed"
+            fi
+          else
+            echo "No simulator app; build failed before producing a bundle"
+          fi
 
       - name: Collect redacted Gateway requests
         if: always()
@@ -133,6 +171,8 @@ jobs:
             ${{ runner.temp }}/xcodebuild-ui.log
             ${{ runner.temp }}/mock-gateway.log
             ${{ runner.temp }}/mock-requests.json
+            ${{ runner.temp }}/simulator-signed-entitlements.plist
+            ${{ runner.temp }}/simulator-sign-inspection.log
           if-no-files-found: warn
           retention-days: 7
 
