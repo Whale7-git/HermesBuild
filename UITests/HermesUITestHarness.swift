@@ -16,13 +16,43 @@ enum HermesUITestHarness {
         let setup = app.buttons["配置连接"]
         if setup.waitForExistence(timeout: 3) {
             setup.tap()
-            let link = app.staticTexts["连接与账号"]
+            // A NavigationLink in Form is a *row*. Tapping only the StaticText
+            // can return without completing navigation during sheet animation.
+            let linkCell = app.cells.containing(.staticText, identifier: "连接与账号").firstMatch
+            let linkText = app.staticTexts["连接与账号"]
+            let link = linkCell.waitForExistence(timeout: 10) ? linkCell : linkText
             XCTAssertTrue(link.waitForExistence(timeout: 10),
                           "Settings connection entry missing", file: file, line: line)
             link.tap()
+
             let add = app.buttons["添加实例"]
-            XCTAssertTrue(add.waitForExistence(timeout: 10),
-                          "Add-instance entry missing", file: file, line: line)
+            if !add.waitForExistence(timeout: 5) {
+                // Retry the navigation only when we are STILL on Settings,
+                // not when the connection form is already present.
+                if !app.navigationBars["连接与账号"].exists
+                    && link.exists && link.isHittable {
+                    link.tap()
+                }
+            }
+            if !add.waitForExistence(timeout: 6) {
+                // Form sections can be lazy on a small Simulator: materialize
+                // the lower button by scrolling the actual settings collection.
+                if app.collectionViews.firstMatch.exists {
+                    app.collectionViews.firstMatch.swipeUp()
+                }
+            }
+            guard add.waitForExistence(timeout: 6) && add.isHittable else {
+                let image = XCTAttachment(screenshot: app.screenshot())
+                image.name = "connection-settings-navigation-failed"
+                image.lifetime = .keepAlways
+                XCTContext.runActivity(named: "Connection settings navigation") {
+                    $0.add(image)
+                }
+                XCTFail("Add-instance action not hittable; connection page: "
+                        + "\(app.navigationBars[\"连接与账号\"].exists)",
+                        file: file, line: line)
+                return app
+            }
             add.tap()
             let name = app.textFields["实例名称"]
             let address = app.textFields["https://网关地址:8642"]
