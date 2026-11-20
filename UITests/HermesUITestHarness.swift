@@ -42,9 +42,24 @@ enum HermesUITestHarness {
             let sheet = app.navigationBars["添加实例"]
             let closed = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "exists == false"), object: sheet)
-            XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 25), .completed,
-                           "Gateway connection did not validate and save",
-                           file: file, line: line)
+            let closeStatus = XCTWaiter.wait(for: [closed], timeout: 12)
+            if closeStatus != .completed {
+                // Do not log text-field values or Keychain credentials.
+                // Expose only visible, localized form validation errors.
+                let diagnostics = app.staticTexts.allElementsBoundByIndex
+                    .filter { $0.exists && $0.isHittable }
+                    .map(\.label)
+                    .filter { label in
+                        ["无法", "失败", "密钥", "地址", "保存", "钥匙串",
+                         "请输入", "无效", "Keychain", "error"].contains {
+                            label.localizedCaseInsensitiveContains($0)
+                        }
+                    }
+                    .prefix(12)
+                XCTFail("Gateway AddInstance remained open; visible errors: \(diagnostics)",
+                        file: file, line: line)
+                return app
+            }
             let connection = app.navigationBars["连接与账号"]
             if connection.exists {
                 let back = connection.buttons.firstMatch
