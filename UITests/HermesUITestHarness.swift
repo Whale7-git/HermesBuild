@@ -42,21 +42,41 @@ enum HermesUITestHarness {
             let sheet = app.navigationBars["添加实例"]
             let closed = XCTNSPredicateExpectation(
                 predicate: NSPredicate(format: "exists == false"), object: sheet)
-            let closeStatus = XCTWaiter.wait(for: [closed], timeout: 12)
+            let closeStatus = XCTWaiter.wait(for: [closed], timeout: 8)
             if closeStatus != .completed {
-                // Do not log text-field values or Keychain credentials.
-                // Expose only visible, localized form validation errors.
-                let diagnostics = app.staticTexts.allElementsBoundByIndex
-                    .filter { $0.exists && $0.isHittable }
-                    .map(\.label)
-                    .filter { label in
-                        ["无法", "失败", "密钥", "地址", "保存", "钥匙串",
-                         "请输入", "无效", "Keychain", "error"].contains {
-                            label.localizedCaseInsensitiveContains($0)
+                // The Save error is a Form Section below the text fields. The
+                // keyboard can keep it outside the visible accessibility tree.
+                // Record static labels only: never dump secure fields or values.
+                var labels: [String] = []
+                func captureStaticLabels() {
+                    for label in app.staticTexts.allElementsBoundByIndex.map(\.label) {
+                        if !label.isEmpty && !labels.contains(label) {
+                            labels.append(label)
                         }
                     }
-                    .prefix(12)
-                XCTFail("Gateway AddInstance remained open; visible errors: \(diagnostics)",
+                }
+                captureStaticLabels()
+                let form = app.collectionViews.firstMatch.exists
+                    ? app.collectionViews.firstMatch : app.scrollViews.firstMatch
+                for _ in 0..<3 {
+                    if form.exists { form.swipeUp() }
+                    else { app.swipeUp() }
+                    captureStaticLabels()
+                }
+                let attachment = XCTAttachment(screenshot: app.screenshot())
+                attachment.name = "gateway-instance-save-error"
+                attachment.lifetime = .keepAlways
+                XCTContext.runActivity(named: "Gateway save failure screenshot") {
+                    $0.add(attachment)
+                }
+                let errors = labels.filter { label in
+                    ["无法", "失败", "钥匙串", "请输入", "无效", "Keychain",
+                     "error", "配置"].contains {
+                        label.localizedCaseInsensitiveContains($0)
+                    }
+                }
+                let report = errors.isEmpty ? labels : errors
+                XCTFail("Gateway AddInstance remained open; form labels: \(Array(report.prefix(28)))",
                         file: file, line: line)
                 return app
             }
