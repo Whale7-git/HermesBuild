@@ -20,6 +20,14 @@ final class HermesGoldUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
+        let focused = app.textViews.matching(
+            NSPredicate(format: "hasKeyboardFocus == 1")).firstMatch
+        if !focused.exists {
+            // A history layout update can move the editor immediately after tap.
+            editor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+        XCTAssertTrue(focused.waitForExistence(timeout: 7),
+                      "Chat editor did not gain focus after two real taps")
         editor.typeText("UI test: one message")
         let send = app.buttons["发送消息"]
         XCTAssertTrue(send.waitForExistence(timeout: 15), "Send control missing")
@@ -40,17 +48,14 @@ final class HermesGoldUITests: XCTestCase {
         let thread = app.scrollViews.firstMatch
         XCTAssertTrue(thread.waitForExistence(timeout: 10),
                       "Chat transcript has no UIScrollView")
-        let more = app.buttons["本条回复的更多操作"].firstMatch
-        for _ in 0..<18 {
-            if more.exists { break }
+        // Open the build216 direct long-answer shortcut, not an ellipsis menu.
+        let read = app.buttons["专注阅读这条长回复"].firstMatch
+        for _ in 0..<24 {
+            if read.exists && read.isHittable { break }
             thread.swipeUp()
         }
-        XCTAssertTrue(more.waitForExistence(timeout: 8),
-                      "A completed long reply has no actions")
-        more.tap()
-        let read = app.buttons["专注阅读"]
-        XCTAssertTrue(read.waitForExistence(timeout: 8),
-                      "Reader option is not wired to the visible reply toolbar")
+        XCTAssertTrue(read.waitForExistence(timeout: 8) && read.isHittable,
+                      "Completed long answer has no hittable reader shortcut")
         read.tap()
         XCTAssertTrue(app.navigationBars["阅读模式"].waitForExistence(timeout: 12),
                       "Reader sheet did not open")
