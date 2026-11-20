@@ -80,16 +80,22 @@ enum HermesUITestHarness {
                         file: file, line: line)
                 return app
             }
-            let connection = app.navigationBars["连接与账号"]
-            if connection.exists {
-                let back = connection.buttons.firstMatch
-                if back.exists { back.tap() }
-            }
-            let done = app.buttons["完成"]
-            if done.waitForExistence(timeout: 8) { done.tap() }
+            // After the real Gateway/Keychain save has succeeded, perform
+            // a cold relaunch. This verifies persisted credentials and also
+            // prevents a presented Settings sheet from obscuring the home UI.
+            // This is not a test backdoor: the app must initialize normally.
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20),
+                          "Hermes failed to relaunch after saving Gateway",
+                          file: file, line: line)
         }
-        XCTAssertTrue(app.buttons["打开会话侧栏"].waitForExistence(timeout: 20),
-                      "Connected home is missing session navigation", file: file, line: line)
+        let sidebar = app.buttons["打开会话侧栏"]
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 20),
+                      "Connected home is missing the drawer action", file: file, line: line)
+        XCTAssertTrue(sidebar.isHittable,
+                      "Drawer action exists but is occluded; verify Settings was dismissed",
+                      file: file, line: line)
         return app
     }
 
@@ -97,13 +103,37 @@ enum HermesUITestHarness {
                             file: StaticString = #filePath,
                             line: UInt = #line) {
         let drawer = app.buttons["打开会话侧栏"]
-        if drawer.waitForExistence(timeout: 6) { drawer.tap() }
-        let row = app.buttons.containing(
+        XCTAssertTrue(drawer.waitForExistence(timeout: 10) && drawer.isHittable,
+                      "Home drawer button is not actionable", file: file, line: line)
+        drawer.tap()
+
+        // The drawer view is always mounted behind the chat card. Merely
+        // finding a Session row is NOT evidence that the drawer is open.
+        let close = app.buttons["关闭会话列表"]
+        let opened = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND hittable == true"),
+            object: close)
+        guard XCTWaiter.wait(for: [opened], timeout: 8) == .completed else {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "drawer-not-open-or-occluded"
+            screenshot.lifetime = .keepAlways
+            XCTContext.runActivity(named: "Drawer did not become interactive") {
+                $0.add(screenshot)
+            }
+            XCTFail("Drawer button tap did not reveal hittable close control; "
+                    + "sidebar frame=\(drawer.frame), close frame=\(close.frame)",
+                    file: file, line: line)
+            return
+        }
+
+        let row = app.buttons.matching(
             NSPredicate(format: "label CONTAINS[cd] %@", sessionTitle)).firstMatch
         let title = app.staticTexts[sessionTitle]
         let target = row.waitForExistence(timeout: 12) ? row : title
         XCTAssertTrue(target.waitForExistence(timeout: 12),
-                      "Mock session must be visible in the actual session list",
+                      "Mock session is not present in the opened drawer", file: file, line: line)
+        XCTAssertTrue(target.isHittable,
+                      "Session exists but is occluded: \(target.frame)",
                       file: file, line: line)
         target.tap()
         XCTAssertTrue(app.textViews.matching(
