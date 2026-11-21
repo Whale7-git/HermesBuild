@@ -229,7 +229,7 @@ extension NativeChatView {
         case .reader(let message):
             messageReaderSheet(message)
         case .attachments(let filter):
-            AttachmentOverview(model: model, baseURL: app.api.webConsoleBaseURL,
+            AttachmentOverview(model: model, baseURL: app.api.attachmentBaseURL,
                 sessionID: sessionID, scope: displayScope,
                 authorization: app.api.attachmentPreviewAuthorization,
                 ratios: imageRatios, onLocate: { attachmentTarget = $0 }, initialFilter: filter)
@@ -242,7 +242,7 @@ extension NativeChatView {
                 .presentationDetents([.medium, .large])
         case .info:
             ChatConversationInfo(model: model, title: currentTitle, instance: app.active.name,
-                modelLabel: modelLabel, baseURL: app.api.webConsoleBaseURL, sessionID: sessionID,
+                modelLabel: modelLabel, baseURL: app.api.attachmentBaseURL, sessionID: sessionID,
                 scope: displayScope, authorization: app.api.attachmentPreviewAuthorization,
                 ratios: imageRatios, canExportFullHistory: canFetchFullExport,
                 onPanel: showPanel, onFind: { dismissPanel(then: .find) },
