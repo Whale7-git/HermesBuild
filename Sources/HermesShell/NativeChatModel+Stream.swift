@@ -297,6 +297,21 @@ extension NativeChatModel {
 
     func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
+        // A later/manual refresh must obey the same final-history gate as
+        // terminal SSE reconciliation. Otherwise the first incomplete GET
+        // after the bounded retries can still erase a visible assistant.
+        // This applies only to successful streams: a failed or interrupted
+        // Run has different terminal authority and may retain a partial reply.
+        let hasStreamedAnswer = buffer.messages.contains {
+            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+        }
+        if buffer.terminal && buffer.failure == nil && buffer.notices.isEmpty &&
+           hasStreamedAnswer && snap.activeStreamID == nil &&
+           !ChatFinalHistoryGate.canReplace(
+               snap, sessionID: sessionID, receipt: activeTurnRecovery,
+               expectedRunID: streamID, streamedAssistantPresent: true) {
+            throw ChatCoreError.server("最终历史尚未包含本轮回复，已保留当前流式内容")
+        }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
@@ -780,6 +795,7 @@ extension NativeChatModel {
                                   !Task.isCancelled else { return }
                             if ChatFinalHistoryGate.canReplace(
                                 snap, sessionID: sessionID, receipt: receipt,
+                                expectedRunID: active,
                                 streamedAssistantPresent: streamedAssistantPresent) { break }
                             if attempt == 2 {
                                 uncertain = true

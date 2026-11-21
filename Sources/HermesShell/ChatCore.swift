@@ -585,11 +585,14 @@ struct ActiveTurnRecovery: Codable, Equatable {
 /// existence of an unrelated assistant message.
 enum ChatFinalHistoryGate {
     static func canReplace(_ snapshot: ChatSnapshot, sessionID: String,
-                           receipt: ActiveTurnRecovery?,
+                           receipt: ActiveTurnRecovery?, expectedRunID: String? = nil,
                            streamedAssistantPresent: Bool) -> Bool {
         guard snapshot.sessionID == sessionID, !snapshot.readOnly,
               snapshot.activeStreamID == nil else { return false }
         guard streamedAssistantPresent else { return true }
+        // A different recovered Run must not satisfy this stream's terminal
+        // authorization even if the resulting user text is identical.
+        if let expectedRunID, receipt?.runID != expectedRunID { return false }
         return receipt?.confirmsCompletion(in: snapshot) == true
     }
 }

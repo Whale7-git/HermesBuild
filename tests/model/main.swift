@@ -96,9 +96,26 @@ var transcriptPublications = 0
         precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
             receipt: nil, streamedAssistantPresent: true))
         precondition(ChatFinalHistoryGate.canReplace(final, sessionID: "test",
-            receipt: receipt, streamedAssistantPresent: true))
+            receipt: receipt, expectedRunID: "run-1", streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, expectedRunID: "another-run", streamedAssistantPresent: true))
         precondition(ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
             receipt: receipt, streamedAssistantPresent: false))
+        let guarded = NativeChatModel(sessionID: "test", api: FakeChatService())
+        guarded.buffer.messages = [
+            ChatMessage(id: "streaming:local", role: "assistant",
+                        content: "visible answer", timestamp: 1)
+        ]
+        guarded.buffer.terminal = true
+        guarded.activeTurnRecovery = receipt
+        var staleRejected = false
+        do { try guarded.applySnapshot(stale) }
+        catch { staleRejected = true }
+        precondition(staleRejected && guarded.buffer.messages.last?.content == "visible answer",
+                     "Manual refresh must not overwrite an unconfirmed streamed reply")
+        try guarded.applySnapshot(final)
+        precondition(guarded.buffer.messages.last?.content == "final streamed answer")
+        guarded.disconnect()
         print("MODEL_PASS never replace streamed text with stale terminal history")
     }
 
