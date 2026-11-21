@@ -58,9 +58,9 @@ extension HermesBackend {
 
     /// 预览/下载用的认证方式。
     ///
-    /// 关键：预览走的是 `webConsoleBaseURL`（网关实例优先用配套 WebUI）。
-    /// 如果指向的是 WebUI，认证就该是 cookie；只有真正落到网关地址时才用 Bearer。
-    /// 两者混用会让「配了 WebUI 的网关实例」把 Bearer 发给 WebUI、或不带认证直连网关。
+    /// 预览与上传必须走同一个附件来源（attachmentBaseURL），而不是会话浏览器的
+    /// webConsoleBaseURL。网关实例可配置配套 WebUI，但其附件 Files API 仍属于网关。
+    /// 认证只发送给匹配的实例：WebUI 用 cookie，网关用 Bearer。
     var attachmentPreviewAuthorization: AttachmentAuthorization { .cookieOnly }
 }
 
