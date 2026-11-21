@@ -717,14 +717,15 @@ struct RootView: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Hermes").font(.headline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Text(app.active.name).font(.caption2)
-                                .foregroundStyle(.secondary).lineLimit(1)
-                        }
+                        // A single host title avoids clipping in fixed chrome;
+                        // the full identity stays in the Menu's AX label.
+                        Text(app.active.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                         Image(systemName: "chevron.down").font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
                     }
                     .frame(maxWidth: 156, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())

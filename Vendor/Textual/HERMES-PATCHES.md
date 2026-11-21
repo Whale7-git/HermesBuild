@@ -240,3 +240,12 @@ for an already merged document. This fixes the integration predicate in build52;
 the vendored rendering algorithms and upstream inventory are unchanged.
 Pure state transitions are covered offline. Native range/gesture behavior remains
 on `tests/manual-ios-1.17.0.md`; compilation is not iPhone selection acceptance.
+
+## build216 accessibility audit follow-up
+
+NativeSelectionTextView now uses a preferred body font and opts into UIKit
+Dynamic Type, invalidating cached glyph measurements when the content size
+category changes. Attributed heading/code/body fonts still resolve from
+SwiftUI TextEnvironmentValues; selection, links and grouping are unchanged.
+This is a narrow source-local patch, not a Textual dependency upgrade.
+Simulator tests and physical-device typography remain distinct checks.

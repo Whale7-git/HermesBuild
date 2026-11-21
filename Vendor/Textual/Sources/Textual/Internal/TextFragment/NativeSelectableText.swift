@@ -71,6 +71,10 @@
       super.init(frame: .zero, textContainer: nil)
       isEditable = false
       isSelectable = true
+      // The attributed runs resolve environment-scaled fonts, and UIKit
+      // must advertise Dynamic Type support for this readonly text surface.
+      font = .preferredFont(forTextStyle: .body)
+      adjustsFontForContentSizeCategory = true
       isScrollEnabled = false
       backgroundColor = .clear
       textContainerInset = .zero
@@ -83,6 +87,16 @@
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+      super.traitCollectionDidChange(previousTraitCollection)
+      if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
+        // SwiftUI supplies new attributed fonts; reject stale measured sizes.
+        measurement = nil
+        naturalWidth = nil
+        invalidateIntrinsicContentSize()
+      }
+    }
 
     private var interacting: Bool {
       return (isFirstResponder && selectedRange.length > 0) || gestureRecognizers?.contains {

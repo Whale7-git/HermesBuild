@@ -8,6 +8,7 @@ struct SessionListPane: View {
 
     @EnvironmentObject var app: AppState
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let mode: Mode
     let selectedID: String?
     let onSelect: (SessionSummary) -> Void
@@ -647,7 +648,8 @@ struct SessionListPane: View {
                         .foregroundStyle(attention > 0 ? AppTheme.warning : Color.secondary)
                     Text(attention > 0 ? "本实例 · \(attention) 项待处理" : "本实例任务中心")
                         .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     if !summaries.isEmpty {
                         Text("\(summaries.count)")
@@ -1195,13 +1197,24 @@ struct SessionListPane: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 5) {
-            Text("已载入 \(app.sessions.count) 个会话")
-            if let refreshedAt = app.lastSessionRefresh {
-                Text("· 更新于 \(refreshTime(refreshedAt))")
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 3) {
+                    Text("已载入 \(app.sessions.count) 个会话")
+                    if let refreshedAt = app.lastSessionRefresh {
+                        Text("· 更新于 \(refreshTime(refreshedAt))")
+                    }
+                }
+            } else {
+                HStack(spacing: 5) {
+                    Text("已载入 \(app.sessions.count) 个会话")
+                    if let refreshedAt = app.lastSessionRefresh {
+                        Text("· 更新于 \(refreshTime(refreshedAt))")
+                    }
+                }
             }
         }
-        .font(.caption2).foregroundStyle(.tertiary)
+        .font(.caption2).foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 20)
     }
