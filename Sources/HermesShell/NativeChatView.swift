@@ -116,7 +116,6 @@ struct NativeChatView: View {
     @State var findWork = FindWorkState()
     @State var findWorker = ChatFindWorker()
     @Environment(\.accessibilityReduceMotion) var reduceMotion
-    @Environment(\.dynamicTypeSize) var dynamicTypeSize
     /// 模型 + 时间线投影的单一持有者（见 ChatSessionObjects）。
     @StateObject var objects: ChatSessionObjects
     /// 与模型同一作用域键的草稿存储：输入框用它做防抖落盘。
