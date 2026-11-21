@@ -390,8 +390,12 @@ expect(!ChatDrawerGestureState().claimed,
 // not consulted through @GestureState.claimed at onEnded.
 var rootOwner = RootDrawerGestureOwnership()
 rootOwner.changed(open: false, startX: 175, horizontal: 95, vertical: 4, width: 330)
-expect(rootOwner.claimed, "host event claims a horizontal drawer opening")
-rootOwner.changed(open: false, startX: 175, horizontal: -25, vertical: 15, width: 330)
+expect(!rootOwner.claimed && rootOwner.ended(
+    open: false, width: 330, predictedTranslation: 260) == nil,
+    "text selection from the chat center must never open the drawer")
+rootOwner.changed(open: false, startX: 8, horizontal: 95, vertical: 4, width: 330)
+expect(rootOwner.claimed, "left-edge opening retains interactive drawer navigation")
+rootOwner.changed(open: false, startX: 8, horizontal: -25, vertical: 15, width: 330)
 expect(rootOwner.claimed, "reversal cannot revoke a claimed root gesture")
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 260) == true,
        "onEnded succeeds even when transient gesture state has reset")
@@ -411,15 +415,15 @@ rootOwner.changed(open: true, startX: 80, horizontal: -130, vertical: 2, width: 
 expect(!rootOwner.claimed && rootOwner.ended(
        open: true, width: 330, predictedTranslation: -290) == nil,
        "instance rail gesture cannot close the sidebar")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 rootOwner.cancelled()
 expect(!rootOwner.claimed && rootOwner.ended(
        open: false, width: 330, predictedTranslation: 270) == nil,
        "scene change or browser handoff cancels pending root navigation")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 60) == false,
        "short opening swipe springs back instead of navigating")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 270) == true,
        "new gesture succeeds after an interrupted and a cancelled gesture")
 expect(!rootOwner.claimed, "no owner leaks into the next interaction")
