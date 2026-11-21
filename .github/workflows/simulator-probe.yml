@@ -1,62 +1,245 @@
-name: simulator-probe
+name: Hermes iOS Simulator UI regression
 
-# Read-only probe: can a GitHub-hosted macos-26 runner boot an iOS Simulator?
-# Nothing here touches the release chain. Delete this file once answered.
-
+# The old read-only probe proved simulator boot. Extend it instead of creating a duplicate.
+# Never runs automatically for pull requests; it cannot publish an IPA.
 on:
   workflow_dispatch:
+    inputs:
+      suite:
+        description: "gold, audit, or all"
+        required: false
+        default: all
+        type: choice
+        options: [gold, audit, all]
+  schedule:
+    - cron: "17 2 * * *"
+  # Temporary one-shot development trigger; remove before main merge.
+  push:
+    branches: [fix/ui-native-font-216]
 
 permissions:
   contents: read
+  statuses: write
+
+concurrency:
+  group: hermes-ui-simulator-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  probe:
+  simulator:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
-      - name: Toolchain
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain and XcodeGen
+        shell: bash
         run: |
-          set -x
-          sw_vers
-          uname -m
+          set -euo pipefail
+          (command -v xcodegen >/dev/null || brew install xcodegen)
+          xcodegen --version
           xcodebuild -version
-          xcode-select -p
+          xcrun simctl list runtimes
 
-      - name: Installed runtimes
-        run: xcrun simctl list runtimes
+      - name: Launch isolated mock Gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
+          python3 tests/uitest/mock_gateway.py --port 8765 > "$RUNNER_TEMP/mock-gateway.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/mock.pid"
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8765/api/sessions >/dev/null; then break; fi
+            sleep 0.2
+          done
+          curl --fail --silent http://127.0.0.1:8765/api/sessions | python3 -m json.tool
 
-      - name: Available devices
-        run: xcrun simctl list devices available
-
-      - name: Boot a simulator and screenshot it
+      - name: Select and boot available iOS iPhone
+        shell: bash
         run: |
           set -euo pipefail
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next(i["udid"] for r,v in sorted(d.items()) if "iOS" in r for i in v if i.get("isAvailable") and "iPhone" in i["name"]))')
           echo "DEVICE=$DEVICE" >> "$GITHUB_ENV"
-          echo "picked device: $DEVICE"
           xcrun simctl boot "$DEVICE"
           xcrun simctl bootstatus "$DEVICE" -b
-          xcrun simctl list devices | grep -i booted || true
-          sleep 5
-          xcrun simctl io "$DEVICE" screenshot "$RUNNER_TEMP/probe.png"
-          ls -l "$RUNNER_TEMP/probe.png"
-          file "$RUNNER_TEMP/probe.png"
 
-      - name: Prove the device runs code
+      - name: Generate UI test project with simulator-only bundle metadata
+        shell: bash
         run: |
           set -euo pipefail
-          xcrun simctl spawn "$DEVICE" launchctl list | head -5
-          xcrun simctl getenv "$DEVICE" HOME
+          # The production Info.plist intentionally lacks CFBundleIdentifier.
+          # Simulator installation requires it; never mutate the checked-in plist.
+          cp Resources/Info.plist "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.whale7.hermes" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string HermesShell" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          # Simulator-only access group; do not modify product App entitlements.
+          cat > "$RUNNER_TEMP/HermesSimulator.entitlements" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>application-identifier</key><string>com.whale7.hermes</string>
+            <key>keychain-access-groups</key>
+            <array><string>com.whale7.hermes</string></array>
+          </dict>
+          </plist>
+          PLIST
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          spec = Path("ios-ci-project.yml")
+          original = spec.read_text(encoding="utf-8")
+          old = "INFOPLIST_FILE: Resources/Info.plist"
+          assert original.count(old) == 1
+          temp = os.environ["RUNNER_TEMP"]
+          replacement = (f"INFOPLIST_FILE: {temp}/HermesSimulator-Info.plist\n"
+                         f"        CODE_SIGN_ENTITLEMENTS: {temp}/HermesSimulator.entitlements")
+          spec.write_text(original.replace(old, replacement), encoding="utf-8")
+          PY
+          xcodegen generate --spec ios-ci-project.yml
 
-      - name: Shutdown
+      - name: Run real iOS UI gestures
+        id: ui_gestures
+        shell: bash
+        env:
+          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'all' }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_SUITE" in
+            gold) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
+            audit) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
+            all) selection="" ;;
+            *) echo "Unsupported suite $REQUESTED_SUITE" >&2; exit 2 ;;
+          esac
+          xcodebuild test \
+            -project HermesShellCI.xcodeproj \
+            -scheme HermesShell \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/HermesUITests.xcresult" \
+            $selection CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-ui.log"
+          echo "### Hermes iOS UI: $REQUESTED_SUITE" >> "$GITHUB_STEP_SUMMARY"
+          echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
+          echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract structured XCTest diagnostics
         if: always()
-        run: xcrun simctl shutdown all || true
+        shell: bash
+        run: |
+          if [[ -d "$RUNNER_TEMP/HermesUITests.xcresult" ]]; then
+            xcrun xcresulttool get test-results summary \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              > "$RUNNER_TEMP/ui-test-summary.json" || true
+            xcrun xcresulttool get test-results tests \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              > "$RUNNER_TEMP/ui-test-cases.json" || true
+            # Export actual failed-test screenshots for source-backed triage.
+            # Keep the xcresult even if this extraction command is unavailable.
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              --output-path "$RUNNER_TEMP/ui-attachments" \
+              --only-failures || true
+          fi
 
-      - name: Upload screenshot
+      - name: Record exact-commit simulator gold result
+        if: always()
+        shell: bash
+        env:
+          UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
+          TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_SHA: ${{ github.sha }}
+          STATUS_REPO: ${{ github.repository }}
+          STATUS_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          suite = os.environ["TEST_SUITE"]
+          passed = os.environ["UI_OUTCOME"] == "success"
+          body = {
+              "state": "success" if passed else "failure",
+              "context": f"hermes/simulator-{suite}",
+              "description": f"{suite} UI suite passed" if passed else f"{suite} UI suite did not pass",
+              "target_url": ("https://github.com/" + os.environ["STATUS_REPO"]
+                             + "/actions/runs/" + os.environ["STATUS_RUN"]),
+          }
+          req = urllib.request.Request(
+              "https://api.github.com/repos/" + os.environ["STATUS_REPO"]
+              + "/statuses/" + os.environ["STATUS_SHA"],
+              data=json.dumps(body).encode("utf-8"),
+              headers={
+                  "Authorization": "Bearer " + os.environ["STATUS_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=15) as response:
+              print("UI commit status published:", response.status, body["context"], body["state"])
+          PY
+
+      - name: Inspect actual simulator signing entitlements
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -path '*/Build/Products/Debug-iphonesimulator/HermesShell.app' \
+            -type d -print -quit 2>/dev/null || true)
+          if [[ -n "$APP" ]]; then
+            if codesign -d --entitlements :- "$APP" \
+              > "$RUNNER_TEMP/simulator-signed-entitlements.plist" \
+              2> "$RUNNER_TEMP/simulator-sign-inspection.log"; then
+              echo "Simulator-only Keychain signing entitlements:"
+              /usr/libexec/PlistBuddy -c 'Print :application-identifier' \
+                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
+              /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups' \
+                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
+            else
+              echo "Simulator App signing/entitlement inspection failed"
+            fi
+          else
+            echo "No simulator app; build failed before producing a bundle"
+          fi
+
+      - name: Collect redacted Gateway requests
+        if: always()
+        shell: bash
+        run: |
+          curl --max-time 5 --silent http://127.0.0.1:8765/__control/log \
+            > "$RUNNER_TEMP/mock-requests.json" || true
+
+      - name: Preserve UI failures and xcresult
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulator-probe-screenshot
-          path: ${{ runner.temp }}/probe.png
+          name: hermes-ui-evidence-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/HermesUITests.xcresult
+            ${{ runner.temp }}/xcodebuild-ui.log
+            ${{ runner.temp }}/ui-test-summary.json
+            ${{ runner.temp }}/ui-test-cases.json
+            ${{ runner.temp }}/ui-attachments
+            ${{ runner.temp }}/mock-gateway.log
+            ${{ runner.temp }}/mock-requests.json
+            ${{ runner.temp }}/simulator-signed-entitlements.plist
+            ${{ runner.temp }}/simulator-sign-inspection.log
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 7
+
+      - name: Shutdown Simulator and fixture
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/mock.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/mock.pid")" 2>/dev/null || true
+          fi
+          xcrun simctl shutdown all || true

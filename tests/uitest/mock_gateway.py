@@ -229,7 +229,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.state.history.pop(sid, None)
                 result = dict(row, session_id=sid,
                               message_count=len(self.state.history.get(sid, [])))
-            return self.json_response(200, result)
+            # GatewayHistoryReader expects a nested session metadata object.
+            return self.json_response(200, {"session": result} if method == "GET" else result)
 
         session_action = SESSION_ACTION_RE.fullmatch(path)
         if method == "POST" and session_action:

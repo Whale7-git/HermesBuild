@@ -27,6 +27,7 @@
     @Environment(\.lineSpacing) private var lineSpacing
     @Environment(\.multilineTextAlignment) private var alignment
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.textualNativeParagraphSpacing) private var paragraphSpacing
     @Environment(\.textualSelectionActivity) private var selectionActivity
 
@@ -37,7 +38,9 @@
     func updateUIView(_ view: NativeSelectionTextView, context: Context) {
       view.openURL = openURL
       view.selectionActivity = selectionActivity
-      view.receive(.init(content: content, environment: environment, lineSpacing: lineSpacing,
+      var liveEnvironment = environment
+      liveEnvironment.dynamicTypeSize = dynamicTypeSize
+      view.receive(.init(content: content, environment: liveEnvironment, lineSpacing: lineSpacing,
                          alignment: alignment, paragraphSpacing: paragraphSpacing))
     }
 
@@ -61,6 +64,9 @@
     var openURL: OpenURLAction?
     weak var selectionActivity: TextualSelectionActivity?
     private var publication = TextualSelectionPublication<Input>()
+    // Keep the currently rendered source, not a deferred selection update,
+    // so a UIKit trait change can regenerate every attributed font.
+    private var lastRenderedInput: Input?
     private var measurement: (width: CGFloat, size: CGSize)?
     private var naturalWidth: CGFloat?
     private var flushScheduled = false
@@ -71,6 +77,14 @@
       super.init(frame: .zero, textContainer: nil)
       isEditable = false
       isSelectable = true
+      // Recycled/offscreen transcript views must not remain reachable in
+      // VoiceOver or screen-wide audits before joining an actual UIWindow.
+      isAccessibilityElement = false
+      accessibilityElementsHidden = true
+      // The attributed runs resolve environment-scaled fonts, and UIKit
+      // must advertise Dynamic Type support for this readonly text surface.
+      font = .preferredFont(forTextStyle: .body)
+      adjustsFontForContentSizeCategory = true
       isScrollEnabled = false
       backgroundColor = .clear
       textContainerInset = .zero
@@ -84,6 +98,32 @@
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func didMoveToWindow() {
+      super.didMoveToWindow()
+      let presented = window != nil && bounds.width.isFinite && bounds.height.isFinite
+      isAccessibilityElement = presented
+      accessibilityElementsHidden = !presented
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+      super.traitCollectionDidChange(previousTraitCollection)
+      if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
+        // Keep the UIKit text control's own preferred font in sync with the
+        // category while SwiftUI restyles its attributed glyph runs.
+        font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        if let lastRenderedInput, !interacting {
+          // adjustsFontForContentSizeCategory updates UITextView.font, not
+          // the fonts embedded in its attributedText. Rebuild all runs.
+          apply(lastRenderedInput,
+                preferredContentSizeCategory: traitCollection.preferredContentSizeCategory)
+        } else {
+          measurement = nil
+          naturalWidth = nil
+          invalidateIntrinsicContentSize()
+        }
+      }
+    }
+
     private var interacting: Bool {
       return (isFirstResponder && selectedRange.length > 0) || gestureRecognizers?.contains {
         $0.state == .began || $0.state == .changed
@@ -95,8 +135,26 @@
       if let value = publication.receive(input, interacting: interacting) { apply(value) }
     }
 
-    private func apply(_ input: Input) {
-      attributedText = Self.styled(input)
+    private func apply(_ input: Input,
+                       preferredContentSizeCategory: UIContentSizeCategory? = nil) {
+      // There are TWO update paths: traitCollectionDidChange supplies an
+      // explicit UIKit category, while SwiftUI updateUIView supplies its
+      // current Environment DynamicTypeSize. An implicit UIKit trait may lag
+      // behind a SwiftUI accessibility audit's category switch, so it must
+      // not override a fresh SwiftUI environment value in receive().
+      let category = preferredContentSizeCategory
+          ?? UIContentSizeCategory(input.environment.dynamicTypeSize)
+      #if DEBUG
+        if lastRenderedInput?.environment.dynamicTypeSize != input.environment.dynamicTypeSize {
+          NSLog("HERMES_DYNTYPE: swiftUI=%@ uiKit=%@ chosen=%@",
+                String(describing: input.environment.dynamicTypeSize),
+                String(describing: traitCollection.preferredContentSizeCategory),
+                String(describing: category))
+        }
+      #endif
+      lastRenderedInput = input
+      attributedText = Self.styled(input,
+          preferredContentSizeCategory: category)
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
@@ -169,10 +227,15 @@
       return UIAction { [weak self] _ in self?.openURL?(url) }
     }
 
-    private static func styled(_ input: Input) -> NSAttributedString {
-      let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body,
-                                                                in: input.environment)
-      let baseSize = descriptor.pointSize
+    private static func styled(_ input: Input,
+                               preferredContentSizeCategory: UIContentSizeCategory? = nil) -> NSAttributedString {
+      // UIKit's semantic preferred fonts retain their text-style descriptor.
+      // A manually scaled systemFont in attributedText changes pointSize but
+      // loses the semantic style that UIKit's Dynamic Type audit inspects.
+      let standardTraits = UITraitCollection(preferredContentSizeCategory: .large)
+      let currentTraits = UITraitCollection(
+        preferredContentSizeCategory: preferredContentSizeCategory
+            ?? .init(input.environment.dynamicTypeSize))
       let paragraph = NSMutableParagraphStyle()
       paragraph.lineSpacing = max(0, input.lineSpacing)
       switch input.alignment {
@@ -180,7 +243,7 @@
       case .center: paragraph.alignment = .center
       case .trailing: paragraph.alignment = .right
       }
-      struct FontKey: Hashable { let size: CGFloat; let bold: Bool; let mono: Bool; let italic: Bool }
+      struct FontKey: Hashable { let style: String; let bold: Bool; let mono: Bool; let italic: Bool }
       var fonts: [FontKey: UIFont] = [:]
       let output = NSMutableAttributedString(string: "")
       let runs = Array(input.content.runs)
@@ -188,14 +251,15 @@
       for (index, run) in runs.enumerated() {
         let intents = run.presentationIntent?.components ?? []
         let inline = run.inlinePresentationIntent ?? []
-        var size = baseSize
+        var style: UIFont.TextStyle = .body
         var bold = inline.contains(.stronglyEmphasized) || input.environment.legibilityWeight == .bold
         var mono = inline.contains(.code)
         var color = UIColor.label
         for intent in intents {
           switch intent.kind {
           case .header(let level):
-            size *= [CGFloat(2), 1.5, 1.25, 1, 0.875, 0.85][min(5, max(0, level - 1))]
+            style = [UIFont.TextStyle.largeTitle, .title1, .title2, .title3,
+                     .headline, .subheadline][min(5, max(0, level - 1))]
             bold = true
           case .codeBlock: mono = true
           case .tableHeaderRow: bold = true
@@ -203,16 +267,30 @@
           default: break
           }
         }
-        if mono { size *= 0.85 }
-        let key = FontKey(size: size, bold: bold, mono: mono, italic: inline.contains(.emphasized))
+        let key = FontKey(style: style.rawValue, bold: bold, mono: mono,
+                          italic: inline.contains(.emphasized))
         let font: UIFont
         if let cached = fonts[key] { font = cached }
         else {
-          var resolved = mono ? UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
-                              : UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
-          if key.italic,
-             let italic = resolved.fontDescriptor.withSymbolicTraits(resolved.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            resolved = UIFont(descriptor: italic, size: size)
+          var resolved: UIFont
+          if mono {
+            // Monospaced code still uses the matching semantic style metrics;
+            // derive its base size at .large to avoid double-scaling.
+            let baseline = UIFont.preferredFont(forTextStyle: style,
+                                                 compatibleWith: standardTraits).pointSize
+            let code = UIFont.monospacedSystemFont(ofSize: baseline * 0.85,
+                                                   weight: bold ? .semibold : .regular)
+            resolved = UIFontMetrics(forTextStyle: style)
+              .scaledFont(for: code, compatibleWith: currentTraits)
+          } else {
+            resolved = UIFont.preferredFont(forTextStyle: style,
+                                            compatibleWith: currentTraits)
+            var traits = resolved.fontDescriptor.symbolicTraits
+            if bold { traits.insert(.traitBold) }
+            if key.italic { traits.insert(.traitItalic) }
+            if let descriptor = resolved.fontDescriptor.withSymbolicTraits(traits) {
+              resolved = UIFont(descriptor: descriptor, size: 0)
+            }
           }
           font = resolved
           fonts[key] = resolved
