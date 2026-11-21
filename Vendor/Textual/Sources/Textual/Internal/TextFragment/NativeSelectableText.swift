@@ -77,6 +77,10 @@
       super.init(frame: .zero, textContainer: nil)
       isEditable = false
       isSelectable = true
+      // Recycled/offscreen transcript views must not remain reachable in
+      // VoiceOver or screen-wide audits before joining an actual UIWindow.
+      isAccessibilityElement = false
+      accessibilityElementsHidden = true
       // The attributed runs resolve environment-scaled fonts, and UIKit
       // must advertise Dynamic Type support for this readonly text surface.
       font = .preferredFont(forTextStyle: .body)
@@ -93,6 +97,13 @@
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func didMoveToWindow() {
+      super.didMoveToWindow()
+      let presented = window != nil && bounds.width.isFinite && bounds.height.isFinite
+      isAccessibilityElement = presented
+      accessibilityElementsHidden = !presented
+    }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
       super.traitCollectionDidChange(previousTraitCollection)

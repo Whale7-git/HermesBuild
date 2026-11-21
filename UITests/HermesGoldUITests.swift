@@ -35,8 +35,28 @@ final class HermesGoldUITests: XCTestCase {
         send.tap()
         let text = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "第二段回复已送达")).firstMatch
-        XCTAssertTrue(text.waitForExistence(timeout: 30),
-                      "Scripted SSE text never reached the rendered transcript")
+        // The transcript virtualizes long histories; a completed reply can
+        // exist beyond the viewport even after the one SSE GET succeeded.
+        // Still require the exact rendered reply, not just a network request.
+        if !text.waitForExistence(timeout: 12) {
+            let transcript = app.scrollViews.firstMatch
+            XCTAssertTrue(transcript.waitForExistence(timeout: 5),
+                          "Chat transcript missing after sending")
+            for _ in 0..<24 {
+                if text.exists { break }
+                transcript.swipeUp()
+            }
+        }
+        if !text.exists {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "sse-reply-not-visible-after-scroll"
+            screenshot.lifetime = .keepAlways
+            XCTContext.runActivity(named: "Failed SSE visible transcript") {
+                $0.add(screenshot)
+            }
+        }
+        XCTAssertTrue(text.exists,
+                      "SSE reply absent after waiting and scrolling through transcript")
         XCTAssertTrue(app.buttons["发送消息"].waitForExistence(timeout: 30),
                       "Finished Run did not restore the idle Send state")
     }

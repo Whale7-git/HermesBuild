@@ -557,7 +557,7 @@
     ".github/workflows/hermes-candidate-queue-watchdog.yml": "be8249ff09744c184ebaa41876e4f22eb433c10c65aef9933284e132c7b0eb87",
     ".github/workflows/hermesshell-single-build.yml": "288788d8e0d014c99d847d869c8e5278c16500fe252eb0db7a45c24610022773",
     ".github/workflows/hermesshell-single-promote.yml": "a7facb6722e17a053a89fee6c44cbb1827a231a6ab14b98cd33fcb2c1c105fc2",
-    ".github/workflows/simulator-probe.yml": "22b756d384dacbd001c272d0a373dacea4855f9eaad7a82bd6e90c06adc5bec6",
+    ".github/workflows/simulator-probe.yml": "a172312b5376d9dec2f021ce7def439d6c136473a3b484b06d2e55677f82520b",
     ".gitignore": "476ac675e84496b4e18f6a3f859ac9f9a75df3666dd54a8f759e5db057cdab52",
     ".gitleaks.toml": "5307f38355ab307558ca86d20cfdaa6746b4cea5ce2c4d60d2d49a792504558e",
     "AGENTS.md": "4e7ba17c50a14a11866dc34e5a75340bbb2b5c307110b4b62b2312449a0b6d04",
@@ -690,7 +690,7 @@
     "Sources/HermesShell/NativeChatModel+Stream.swift": "c0e6aba5764fbdf471b4022ae9ee80edb3329785c3db1026253c6d727ca60ece",
     "Sources/HermesShell/NativeChatService.swift": "0e456390fd4eea8c58aa5d1b7cb91f6d06928641bd312be2bc39f6e96ea88439",
     "Sources/HermesShell/NativeChatView.swift": "c7b778cd794c62f245ed42be7efd37bb951a0dcf73faf88614b23835a879aa9d",
-    "Sources/HermesShell/NativeChatView+Chrome.swift": "97d28508338974c1274d6c77e3c8e8032fe215d70d5d752982e41bca761d33df",
+    "Sources/HermesShell/NativeChatView+Chrome.swift": "077b38895859bf9f9efb4719086b140d12ce3b87322723169ac6453ac87bb194",
     "Sources/HermesShell/NativeChatView+Composer.swift": "e595f2f5fbb4b8b20803912184c23aa13ca05535573c999f41e8624f3cbb6e01",
     "Sources/HermesShell/NativeChatView+MessageList.swift": "597873da357ecdbd1d43d177b2c6fc8eccb1805ea9ac52bac0350633563743f6",
     "Sources/HermesShell/NativeChatView+Notices.swift": "6a3016ad85c30523db923080e34f7d527d697786e554cdebdbd4ceb253212730",
@@ -856,9 +856,9 @@
     "tests/w3w4/run.py": "1b59da2557bc43ccb67d3c148908ce592b58453b40244f46130d4c97771ba5a7",
     "tests/w3w4/TaskObservation.swift": "1d484155cecf48e824a93426abfb2b8af30e6bd59b3db043f385ec9f06302e35",
     "UITests/HermesAccessibilityUITests.swift": "da1d92955db6aef829a3f606c6433e993ae6f8164d85b6f415a215abb8e3e1a0",
-    "UITests/HermesGoldUITests.swift": "12f8a8ba57ff75733d50892b599d40fd0d040e33186af8e7e8fd18bb7dbcbb78",
+    "UITests/HermesGoldUITests.swift": "adbc007c51ca9d3763a5741cca91b638bd88453363bcedca9c1c017d0f7f98e1",
     "UITests/HermesUITestHarness.swift": "f0fe3823facdb839155fdff84a0da1b2bc481c4a85152fa62bc94d4e50ec6add",
-    "Vendor/Textual/HERMES-PATCHES.md": "339ed2705abe73671b795356cac54b1614ede16d5d3914016ff31526ab41e154",
+    "Vendor/Textual/HERMES-PATCHES.md": "0d8b91b3b1f231e5c0221139f6d492650aa7a192d85829ab5be86c5e58553591",
     "Vendor/Textual/patches/01-Package.swift.patch": "6fbb430eb927923d613d6de067880266d7ebe44c4d429393813b50bfcff41d01",
     "Vendor/Textual/patches/02-Sources_Textual_Internal_Attachment_WithAttachments.swift.patch": "e2ef06485022b0269ddbf2cfe8062cb97ac9ed831e812c7112b29be53bcdfae2",
     "Vendor/Textual/patches/03-Sources_Textual_Internal_Highlighter_CodeTokenizer.swift.patch": "7cb0a42876d6434c67d6d5a1ad8db3d7505689f32f8d9ca16e9a85a9a32ac125",
@@ -881,6 +881,6 @@
     "Vendor/Textual/Sources/Textual/Internal/StructuredText/BlockContent.swift": "114c7f9857f78e7654968edd6aa89c65e8c93311b11b88f457076d937dc43b6f",
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
-    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "10251bcae976d2dcc3c7c955b3755bbecc14ba42cacdaf9343d8621f0517603e"
+    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "70609e6a95feed031b25f05507d0c4d8c75aeddf94b59b0f57eb311d4bb5ba2c"
   }
 }

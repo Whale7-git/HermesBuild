@@ -138,6 +138,12 @@ jobs:
             xcrun xcresulttool get test-results tests \
               --path "$RUNNER_TEMP/HermesUITests.xcresult" \
               > "$RUNNER_TEMP/ui-test-cases.json" || true
+            # Export actual failed-test screenshots for source-backed triage.
+            # Keep the xcresult even if this extraction command is unavailable.
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              --output-path "$RUNNER_TEMP/ui-attachments" \
+              --only-failures || true
           fi
 
       - name: Record exact-commit simulator gold result
@@ -221,6 +227,7 @@ jobs:
             ${{ runner.temp }}/xcodebuild-ui.log
             ${{ runner.temp }}/ui-test-summary.json
             ${{ runner.temp }}/ui-test-cases.json
+            ${{ runner.temp }}/ui-attachments
             ${{ runner.temp }}/mock-gateway.log
             ${{ runner.temp }}/mock-requests.json
             ${{ runner.temp }}/simulator-signed-entitlements.plist

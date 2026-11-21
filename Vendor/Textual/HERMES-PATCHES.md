@@ -277,3 +277,20 @@ adjustsFontForContentSizeCategory does not update baked-in attributed fonts.
 Selection/link handling and the original UIFontMetrics scaling are retained.
 The three audit tests now run sidebar before the font-changing chat audit to
 isolate an XCTest audit timeout; none of the audit failure categories is skipped.
+
+## build216 audit: detached text views and deterministic SSE visibility
+
+The six-case run on SHA 6842465 showed three Dynamic Type issues on
+Textual.NativeSelectionTextView elements whose accessibility frames had
+infinite origins and zero area. NativeSelectionTextView now excludes itself
+from accessibility while detached from a UIWindow and restores its native
+read-only accessibility when reattached. This does not exclude any on-screen
+text from the Dynamic Type audit. The visible small status caption switches
+from caption2 to the semantic footnote style to improve scaling.
+
+The SSE UI gold test continues to demand the literal second response segment
+in the actual rendered transcript. The mock captured one POST and one SSE
+events GET but long-history virtualization made the initial on-screen element
+query inconclusive; the test now scrolls to locate the rendered segment and
+retains a screenshot on failure. The workflow additionally exports failure
+attachments for review. No audit category or real UI assertion is skipped.
