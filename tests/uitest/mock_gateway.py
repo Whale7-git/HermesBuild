@@ -27,7 +27,7 @@ PNG = base64.b64decode(
 )
 def validate_fixture_png(data: bytes):
     """Fail at mock startup, not 10 minutes into simulator image gestures."""
-    if not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("mock PNG signature invalid")
     offset = 8
     seen_idat = False
