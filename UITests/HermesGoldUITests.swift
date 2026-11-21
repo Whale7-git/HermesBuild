@@ -72,7 +72,16 @@ final class HermesGoldUITests: XCTestCase {
     }
 
     /// Gold 3: contentOffset must change in a real rendered long-answer reader.
-    func test03ReaderProgressAdvancesOnSwipe() {
+    @MainActor func test03ReaderProgressAdvancesOnSwipe() async throws {
+        // Test-specific image and text fixtures added by earlier UI suites
+        // must not displace the long-answer reader from its deterministic
+        // baseline. Reset the isolated loopback server before this test.
+        var reset = URLRequest(url: URL(string:
+            "http://127.0.0.1:8765/__control/reset")!)
+        reset.httpMethod = "POST"
+        let (_, response) = try await URLSession.shared.data(for: reset)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200,
+                       "Mock gateway baseline reset failed")
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         let thread = app.scrollViews.firstMatch
