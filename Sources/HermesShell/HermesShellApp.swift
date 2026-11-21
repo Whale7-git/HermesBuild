@@ -12,9 +12,19 @@ public struct HermesShellApp: App {
 
     public var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-hermes-font-probe") {
+                HermesNativeFontProbeView()
+            } else {
+                RootView()
+                    .environmentObject(app)
+                    .tint(AppTheme.accent)
+            }
+            #else
             RootView()
                 .environmentObject(app)
                 .tint(AppTheme.accent)
+            #endif
         }
     }
 }
