@@ -67,7 +67,43 @@ var transcriptPublications = 0
         }
         preconditionFailure("automatic GET recovery did not reach expected state", file: file, line: line)
     }
+    @MainActor static func finalHistoryGateTests() throws {
+        let initial: [[String: Any]] = [
+            ["id": "old-user", "role": "user", "content": "Earlier question"],
+            ["id": "old-answer", "role": "assistant", "content": "Earlier answer"]
+        ]
+        let sent: [String: Any] = ["id": "new-user", "role": "user", "content": "new turn"]
+        let answer: [String: Any] = ["id": "new-answer", "role": "assistant", "content": "final streamed answer"]
+        func snapshot(_ rows: [[String: Any]], active: String? = nil) throws -> ChatSnapshot {
+            var obj: [String: Any] = [
+                "session_id": "test", "messages": rows, "_messages_offset": 0,
+                "read_only": false
+            ]
+            if let active { obj["active_stream_id"] = active }
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: ["session": obj]))
+        }
+        let receipt = ActiveTurnRecovery(runID: "run-1", historyEnd: 2,
+            knownIDs: ["old-user", "old-answer"], text: "new turn", attachmentPaths: [])
+        let stale = try snapshot(initial + [sent])
+        let alive = try snapshot(initial + [sent, answer], active: "run-1")
+        let final = try snapshot(initial + [sent, answer])
+        precondition(!ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(alive, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "different",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: nil, streamedAssistantPresent: true))
+        precondition(ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: false))
+        print("MODEL_PASS never replace streamed text with stale terminal history")
+    }
+
     @MainActor static func main() async throws {
+        try finalHistoryGateTests()
         try await placeholderOriginTests()
         try await cacheTests()
         try await placeholderBindingTests()
