@@ -345,6 +345,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             })
 
         if method == "GET" and path == "/v1/files/by-path":
+            # The image UI regression must prove it includes a Gateway Bearer,
+            # not accidentally pass because the fixture accepts anonymous GET.
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self.json_response(401, {"error": {"message": "missing bearer"}})
             requested = query.get("path", [""])[0]
             if requested != "/ui-test/ui-image.png":
                 return self.json_response(404, {"error": {"message": "fixture image unavailable"}})
