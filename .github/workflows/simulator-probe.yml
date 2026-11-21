@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "gold, audit, or all"
+        description: "probe, gold, audit, or all"
         required: false
         default: all
         type: choice
@@ -105,7 +105,7 @@ jobs:
         id: ui_gestures
         shell: bash
         env:
-          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'probe' }}
+          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'all' }}
         run: |
           set -euo pipefail
           case "$REQUESTED_SUITE" in
@@ -152,7 +152,7 @@ jobs:
         shell: bash
         env:
           UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
-          TEST_SUITE: ${{ github.event.inputs.suite || 'probe' }}
+          TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
           STATUS_TOKEN: ${{ github.token }}
           STATUS_SHA: ${{ github.sha }}
           STATUS_REPO: ${{ github.repository }}
