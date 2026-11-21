@@ -20,6 +20,36 @@ enum AttachmentError: LocalizedError, Equatable {
     }
 }
 
+/// UI-facing preview diagnosis. Never print URLs, opaque paths, API keys,
+/// response bodies or raw transport errors from a private attachment request.
+enum AttachmentImageFailurePresentation {
+    static func reason(for error: Error) -> String {
+        if let failure = error as? AttachmentError {
+            switch failure {
+            case .http(401), .http(403): return "无权读取此附件，请检查当前实例登录状态"
+            case .http(404): return "服务器找不到附件文件"
+            case .http(let status): return "附件请求失败（HTTP \\(status)）"
+            case .unsafeURL: return "附件来源或路径未通过安全校验"
+            case .unsupportedPreview: return "服务器未返回受支持的图片格式"
+            case .tooLarge: return "图片超过预览大小限制"
+            case .invalidMetadata, .invalidMultipart, .tooMany:
+                return "附件元数据不完整"
+            }
+        }
+        if let failure = error as? URLError {
+            switch failure.code {
+            case .timedOut: return "附件请求超时"
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "网络连接中断"
+            case .cannotFindHost, .cannotConnectToHost:
+                return "无法连接附件服务器"
+            default: return "附件网络请求失败"
+            }
+        }
+        return "无法读取图片，请重试"
+    }
+}
+
 /// 附件文件名的唯一清洗入口。
 ///
 /// 三处调用（multipart 头、下载落盘、服务端字段解析）必须行为一致，否则会出现
