@@ -13,9 +13,18 @@ final class HermesGoldUITests: XCTestCase {
     }
 
     /// Gold 2: UI sends a single message and observes scripted SSE completion.
-    func test02SendStreamAndComplete() {
+    func test02SendStreamAndComplete() async throws {
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
+        // Delay only the fixture's final-history commit. Real product
+        // code still sends one POST and listens to an ordinary SSE stream.
+        var config = URLRequest(url: URL(string:
+            "http://127.0.0.1:8765/__control/finalization-lag")!)
+        config.httpMethod = "POST"
+        config.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        config.httpBody = Data(#"{"delay_ms":350}"#.utf8)
+        let (_, configResponse) = try await URLSession.shared.data(for: config)
+        XCTAssertEqual((configResponse as? HTTPURLResponse)?.statusCode, 200)
         let editor = app.textViews.matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))

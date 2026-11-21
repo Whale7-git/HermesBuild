@@ -86,6 +86,36 @@ class GatewayContractTests(unittest.TestCase):
                              for r in logs["requests"]), 1)
         self.assertEqual(logs["unknown"], [])
 
+    def test_terminal_frame_precedes_persisted_history(self):
+        code, config = self.decoded("POST", "/__control/finalization-lag",
+                                    {"delay_ms": 700})
+        self.assertEqual((code, config["delay_ms"]), (200, 700))
+        code, started = self.decoded("POST", "/v1/runs", {
+            "session_id": "ui-session-1", "input": "delayed final history"})
+        self.assertEqual(code, 200)
+        finished = threading.Event()
+        def consume():
+            self.request("GET", f'/v1/runs/{started["run_id"]}/events')
+            finished.set()
+        worker = threading.Thread(target=consume, daemon=True)
+        worker.start()
+        # The server emits the terminal SSE before finish_run persists the
+        # assistant row. GET can therefore return only the new user message.
+        import time
+        time.sleep(0.2)
+        code, early = self.decoded("GET",
+            "/api/sessions/ui-session-1/messages?order=oldest&offset=0&limit=20")
+        self.assertEqual(code, 200)
+        self.assertEqual(len(early["data"]), 3)
+        self.assertEqual(early["data"][-1]["role"], "user")
+        self.assertFalse(finished.is_set())
+        worker.join(timeout=6)
+        self.assertTrue(finished.is_set())
+        code, later = self.decoded("GET",
+            "/api/sessions/ui-session-1/messages?order=oldest&offset=0&limit=20")
+        self.assertEqual(code, 200)
+        self.assertEqual(later["data"][-1]["role"], "assistant")
+
     def test_force_429_then_normal_response(self):
         code, _ = self.decoded("POST", "/__control/stub", {
             "method": "GET", "path": "/api/sessions",

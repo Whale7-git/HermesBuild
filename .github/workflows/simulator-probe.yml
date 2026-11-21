@@ -15,7 +15,7 @@ on:
     - cron: "17 2 * * *"
   # Temporary one-shot development trigger; remove before main merge.
   push:
-    branches: [chore/ui-xcuitest-core]
+    branches: [fix/ui-final-history-216]
 
 permissions:
   contents: read
