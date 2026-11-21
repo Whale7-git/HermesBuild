@@ -10,12 +10,12 @@ on:
         required: false
         default: all
         type: choice
-        options: [gold, audit, all]
+        options: [probe, gold, audit, all]
   schedule:
     - cron: "17 2 * * *"
   # Temporary one-shot development trigger; remove before main merge.
   push:
-    branches: [fix/ui-integration-216]
+    branches: [fix/native-dynamic-type-proof-216]
 
 permissions:
   contents: read
@@ -105,10 +105,11 @@ jobs:
         id: ui_gestures
         shell: bash
         env:
-          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'all' }}
+          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'probe' }}
         run: |
           set -euo pipefail
           case "$REQUESTED_SUITE" in
+            probe) selection="-only-testing:HermesUITests/HermesDynamicTypeProbeUITests" ;;
             gold) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
             audit) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
             all) selection="" ;;
@@ -151,7 +152,7 @@ jobs:
         shell: bash
         env:
           UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
-          TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
+          TEST_SUITE: ${{ github.event.inputs.suite || 'probe' }}
           STATUS_TOKEN: ${{ github.token }}
           STATUS_SHA: ${{ github.sha }}
           STATUS_REPO: ${{ github.repository }}
