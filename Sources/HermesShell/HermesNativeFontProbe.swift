@@ -8,6 +8,7 @@ import Textual
 struct HermesNativeFontProbeView: View {
     private let mode: String
     @State private var large = false
+    @Environment(\.dynamicTypeSize) private var inheritedDynamicTypeSize
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
@@ -43,7 +44,7 @@ struct HermesNativeFontProbeView: View {
                             .accessibilityIdentifier("probe-font")
                     }
                 }
-                .environment(\.dynamicTypeSize, large ? .accessibility3 : .large)
+                .environment(\.dynamicTypeSize, large ? .accessibility3 : inheritedDynamicTypeSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
             }
@@ -70,9 +71,25 @@ private struct HermesUIKitFontProbe: UIViewRepresentable {
         view.attributedMode = attributed
         // Explicit changes test render invalidation. The UIKit trait observer
         // separately tests system-initiated changes in accessibility audits.
-        let category: UIContentSizeCategory = dynamicTypeSize.isAccessibilitySize
-            ? .accessibilityExtraExtraExtraLarge : .large
-        view.render(category: category)
+        view.render(category: category(dynamicTypeSize))
+    }
+
+    private func category(_ size: DynamicTypeSize) -> UIContentSizeCategory {
+        switch size {
+        case .xSmall: return .extraSmall
+        case .small: return .small
+        case .medium: return .medium
+        case .large: return .large
+        case .xLarge: return .extraLarge
+        case .xxLarge: return .extraExtraLarge
+        case .xxxLarge: return .extraExtraExtraLarge
+        case .accessibility1: return .accessibilityMedium
+        case .accessibility2: return .accessibilityLarge
+        case .accessibility3: return .accessibilityExtraLarge
+        case .accessibility4: return .accessibilityExtraExtraLarge
+        case .accessibility5: return .accessibilityExtraExtraExtraLarge
+        @unknown default: return .large
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: HermesProbeTextView,
