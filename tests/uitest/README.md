@@ -5,7 +5,7 @@ Runs **only** on 127.0.0.1. The server never connects to real instances and uses
 Run: python3 tests/uitest/mock_gateway.py --port 8765
 Check: python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
 
-- GET /api/sessions, GET /api/sessions/{id}, GET /api/sessions/{id}/messages
+- GET /api/sessions, GET /api/sessions/{id} (nested session metadata), GET /api/sessions/{id}/messages
 - POST /api/sessions, POST /v1/runs, GET /v1/runs/{id}, GET /v1/runs/{id}/events
 - POST /v1/runs/{id}/stop, POST /v1/files, GET /v1/files/by-path
 - GET /api/model/options
