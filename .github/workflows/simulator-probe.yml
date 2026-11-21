@@ -8,14 +8,14 @@ on:
       suite:
         description: "gold, audit, or all"
         required: false
-        default: gold
+        default: audit
         type: choice
         options: [gold, audit, all]
   schedule:
     - cron: "17 2 * * *"
   # Temporary one-shot development trigger; remove before main merge.
   push:
-    branches: [chore/ui-xcuitest-core]
+    branches: [chore/ui-a11y-audit]
 
 permissions:
   contents: read
@@ -105,7 +105,7 @@ jobs:
         id: ui_gestures
         shell: bash
         env:
-          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'gold' }}
+          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'audit' }}
         run: |
           set -euo pipefail
           case "$REQUESTED_SUITE" in
@@ -132,7 +132,7 @@ jobs:
         shell: bash
         env:
           UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
-          TEST_SUITE: ${{ github.event.inputs.suite || 'gold' }}
+          TEST_SUITE: ${{ github.event.inputs.suite || 'audit' }}
           STATUS_TOKEN: ${{ github.token }}
           STATUS_SHA: ${{ github.sha }}
           STATUS_REPO: ${{ github.repository }}
