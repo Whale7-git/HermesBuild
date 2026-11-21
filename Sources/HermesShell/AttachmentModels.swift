@@ -28,7 +28,7 @@ enum AttachmentImageFailurePresentation {
             switch failure {
             case .http(401), .http(403): return "无权读取此附件，请检查当前实例登录状态"
             case .http(404): return "服务器找不到附件文件"
-            case .http(let status): return "附件请求失败（HTTP \\(status)）"
+            case .http(let status): return "附件请求失败（HTTP \(status)）"
             case .unsafeURL: return "附件来源或路径未通过安全校验"
             case .unsupportedPreview: return "服务器未返回受支持的图片格式"
             case .tooLarge: return "图片超过预览大小限制"
