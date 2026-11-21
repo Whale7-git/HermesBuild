@@ -1,8 +1,16 @@
 name: Hermes iOS Simulator UI regression
 
-# The old read-only probe proved simulator boot. Extend it instead of creating a duplicate.
-# Never runs automatically for pull requests; it cannot publish an IPA.
+# Real UI regression for iOS-affecting pull requests, plus manual/scheduled probes.
+# Separate from candidate IPA building; this workflow never publishes an IPA.
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Sources/HermesShell/**'
+      - 'Vendor/Textual/**'
+      - 'UITests/**'
+      - 'ios-ci-project.yml'
+      - '.github/workflows/simulator-probe.yml'
   workflow_dispatch:
     inputs:
       suite:
@@ -13,10 +21,6 @@ on:
         options: [gold, audit, all]
   schedule:
     - cron: "17 2 * * *"
-  # Temporary one-shot development trigger; remove before main merge.
-  push:
-    branches: [fix/ui-integration-216]
-
 permissions:
   contents: read
   statuses: write
@@ -33,6 +37,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          # Pin simulator source and status to the same PR HEAD, not a synthetic
+          # pull_request merge ref (which can hide head-specific regressions).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Toolchain and XcodeGen
         shell: bash
@@ -153,7 +160,7 @@ jobs:
           UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
           TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
           STATUS_TOKEN: ${{ github.token }}
-          STATUS_SHA: ${{ github.sha }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           STATUS_REPO: ${{ github.repository }}
           STATUS_RUN: ${{ github.run_id }}
         run: |
