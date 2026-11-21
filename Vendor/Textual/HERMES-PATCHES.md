@@ -306,3 +306,15 @@ the next UIViewRepresentable update follows the view's live trait collection
 instead of potentially undoing it with a stale SwiftUI environment snapshot.
 This remains a narrow Textual vendor patch; verify real font growth and
 paragraph selection in the simulator before merging.
+
+## build216 Dynamic Type category-order correction
+
+A simulator audit still flagged visible native paragraphs despite semantic
+UIFont descriptors. `updateUIView` is driven by SwiftUI's dynamic type
+environment, whereas `traitCollectionDidChange` is driven by UIKit.
+Selecting an implicit UIKit category while handling a SwiftUI update can
+restore the previous font size before UIKit trait propagation completes.
+This patch uses the explicit UIKit category only for trait-driven updates
+and otherwise uses the current SwiftUI category. DEBUG logging captures
+category differences without recording text, credentials, or user content.
+No audit findings are ignored and native selection is retained.

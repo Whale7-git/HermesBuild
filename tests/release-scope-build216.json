@@ -858,7 +858,7 @@
     "UITests/HermesAccessibilityUITests.swift": "da1d92955db6aef829a3f606c6433e993ae6f8164d85b6f415a215abb8e3e1a0",
     "UITests/HermesGoldUITests.swift": "adbc007c51ca9d3763a5741cca91b638bd88453363bcedca9c1c017d0f7f98e1",
     "UITests/HermesUITestHarness.swift": "f0fe3823facdb839155fdff84a0da1b2bc481c4a85152fa62bc94d4e50ec6add",
-    "Vendor/Textual/HERMES-PATCHES.md": "ef8610e569bb8d99a1586d936b52fb462d0b3996e8acb34300c9a2f2c3d5796b",
+    "Vendor/Textual/HERMES-PATCHES.md": "78942c2032b92178d9c0fd4a38d8bf4ccedf084032e4213162c67e5f2e4109a3",
     "Vendor/Textual/patches/01-Package.swift.patch": "6fbb430eb927923d613d6de067880266d7ebe44c4d429393813b50bfcff41d01",
     "Vendor/Textual/patches/02-Sources_Textual_Internal_Attachment_WithAttachments.swift.patch": "e2ef06485022b0269ddbf2cfe8062cb97ac9ed831e812c7112b29be53bcdfae2",
     "Vendor/Textual/patches/03-Sources_Textual_Internal_Highlighter_CodeTokenizer.swift.patch": "7cb0a42876d6434c67d6d5a1ad8db3d7505689f32f8d9ca16e9a85a9a32ac125",
@@ -881,6 +881,6 @@
     "Vendor/Textual/Sources/Textual/Internal/StructuredText/BlockContent.swift": "114c7f9857f78e7654968edd6aa89c65e8c93311b11b88f457076d937dc43b6f",
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
-    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "6ce8e6f2a6588d9a7692fecb000fc1c0d0fad44d4e9b602b968c8ee4f699e2f9"
+    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "3a62646e7a00d38a3f9345f515979eb48315f8972c6e3e1e1f68947d3f070b51"
   }
 }

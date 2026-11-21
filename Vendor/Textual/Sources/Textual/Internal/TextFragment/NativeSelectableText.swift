@@ -137,13 +137,21 @@
 
     private func apply(_ input: Input,
                        preferredContentSizeCategory: UIContentSizeCategory? = nil) {
-      // When UIKit audits change the system category, a SwiftUI redraw can
-      // arrive with the previous environment. Do not regress the attributed
-      // runs back to a stale category after traitCollectionDidChange.
-      let liveCategory = traitCollection.preferredContentSizeCategory
+      // There are TWO update paths: traitCollectionDidChange supplies an
+      // explicit UIKit category, while SwiftUI updateUIView supplies its
+      // current Environment DynamicTypeSize. An implicit UIKit trait may lag
+      // behind a SwiftUI accessibility audit's category switch, so it must
+      // not override a fresh SwiftUI environment value in receive().
       let category = preferredContentSizeCategory
-          ?? (liveCategory == .unspecified ? UIContentSizeCategory(input.environment.dynamicTypeSize)
-                                          : liveCategory)
+          ?? UIContentSizeCategory(input.environment.dynamicTypeSize)
+      #if DEBUG
+        if lastRenderedInput?.environment.dynamicTypeSize != input.environment.dynamicTypeSize {
+          NSLog("HERMES_DYNTYPE: swiftUI=%@ uiKit=%@ chosen=%@",
+                String(describing: input.environment.dynamicTypeSize),
+                String(describing: traitCollection.preferredContentSizeCategory),
+                String(describing: category))
+        }
+      #endif
       lastRenderedInput = input
       attributedText = Self.styled(input,
           preferredContentSizeCategory: category)
