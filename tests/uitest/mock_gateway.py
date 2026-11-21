@@ -14,13 +14,44 @@ from pathlib import Path
 import re
 import threading
 import time
+import zlib
+import struct
 from urllib.parse import parse_qs, urlsplit
 
 HERE = Path(__file__).resolve().parent
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
-    "AAAAC0lEQVR42mP8/x8AAwMCAO+/ZkcAAAAASUVORK5CYII="
+    # Valid 32x24 RGBA PNG, CRC-verified. The previous 1x1 fixture carried
+    # an invalid IDAT CRC and failed iOS ImageIO despite the correct 200/MIME.
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAYAAACbU/80"
+    "AAAAL0lEQVR4nO3OQQEAMAjEsGPq5nHW8DJk8EkNNHVf/yx2NucAAAAAAAAAAAAAAEkyUhgC7m/qr4UAAAAASUVORK5CYII="
 )
+def validate_fixture_png(data: bytes):
+    """Fail at mock startup, not 10 minutes into simulator image gestures."""
+    if not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        raise ValueError("mock PNG signature invalid")
+    offset = 8
+    seen_idat = False
+    seen_iend = False
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        end = offset + 12 + length
+        if end > len(data):
+            raise ValueError("mock PNG chunk truncated")
+        payload = data[offset + 4:offset + 8 + length]
+        expected = struct.unpack(">I", data[offset + 8 + length:end])[0]
+        if zlib.crc32(payload) != expected:
+            raise ValueError("mock PNG chunk CRC invalid")
+        seen_idat |= payload[:4] == b"IDAT"
+        seen_iend |= payload[:4] == b"IEND"
+        offset = end
+        if seen_iend:
+            break
+    if not (seen_idat and seen_iend and offset == len(data)):
+        raise ValueError("mock PNG missing essential chunks")
+
+
+validate_fixture_png(PNG)
+
 SESSION_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)$")
 MESSAGES_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)/messages$")
 RUN_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)$")
