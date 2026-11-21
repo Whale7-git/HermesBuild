@@ -216,6 +216,18 @@
       // and the golden visible-reply assertion.
       let rendered = attributedText.string
       if accessibilityLabel != rendered { accessibilityLabel = rendered }
+      #if DEBUG
+      // Debug-only observable font sample. Ordinary chats never expose
+      // diagnostic metadata; no transcript or credentials are written to logs.
+      if ProcessInfo.processInfo.arguments.contains("-hermes-font-probe"),
+         rendered.contains("PROBE TEXTUAL BODY") {
+        accessibilityIdentifier = "probe-font"
+        let sample = attributedText.length > 0
+          ? (attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0
+          : 0
+        accessibilityValue = String(format: "fontPt=%.2f", sample)
+      }
+      #endif
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
