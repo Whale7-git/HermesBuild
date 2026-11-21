@@ -322,3 +322,26 @@ Each native selectable text view now exposes its actual attributed content as
 its accessibility label, instead of relying on an intermittently blank
 `UITextView` label. Gold2 continues to demand the real second SSE text;
 there is no network-only fallback or skipped assertion.
+
+## build216 native Dynamic Type convergence
+
+The integration simulator run 44879148839 passed all three Gold tests and the
+sidebar/home accessibility audits, but all remaining 11 chat-audit findings
+involved selectable `UITextView` Markdown. Both finite and offscreen frames
+failed; geometry filtering alone cannot establish font scaling.
+
+`NativeSelectionTextView` now observes UIKit's preferred-content-size trait
+through the supported iOS 17+ trait registration, while tracking genuinely
+changed SwiftUI DynamicTypeSize values separately. A late unrelated SwiftUI
+redraw no longer overwrites a newer UIKit category, and a new SwiftUI category
+can render before UIKit's trait propagation catches up. The underlying
+`NSAttributedString` is regenerated on font category transitions; measured
+size caches are tagged with the rendered category. During an active user text
+selection, the font refresh is deferred until selection ends.
+
+In Debug simulator builds, `HERMES_FONT_EVENT` logs only size categories,
+rendered font point sizes and text length, with no transcript content. The
+full XCTest `.dynamicType` audit must remain enabled; the log allows
+checking actual glyph growth, rather than treating a successful compile as
+proof of Dynamic Type behavior. Neither the native selection UI nor the
+accessibility label is suppressed to make the audit pass.
