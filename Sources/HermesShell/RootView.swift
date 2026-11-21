@@ -332,7 +332,7 @@ struct RootView: View {
                             horizontal: Double(value.translation.width),
                             vertical: Double(value.translation.height),
                             open: sidebarOpen, width: Double(width),
-                            allowFullCard: true)
+                            allowFullCard: false)
                     }
                     .onChanged { value in
                         guard navigationGesturesAllowed, !browserOpen, !browserSessionOpen else {
