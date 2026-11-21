@@ -9,6 +9,7 @@ struct RootView: View {
     @AppStorage("hermesAppearance") private var appearance = "system"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var sidebarOpen = false
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
     @State private var foregroundListPolicy = ForegroundListRefreshPolicy()
@@ -293,8 +294,11 @@ struct RootView: View {
                 // Keep the drawer mounted behind the fully opaque chat canvas.
                 // Flipping opacity/hit-testing at exposed == 0 introduced a
                 // compositing and gesture hit-map discontinuity on left return.
+                .opacity(exposed > 0.5 && !browserOpen ? 1 : 0)
                 .allowsHitTesting(sidebarOpen && !browserOpen && settlingPage == nil)
-                .accessibilityHidden(!sidebarOpen || browserOpen)
+                // The permanently mounted covered drawer must not contribute
+                // text to accessibility scans of the active chat/home card.
+                .accessibilityHidden(exposed <= 0.5 || browserOpen)
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
@@ -722,8 +726,8 @@ struct RootView: View {
                         Text(app.active.name)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                         Image(systemName: "chevron.down").font(.caption2)
                             .foregroundStyle(.primary)
                     }
@@ -749,7 +753,7 @@ struct RootView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
-            .frame(height: 56)
+            .frame(minHeight: 56)
 
             Spacer(minLength: 24)
             VStack(spacing: 12) {

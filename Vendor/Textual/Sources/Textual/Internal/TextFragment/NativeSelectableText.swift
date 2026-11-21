@@ -91,7 +91,9 @@
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
       super.traitCollectionDidChange(previousTraitCollection)
       if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
-        // SwiftUI supplies new attributed fonts; reject stale measured sizes.
+        // Keep the UIKit text control's own preferred font in sync with the
+        // category while SwiftUI restyles its attributed glyph runs.
+        font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
         measurement = nil
         naturalWidth = nil
         invalidateIntrinsicContentSize()

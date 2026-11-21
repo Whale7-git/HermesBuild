@@ -193,7 +193,8 @@ extension NativeChatView {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 12)
-        .frame(height: 56)
+        // Accessibility fonts may need more than the standard 56pt row.
+        .frame(minHeight: 56)
         .background(AppTheme.canvas)
     }
 
@@ -210,8 +211,8 @@ extension NativeChatView {
             Text(currentTitle)
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             HStack(spacing: 5) {
                 if model.activity.showsProgress {
@@ -228,8 +229,8 @@ extension NativeChatView {
                 Text(statusLine)
                     .font(.caption2)
                     .foregroundStyle(model.activity == .ready ? .secondary : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                    .fixedSize(horizontal: false, vertical: true)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.tertiary)

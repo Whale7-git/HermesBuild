@@ -689,8 +689,8 @@
     "Sources/HermesShell/NativeChatModel+Send.swift": "a1798a0ddfac3a288d0af6a66fb50200b5f6dec988c86c92a023415d04870db5",
     "Sources/HermesShell/NativeChatModel+Stream.swift": "c0e6aba5764fbdf471b4022ae9ee80edb3329785c3db1026253c6d727ca60ece",
     "Sources/HermesShell/NativeChatService.swift": "0e456390fd4eea8c58aa5d1b7cb91f6d06928641bd312be2bc39f6e96ea88439",
-    "Sources/HermesShell/NativeChatView.swift": "c7b778cd794c62f245ed42be7efd37bb951a0dcf73faf88614b23835a879aa9d",
-    "Sources/HermesShell/NativeChatView+Chrome.swift": "1e4be66ef1b7efc585c452f1516e3adc5e58d6d22b1491984f41350e7a585326",
+    "Sources/HermesShell/NativeChatView.swift": "7a20e069acc9b8bace1e71756bc17174d61dbe19298cc9698b5be96ee4b83614",
+    "Sources/HermesShell/NativeChatView+Chrome.swift": "97d28508338974c1274d6c77e3c8e8032fe215d70d5d752982e41bca761d33df",
     "Sources/HermesShell/NativeChatView+Composer.swift": "e595f2f5fbb4b8b20803912184c23aa13ca05535573c999f41e8624f3cbb6e01",
     "Sources/HermesShell/NativeChatView+MessageList.swift": "597873da357ecdbd1d43d177b2c6fc8eccb1805ea9ac52bac0350633563743f6",
     "Sources/HermesShell/NativeChatView+Notices.swift": "6a3016ad85c30523db923080e34f7d527d697786e554cdebdbd4ceb253212730",
@@ -698,7 +698,7 @@
     "Sources/HermesShell/NotificationNavigation.swift": "89ab1c3cfe37228728e2ac11a20a2bf5d54b2bc855fd4c46e081765d95aaadf2",
     "Sources/HermesShell/NotificationPreference.swift": "11d0083fc3675538acca9c76cd4440b9c94e127b7995b6c47ddc745bad27f762",
     "Sources/HermesShell/ReasoningEffortPolicy.swift": "b635adfea35a757cca4ad047d6d3f6d77f2157dc115753db3ed8e9b24a09fc14",
-    "Sources/HermesShell/RootView.swift": "3372b289ffd7449cd91294516903693b7f1922123020ea1159dd7fbb70086d43",
+    "Sources/HermesShell/RootView.swift": "c70a1a095d1c21b5b1aa36817d15d9c5efadf8cc7214b73de62a067c60232bbd",
     "Sources/HermesShell/RuntimeLogRecorder.swift": "0420cd92ecaecb2e4137932d8eb692bc605cab52fa38fc33163c08e4ec1766d6",
     "Sources/HermesShell/RuntimeLogStorage.swift": "2588887ea918a49d2c597ee0ba9fbca6a83c72db0807e501f4f45c1e1ea217f3",
     "Sources/HermesShell/SessionDrawer.swift": "cc6d5fa2f6ea62b4e499986314ef32fe517fe1257f10722fd2d08d2e65a31779",
@@ -881,6 +881,6 @@
     "Vendor/Textual/Sources/Textual/Internal/StructuredText/BlockContent.swift": "114c7f9857f78e7654968edd6aa89c65e8c93311b11b88f457076d937dc43b6f",
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
-    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "860627cb4ea18f0a9207250464d1ad29302a2be3488578380ea8385fc250e931"
+    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "571ebd0ea1991df82fd701dc742747068c6d2a0649b3779d79e8dfdeec29f7fe"
   }
 }
