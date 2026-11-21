@@ -57,6 +57,15 @@ class GatewayContractTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(last["data"][0]["id"], old["data"][1]["id"])
 
+    def test_session_detail_is_nested_for_history_reader(self):
+        status, result = self.decoded("GET", "/api/sessions/ui-session-1")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["session"]["id"], "ui-session-1")
+        self.assertEqual(result["session"]["message_count"], 2)
+        self.assertNotIn("message_count", result)
+        code, _ = self.decoded("GET", "/api/sessions/unknown")
+        self.assertEqual(code, 404)
+
     def test_start_stream_terminal_and_no_duplicate_post(self):
         status, started = self.decoded("POST", "/v1/runs", {
             "session_id": "ui-session-1", "input": "fixture text",

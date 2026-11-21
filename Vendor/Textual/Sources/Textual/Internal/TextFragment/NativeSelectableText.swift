@@ -27,6 +27,7 @@
     @Environment(\.lineSpacing) private var lineSpacing
     @Environment(\.multilineTextAlignment) private var alignment
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.textualNativeParagraphSpacing) private var paragraphSpacing
     @Environment(\.textualSelectionActivity) private var selectionActivity
 
@@ -37,7 +38,9 @@
     func updateUIView(_ view: NativeSelectionTextView, context: Context) {
       view.openURL = openURL
       view.selectionActivity = selectionActivity
-      view.receive(.init(content: content, environment: environment, lineSpacing: lineSpacing,
+      var liveEnvironment = environment
+      liveEnvironment.dynamicTypeSize = dynamicTypeSize
+      view.receive(.init(content: content, environment: liveEnvironment, lineSpacing: lineSpacing,
                          alignment: alignment, paragraphSpacing: paragraphSpacing))
     }
 
@@ -61,6 +64,9 @@
     var openURL: OpenURLAction?
     weak var selectionActivity: TextualSelectionActivity?
     private var publication = TextualSelectionPublication<Input>()
+    // Keep the currently rendered source, not a deferred selection update,
+    // so a UIKit trait change can regenerate every attributed font.
+    private var lastRenderedInput: Input?
     private var measurement: (width: CGFloat, size: CGSize)?
     private var naturalWidth: CGFloat?
     private var flushScheduled = false
@@ -71,6 +77,14 @@
       super.init(frame: .zero, textContainer: nil)
       isEditable = false
       isSelectable = true
+      // Recycled/offscreen transcript views must not remain reachable in
+      // VoiceOver or screen-wide audits before joining an actual UIWindow.
+      isAccessibilityElement = false
+      accessibilityElementsHidden = true
+      // The attributed runs resolve environment-scaled fonts, and UIKit
+      // must advertise Dynamic Type support for this readonly text surface.
+      font = .preferredFont(forTextStyle: .body)
+      adjustsFontForContentSizeCategory = true
       isScrollEnabled = false
       backgroundColor = .clear
       textContainerInset = .zero
@@ -84,6 +98,32 @@
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func didMoveToWindow() {
+      super.didMoveToWindow()
+      let presented = window != nil && bounds.width.isFinite && bounds.height.isFinite
+      isAccessibilityElement = presented
+      accessibilityElementsHidden = !presented
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+      super.traitCollectionDidChange(previousTraitCollection)
+      if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
+        // Keep the UIKit text control's own preferred font in sync with the
+        // category while SwiftUI restyles its attributed glyph runs.
+        font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        if let lastRenderedInput, !interacting {
+          // adjustsFontForContentSizeCategory updates UITextView.font, not
+          // the fonts embedded in its attributedText. Rebuild all runs.
+          apply(lastRenderedInput,
+                preferredContentSizeCategory: traitCollection.preferredContentSizeCategory)
+        } else {
+          measurement = nil
+          naturalWidth = nil
+          invalidateIntrinsicContentSize()
+        }
+      }
+    }
+
     private var interacting: Bool {
       return (isFirstResponder && selectedRange.length > 0) || gestureRecognizers?.contains {
         $0.state == .began || $0.state == .changed
@@ -95,8 +135,11 @@
       if let value = publication.receive(input, interacting: interacting) { apply(value) }
     }
 
-    private func apply(_ input: Input) {
-      attributedText = Self.styled(input)
+    private func apply(_ input: Input,
+                       preferredContentSizeCategory: UIContentSizeCategory? = nil) {
+      lastRenderedInput = input
+      attributedText = Self.styled(input,
+          preferredContentSizeCategory: preferredContentSizeCategory)
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
@@ -169,10 +212,18 @@
       return UIAction { [weak self] _ in self?.openURL?(url) }
     }
 
-    private static func styled(_ input: Input) -> NSAttributedString {
-      let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body,
-                                                                in: input.environment)
-      let baseSize = descriptor.pointSize
+    private static func styled(_ input: Input,
+                               preferredContentSizeCategory: UIContentSizeCategory? = nil) -> NSAttributedString {
+      // Use a standard-size base font plus UIKit text-style metrics.
+      // A raw UIFont.systemFont(ofSize: alreadyScaledPointSize) embeds a
+      // non-scaling attributed font and fails iOS Dynamic Type auditing.
+      let standardTraits = UITraitCollection(preferredContentSizeCategory: .large)
+      let baseSize = UIFont.preferredFont(forTextStyle: .body,
+                                          compatibleWith: standardTraits).pointSize
+      let currentTraits = UITraitCollection(
+        preferredContentSizeCategory: preferredContentSizeCategory
+            ?? .init(input.environment.dynamicTypeSize))
+      let metrics = UIFontMetrics(forTextStyle: .body)
       let paragraph = NSMutableParagraphStyle()
       paragraph.lineSpacing = max(0, input.lineSpacing)
       switch input.alignment {
@@ -214,8 +265,9 @@
              let italic = resolved.fontDescriptor.withSymbolicTraits(resolved.fontDescriptor.symbolicTraits.union(.traitItalic)) {
             resolved = UIFont(descriptor: italic, size: size)
           }
-          font = resolved
-          fonts[key] = resolved
+          let scaled = metrics.scaledFont(for: resolved, compatibleWith: currentTraits)
+          font = scaled
+          fonts[key] = scaled
         }
         // A merged fragment can hold several paragraphs. The paragraph style
         // that owns the trailing newline also owns the gap after it, so only a
