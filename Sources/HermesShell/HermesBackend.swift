@@ -28,6 +28,11 @@ protocol HermesBackend: NativeChatService, SessionService {
     /// 网关只认 `Authorization: Bearer`，不返回它会 401。
     var attachmentAuthorization: AttachmentAuthorization { get }
 
+    /// 必须是协议要求而不只是扩展属性：聊天页通过 HermesBackend existential
+    /// 读取预览认证。只有协议要求才动态分发到 GatewayBackend 的 Bearer 实现，
+    /// 否则会静态选中扩展的 cookieOnly，随后错误请求 WebUI 的 api/media。
+    var attachmentPreviewAuthorization: AttachmentAuthorization { get }
+
     /// 「浏览器打开这个会话」的基地址。WebUI 实例指向自己；
     /// 网关实例优先用配套 WebUI（会话页只有那边有），没有再退回网关地址。
     var webConsoleBaseURL: URL { get }
