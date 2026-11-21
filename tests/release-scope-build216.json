@@ -200,6 +200,7 @@
     "Sources/HermesShell/UnifiedTaskWorkspace.swift",
     "UITests/HermesAccessibilityUITests.swift",
     "UITests/HermesGoldUITests.swift",
+    "UITests/HermesRealChatDynamicTypeUITests.swift",
     "UITests/HermesUITestHarness.swift",
     "Vendor/Textual/patches/01-Package.swift.patch",
     "Vendor/Textual/patches/02-Sources_Textual_Internal_Attachment_WithAttachments.swift.patch",
@@ -692,7 +693,7 @@
     "Sources/HermesShell/NativeChatView.swift": "c7b778cd794c62f245ed42be7efd37bb951a0dcf73faf88614b23835a879aa9d",
     "Sources/HermesShell/NativeChatView+Chrome.swift": "077b38895859bf9f9efb4719086b140d12ce3b87322723169ac6453ac87bb194",
     "Sources/HermesShell/NativeChatView+Composer.swift": "e595f2f5fbb4b8b20803912184c23aa13ca05535573c999f41e8624f3cbb6e01",
-    "Sources/HermesShell/NativeChatView+MessageList.swift": "597873da357ecdbd1d43d177b2c6fc8eccb1805ea9ac52bac0350633563743f6",
+    "Sources/HermesShell/NativeChatView+MessageList.swift": "cdadf7d367c0b99c207e7cd8b48dc220a3858e35815040a55d558a61a24b6672",
     "Sources/HermesShell/NativeChatView+Notices.swift": "6a3016ad85c30523db923080e34f7d527d697786e554cdebdbd4ceb253212730",
     "Sources/HermesShell/NativeChatView+Panels.swift": "5ecdaff9cf8b548d23ed429f01d18f77105abc34c0050daee4b0e1d10e52db76",
     "Sources/HermesShell/NotificationNavigation.swift": "89ab1c3cfe37228728e2ac11a20a2bf5d54b2bc855fd4c46e081765d95aaadf2",
@@ -857,7 +858,7 @@
     "tests/w3w4/TaskObservation.swift": "1d484155cecf48e824a93426abfb2b8af30e6bd59b3db043f385ec9f06302e35",
     "UITests/HermesAccessibilityUITests.swift": "da1d92955db6aef829a3f606c6433e993ae6f8164d85b6f415a215abb8e3e1a0",
     "UITests/HermesGoldUITests.swift": "8803de5577d433ed5552f5352ef67a0b1608d4409f2a64a4191f10e4d43c27e0",
-    "UITests/HermesUITestHarness.swift": "f0fe3823facdb839155fdff84a0da1b2bc481c4a85152fa62bc94d4e50ec6add",
+    "UITests/HermesUITestHarness.swift": "b1c001f004a0420a85eb3fcc4e673ed0139b8d46d33b3726e9b15426a0ed16f0",
     "Vendor/Textual/HERMES-PATCHES.md": "107e6dc1c1351f18b48e96d8815d8098c94f3bef7c0c1d82f4f370d8500af1da",
     "Vendor/Textual/patches/01-Package.swift.patch": "6fbb430eb927923d613d6de067880266d7ebe44c4d429393813b50bfcff41d01",
     "Vendor/Textual/patches/02-Sources_Textual_Internal_Attachment_WithAttachments.swift.patch": "e2ef06485022b0269ddbf2cfe8062cb97ac9ed831e812c7112b29be53bcdfae2",
@@ -881,6 +882,7 @@
     "Vendor/Textual/Sources/Textual/Internal/StructuredText/BlockContent.swift": "114c7f9857f78e7654968edd6aa89c65e8c93311b11b88f457076d937dc43b6f",
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
-    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "81471839eaf61f78cf5900665b78dd1fd195e6f9520fd6e3dc22eeb59d56c2d8"
+    "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "484814b5daedc5a3b49b80cfb2665b82fcb4c70f8abbb9a9189fb26e250863de",
+    "UITests/HermesRealChatDynamicTypeUITests.swift": "d150816770bd65eb730cb15dc98c7564d119f48433219d95ef4f9d718070b765"
   }
 }
