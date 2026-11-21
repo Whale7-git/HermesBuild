@@ -350,6 +350,26 @@ class GatewayHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.finalization_lag_ms = delay
             return self.json_response(200, {"delay_ms": delay})
+        if method == "POST" and path == "/__control/add-image":
+            # Dedicated UI fixture: inject one authenticated uploaded-image
+            # reference into existing history, never user files or credentials.
+            with self.state.lock:
+                self.state.message_count += 1
+                self.state.rows("ui-session-1").append({
+                    "id": self.state.message_count,
+                    "session_id": "ui-session-1",
+                    "role": "user",
+                    "content": "UI 验收图片",
+                    "timestamp": 1795150003,
+                    "attachments": [{
+                        "name": "ui-image.png",
+                        "path": "/ui-test/ui-image.png",
+                        "mime": "image/png",
+                        "size": len(PNG),
+                        "is_image": True,
+                    }],
+                })
+            return self.json_response(200, {"image_added": True})
         if method == "POST" and path == "/__control/stub":
             payload = self.body_json()
             target_method = str(payload.get("method", "GET")).upper()
