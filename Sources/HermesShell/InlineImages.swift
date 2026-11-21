@@ -216,6 +216,8 @@ struct InlineImageView: View {
                 await load()
             }
             .accessibilityLabel(accessibilityText)
+            .accessibilityValue(awaitingConsent ? "需要确认外部连接"
+                : image != nil ? "已加载" : failed ? "加载失败" : "正在加载")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction {
                 if awaitingConsent {
