@@ -76,7 +76,9 @@ extension NativeChatView {
                         }
                     }
                     .tint(AppTheme.accent)
-                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    // UIKit-owned row hosts inherit the live trait category.
+                    // Explicitly copying the outer SwiftUI size freezes it
+                    // during XCTest's system-driven Dynamic Type audit.
                     .environment(\.colorScheme, colorScheme))
                 },
                 footer: {
@@ -85,7 +87,9 @@ extension NativeChatView {
                         webURL: app.api.browserSessionURL?.appendingPathComponent("session")
                             .appendingPathComponent(sessionID))
                     .tint(AppTheme.accent)
-                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    // UIKit-owned row hosts inherit the live trait category.
+                    // Explicitly copying the outer SwiftUI size freezes it
+                    // during XCTest's system-driven Dynamic Type audit.
                     .environment(\.colorScheme, colorScheme))
                 },
                 onDistance: note,
