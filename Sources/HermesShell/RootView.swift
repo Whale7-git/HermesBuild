@@ -9,6 +9,7 @@ struct RootView: View {
     @AppStorage("hermesAppearance") private var appearance = "system"
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var sidebarOpen = false
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
     @State private var foregroundListPolicy = ForegroundListRefreshPolicy()
@@ -243,6 +244,7 @@ struct RootView: View {
             // home-indicator backgrounds using one shared card container.
             // Only its interior content is padded into the safe area.
             ZStack(alignment: .leading) {
+                if sidebarOpen || exposed > 0.5 {
                 SessionListPane(
                     mode: .drawer,
                     selectedID: app.currentSessionID,
@@ -293,8 +295,21 @@ struct RootView: View {
                 // Keep the drawer mounted behind the fully opaque chat canvas.
                 // Flipping opacity/hit-testing at exposed == 0 introduced a
                 // compositing and gesture hit-map discontinuity on left return.
+                .opacity(exposed > 0.5 && !browserOpen ? 1 : 0)
                 .allowsHitTesting(sidebarOpen && !browserOpen && settlingPage == nil)
-                .accessibilityHidden(!sidebarOpen || browserOpen)
+                // The permanently mounted covered drawer must not contribute
+                // text to accessibility scans of the active chat/home card.
+                // In addition to hiding the covered drawer, omit its AX
+                // descendants. opacity(0) and accessibilityHidden alone were
+                // insufficient for Xcode's Dynamic Type screen audit.
+                .accessibilityElement(children: exposed <= 0.5 || browserOpen
+                    ? .ignore : .contain)
+                .accessibilityHidden(exposed <= 0.5 || browserOpen)
+                }
+                // The collapsed drawer has no rendered descendants. Keeping
+                // an opaque, hidden list mounted still exposed its text to
+                // XCTest's Dynamic Type visual audit. AppState still owns
+                // the session data; the pane is rebuilt on next reveal.
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
@@ -717,16 +732,19 @@ struct RootView: View {
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Hermes").font(.headline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Text(app.active.name).font(.caption2)
-                                .foregroundStyle(.secondary).lineLimit(1)
-                        }
+                        // A single host title avoids clipping in fixed chrome;
+                        // the full identity stays in the Menu's AX label.
+                        Text(app.active.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                         Image(systemName: "chevron.down").font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
                     }
-                    .frame(maxWidth: 156, minHeight: 44, alignment: .leading)
+                    .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : 156,
+                           minHeight: 44, alignment: .leading)
+                    .layoutPriority(1)
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel("切换 Hermes 实例，当前\(app.active.name)")
@@ -748,7 +766,7 @@ struct RootView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 12)
-            .frame(height: 56)
+            .frame(minHeight: 56)
 
             Spacer(minLength: 24)
             VStack(spacing: 12) {

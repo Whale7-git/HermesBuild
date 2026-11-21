@@ -76,7 +76,7 @@ extension NativeChatView {
                         }
                     }
                     .tint(AppTheme.accent)
-                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    // Hosted rows inherit live UIKit content size traits.
                     .environment(\.colorScheme, colorScheme))
                 },
                 footer: {
@@ -85,7 +85,7 @@ extension NativeChatView {
                         webURL: app.api.browserSessionURL?.appendingPathComponent("session")
                             .appendingPathComponent(sessionID))
                     .tint(AppTheme.accent)
-                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    // Hosted rows inherit live UIKit content size traits.
                     .environment(\.colorScheme, colorScheme))
                 },
                 onDistance: note,

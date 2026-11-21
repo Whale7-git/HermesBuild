@@ -767,7 +767,34 @@ extension NativeChatModel {
                     var settled = false
                     var finalHistoryConfirmed = false
                     do {
-                        let snap = try await api.history(sessionID:sessionID,before:nil)
+                        // Terminal SSE is not proof that the server's final
+                        // assistant history row has been committed. GET only:
+                        // never replay the accepted POST or clear its receipt.
+                        let streamedAssistantPresent = buffer.messages.contains {
+                            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+                        }
+                        let receipt = activeTurnRecovery
+                        var snap = try await api.history(sessionID:sessionID,before:nil)
+                        for attempt in 0..<3 {
+                            guard accepts(runContext(for: active, generation: generation)),
+                                  !Task.isCancelled else { return }
+                            if ChatFinalHistoryGate.canReplace(
+                                snap, sessionID: sessionID, receipt: receipt,
+                                streamedAssistantPresent: streamedAssistantPresent) { break }
+                            if attempt == 2 {
+                                uncertain = true
+                                pauseQueueForRecovery()
+                                transition(to: .idle)
+                                reconciling = false
+                                notice = "回复已结束，但最终历史尚未同步；已保留当前回复并暂停自动续发，可稍后核对。"
+                                flush()
+                                RuntimeLogRecorder.shared.record(.warning, "stream",
+                                    "final history pending run=\(active) attempts=3")
+                                return
+                            }
+                            try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 200_000_000)
+                            snap = try await api.history(sessionID:sessionID,before:nil)
+                        }
                         guard accepts(runContext(for: active, generation: generation)),
                               !Task.isCancelled else { return }
                         let userPauseWasActive = queueUserPaused

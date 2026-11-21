@@ -53,8 +53,9 @@ struct HomeConversationComposer: View {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 10, weight: .semibold))
                         }
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .font(.caption.weight(.semibold))
+                        // Text must remain legible on the composer surface.
+                        .foregroundStyle(.primary)
                         .frame(maxWidth: 148, minHeight: 44)
                         .contentShape(Rectangle())
                     }
