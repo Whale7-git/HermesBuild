@@ -67,7 +67,60 @@ var transcriptPublications = 0
         }
         preconditionFailure("automatic GET recovery did not reach expected state", file: file, line: line)
     }
+    @MainActor static func finalHistoryGateTests() throws {
+        let initial: [[String: Any]] = [
+            ["id": "old-user", "role": "user", "content": "Earlier question"],
+            ["id": "old-answer", "role": "assistant", "content": "Earlier answer"]
+        ]
+        let sent: [String: Any] = ["id": "new-user", "role": "user", "content": "new turn"]
+        let answer: [String: Any] = ["id": "new-answer", "role": "assistant", "content": "final streamed answer"]
+        func snapshot(_ rows: [[String: Any]], active: String? = nil) throws -> ChatSnapshot {
+            var obj: [String: Any] = [
+                "session_id": "test", "messages": rows, "_messages_offset": 0,
+                "read_only": false
+            ]
+            if let active { obj["active_stream_id"] = active }
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: ["session": obj]))
+        }
+        let receipt = ActiveTurnRecovery(runID: "run-1", historyEnd: 2,
+            knownIDs: ["old-user", "old-answer"], text: "new turn", attachmentPaths: [])
+        let stale = try snapshot(initial + [sent])
+        let alive = try snapshot(initial + [sent, answer], active: "run-1")
+        let final = try snapshot(initial + [sent, answer])
+        precondition(!ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(alive, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "different",
+            receipt: receipt, streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: nil, streamedAssistantPresent: true))
+        precondition(ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, expectedRunID: "run-1", streamedAssistantPresent: true))
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, expectedRunID: "another-run", streamedAssistantPresent: true))
+        precondition(ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: false))
+        let guarded = NativeChatModel(sessionID: "test", api: FakeChatService())
+        guarded.buffer.messages = [
+            ChatMessage(id: "streaming:local", role: "assistant",
+                        content: "visible answer", timestamp: 1)
+        ]
+        guarded.buffer.terminal = true
+        guarded.activeTurnRecovery = receipt
+        var staleRejected = false
+        do { try guarded.applySnapshot(stale) }
+        catch { staleRejected = true }
+        precondition(staleRejected && guarded.buffer.messages.last?.content == "visible answer",
+                     "Manual refresh must not overwrite an unconfirmed streamed reply")
+        try guarded.applySnapshot(final)
+        precondition(guarded.buffer.messages.last?.content == "final streamed answer")
+        guarded.disconnect()
+        print("MODEL_PASS never replace streamed text with stale terminal history")
+    }
+
     @MainActor static func main() async throws {
+        try finalHistoryGateTests()
         try await placeholderOriginTests()
         try await cacheTests()
         try await placeholderBindingTests()
@@ -607,6 +660,7 @@ enum CacheTestError: Error { case unauthorized }
     var historyCalls = 0
     var cursors:[String?] = []
     var active:String?
+    var lastSubmittedText: String?
     var throwsOnDisconnect = false
     var neverFinishes = false
     var holdHistory = false
@@ -621,7 +675,16 @@ enum CacheTestError: Error { case unauthorized }
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot {
         historyCalls += 1
         let includeAnswer = active == nil && streamCalls > 0 && !historyWithoutAnswer
-        var s:[String:Any] = ["session_id":sessionID,"messages":includeAnswer ? [["id":"answer","role":"assistant","content":"AB"]] : [],"read_only":false]
+        // Final history must contain the accepted user row as well as its
+        // reply. A mock that returns only "AB" cannot prove which POST
+        // produced it and must not unlock a real recovered Run.
+        let completedRows: [[String: Any]] = [
+            ["id": "sent-user", "role": "user", "content": lastSubmittedText ?? ""],
+            ["id": "answer", "role": "assistant", "content": "AB"]
+        ]
+        var s:[String:Any] = ["session_id":sessionID,
+                              "messages":includeAnswer ? completedRows : [],
+                              "read_only":false]
         if let active { s["active_stream_id"] = active }
         let snapshot = try ChatSnapshot(data:JSONSerialization.data(withJSONObject:["session":s]))
         if holdHistory {
@@ -631,6 +694,7 @@ enum CacheTestError: Error { case unauthorized }
     }
     func startNativeTurn(sessionID:String,text:String) async throws -> String {
         startCalls += 1
+        lastSubmittedText = text
         active = "s"
         return "s"
     }

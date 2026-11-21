@@ -297,6 +297,21 @@ extension NativeChatModel {
 
     func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
+        // A later/manual refresh must obey the same final-history gate as
+        // terminal SSE reconciliation. Otherwise the first incomplete GET
+        // after the bounded retries can still erase a visible assistant.
+        // This applies only to successful streams: a failed or interrupted
+        // Run has different terminal authority and may retain a partial reply.
+        let hasStreamedAnswer = buffer.messages.contains {
+            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+        }
+        if buffer.terminal && buffer.failure == nil && buffer.notices.isEmpty &&
+           hasStreamedAnswer && snap.activeStreamID == nil &&
+           !ChatFinalHistoryGate.canReplace(
+               snap, sessionID: sessionID, receipt: activeTurnRecovery,
+               expectedRunID: streamID, streamedAssistantPresent: true) {
+            throw ChatCoreError.server("最终历史尚未包含本轮回复，已保留当前流式内容")
+        }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
@@ -767,7 +782,35 @@ extension NativeChatModel {
                     var settled = false
                     var finalHistoryConfirmed = false
                     do {
-                        let snap = try await api.history(sessionID:sessionID,before:nil)
+                        // Terminal SSE is not proof that the server's final
+                        // assistant history row has been committed. GET only:
+                        // never replay the accepted POST or clear its receipt.
+                        let streamedAssistantPresent = buffer.messages.contains {
+                            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+                        }
+                        let receipt = activeTurnRecovery
+                        var snap = try await api.history(sessionID:sessionID,before:nil)
+                        for attempt in 0..<3 {
+                            guard accepts(runContext(for: active, generation: generation)),
+                                  !Task.isCancelled else { return }
+                            if ChatFinalHistoryGate.canReplace(
+                                snap, sessionID: sessionID, receipt: receipt,
+                                expectedRunID: active,
+                                streamedAssistantPresent: streamedAssistantPresent) { break }
+                            if attempt == 2 {
+                                uncertain = true
+                                pauseQueueForRecovery()
+                                transition(to: .idle)
+                                reconciling = false
+                                notice = "回复已结束，但最终历史尚未同步；已保留当前回复并暂停自动续发，可稍后核对。"
+                                flush()
+                                RuntimeLogRecorder.shared.record(.warning, "stream",
+                                    "final history pending run=\(active) attempts=3")
+                                return
+                            }
+                            try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 200_000_000)
+                            snap = try await api.history(sessionID:sessionID,before:nil)
+                        }
                         guard accepts(runContext(for: active, generation: generation)),
                               !Task.isCancelled else { return }
                         let userPauseWasActive = queueUserPaused

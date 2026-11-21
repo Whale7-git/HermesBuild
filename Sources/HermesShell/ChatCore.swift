@@ -579,6 +579,24 @@ struct ActiveTurnRecovery: Codable, Equatable {
     }
 }
 
+/// A terminal SSE frame may precede the authoritative final history row.
+/// Do not replace a visibly streamed reply with stale history. This policy
+/// uses the immutable accepted-POST receipt rather than guessing from the
+/// existence of an unrelated assistant message.
+enum ChatFinalHistoryGate {
+    static func canReplace(_ snapshot: ChatSnapshot, sessionID: String,
+                           receipt: ActiveTurnRecovery?, expectedRunID: String? = nil,
+                           streamedAssistantPresent: Bool) -> Bool {
+        guard snapshot.sessionID == sessionID, !snapshot.readOnly,
+              snapshot.activeStreamID == nil else { return false }
+        guard streamedAssistantPresent else { return true }
+        // A different recovered Run must not satisfy this stream's terminal
+        // authorization even if the resulting user text is identical.
+        if let expectedRunID, receipt?.runID != expectedRunID { return false }
+        return receipt?.confirmsCompletion(in: snapshot) == true
+    }
+}
+
 private func streamErrorDescription(_ data: String) -> String {
     guard let payload = (try? JSONSerialization.jsonObject(with: Data(data.utf8))) as? [String: Any] else {
         return data.isEmpty ? "Stream error" : data
