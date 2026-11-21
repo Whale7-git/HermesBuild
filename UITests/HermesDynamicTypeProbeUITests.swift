@@ -9,6 +9,48 @@ final class HermesDynamicTypeProbeUITests: XCTestCase {
     func test03UIKitAttributedControl() throws { try verify("attributed") }
     func test04TextualNativeProduction() throws { try verify("textual") }
 
+    /// The regression that the standalone A/B/C/D probes cannot exercise:
+    /// actual native Markdown inside the nested UIHostingController transcript.
+    /// A fresh launch with different preferred content size is a measurable,
+    /// UIKit-driven fixture independent of SwiftUI's test-only toggle.
+    func test05ChatNativeGlyphsGrowWithSystemSize() throws {
+        let app = HermesUITestHarness.launchAndConnect(extraLaunchArguments: [
+            "-hermes-chat-font-probe",
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryL",
+        ])
+        HermesUITestHarness.openSession(app)
+
+        func sample() -> Double {
+            let text = app.textViews.matching(
+                NSPredicate(format: "label CONTAINS[cd] %@", "本段只用于 iOS 模拟器")
+            ).firstMatch
+            let scroll = app.scrollViews.firstMatch
+            for _ in 0..<30 {
+                if text.exists && text.isHittable { break }
+                if scroll.exists { scroll.swipeUp() }
+            }
+            XCTAssertTrue(text.waitForExistence(timeout: 10),
+                          "Real chat did not expose native Markdown text")
+            let value = pointSize(text)
+            XCTAssertNotNil(value, "Real chat native font sample unavailable")
+            return value ?? -1
+        }
+
+        let normal = sample()
+        app.terminate()
+        app.launchArguments = [
+            "-hermes-chat-font-probe",
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityL",
+        ]
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        HermesUITestHarness.openSession(app)
+        let accessibility = sample()
+        print("HERMES_REAL_CHAT_FONT normalPt=\(normal) accessibilityPt=\(accessibility)")
+        XCTAssertGreaterThan(accessibility, normal,
+                             "Real chat native glyphs did not grow with system text size")
+    }
+
     private func pointSize(_ element: XCUIElement) -> Double? {
         let value = element.value as? String ?? ""
         guard let range = value.range(of: "fontPt=") else { return nil }
