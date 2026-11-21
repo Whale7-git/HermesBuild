@@ -7,8 +7,10 @@ enum HermesUITestHarness {
     static let sessionTitle = "UI 验收会话"
 
     static func launchAndConnect(file: StaticString = #filePath,
-                                 line: UInt = #line) -> XCUIApplication {
+                                 line: UInt = #line,
+                                 extraLaunchArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication(bundleIdentifier: "com.whale7.hermes")
+        app.launchArguments = extraLaunchArguments
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20),
                       "Hermes did not launch", file: file, line: line)
