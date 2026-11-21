@@ -16,6 +16,14 @@ final class HermesGoldUITests: XCTestCase {
     // Network setup is async but XCUIApplication gestures must remain on
     // XCTest's main actor; otherwise launch throws NSInternalInconsistencyException.
     @MainActor func test02SendStreamAndComplete() async throws {
+        // Isolate SSE expectations from image and selection fixtures injected
+        // by prior UI suites. All tests run against the same loopback process.
+        var reset = URLRequest(url: URL(string:
+            "http://127.0.0.1:8765/__control/reset")!)
+        reset.httpMethod = "POST"
+        let (_, initialResponse) = try await URLSession.shared.data(for: reset)
+        XCTAssertEqual((initialResponse as? HTTPURLResponse)?.statusCode, 200,
+                       "Mock gateway reset failed before SSE test")
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         // Make the terminal SSE arrive before the mock persists its answer.
