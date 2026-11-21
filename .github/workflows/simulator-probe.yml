@@ -15,7 +15,7 @@ on:
     - cron: "17 2 * * *"
   # Temporary one-shot development trigger; remove before main merge.
   push:
-    branches: [fix/ui-native-font-216]
+    branches: [fix/ui-integration-216]
 
 permissions:
   contents: read
