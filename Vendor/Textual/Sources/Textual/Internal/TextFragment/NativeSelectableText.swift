@@ -219,9 +219,12 @@
       #if DEBUG
       // Debug-only observable font sample. Ordinary chats never expose
       // diagnostic metadata; no transcript or credentials are written to logs.
-      if ProcessInfo.processInfo.arguments.contains("-hermes-font-probe"),
-         rendered.contains("PROBE TEXTUAL BODY") {
-        accessibilityIdentifier = "probe-font"
+      if (ProcessInfo.processInfo.arguments.contains("-hermes-font-probe")
+          && rendered.contains("PROBE TEXTUAL BODY"))
+          || ProcessInfo.processInfo.arguments.contains("-hermes-chat-font-probe") {
+        if ProcessInfo.processInfo.arguments.contains("-hermes-font-probe") {
+          accessibilityIdentifier = "probe-font"
+        }
         let sample = attributedText.length > 0
           ? (attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0
           : 0
