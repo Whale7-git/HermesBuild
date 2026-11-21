@@ -49,6 +49,7 @@ class GatewayState:
             self.stubs = {}
             self.requests = []
             self.unknown = []
+            self.finalization_lag_ms = 0
 
     def remember(self, method, path, query, headers):
         # Never include credential values or user message contents in logs.
@@ -229,7 +230,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.state.history.pop(sid, None)
                 result = dict(row, session_id=sid,
                               message_count=len(self.state.history.get(sid, [])))
-            return self.json_response(200, result)
+            # GatewayHistoryReader expects a nested session metadata object.
+            return self.json_response(200, {"session": result} if method == "GET" else result)
 
         session_action = SESSION_ACTION_RE.fullmatch(path)
         if method == "POST" and session_action:
@@ -277,6 +279,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f"id: {seq}\ndata: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
                     time.sleep(0.03)
+                with self.state.lock:
+                    lag_ms = self.state.finalization_lag_ms
+                if lag_ms:
+                    time.sleep(lag_ms / 1000.0)
                 self.state.finish_run(run_id)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -336,6 +342,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/__control/reset":
             self.state.reset()
             return self.json_response(200, {"reset": True})
+        if method == "POST" and path == "/__control/finalization-lag":
+            payload = self.body_json()
+            delay = payload.get("delay_ms")
+            if type(delay) is not int or not 0 <= delay <= 5000:
+                return self.json_response(400, {"error": {"message": "invalid delay_ms"}})
+            with self.state.lock:
+                self.state.finalization_lag_ms = delay
+            return self.json_response(200, {"delay_ms": delay})
         if method == "POST" and path == "/__control/stub":
             payload = self.body_json()
             target_method = str(payload.get("method", "GET")).upper()

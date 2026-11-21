@@ -240,3 +240,108 @@ for an already merged document. This fixes the integration predicate in build52;
 the vendored rendering algorithms and upstream inventory are unchanged.
 Pure state transitions are covered offline. Native range/gesture behavior remains
 on `tests/manual-ios-1.17.0.md`; compilation is not iPhone selection acceptance.
+
+## build216 accessibility audit follow-up
+
+NativeSelectionTextView now uses a preferred body font and opts into UIKit
+Dynamic Type, invalidating cached glyph measurements when the content size
+category changes. Attributed heading/code/body fonts still resolve from
+SwiftUI TextEnvironmentValues; selection, links and grouping are unchanged.
+This is a narrow source-local patch, not a Textual dependency upgrade.
+Simulator tests and physical-device typography remain distinct checks.
+
+## Dynamic Type font metrics correction
+
+The original native selectable Markdown attributed runs used the already-scaled
+UIKit preferred body descriptor as a raw `systemFont(ofSize:)`. They did not
+carry UIFontMetrics text-style scaling, even though the surrounding readonly
+UITextView opted into Dynamic Type. Build the semantic heading/code/body
+variants from the standard `.large` body point size and apply
+`UIFontMetrics(forTextStyle: .body).scaledFont(for:compatibleWith:)` to
+each run using the current SwiftUI text environment's preferred category.
+This preserves default-size metrics and all existing selection/link behavior;
+verify with the simulator audit and real-device large-text typography.
+
+## build216 audit correction: visible surface and attributed Dynamic Type
+
+XCTest's Dynamic Type audit still traversed a fully covered, zero-opacity
+drawer beneath the chat card. RootView now builds the drawer pane only while
+open or being revealed; server sessions remain on AppState. This changes the
+lifetime of the drawer's local visual state (such as search/filter/scroll):
+verify reopening behaviour separately, and do not claim identical preservation.
+
+NativeSelectableText now directly observes SwiftUI DynamicTypeSize. The native
+UITextView retains the last rendered Input and regenerates its attributed runs
+on a UIKit content-size-category trait change; setting only UITextView.font and
+adjustsFontForContentSizeCategory does not update baked-in attributed fonts.
+Selection/link handling and the original UIFontMetrics scaling are retained.
+The three audit tests now run sidebar before the font-changing chat audit to
+isolate an XCTest audit timeout; none of the audit failure categories is skipped.
+
+## build216 audit: detached text views and deterministic SSE visibility
+
+The six-case run on SHA 6842465 showed three Dynamic Type issues on
+Textual.NativeSelectionTextView elements whose accessibility frames had
+infinite origins and zero area. NativeSelectionTextView now excludes itself
+from accessibility while detached from a UIWindow and restores its native
+read-only accessibility when reattached. This does not exclude any on-screen
+text from the Dynamic Type audit. The visible small status caption switches
+from caption2 to the semantic footnote style to improve scaling.
+
+The SSE UI gold test continues to demand the literal second response segment
+in the actual rendered transcript. The mock captured one POST and one SSE
+events GET but long-history virtualization made the initial on-screen element
+query inconclusive; the test now scrolls to locate the rendered segment and
+retains a screenshot on failure. The workflow additionally exports failure
+attachments for review. No audit category or real UI assertion is skipped.
+
+## build216 Dynamic Type semantic-font follow-up
+
+Visible native UITextViews still failed the real XCTest Dynamic Type audit after
+assigning manually-scaled system fonts to attributedText. The renderer now
+resolves normal body/heading runs through `UIFont.preferredFont(forTextStyle:
+compatibleWith:)` and keeps semantic font descriptors, deriving monospaced
+runs via matching `UIFontMetrics`. When UIKit changes text-size category,
+the next UIViewRepresentable update follows the view's live trait collection
+instead of potentially undoing it with a stale SwiftUI environment snapshot.
+This remains a narrow Textual vendor patch; verify real font growth and
+paragraph selection in the simulator before merging.
+
+## build216 integration: AX coordinates and readable selectable text
+
+The full six-case simulator run 44872768244 still reported eight Dynamic Type
+failures on `NativeSelectionTextView` elements with `(inf, inf, 0, 0)`
+accessibility frames, while actual chat paragraphs remained visible in the
+XCTest screenshots. An attached UIWindow alone had been used to mark these
+recycled/zero-geometry views accessible. The integration patch now checks
+nonzero finite coordinates after every layout and window move, hiding only
+views without actual geometry. Visible text remains in the AX tree and subject
+to Dynamic Type audit.
+
+Each native selectable text view now exposes its actual attributed content as
+its accessibility label, instead of relying on an intermittently blank
+`UITextView` label. Gold2 continues to demand the real second SSE text;
+there is no network-only fallback or skipped assertion.
+
+## build216 native Dynamic Type convergence
+
+The integration simulator run 44879148839 passed all three Gold tests and the
+sidebar/home accessibility audits, but all remaining 11 chat-audit findings
+involved selectable `UITextView` Markdown. Both finite and offscreen frames
+failed; geometry filtering alone cannot establish font scaling.
+
+`NativeSelectionTextView` now observes UIKit's preferred-content-size trait
+through the supported iOS 17+ trait registration, while tracking genuinely
+changed SwiftUI DynamicTypeSize values separately. A late unrelated SwiftUI
+redraw no longer overwrites a newer UIKit category, and a new SwiftUI category
+can render before UIKit's trait propagation catches up. The underlying
+`NSAttributedString` is regenerated on font category transitions; measured
+size caches are tagged with the rendered category. During an active user text
+selection, the font refresh is deferred until selection ends.
+
+In Debug simulator builds, `HERMES_FONT_EVENT` logs only size categories,
+rendered font point sizes and text length, with no transcript content. The
+full XCTest `.dynamicType` audit must remain enabled; the log allows
+checking actual glyph growth, rather than treating a successful compile as
+proof of Dynamic Type behavior. Neither the native selection UI nor the
+accessibility label is suppressed to make the audit pass.
