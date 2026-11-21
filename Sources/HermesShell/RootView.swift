@@ -244,6 +244,7 @@ struct RootView: View {
             // home-indicator backgrounds using one shared card container.
             // Only its interior content is padded into the safe area.
             ZStack(alignment: .leading) {
+                if sidebarOpen || exposed > 0.5 {
                 SessionListPane(
                     mode: .drawer,
                     selectedID: app.currentSessionID,
@@ -304,6 +305,11 @@ struct RootView: View {
                 .accessibilityElement(children: exposed <= 0.5 || browserOpen
                     ? .ignore : .contain)
                 .accessibilityHidden(exposed <= 0.5 || browserOpen)
+                }
+                // The collapsed drawer has no rendered descendants. Keeping
+                // an opaque, hidden list mounted still exposed its text to
+                // XCTest's Dynamic Type visual audit. AppState still owns
+                // the session data; the pane is rebuilt on next reveal.
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
                               progress: progress, exposed: exposed)
@@ -736,7 +742,9 @@ struct RootView: View {
                         Image(systemName: "chevron.down").font(.caption2)
                             .foregroundStyle(.primary)
                     }
-                    .frame(maxWidth: 156, minHeight: 44, alignment: .leading)
+                    .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : 156,
+                           minHeight: 44, alignment: .leading)
+                    .layoutPriority(1)
                     .contentShape(Rectangle())
                 }
                 .accessibilityLabel("切换 Hermes 实例，当前\(app.active.name)")

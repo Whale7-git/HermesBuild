@@ -27,6 +27,7 @@
     @Environment(\.lineSpacing) private var lineSpacing
     @Environment(\.multilineTextAlignment) private var alignment
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.textualNativeParagraphSpacing) private var paragraphSpacing
     @Environment(\.textualSelectionActivity) private var selectionActivity
 
@@ -37,7 +38,9 @@
     func updateUIView(_ view: NativeSelectionTextView, context: Context) {
       view.openURL = openURL
       view.selectionActivity = selectionActivity
-      view.receive(.init(content: content, environment: environment, lineSpacing: lineSpacing,
+      var liveEnvironment = environment
+      liveEnvironment.dynamicTypeSize = dynamicTypeSize
+      view.receive(.init(content: content, environment: liveEnvironment, lineSpacing: lineSpacing,
                          alignment: alignment, paragraphSpacing: paragraphSpacing))
     }
 
@@ -61,6 +64,9 @@
     var openURL: OpenURLAction?
     weak var selectionActivity: TextualSelectionActivity?
     private var publication = TextualSelectionPublication<Input>()
+    // Keep the currently rendered source, not a deferred selection update,
+    // so a UIKit trait change can regenerate every attributed font.
+    private var lastRenderedInput: Input?
     private var measurement: (width: CGFloat, size: CGSize)?
     private var naturalWidth: CGFloat?
     private var flushScheduled = false
@@ -94,9 +100,16 @@
         // Keep the UIKit text control's own preferred font in sync with the
         // category while SwiftUI restyles its attributed glyph runs.
         font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
-        measurement = nil
-        naturalWidth = nil
-        invalidateIntrinsicContentSize()
+        if let lastRenderedInput, !interacting {
+          // adjustsFontForContentSizeCategory updates UITextView.font, not
+          // the fonts embedded in its attributedText. Rebuild all runs.
+          apply(lastRenderedInput,
+                preferredContentSizeCategory: traitCollection.preferredContentSizeCategory)
+        } else {
+          measurement = nil
+          naturalWidth = nil
+          invalidateIntrinsicContentSize()
+        }
       }
     }
 
@@ -111,8 +124,11 @@
       if let value = publication.receive(input, interacting: interacting) { apply(value) }
     }
 
-    private func apply(_ input: Input) {
-      attributedText = Self.styled(input)
+    private func apply(_ input: Input,
+                       preferredContentSizeCategory: UIContentSizeCategory? = nil) {
+      lastRenderedInput = input
+      attributedText = Self.styled(input,
+          preferredContentSizeCategory: preferredContentSizeCategory)
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
@@ -185,7 +201,8 @@
       return UIAction { [weak self] _ in self?.openURL?(url) }
     }
 
-    private static func styled(_ input: Input) -> NSAttributedString {
+    private static func styled(_ input: Input,
+                               preferredContentSizeCategory: UIContentSizeCategory? = nil) -> NSAttributedString {
       // Use a standard-size base font plus UIKit text-style metrics.
       // A raw UIFont.systemFont(ofSize: alreadyScaledPointSize) embeds a
       // non-scaling attributed font and fails iOS Dynamic Type auditing.
@@ -193,7 +210,8 @@
       let baseSize = UIFont.preferredFont(forTextStyle: .body,
                                           compatibleWith: standardTraits).pointSize
       let currentTraits = UITraitCollection(
-        preferredContentSizeCategory: .init(input.environment.dynamicTypeSize))
+        preferredContentSizeCategory: preferredContentSizeCategory
+            ?? .init(input.environment.dynamicTypeSize))
       let metrics = UIFontMetrics(forTextStyle: .body)
       let paragraph = NSMutableParagraphStyle()
       paragraph.lineSpacing = max(0, input.lineSpacing)

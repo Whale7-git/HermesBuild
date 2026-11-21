@@ -261,3 +261,19 @@ variants from the standard `.large` body point size and apply
 each run using the current SwiftUI text environment's preferred category.
 This preserves default-size metrics and all existing selection/link behavior;
 verify with the simulator audit and real-device large-text typography.
+
+## build216 audit correction: visible surface and attributed Dynamic Type
+
+XCTest's Dynamic Type audit still traversed a fully covered, zero-opacity
+drawer beneath the chat card. RootView now builds the drawer pane only while
+open or being revealed; server sessions remain on AppState. This changes the
+lifetime of the drawer's local visual state (such as search/filter/scroll):
+verify reopening behaviour separately, and do not claim identical preservation.
+
+NativeSelectableText now directly observes SwiftUI DynamicTypeSize. The native
+UITextView retains the last rendered Input and regenerates its attributed runs
+on a UIKit content-size-category trait change; setting only UITextView.font and
+adjustsFontForContentSizeCategory does not update baked-in attributed fonts.
+Selection/link handling and the original UIFontMetrics scaling are retained.
+The three audit tests now run sidebar before the font-changing chat audit to
+isolate an XCTest audit timeout; none of the audit failure categories is skipped.

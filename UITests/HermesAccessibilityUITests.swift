@@ -3,7 +3,7 @@ import XCTest
 /// Intentionally separate from the three gold tests. Existing accessibility
 /// defects are recorded as product bugs rather than silently skipped.
 final class HermesAccessibilityUITests: XCTestCase {
-    func testHomeAudit() throws {
+    func test02HomeAudit() throws {
         let app = HermesUITestHarness.launchAndConnect()
         // Verify empty home, never an old persisted chat screen.
         let newChat = app.buttons["新建对话"]
@@ -22,7 +22,7 @@ final class HermesAccessibilityUITests: XCTestCase {
         }
     }
 
-    func testSessionListAudit() throws {
+    func test01SessionListAudit() throws {
         let app = HermesUITestHarness.launchAndConnect()
         app.buttons["打开会话侧栏"].tap()
         try app.performAccessibilityAudit(for: [
@@ -30,7 +30,7 @@ final class HermesAccessibilityUITests: XCTestCase {
         ])
     }
 
-    func testChatAudit() throws {
+    func test03ChatAudit() throws {
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         // The drawer stays mounted behind the card; wait for the transition.
