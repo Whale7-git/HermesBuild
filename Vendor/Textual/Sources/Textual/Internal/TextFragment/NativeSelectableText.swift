@@ -186,9 +186,15 @@
     }
 
     private static func styled(_ input: Input) -> NSAttributedString {
-      let descriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: .body,
-                                                                in: input.environment)
-      let baseSize = descriptor.pointSize
+      // Use a standard-size base font plus UIKit text-style metrics.
+      // A raw UIFont.systemFont(ofSize: alreadyScaledPointSize) embeds a
+      // non-scaling attributed font and fails iOS Dynamic Type auditing.
+      let standardTraits = UITraitCollection(preferredContentSizeCategory: .large)
+      let baseSize = UIFont.preferredFont(forTextStyle: .body,
+                                          compatibleWith: standardTraits).pointSize
+      let currentTraits = UITraitCollection(
+        preferredContentSizeCategory: .init(input.environment.dynamicTypeSize))
+      let metrics = UIFontMetrics(forTextStyle: .body)
       let paragraph = NSMutableParagraphStyle()
       paragraph.lineSpacing = max(0, input.lineSpacing)
       switch input.alignment {
@@ -230,8 +236,9 @@
              let italic = resolved.fontDescriptor.withSymbolicTraits(resolved.fontDescriptor.symbolicTraits.union(.traitItalic)) {
             resolved = UIFont(descriptor: italic, size: size)
           }
-          font = resolved
-          fonts[key] = resolved
+          let scaled = metrics.scaledFont(for: resolved, compatibleWith: currentTraits)
+          font = scaled
+          fonts[key] = scaled
         }
         // A merged fragment can hold several paragraphs. The paragraph style
         // that owns the trailing newline also owns the gap after it, so only a

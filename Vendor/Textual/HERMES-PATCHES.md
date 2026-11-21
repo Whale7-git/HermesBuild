@@ -249,3 +249,15 @@ category changes. Attributed heading/code/body fonts still resolve from
 SwiftUI TextEnvironmentValues; selection, links and grouping are unchanged.
 This is a narrow source-local patch, not a Textual dependency upgrade.
 Simulator tests and physical-device typography remain distinct checks.
+
+## Dynamic Type font metrics correction
+
+The original native selectable Markdown attributed runs used the already-scaled
+UIKit preferred body descriptor as a raw `systemFont(ofSize:)`. They did not
+carry UIFontMetrics text-style scaling, even though the surrounding readonly
+UITextView opted into Dynamic Type. Build the semantic heading/code/body
+variants from the standard `.large` body point size and apply
+`UIFontMetrics(forTextStyle: .body).scaledFont(for:compatibleWith:)` to
+each run using the current SwiftUI text environment's preferred category.
+This preserves default-size metrics and all existing selection/link behavior;
+verify with the simulator audit and real-device large-text typography.
