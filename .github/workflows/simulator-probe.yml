@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: hermes-ui-simulator-${{ github.ref }}
@@ -101,6 +102,7 @@ jobs:
           xcodegen generate --spec ios-ci-project.yml
 
       - name: Run real iOS UI gestures
+        id: ui_gestures
         shell: bash
         env:
           REQUESTED_SUITE: ${{ github.event.inputs.suite || 'gold' }}
@@ -124,6 +126,46 @@ jobs:
           echo "### Hermes iOS UI: $REQUESTED_SUITE" >> "$GITHUB_STEP_SUMMARY"
           echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
           echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record exact-commit simulator gold result
+        if: always()
+        shell: bash
+        env:
+          UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
+          TEST_SUITE: ${{ github.event.inputs.suite || 'gold' }}
+          STATUS_TOKEN: ${{ github.token }}
+          STATUS_SHA: ${{ github.sha }}
+          STATUS_REPO: ${{ github.repository }}
+          STATUS_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          suite = os.environ["TEST_SUITE"]
+          passed = os.environ["UI_OUTCOME"] == "success"
+          body = {
+              "state": "success" if passed else "failure",
+              "context": f"hermes/simulator-{suite}",
+              "description": f"{suite} UI suite passed" if passed else f"{suite} UI suite did not pass",
+              "target_url": ("https://github.com/" + os.environ["STATUS_REPO"]
+                             + "/actions/runs/" + os.environ["STATUS_RUN"]),
+          }
+          req = urllib.request.Request(
+              "https://api.github.com/repos/" + os.environ["STATUS_REPO"]
+              + "/statuses/" + os.environ["STATUS_SHA"],
+              data=json.dumps(body).encode("utf-8"),
+              headers={
+                  "Authorization": "Bearer " + os.environ["STATUS_TOKEN"],
+                  "Accept": "application/vnd.github+json",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=15) as response:
+              print("UI commit status published:", response.status, body["context"], body["state"])
+          PY
 
       - name: Inspect actual simulator signing entitlements
         if: always()

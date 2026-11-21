@@ -23,23 +23,25 @@ enum HermesUITestHarness {
             let link = linkCell.waitForExistence(timeout: 10) ? linkCell : linkText
             XCTAssertTrue(link.waitForExistence(timeout: 10),
                           "Settings connection entry missing", file: file, line: line)
-            link.tap()
-
             let add = app.buttons["添加实例"]
-            if !(add.waitForExistence(timeout: 5) && add.isHittable) {
-                // Retry the navigation only when we are STILL on Settings,
-                // not when the connection form is already present.
-                if !app.navigationBars["连接与账号"].exists
-                    && link.exists && link.isHittable {
-                    link.tap()
+            let connectionPage = app.navigationBars["连接与账号"]
+
+            // Settings is a presented NavigationStack. A tap on its text can
+            // be accepted while a transition is still settling, without
+            // actually pushing the destination. Recheck the destination and
+            // retry its *real* row, never assume the tap navigated.
+            for _ in 0..<3 {
+                if add.exists && add.isHittable { break }
+                if !connectionPage.exists {
+                    let target = (linkCell.exists && linkCell.isHittable)
+                        ? linkCell : linkText
+                    if target.exists && target.isHittable { target.tap() }
+                } else {
+                    // The destination may lazy-load its bottom action.
+                    let form = app.collectionViews.firstMatch
+                    if form.exists && form.isHittable { form.swipeUp() }
                 }
-            }
-            if !(add.waitForExistence(timeout: 6) && add.isHittable) {
-                // Form sections can be lazy on a small Simulator: materialize
-                // the lower button by scrolling the actual settings collection.
-                if app.collectionViews.firstMatch.exists {
-                    app.collectionViews.firstMatch.swipeUp()
-                }
+                if add.waitForExistence(timeout: 4) && add.isHittable { break }
             }
             guard add.waitForExistence(timeout: 6) && add.isHittable else {
                 let image = XCTAttachment(screenshot: app.screenshot())
