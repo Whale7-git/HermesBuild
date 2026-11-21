@@ -137,9 +137,16 @@
 
     private func apply(_ input: Input,
                        preferredContentSizeCategory: UIContentSizeCategory? = nil) {
+      // When UIKit audits change the system category, a SwiftUI redraw can
+      // arrive with the previous environment. Do not regress the attributed
+      // runs back to a stale category after traitCollectionDidChange.
+      let liveCategory = traitCollection.preferredContentSizeCategory
+      let category = preferredContentSizeCategory
+          ?? (liveCategory == .unspecified ? UIContentSizeCategory(input.environment.dynamicTypeSize)
+                                          : liveCategory)
       lastRenderedInput = input
       attributedText = Self.styled(input,
-          preferredContentSizeCategory: preferredContentSizeCategory)
+          preferredContentSizeCategory: category)
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
@@ -214,16 +221,13 @@
 
     private static func styled(_ input: Input,
                                preferredContentSizeCategory: UIContentSizeCategory? = nil) -> NSAttributedString {
-      // Use a standard-size base font plus UIKit text-style metrics.
-      // A raw UIFont.systemFont(ofSize: alreadyScaledPointSize) embeds a
-      // non-scaling attributed font and fails iOS Dynamic Type auditing.
+      // UIKit's semantic preferred fonts retain their text-style descriptor.
+      // A manually scaled systemFont in attributedText changes pointSize but
+      // loses the semantic style that UIKit's Dynamic Type audit inspects.
       let standardTraits = UITraitCollection(preferredContentSizeCategory: .large)
-      let baseSize = UIFont.preferredFont(forTextStyle: .body,
-                                          compatibleWith: standardTraits).pointSize
       let currentTraits = UITraitCollection(
         preferredContentSizeCategory: preferredContentSizeCategory
             ?? .init(input.environment.dynamicTypeSize))
-      let metrics = UIFontMetrics(forTextStyle: .body)
       let paragraph = NSMutableParagraphStyle()
       paragraph.lineSpacing = max(0, input.lineSpacing)
       switch input.alignment {
@@ -231,7 +235,7 @@
       case .center: paragraph.alignment = .center
       case .trailing: paragraph.alignment = .right
       }
-      struct FontKey: Hashable { let size: CGFloat; let bold: Bool; let mono: Bool; let italic: Bool }
+      struct FontKey: Hashable { let style: String; let bold: Bool; let mono: Bool; let italic: Bool }
       var fonts: [FontKey: UIFont] = [:]
       let output = NSMutableAttributedString(string: "")
       let runs = Array(input.content.runs)
@@ -239,14 +243,15 @@
       for (index, run) in runs.enumerated() {
         let intents = run.presentationIntent?.components ?? []
         let inline = run.inlinePresentationIntent ?? []
-        var size = baseSize
+        var style: UIFont.TextStyle = .body
         var bold = inline.contains(.stronglyEmphasized) || input.environment.legibilityWeight == .bold
         var mono = inline.contains(.code)
         var color = UIColor.label
         for intent in intents {
           switch intent.kind {
           case .header(let level):
-            size *= [CGFloat(2), 1.5, 1.25, 1, 0.875, 0.85][min(5, max(0, level - 1))]
+            style = [UIFont.TextStyle.largeTitle, .title1, .title2, .title3,
+                     .headline, .subheadline][min(5, max(0, level - 1))]
             bold = true
           case .codeBlock: mono = true
           case .tableHeaderRow: bold = true
@@ -254,20 +259,33 @@
           default: break
           }
         }
-        if mono { size *= 0.85 }
-        let key = FontKey(size: size, bold: bold, mono: mono, italic: inline.contains(.emphasized))
+        let key = FontKey(style: style.rawValue, bold: bold, mono: mono,
+                          italic: inline.contains(.emphasized))
         let font: UIFont
         if let cached = fonts[key] { font = cached }
         else {
-          var resolved = mono ? UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .semibold : .regular)
-                              : UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
-          if key.italic,
-             let italic = resolved.fontDescriptor.withSymbolicTraits(resolved.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-            resolved = UIFont(descriptor: italic, size: size)
+          var resolved: UIFont
+          if mono {
+            // Monospaced code still uses the matching semantic style metrics;
+            // derive its base size at .large to avoid double-scaling.
+            let baseline = UIFont.preferredFont(forTextStyle: style,
+                                                 compatibleWith: standardTraits).pointSize
+            let code = UIFont.monospacedSystemFont(ofSize: baseline * 0.85,
+                                                   weight: bold ? .semibold : .regular)
+            resolved = UIFontMetrics(forTextStyle: style)
+              .scaledFont(for: code, compatibleWith: currentTraits)
+          } else {
+            resolved = UIFont.preferredFont(forTextStyle: style,
+                                            compatibleWith: currentTraits)
+            var traits = resolved.fontDescriptor.symbolicTraits
+            if bold { traits.insert(.traitBold) }
+            if key.italic { traits.insert(.traitItalic) }
+            if let descriptor = resolved.fontDescriptor.withSymbolicTraits(traits) {
+              resolved = UIFont(descriptor: descriptor, size: 0)
+            }
           }
-          let scaled = metrics.scaledFont(for: resolved, compatibleWith: currentTraits)
-          font = scaled
-          fonts[key] = scaled
+          font = resolved
+          fonts[key] = resolved
         }
         // A merged fragment can hold several paragraphs. The paragraph style
         // that owns the trailing newline also owns the gap after it, so only a

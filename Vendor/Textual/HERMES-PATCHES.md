@@ -294,3 +294,15 @@ events GET but long-history virtualization made the initial on-screen element
 query inconclusive; the test now scrolls to locate the rendered segment and
 retains a screenshot on failure. The workflow additionally exports failure
 attachments for review. No audit category or real UI assertion is skipped.
+
+## build216 Dynamic Type semantic-font follow-up
+
+Visible native UITextViews still failed the real XCTest Dynamic Type audit after
+assigning manually-scaled system fonts to attributedText. The renderer now
+resolves normal body/heading runs through `UIFont.preferredFont(forTextStyle:
+compatibleWith:)` and keeps semantic font descriptors, deriving monospaced
+runs via matching `UIFontMetrics`. When UIKit changes text-size category,
+the next UIViewRepresentable update follows the view's live trait collection
+instead of potentially undoing it with a stale SwiftUI environment snapshot.
+This remains a narrow Textual vendor patch; verify real font growth and
+paragraph selection in the simulator before merging.
