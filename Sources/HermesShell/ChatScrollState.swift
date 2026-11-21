@@ -234,7 +234,7 @@ struct RootDrawerGestureOwnership: Equatable {
         guard !claimed else { return }
         claimed = ChatDrawerInteraction.shouldTrack(
             startX: startX, translationX: horizontal, translationY: vertical,
-            open: open, width: width, allowFullCard: true)
+            open: open, width: width, allowFullCard: false)
     }
 
     /// A cancelled, vertical, or browser-owned gesture has no destination.
