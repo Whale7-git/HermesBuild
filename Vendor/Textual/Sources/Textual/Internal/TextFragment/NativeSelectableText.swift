@@ -67,7 +67,14 @@
     // Keep the currently rendered source, not a deferred selection update,
     // so a UIKit trait change can regenerate every attributed font.
     private var lastRenderedInput: Input?
-    private var measurement: (width: CGFloat, size: CGSize)?
+    // SwiftUI and UIKit may publish the same Dynamic Type change in either
+    // order. Track a genuinely new SwiftUI category until UIKit catches up;
+    // unrelated redraws must not reinstate stale font sizes.
+    private var lastEnvironmentCategory: UIContentSizeCategory?
+    private var pendingEnvironmentCategory: UIContentSizeCategory?
+    private var deferredTraitCategory: UIContentSizeCategory?
+    private var renderedCategory: UIContentSizeCategory = .unspecified
+    private var measurement: (width: CGFloat, category: UIContentSizeCategory, size: CGSize)?
     private var naturalWidth: CGFloat?
     private var flushScheduled = false
     private var retired = false
@@ -94,6 +101,10 @@
       showsVerticalScrollIndicator = false
       setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
       delegate = self
+      // iOS 17+ trait observation also runs when UIKit changes its category
+      // without a SwiftUI UIViewRepresentable update.
+      _ = registerForTraitChanges([UITraitPreferredContentSizeCategory.self],
+                                  action: #selector(contentSizeCategoryChanged))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -130,22 +141,24 @@
       synchronizeAccessibilityGeometry()
     }
 
-    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
-      super.traitCollectionDidChange(previousTraitCollection)
-      if previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory {
-        // Keep the UIKit text control's own preferred font in sync with the
-        // category while SwiftUI restyles its attributed glyph runs.
-        font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
-        if let lastRenderedInput, !interacting {
-          // adjustsFontForContentSizeCategory updates UITextView.font, not
-          // the fonts embedded in its attributedText. Rebuild all runs.
-          apply(lastRenderedInput,
-                preferredContentSizeCategory: traitCollection.preferredContentSizeCategory)
-        } else {
-          measurement = nil
-          naturalWidth = nil
-          invalidateIntrinsicContentSize()
-        }
+    @objc private func contentSizeCategoryChanged() {
+      guard !retired else { return }
+      let category = traitCollection.preferredContentSizeCategory
+      pendingEnvironmentCategory = nil
+      font = .preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+      if interacting {
+        // Do not destroy a user's active selection to resize Markdown.
+        deferredTraitCategory = category
+        measurement = nil
+        naturalWidth = nil
+        invalidateIntrinsicContentSize()
+      } else if let lastRenderedInput {
+        apply(lastRenderedInput, preferredContentSizeCategory: category)
+      } else {
+        renderedCategory = category
+        measurement = nil
+        naturalWidth = nil
+        invalidateIntrinsicContentSize()
       }
     }
 
@@ -157,21 +170,45 @@
 
     func receive(_ input: Input) {
       guard !retired else { return }
+      let incomingCategory = UIContentSizeCategory(input.environment.dynamicTypeSize)
+      let liveCategory = traitCollection.preferredContentSizeCategory
+      if let previous = lastEnvironmentCategory, previous != incomingCategory {
+        pendingEnvironmentCategory = incomingCategory
+      }
+      lastEnvironmentCategory = incomingCategory
+      if incomingCategory == liveCategory { pendingEnvironmentCategory = nil }
       if let value = publication.receive(input, interacting: interacting) { apply(value) }
     }
 
     private func apply(_ input: Input,
                        preferredContentSizeCategory: UIContentSizeCategory? = nil) {
-      // When UIKit audits change the system category, a SwiftUI redraw can
-      // arrive with the previous environment. Do not regress the attributed
-      // runs back to a stale category after traitCollectionDidChange.
+      // Respect whichever source genuinely changed most recently, rather
+      // than unconditionally choosing a potentially stale UIKit trait.
       let liveCategory = traitCollection.preferredContentSizeCategory
-      let category = preferredContentSizeCategory
+      let category = preferredContentSizeCategory ?? pendingEnvironmentCategory
           ?? (liveCategory == .unspecified ? UIContentSizeCategory(input.environment.dynamicTypeSize)
                                           : liveCategory)
+      let previousCategory = renderedCategory
+      renderedCategory = category
       lastRenderedInput = input
       attributedText = Self.styled(input,
           preferredContentSizeCategory: category)
+      #if DEBUG
+      // Diagnostic facts only: no message text, URL, credential or model data.
+      // The simulator audit exercises category changes; log actual glyph
+      // sizes to distinguish stale font rendering from accessibility metadata.
+      if previousCategory != category {
+        var firstPoint: CGFloat = 0
+        if attributedText.length > 0 {
+          firstPoint = (attributedText.attribute(.font, at: 0, effectiveRange: nil)
+                        as? UIFont)?.pointSize ?? 0
+        }
+        print("HERMES_FONT_EVENT trait=\(liveCategory.rawValue)"
+              + " environment=\(input.environment.dynamicTypeSize)"
+              + " rendered=\(category.rawValue) firstPoint=\(firstPoint)"
+              + " utf16Length=\(attributedText.length)")
+      }
+      #endif
       // A selectable UITextView exposes its content through the native
       // value, but XCTest and VoiceOver can see a blank label after a
       // SwiftUI text view is recycled. Expose the actual rendered text
@@ -194,11 +231,12 @@
         if naturalWidth == nil { naturalWidth = min(32_768, max(1, ceil(attributedText?.size().width ?? 0))) }
         width = naturalWidth ?? 1
       }
-      if let measurement, measurement.width == width { return measurement.size }
+      if let measurement, measurement.width == width,
+         measurement.category == renderedCategory { return measurement.size }
       let fitted = sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
       let scale = max(1, traitCollection.displayScale)
       let result = CGSize(width: width, height: max(0, ceil(fitted.height * scale) / scale))
-      measurement = (width, result)
+      measurement = (width, renderedCategory, result)
       return result
     }
 
@@ -231,7 +269,14 @@
       DispatchQueue.main.async { [weak self] in
         guard let self, !self.retired else { return }
         self.flushScheduled = false
-        if let value = self.publication.resume(interacting: self.interacting) { self.apply(value) }
+        if let value = self.publication.resume(interacting: self.interacting) {
+          self.deferredTraitCategory = nil
+          self.apply(value)
+        } else if !self.interacting, let category = self.deferredTraitCategory,
+                  let input = self.lastRenderedInput {
+          self.deferredTraitCategory = nil
+          self.apply(input, preferredContentSizeCategory: category)
+        }
       }
     }
 
@@ -240,6 +285,7 @@
       selectionActivity?.update(self, selecting: false)
       selectionActivity = nil
       publication.cancel()
+      deferredTraitCategory = nil
       delegate = nil
       openURL = nil
       _ = resignFirstResponder()
