@@ -350,6 +350,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.finalization_lag_ms = delay
             return self.json_response(200, {"delay_ms": delay})
+        if method == "POST" and path == "/__control/add-selection-text":
+            # Place a short real assistant Markdown paragraph at the end of
+            # history, so the native selection surface is actually visible.
+            with self.state.lock:
+                self.state.message_count += 1
+                self.state.rows("ui-session-1").append({
+                    "id": self.state.message_count,
+                    "session_id": "ui-session-1",
+                    "role": "assistant",
+                    "content": "UI 手势冲突测试文本。长按选中这段文字并向右拖动选区时，侧栏应保持关闭。",
+                    "timestamp": 1795150003,
+                })
+            return self.json_response(200, {"selection_text_added": True})
         if method == "POST" and path == "/__control/add-image":
             # Dedicated UI fixture: inject one authenticated uploaded-image
             # reference into existing history, never user files or credentials.
