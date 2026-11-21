@@ -884,7 +884,7 @@
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/TextualSelectionActivity.swift": "3671971a36b17492f9827ed4cc0d677df271bf52dcdb226d247432dd71a11b7f",
     "Vendor/Textual/UPSTREAM-SHA256.json": "bc1d1d7b9c4a2a6749b4a3582b0dee510357c2dd2556bcf287e25c6adfc2fb88",
     "Vendor/Textual/Sources/Textual/Internal/TextFragment/NativeSelectableText.swift": "b30e011a2351d06c36d93cc6b763d46ad31658bfbacb65d9701a656e043158bb",
-    "Sources/HermesShell/HermesNativeFontProbe.swift": "fbad9a787e159814c120d6df181c40d71a0840f05500fe4049b99b555204d932",
+    "Sources/HermesShell/HermesNativeFontProbe.swift": "d21d93ba153b50fb5df947d222d19a701349351992d82f1732f9e1b5bbb636e0",
     "UITests/HermesDynamicTypeProbeUITests.swift": "58f33e665157168cce13f681ddfaaa82183084abf4bc34550b6a3634869ba769"
   }
 }
