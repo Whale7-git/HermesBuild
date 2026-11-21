@@ -1,4 +1,5 @@
 import SwiftUI
+import Textual
 
 /// Chat-first root shell. The conversation is the canvas; the native Hermes
 /// sessions remain available in a left-side drawer without a navigation push.
@@ -14,6 +15,9 @@ struct RootView: View {
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
     @State private var foregroundListPolicy = ForegroundListRefreshPolicy()
     @State private var drawerGestureOwner = RootDrawerGestureOwnership()
+    // Native UITextView selection has priority over full-card drawer dragging.
+    @State private var textSelectionOwners = Set<ObjectIdentifier>()
+    private var textSelectionActive: Bool { !textSelectionOwners.isEmpty }
     @State private var sessionBackOwner = RootPageGestureOwnership()
     @State private var browserBackOwner = RootPageGestureOwnership()
     // Full-page session browser has its own navigation gesture and a real
@@ -89,7 +93,8 @@ struct RootView: View {
 
     private func reveal(width: CGFloat) -> CGFloat {
         CGFloat(ChatDrawerInteraction.reveal(width: Double(drawerWidth(width)),
-                                              open: sidebarOpen, translation: sidebarGesture.translation))
+                                              open: sidebarOpen,
+                                              translation: textSelectionActive ? 0 : sidebarGesture.translation))
     }
 
     var body: some View {
@@ -326,13 +331,14 @@ struct RootView: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 14)
                     .updating($sidebarGesture) { value, state, _ in
-                        guard navigationGesturesAllowed, !browserOpen else { return }
+                        guard navigationGesturesAllowed, !browserOpen,
+                              !textSelectionActive else { return }
                         state.update(
                             startX: Double(value.startLocation.x),
                             horizontal: Double(value.translation.width),
                             vertical: Double(value.translation.height),
                             open: sidebarOpen, width: Double(width),
-                            allowFullCard: false)
+                            allowFullCard: true)
                     }
                     .onChanged { value in
                         guard navigationGesturesAllowed, !browserOpen, !browserSessionOpen else {
@@ -344,7 +350,7 @@ struct RootView: View {
                             startX: Double(value.startLocation.x),
                             horizontal: Double(value.translation.width),
                             vertical: Double(value.translation.height),
-                            width: Double(width))
+                            width: Double(width), textSelecting: textSelectionActive)
                     }
                     .onEnded { value in
                         guard navigationGesturesAllowed, !browserOpen, !browserSessionOpen else {
@@ -353,7 +359,8 @@ struct RootView: View {
                         }
                         guard let shouldOpen = drawerGestureOwner.ended(
                             open: sidebarOpen, width: Double(width),
-                            predictedTranslation: Double(value.predictedEndTranslation.width))
+                            predictedTranslation: Double(value.predictedEndTranslation.width),
+                            textSelecting: textSelectionActive)
                         else { return }
                         if shouldOpen && !sidebarOpen { openSidebar() }
                         else if !shouldOpen && sidebarOpen { closeSidebar() }
@@ -399,6 +406,16 @@ struct RootView: View {
             }
         }
         .onAppear { openPendingNotificationTarget() }
+        .onReceive(NotificationCenter.default.publisher(for: TextualSelectionActivity.didChangeNotification)) { event in
+            guard let selection = event.object as? TextualSelectionActivity else { return }
+            let owner = ObjectIdentifier(selection)
+            if selection.isSelecting {
+                textSelectionOwners.insert(owner)
+                drawerGestureOwner.cancelled()
+            } else {
+                textSelectionOwners.remove(owner)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: GatewayBackend.runsChanged)) { event in
             guard let backend = event.object as? GatewayBackend, backend === app.api else { return }
             Task { await app.refresh() }
@@ -927,6 +944,7 @@ struct RootView: View {
     /// Call on scope, foreground, modal and navigation transitions.
     private func cancelNavigationGestures() {
         drawerGestureOwner.cancelled()
+        textSelectionOwners.removeAll()
         sessionBackOwner.cancelled()
         browserBackOwner.cancelled()
         // A new scope, modal or inactive scene invalidates an old animation
