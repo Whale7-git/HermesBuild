@@ -306,3 +306,19 @@ the next UIViewRepresentable update follows the view's live trait collection
 instead of potentially undoing it with a stale SwiftUI environment snapshot.
 This remains a narrow Textual vendor patch; verify real font growth and
 paragraph selection in the simulator before merging.
+
+## build216 integration: AX coordinates and readable selectable text
+
+The full six-case simulator run 44872768244 still reported eight Dynamic Type
+failures on `NativeSelectionTextView` elements with `(inf, inf, 0, 0)`
+accessibility frames, while actual chat paragraphs remained visible in the
+XCTest screenshots. An attached UIWindow alone had been used to mark these
+recycled/zero-geometry views accessible. The integration patch now checks
+nonzero finite coordinates after every layout and window move, hiding only
+views without actual geometry. Visible text remains in the AX tree and subject
+to Dynamic Type audit.
+
+Each native selectable text view now exposes its actual attributed content as
+its accessibility label, instead of relying on an intermittently blank
+`UITextView` label. Gold2 continues to demand the real second SSE text;
+there is no network-only fallback or skipped assertion.

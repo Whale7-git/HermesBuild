@@ -98,11 +98,36 @@
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // The audit can observe SwiftUI's recyclable text views between
+    // attachment and their first valid layout. A window alone is not proof
+    // that an element has real screen coordinates: XCTest reported
+    // (inf, inf, 0, 0) nodes after Dynamic Type changed its dimensions.
+    // Keep valid, rendered text fully accessible and exclude only views
+    // without a finite, nonempty screen frame.
+    private func synchronizeAccessibilityGeometry() {
+      let valid: Bool
+      if !retired, let window {
+        let rect = convert(bounds, to: window)
+        valid = bounds.width.isFinite && bounds.height.isFinite
+          && bounds.width > 0 && bounds.height > 0
+          && rect.minX.isFinite && rect.minY.isFinite
+          && rect.width.isFinite && rect.height.isFinite
+          && rect.width > 0 && rect.height > 0
+      } else {
+        valid = false
+      }
+      if isAccessibilityElement != valid { isAccessibilityElement = valid }
+      if accessibilityElementsHidden == valid { accessibilityElementsHidden = !valid }
+    }
+
     override func didMoveToWindow() {
       super.didMoveToWindow()
-      let presented = window != nil && bounds.width.isFinite && bounds.height.isFinite
-      isAccessibilityElement = presented
-      accessibilityElementsHidden = !presented
+      synchronizeAccessibilityGeometry()
+    }
+
+    override func layoutSubviews() {
+      super.layoutSubviews()
+      synchronizeAccessibilityGeometry()
     }
 
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -147,6 +172,13 @@
       lastRenderedInput = input
       attributedText = Self.styled(input,
           preferredContentSizeCategory: category)
+      // A selectable UITextView exposes its content through the native
+      // value, but XCTest and VoiceOver can see a blank label after a
+      // SwiftUI text view is recycled. Expose the actual rendered text
+      // (never a synthetic "reply received" flag) for both accessibility
+      // and the golden visible-reply assertion.
+      let rendered = attributedText.string
+      if accessibilityLabel != rendered { accessibilityLabel = rendered }
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
