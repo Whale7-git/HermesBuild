@@ -13,7 +13,9 @@ final class HermesGoldUITests: XCTestCase {
     }
 
     /// Gold 2: UI sends a single message and observes scripted SSE completion.
-    func test02SendStreamAndComplete() async throws {
+    // XCTest invokes ordinary async test bodies on a worker thread; native
+    // XCUIApplication launch/tap APIs are main-thread-only.
+    @MainActor func test02SendStreamAndComplete() async throws {
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
         // Delay only the fixture's final-history commit. Real product
