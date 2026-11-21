@@ -164,6 +164,7 @@ struct InlineImageView: View {
     @State private var layoutRatio: CGFloat?
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var failureReason: String?
     @State private var attempt = 0
     // Consent belongs to one exact source; a recycled SwiftUI row cannot carry
     // approval to a different URL or another account/session.
@@ -227,7 +228,7 @@ struct InlineImageView: View {
 
     private var accessibilityText: String {
         if awaitingConsent { return "外部图片，轻点后才会连接第三方服务器" }
-        if failed { return "图片加载失败，轻点重试" }
+        if failed { return "图片加载失败：\(failureReason ?? "未知原因")，轻点重试" }
         return isLong ? "长图，轻点查看" : "图片"
     }
 
@@ -303,7 +304,10 @@ struct InlineImageView: View {
         } else if failed {
             VStack(spacing: 6) {
                 Image(systemName: "photo.badge.exclamationmark").foregroundStyle(.secondary)
-                Text("图片无法加载，轻点重试").font(.caption2).foregroundStyle(.secondary)
+                Text("图片无法加载：\(failureReason ?? "未知原因")")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).lineLimit(3)
+                Text("轻点重试").font(.caption2).foregroundStyle(.secondary)
             }
         } else {
             ProgressView().controlSize(.small)
@@ -311,7 +315,7 @@ struct InlineImageView: View {
     }
 
     private func load() async {
-        image = nil; failed = false
+        image = nil; failed = false; failureReason = nil
         let writeToken = ImageRatioStore.shared.token(scope: ratioScope)
         do {
             let loaded = try await RemoteImageLoader.shared.load(path: raw, baseURL: baseURL,
@@ -325,7 +329,10 @@ struct InlineImageView: View {
             }
         } catch is CancellationError {
         } catch {
-            if !Task.isCancelled { failed = true }
+            if !Task.isCancelled {
+                failureReason = AttachmentImageFailurePresentation.reason(for: error)
+                failed = true
+            }
         }
     }
 }
