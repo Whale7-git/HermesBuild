@@ -298,6 +298,11 @@ struct RootView: View {
                 .allowsHitTesting(sidebarOpen && !browserOpen && settlingPage == nil)
                 // The permanently mounted covered drawer must not contribute
                 // text to accessibility scans of the active chat/home card.
+                // In addition to hiding the covered drawer, omit its AX
+                // descendants. opacity(0) and accessibilityHidden alone were
+                // insufficient for Xcode's Dynamic Type screen audit.
+                .accessibilityElement(children: exposed <= 0.5 || browserOpen
+                    ? .ignore : .contain)
                 .accessibilityHidden(exposed <= 0.5 || browserOpen)
 
                 chatCardLayer(size: geometry.size, topInset: topInset, bottomInset: bottomInset,
@@ -726,7 +731,7 @@ struct RootView: View {
                         Text(app.active.name)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                             .fixedSize(horizontal: false, vertical: true)
                         Image(systemName: "chevron.down").font(.caption2)
                             .foregroundStyle(.primary)

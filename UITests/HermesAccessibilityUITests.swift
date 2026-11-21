@@ -12,7 +12,14 @@ final class HermesAccessibilityUITests: XCTestCase {
                       "Home audit must inspect the empty conversation")
         try app.performAccessibilityAudit(for: [
             .hitRegion, .contrast, .textClipped, .sufficientElementDescription
-        ])
+        ]) { issue in
+            // Diagnostics only: false keeps the audit failure active.
+            let element = issue.element
+            print("HERMES_A11Y_HOME type=\(issue.auditType) issue=\(issue.detailedDescription)"
+                  + " label=\(element?.label ?? "<none>")"
+                  + " frame=\(String(describing: element?.frame))")
+            return false
+        }
     }
 
     func testSessionListAudit() throws {
@@ -32,6 +39,14 @@ final class HermesAccessibilityUITests: XCTestCase {
             predicate: NSPredicate(format: "hittable == false"), object: close)
         XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 8), .completed,
                        "Drawer never settled closed before chat audit")
-        try app.performAccessibilityAudit(for: [.dynamicType, .trait, .textClipped])
+        try app.performAccessibilityAudit(for: [.dynamicType, .trait, .textClipped]) { issue in
+            // Keep all issues failing; record precise unsupported size ranges
+            // and element geometry for remediation on the next iteration.
+            let element = issue.element
+            print("HERMES_A11Y_CHAT type=\(issue.auditType) issue=\(issue.detailedDescription)"
+                  + " label=\(element?.label ?? "<none>")"
+                  + " frame=\(String(describing: element?.frame))")
+            return false
+        }
     }
 }

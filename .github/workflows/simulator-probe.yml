@@ -127,6 +127,19 @@ jobs:
           echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
           echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Extract structured XCTest diagnostics
+        if: always()
+        shell: bash
+        run: |
+          if [[ -d "$RUNNER_TEMP/HermesUITests.xcresult" ]]; then
+            xcrun xcresulttool get test-results summary \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              > "$RUNNER_TEMP/ui-test-summary.json" || true
+            xcrun xcresulttool get test-results tests \
+              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
+              > "$RUNNER_TEMP/ui-test-cases.json" || true
+          fi
+
       - name: Record exact-commit simulator gold result
         if: always()
         shell: bash
@@ -206,6 +219,8 @@ jobs:
           path: |
             ${{ runner.temp }}/HermesUITests.xcresult
             ${{ runner.temp }}/xcodebuild-ui.log
+            ${{ runner.temp }}/ui-test-summary.json
+            ${{ runner.temp }}/ui-test-cases.json
             ${{ runner.temp }}/mock-gateway.log
             ${{ runner.temp }}/mock-requests.json
             ${{ runner.temp }}/simulator-signed-entitlements.plist
