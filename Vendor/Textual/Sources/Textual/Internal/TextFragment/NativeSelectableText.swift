@@ -216,6 +216,16 @@
       // and the golden visible-reply assertion.
       let rendered = attributedText.string
       if accessibilityLabel != rendered { accessibilityLabel = rendered }
+      #if DEBUG
+      // Simulator-only observable font size for the real chat Dynamic Type
+      // regression. Never expose chat contents, credentials or URLs.
+      if ProcessInfo.processInfo.arguments.contains("-hermes-chat-font-probe") {
+        let pointSize = attributedText.length > 0
+          ? (attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0
+          : 0
+        accessibilityValue = String(format: "fontPt=%.2f", pointSize)
+      }
+      #endif
       selectedRange = NSRange(location: 0, length: 0)
       measurement = nil
       naturalWidth = nil
