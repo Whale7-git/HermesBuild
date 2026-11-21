@@ -643,6 +643,7 @@ enum CacheTestError: Error { case unauthorized }
     var historyCalls = 0
     var cursors:[String?] = []
     var active:String?
+    var lastSubmittedText: String?
     var throwsOnDisconnect = false
     var neverFinishes = false
     var holdHistory = false
@@ -657,7 +658,16 @@ enum CacheTestError: Error { case unauthorized }
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot {
         historyCalls += 1
         let includeAnswer = active == nil && streamCalls > 0 && !historyWithoutAnswer
-        var s:[String:Any] = ["session_id":sessionID,"messages":includeAnswer ? [["id":"answer","role":"assistant","content":"AB"]] : [],"read_only":false]
+        // Final history must contain the accepted user row as well as its
+        // reply. A mock that returns only "AB" cannot prove which POST
+        // produced it and must not unlock a real recovered Run.
+        let completedRows: [[String: Any]] = [
+            ["id": "sent-user", "role": "user", "content": lastSubmittedText ?? ""],
+            ["id": "answer", "role": "assistant", "content": "AB"]
+        ]
+        var s:[String:Any] = ["session_id":sessionID,
+                              "messages":includeAnswer ? completedRows : [],
+                              "read_only":false]
         if let active { s["active_stream_id"] = active }
         let snapshot = try ChatSnapshot(data:JSONSerialization.data(withJSONObject:["session":s]))
         if holdHistory {
@@ -667,6 +677,7 @@ enum CacheTestError: Error { case unauthorized }
     }
     func startNativeTurn(sessionID:String,text:String) async throws -> String {
         startCalls += 1
+        lastSubmittedText = text
         active = "s"
         return "s"
     }
