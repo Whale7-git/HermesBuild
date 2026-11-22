@@ -194,11 +194,11 @@ import Foundation
         // If even an identity placeholder cannot fit, preserve a scoped count
         // rather than making offline history appear authoritative and complete.
         var markerPolicy = ChatHistoryStore.Policy()
-        markerPolicy.maxEntryBytes = 1_500
+        markerPolicy.maxEntryBytes = 4_000
         let marker = ChatHistoryStore(instanceID: namespace, sessionID: "marker",
             accountScope: "marker", rootDirectory: bigRoot, policy: markerPolicy)
         var markerRecord = ChatHistoryRecord(snapshot: try snapshot(session: "marker"))
-        markerRecord.tools = [ChatTool(id: "not-cacheable-" + String(repeating: "i", count: 1100),
+        markerRecord.tools = [ChatTool(id: "not-cacheable-" + String(repeating: "i", count: 3000),
             name: "search", args: "", result: String(repeating: "k", count: 5000),
             done: true, isError: false)]
         marker.schedule(markerRecord)
