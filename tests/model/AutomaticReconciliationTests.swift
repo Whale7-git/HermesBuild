@@ -60,18 +60,20 @@ extension ModelTests {
 
         // A known missing POST is a user-choice boundary. The app must not
         // re-submit it merely because a timer or foreground refresh fired.
-        let absent = ActivityRecoveryService()
-        let noResend = NativeChatModel(sessionID: "activity", api: absent)
+        let absent = FakeChatService()
+        let noResend = NativeChatModel(sessionID: "test", api: absent)
         await noResend.load()
         noResend.draft = "please answer"
-        // The service does not accept this POST; establish only the
-        // read-only guard condition without claiming service execution.
-        noResend.pendingAbsent = true
-        noResend.uncertain = true
+        absent.failStart = true
+        _ = await noResend.send()
+        precondition(absent.startCalls == 1 && noResend.pendingSend != nil)
+        await noResend.refresh()
+        precondition(noResend.pendingAbsent && noResend.canResendPending,
+                     "authoritative absence leaves resend as an explicit choice")
         noResend.scheduleAutomaticReconciliation()
-        precondition(noResend.automaticReconciliationTask != nil ||
-                     absent.postCalls == 0,
-                     "status handling never manufactures a new POST")
+        precondition(noResend.automaticReconciliationTask == nil &&
+                     absent.startCalls == 1,
+                     "automatic worker must not resend a proven absent POST")
         noResend.disconnect()
         print("MODEL_PASS automatic read-only recovery, bounded outage and cancellation")
     }
