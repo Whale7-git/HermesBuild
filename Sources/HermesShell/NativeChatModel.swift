@@ -63,6 +63,8 @@ struct ChatPendingApproval: Identifiable, Equatable {
     let id: String
     let runID: String
     let requestID: String?
+    /// The server's execution generation, required for canonical approval POST.
+    let executionGeneration: Int
     let detail: String
     let command: String?
     let choices: [String]
@@ -78,21 +80,23 @@ struct ChatPendingApproval: Identifiable, Equatable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
         guard let detail else { return nil }
-        let requestID = (object["request_id"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let requestID = (object["request_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !requestID.isEmpty,
+              let generation = object["execution_generation"] as? Int,
+              generation >= 0, let runID, !runID.isEmpty else { return nil }
+        let allowed: Set<String> = ["once", "deny", "reject", "cancel"]
         let rawChoices = (object["choices"] as? [Any])?
             .compactMap { $0 as? String }
-            .filter { !$0.isEmpty } ?? []
-        // 服务端没给选项时按最常见的两者兜底：只读/写两种结果，
-        // 不擅自加 session/always（那等于替用户扩大授权范围）。
+            .filter { !$0.isEmpty && allowed.contains($0.lowercased()) } ?? []
+        // Neither a missing request identity nor absent server-provided choices
+        // is an actionable approval. Never invent a grant from a partial SSE.
         var seenChoices = Set<String>()
-        let choices = (rawChoices.isEmpty ? ["once", "deny"] : rawChoices)
-            .filter { seenChoices.insert($0).inserted }
+        let choices = rawChoices.filter { seenChoices.insert($0).inserted }
+        guard !choices.isEmpty else { return nil }
         let command = (object["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return ChatPendingApproval(
-            id: requestID ?? "\(runID ?? frame.id ?? "approval")-\(detail.prefix(32))",
-            runID: runID ?? "",
-            requestID: requestID?.isEmpty == true ? nil : requestID,
+            id: requestID, runID: runID, requestID: requestID,
+            executionGeneration: generation,
             detail: detail,
             command: command?.isEmpty == true ? nil : command,
             choices: choices)
