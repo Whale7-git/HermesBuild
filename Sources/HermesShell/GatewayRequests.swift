@@ -8,13 +8,14 @@ import FoundationNetworking
 /// 与 `ChatRequests` 的差别只在认证与路由：网关没有 WebUI 的登录 cookie，
 /// 每条请求都必须带 API key；会话/运行因此走另一套 `/api/sessions`、`/v1/runs`。
 enum GatewayRequestError: LocalizedError {
-    case invalidBaseURL, invalidID, invalidReasoningEffort
+    case invalidBaseURL, invalidID, invalidReasoningEffort, invalidApprovalRequest
 
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL: return "网关地址无效：仅支持 http/https，且不能带用户信息、查询或片段"
         case .invalidID: return "会话或运行标识无效"
         case .invalidReasoningEffort: return "无效的推理强度，消息未提交"
+        case .invalidApprovalRequest: return "审批缺少服务端请求标识或执行代次，未发送"
         }
     }
 }
@@ -150,7 +151,7 @@ struct GatewayRequests {
                     executionGeneration: Int) throws -> URLRequest {
         let id = try Self.validatedID(runID)
         guard !requestID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              executionGeneration >= 0 else { throw APIError.badResponse }
+              executionGeneration >= 0 else { throw GatewayRequestError.invalidApprovalRequest }
         let body: [String: Any] = [
             "choice": choice, "request_id": requestID,
             "execution_generation": executionGeneration
