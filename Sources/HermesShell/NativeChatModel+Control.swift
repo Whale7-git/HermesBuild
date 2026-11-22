@@ -224,6 +224,7 @@ extension NativeChatModel {
         guard let active = streamID, !stopping, !submitting else { return }
         let generation = revision
         stopAcknowledged = false
+        stopRejectedStatusCode = nil
         // STOP is an explicit cancellation boundary: preserve any user pause
         // and prohibit ordinary terminal-event queue dispatch from now on.
         pauseQueueForRecovery()
@@ -233,6 +234,7 @@ extension NativeChatModel {
             noteRunRecoveryState()
             guard generation == revision, streamID == active, !Task.isCancelled else { return }
             stopAcknowledged = true
+            stopRejectedStatusCode = nil
             notice = "停止请求已受理，正在核对后台任务是否真正结束。"
             await verifyPendingStop()
             if stopping { scheduleStopStatusPolling() }
@@ -242,7 +244,18 @@ extension NativeChatModel {
             self.error = error.localizedDescription
             uncertain = true
             pauseQueueForRecovery()
-            notice = "停止请求结果未确认；本轮发送仍锁定，请核对后台状态。"
+            if let apiError = error as? APIError,
+               case .http(let code, _) = apiError, code == 404 || code == 409 {
+                stopRejectedStatusCode = code
+                notice = "停止请求被服务端拒绝（HTTP \(code)）；正在核对原 Run，发送保持锁定。"
+            } else {
+                stopRejectedStatusCode = nil
+                notice = "停止请求结果未知；正在核对原 Run，发送保持锁定。"
+            }
+            // A failed/unknown STOP response is not terminal evidence. Perform
+            // a fresh GET-only check, then continue the bounded poll if needed.
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
         }
     }
 
@@ -259,9 +272,21 @@ extension NativeChatModel {
             guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
-                notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
+                if stopAcknowledged {
+                    notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
+                } else if let code = stopRejectedStatusCode {
+                    notice = "停止请求被服务端拒绝（HTTP \(code)），原任务仍运行；发送保持锁定。"
+                } else {
+                    notice = "停止请求结果未知，原任务仍运行；发送保持锁定。"
+                }
             case .unknown:
-                notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+                if stopAcknowledged {
+                    notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+                } else if let code = stopRejectedStatusCode {
+                    notice = "停止请求被服务端拒绝（HTTP \(code)），后台状态仍未知；发送保持锁定。"
+                } else {
+                    notice = "停止请求结果未知，后台状态仍未知；发送保持锁定。"
+                }
             case .unresolved:
                 uncertain = true
                 pauseQueueForRecovery()
@@ -283,6 +308,7 @@ extension NativeChatModel {
                 stopStatusPollTask = nil
                 stopStatusPollTicket = nil
                 stopAcknowledged = false
+                stopRejectedStatusCode = nil
                 revision &+= 1
                 streamTask?.cancel()
                 streamTask = nil
@@ -311,7 +337,7 @@ extension NativeChatModel {
         }
     }
 
-    /// Only a few status GETs are permitted after an acknowledged STOP.
+    /// Only a few status GETs are permitted after an attempted STOP.
     /// A still-running/unknown run stays locked; polling never changes queue
     /// preferences or grants permission to dispatch the next turn.
     func scheduleStopStatusPolling() {
@@ -359,6 +385,7 @@ extension NativeChatModel {
         stopStatusPollTask = nil
         stopStatusPollTicket = nil
         stopAcknowledged = false
+        stopRejectedStatusCode = nil
         buffer = ChatTranscript()
         confirmedHistory = nil
         confirmedHistoryEnd = nil
