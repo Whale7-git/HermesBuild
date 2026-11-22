@@ -469,9 +469,15 @@ struct RootView: View {
         translation: browserSessionOpen ? sessionOffset : exposed,
         reduceMotion: reduceMotion,
         showsDismissSurface: sidebarOpen && !browserSessionOpen,
+        // A drawer swipe must never toggle scrollDisabled on the mounted
+        // transcript. A cancelled/short right drag can terminate before
+        // SwiftUI delivers the matching GestureState reset, leaving UIKit's
+        // UIScrollView disabled for all subsequent vertical pans. The root
+        // drawer recognizer is already axis-gated and simultaneous; the
+        // transcript's directional lock owns vertical motion. Preserve the
+        // separate pushed-chat page transition's existing suppression.
         suppressVerticalScroll: browserSessionOpen
-            ? (sessionBackDrag.claimed || settlingPage == .chat)
-            : (!browserOpen && sidebarGesture.claimed),
+            && (sessionBackDrag.claimed || settlingPage == .chat),
         onDismiss: closeSidebar
     ) {
         Group {
