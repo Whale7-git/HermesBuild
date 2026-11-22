@@ -87,6 +87,15 @@ var transcriptPublications = 0
         let stale = try snapshot(initial + [sent])
         let alive = try snapshot(initial + [sent, answer], active: "run-1")
         let final = try snapshot(initial + [sent, answer])
+        let unknownStatus = try ChatSnapshot(
+            data: JSONSerialization.data(withJSONObject: [
+                "session_id": "test", "messages": initial + [sent, answer]
+            ]), runStatusUnknown: true)
+        precondition(unknownStatus.activeRunEvidence == .unknown
+                     && !ChatFinalHistoryGate.canReplace(
+                         unknownStatus, sessionID: "test",
+                         receipt: receipt, streamedAssistantPresent: true),
+                     "unknown run status must not replace streamed reply")
         precondition(!ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
             receipt: receipt, streamedAssistantPresent: true))
         precondition(!ChatFinalHistoryGate.canReplace(alive, sessionID: "test",

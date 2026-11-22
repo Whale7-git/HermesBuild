@@ -260,6 +260,34 @@ actor ConcurrencyProbe {
                   .runID(for: "s") == nil,
               "verified completion also clears the persisted run identity")
 
+        // build224: 404 is distinct from transient 5xx.
+        let missingScope = "instance|build224-missing"
+        let missing = backend(scope: missingScope)
+        _ = try await missing.startNativeTurn(sessionID: "s", text: "fixture")
+        transport.statusCode = 404
+        for _ in 0..<3 {
+            let proof = try await missing.history(sessionID: "s", before: nil)
+            check(proof.activeRunEvidence == .unknown,
+                  "404 cannot be misread as verified absence")
+        }
+        let missingStore = GatewayRunStore(scope: missingScope, defaults: defaults)
+        check(missingStore.runID(for: "s") == nil
+              && missingStore.unresolvedRunID(for: "s") == run,
+              "three 404 responses converge to durable unresolved, not running")
+        transport.statusCode = 200
+        transport.status = "running"
+        let beforeProbePOSTs = transport.requests.filter {
+            $0.url?.path == "/v1/runs" && $0.httpMethod == "POST"
+        }.count
+        let rejectedResurrection = try await missing.probeActiveRun(sessionID: "s", runID: run)
+        check(rejectedResurrection == .unresolved
+              && missingStore.runID(for: "s") == nil,
+              "late alive response cannot resurrect a retired run")
+        check(transport.requests.filter {
+            $0.url?.path == "/v1/runs" && $0.httpMethod == "POST"
+        }.count == beforeProbePOSTs, "verification cannot submit a second POST")
+        transport.status = "completed"
+
         let unauthScope = "instance|build166-auth"
         let unauth = backend(scope: unauthScope)
         _ = try await unauth.startNativeTurn(sessionID: "s", text: "fixture")
