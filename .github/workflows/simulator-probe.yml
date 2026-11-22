@@ -1,18 +1,8 @@
 name: Hermes iOS Simulator UI regression
 
-# Real UI regression for iOS-affecting pull requests, plus manual/scheduled probes.
-# Separate from candidate IPA building; this workflow never publishes an IPA.
+# Manual-only iOS UI debugging. No PR, daily schedule or post-release dispatch.
+# Separate from candidate IPA building and all release gates.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'Sources/HermesShell/**'
-      - 'Vendor/Textual/**'
-      - 'UITests/**'
-      - 'ios-ci-project.yml'
-      - 'Resources/Info.plist'
-      - 'release.json'
-      - '.github/workflows/simulator-probe.yml'
   workflow_dispatch:
     inputs:
       suite:
@@ -21,11 +11,8 @@ on:
         default: all
         type: choice
         options: [gold, audit, all]
-  schedule:
-    - cron: "17 2 * * *"
 permissions:
   contents: read
-  statuses: write
 
 concurrency:
   group: hermes-ui-simulator-${{ github.ref }}
@@ -44,9 +31,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          # Pin simulator source and status to the same PR HEAD, not a synthetic
-          # pull_request merge ref (which can hide head-specific regressions).
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # workflow_dispatch uses the explicitly selected branch/commit.
+          ref: ${{ github.sha }}
 
       - name: Toolchain and XcodeGen
         shell: bash
@@ -170,7 +156,7 @@ jobs:
         env:
           TEST_OUTCOME: ${{ steps.ui_gestures.outcome }}
           TEST_SHARD: ${{ matrix.shard }}
-          TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_SHA: ${{ github.sha }}
           TEST_RUN: ${{ github.run_id }}
         run: |
           python3 - <<'PY'
@@ -203,47 +189,6 @@ jobs:
           path: ${{ runner.temp }}/simulator-report.json
           if-no-files-found: error
           retention-days: 14
-
-      - name: Record exact-commit simulator gold result
-        if: always()
-        shell: bash
-        env:
-          UI_OUTCOME: ${{ steps.ui_gestures.outcome }}
-          TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
-          STATUS_TOKEN: ${{ github.token }}
-          STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          STATUS_REPO: ${{ github.repository }}
-          STATUS_RUN: ${{ github.run_id }}
-          TEST_SHARD: ${{ matrix.shard }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-          suite = os.environ["TEST_SUITE"]
-          passed = os.environ["UI_OUTCOME"] == "success"
-          body = {
-              "state": "success" if passed else "failure",
-              "context": f"hermes/simulator-{suite}-{os.environ['TEST_SHARD']}",
-              "description": f"{suite} UI suite passed" if passed else f"{suite} UI suite did not pass",
-              "target_url": ("https://github.com/" + os.environ["STATUS_REPO"]
-                             + "/actions/runs/" + os.environ["STATUS_RUN"]),
-          }
-          req = urllib.request.Request(
-              "https://api.github.com/repos/" + os.environ["STATUS_REPO"]
-              + "/statuses/" + os.environ["STATUS_SHA"],
-              data=json.dumps(body).encode("utf-8"),
-              headers={
-                  "Authorization": "Bearer " + os.environ["STATUS_TOKEN"],
-                  "Accept": "application/vnd.github+json",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-          with urllib.request.urlopen(req, timeout=15) as response:
-              print("UI commit status published:", response.status, body["context"], body["state"])
-          PY
 
       - name: Inspect actual simulator signing entitlements
         if: always()
@@ -303,31 +248,3 @@ jobs:
           fi
           xcrun simctl shutdown all || true
 
-  simulator-result:
-    name: Aggregate isolated UI shards
-    if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: simulator
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      statuses: write
-    steps:
-      - name: Publish exact-HEAD combined UI status
-        uses: actions/github-script@v7
-        env:
-          SHARDS_RESULT: ${{ needs.simulator.result }}
-          STATUS_SHA: ${{ github.event.pull_request.head.sha }}
-        with:
-          script: |
-            const result = process.env.SHARDS_RESULT;
-            const passed = result === 'success';
-            await github.rest.repos.createCommitStatus({
-              owner: context.repo.owner, repo: context.repo.repo,
-              sha: process.env.STATUS_SHA,
-              state: passed ? 'success' : 'failure',
-              context: 'hermes/simulator-all',
-              description: passed ? 'All isolated iOS simulator shards passed'
-                                  : 'One or more iOS simulator shards did not pass',
-              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-            });
-            if (!passed) core.setFailed('iOS simulator shard result: ' + result);
