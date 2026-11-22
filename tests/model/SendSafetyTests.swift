@@ -19,6 +19,7 @@ import Foundation
     var pendingApproval: CheckedContinuation<String?, Error>?
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
+    var pendingControlSnapshot: GatewayPendingControlSnapshot?
     var historyCalls = 0
     var recoveryUnavailable = false
     var runRecoveryUnavailable: Bool { recoveryUnavailable }
@@ -29,7 +30,8 @@ import Foundation
         var object: [String: Any] = ["session_id": sessionID, "messages": historyRows,
                                      "read_only": false]
         if let active { object["active_stream_id"] = active }
-        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object))
+        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
+                                gatewayPendingControls: pendingControlSnapshot)
     }
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
         try await startNativeTurn(sessionID: sessionID, text: text, attachments: [])
@@ -1200,6 +1202,63 @@ import Foundation
         editingID: "turn", original: "same", current: "same"))
     precondition(QueueEditorExitPolicy.needsDiscardConfirmation(
         editingID: "turn", original: "original", current: "edited"))
+
+    // Cold recovery rebuilds approval and clarification cards only from a
+    // complete, exact-Run Gateway snapshot. Missing capability preserves known
+    // cards; an explicit empty set removes them; malformed state keeps sending locked.
+    do {
+        let service = SendSafetyService()
+        service.active = "run-1"
+        service.pendingControlSnapshot = GatewayPendingControlSnapshot(
+            frames: [
+                SSEFrame(event: "approval", data:
+                    #"{"request_id":"approval-1","message":"Run command","choices":["once","deny"]}"#,
+                    id: nil),
+                SSEFrame(event: "clarify", data:
+                    #"{"request_id":"clarify-1","execution_generation":7,"question":"Choose a target","choices":["A","B"],"multi_select":false}"#,
+                    id: nil)
+            ],
+            hasIncompleteControl: false)
+        let model = NativeChatModel(sessionID: "control-snapshot-restore", api: service)
+        await model.load()
+        precondition(model.pendingApprovals.count == 1
+                     && model.pendingApprovals.first?.runID == "run-1"
+                     && model.pendingApprovals.first?.requestID == "approval-1",
+                     "cold snapshot restores the approval card for the exact Run")
+        precondition(model.pendingClarifies.count == 1
+                     && model.pendingClarifies.first?.runID == "run-1"
+                     && model.pendingClarifies.first?.requestID == "clarify-1"
+                     && model.pendingClarifies.first?.executionGeneration == 7,
+                     "cold snapshot restores the clarification card with generation")
+
+        func snapshot(_ controls: GatewayPendingControlSnapshot?) throws -> ChatSnapshot {
+            let object: [String: Any] = [
+                "session_id": "control-snapshot-restore",
+                "active_stream_id": "run-1",
+                "messages": [],
+                "read_only": false
+            ]
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
+                                    gatewayPendingControls: controls)
+        }
+        // Older Gateways omit the field; absence is not evidence that a known
+        // approval/clarification has been resolved.
+        model.applySnapshot(try snapshot(nil))
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "missing Gateway capability preserves known pending cards")
+
+        model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+            frames: [], hasIncompleteControl: false)))
+        precondition(model.pendingApprovals.isEmpty && model.pendingClarifies.isEmpty,
+                     "an authoritative empty pending_controls list removes stale cards")
+
+        model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+            frames: [], hasIncompleteControl: true)))
+        precondition(model.uncertain && model.queueRecoveryPaused
+                     && model.notice?.contains("快照数据不完整") == true,
+                     "incomplete control data fails closed and preserves the send lock")
+        model.disconnect()
+    }
 
     print("SEND_SAFETY_PASS complete queue payload, no overwrite, persistence, steer lock, interrupt verification, cancellation, approval identity and clarify reply contract")
 }
