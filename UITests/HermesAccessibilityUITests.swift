@@ -24,10 +24,29 @@ final class HermesAccessibilityUITests: XCTestCase {
 
     func test01SessionListAudit() throws {
         let app = HermesUITestHarness.launchAndConnect()
-        app.buttons["打开会话侧栏"].tap()
+        let open = app.buttons["打开会话侧栏"]
+        XCTAssertTrue(open.waitForExistence(timeout: 12) && open.isHittable,
+                      "Session list opener is missing or obstructed")
+        open.tap()
+        // Audit the opened drawer, not transient presentation frames.
+        let close = app.buttons["关闭会话列表"]
+        XCTAssertTrue(close.waitForExistence(timeout: 12),
+                      "Session drawer never exposed its close control")
+        let settled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"), object: close)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 8), .completed,
+                       "Session drawer did not become interactive before audit")
         try app.performAccessibilityAudit(for: [
             .hitRegion, .elementDetection, .sufficientElementDescription
-        ])
+        ]) { issue in
+            // Log actual audit failures without suppressing any of them.
+            let element = issue.element
+            print("HERMES_A11Y_SESSION type=\(issue.auditType)"
+                  + " issue=\(issue.detailedDescription)"
+                  + " label=\(element?.label ?? "<none>")"
+                  + " frame=\(String(describing: element?.frame))")
+            return false
+        }
     }
 
     func test03ChatAudit() throws {
