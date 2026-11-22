@@ -60,6 +60,38 @@ import FoundationNetworking
     await Task.yield()
     check(coordinator.batch.sessionID == "s2" && coordinator.batch.items.isEmpty, "coordinator ignores late response after session switch")
     coordinator.remove(id)
+
+    // T-10 cancellation race: an upload whose transport ignores cancellation
+    // remains physically in flight until its completion callback. Removing or
+    // switching drafts must not start two more bodies on top of those two.
+    let slow = UploadHarness()
+    let bounded = AttachmentUploadCoordinator(sessionID: "old") { sessionID, draft, _ in
+        try await slow.upload(sessionID: sessionID, draft: draft)
+    }
+    let first = try bounded.add(name: "one.png", mime: "image/png", data: Data([1]))
+    let second = try bounded.add(name: "two.png", mime: "image/png", data: Data([2]))
+    for _ in 0..<100 where slow.sessions.count < 2 { await Task.yield() }
+    check(slow.sessions.count == 2, "two original uploads occupy both slots")
+    bounded.remove(first)
+    bounded.remove(second)
+    _ = try bounded.add(name: "three.png", mime: "image/png", data: Data([3]))
+    for _ in 0..<100 { await Task.yield() }
+    check(slow.sessions.count == 2,
+          "discarding cancelled drafts cannot free transport slots early")
+    bounded.reset(sessionID: "new")
+    _ = try bounded.add(name: "next.png", mime: "image/png", data: Data([4]))
+    for _ in 0..<100 { await Task.yield() }
+    check(slow.sessions.count == 2,
+          "switching session cannot start a third upload before old transports exit")
+    slow.finishNext()
+    for _ in 0..<100 where slow.sessions.count < 3 { await Task.yield() }
+    check(slow.sessions == ["old", "old", "new"],
+          "new session starts only after old cancellation completes")
+    slow.finishNext()
+    slow.finishNext()
+    for _ in 0..<100 where !bounded.batch.canSend { await Task.yield() }
+    check(bounded.batch.canSend && bounded.batch.sessionID == "new",
+          "late old-session callbacks cannot mutate new-session attachment state")
 }
 @MainActor private final class UploadHarness {
     var sessions:[String] = []
