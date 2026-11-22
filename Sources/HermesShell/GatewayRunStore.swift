@@ -93,8 +93,11 @@ final class GatewayRunStore {
     /// An unresolved 404 is a durable diagnostic, not verified absence.
     func unresolvedRunID(for sessionID: String) -> String? {
         guard isValid else { return nil }
-        return defaults?.dictionary(forKey: unresolvedKey).flatMap { $0[sessionID] as? String }
-            ?? unresolved[sessionID]
+        if persistenceFailed { return unresolved[sessionID] }
+        if let defaults {
+            return (defaults.dictionary(forKey: unresolvedKey) as? [String: String])?[sessionID]
+        }
+        return unresolved[sessionID]
     }
 
     /// Drop the tombstone only after a fresh, exact-ID terminal response.
