@@ -880,7 +880,7 @@
     "UITests/HermesChatSelectionGestureUITests.swift": "d22916866e4ce0ab549c225b528db8ca362fbecfb75d0f85636ba7aea144c397",
     "UITests/HermesComposerStabilityUITests.swift": "e59539d2a756b1243ee79ef50e976e0f4dbe2e8ed1c92e87f91c392d5d6cf25f",
     "UITests/HermesGoldUITests.swift": "2390b619be0425e5eb8242e711ab471d560d563ad0c8f2ee17f3f3f6f5f7135e",
-    "UITests/HermesLongTaskRecoveryUITests.swift": "54871866dad278e4718a164617ed45dc42d675d50d754466084aaec0a3ca67be",
+    "UITests/HermesLongTaskRecoveryUITests.swift": "6dcaa4e845a401fc8cd0a9dabf3fe0ceeb858d8423149ece5b3be2704bf9d37e",
     "UITests/HermesRealChatDynamicTypeUITests.swift": "d150816770bd65eb730cb15dc98c7564d119f48433219d95ef4f9d718070b765",
     "UITests/HermesSentImagePreviewUITests.swift": "6e73bd98f3456d791ab53b6f657150186714970c1756df80f20eccbe928ff602",
     "UITests/HermesUITestHarness.swift": "b1c001f004a0420a85eb3fcc4e673ed0139b8d46d33b3726e9b15426a0ed16f0",
