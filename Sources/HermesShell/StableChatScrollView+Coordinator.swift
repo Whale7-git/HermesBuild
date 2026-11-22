@@ -602,6 +602,7 @@ extension ChatScrollController {
         beginAnimatedJump()
         navigationTarget = nil
         navigationDetached = false
+        manualTurnAnchor = nil
         // Tapping the status bar is a deliberate reading gesture, just like
         // dragging the transcript. Do not let the still-active streamed turn
         // recapture the scroll offset on the next Markdown/tool measurement.
