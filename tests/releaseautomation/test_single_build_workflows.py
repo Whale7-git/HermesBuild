@@ -28,15 +28,26 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         path = ROOT / ".github/workflows/hermesshell-single-build.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"pull_request", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["source", "offline", "candidate"])
+        self.assertEqual(jobs(text), ["preflight", "source", "offline", "candidate"])
         self.assertEqual(text.count("bash scripts/github-build-ipa-main.sh"), 1)
         self.assertEqual(text.count("actions/upload-artifact@"), 2)
         self.assertEqual(text.count("name: hermes-candidate-diagnostics-"), 1)
         self.assertIn("HERMES_WORKFLOW_BLOB_SHA", text)
-        self.assertNotRegex(text, r"(?m)^    needs:")
+        self.assertIn("    needs: preflight", text)
+        self.assertIn("needs.preflight.outputs.required == 'true'", text)
         self.assertNotIn("publish-candidate.py", text)
         self.assertNotIn("BARK_URL", text)
         self.assertNotIn("contents: write", text)
+
+    def test_maintenance_pr_skips_mac_candidate(self):
+        text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        preflight = text.split("  preflight:\\n", 1)[1].split("\\n  source:\\n", 1)[0]
+        self.assertIn("github.rest.pulls.listFiles", preflight)
+        self.assertIn("file.filename === 'release.json'", preflight)
+        self.assertIn("core.setOutput('required', 'false')", preflight)
+        candidate = text.split("\\n  candidate:\\n", 1)[1]
+        self.assertIn("needs: preflight", candidate)
+        self.assertIn("needs.preflight.outputs.required == 'true'", candidate)
 
     def test_candidate_concurrency_cancels_stale_pr_builds(self):
         text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
