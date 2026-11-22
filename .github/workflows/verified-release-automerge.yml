@@ -54,7 +54,7 @@ jobs:
               return abort('PR has manual hold label');
             if (!/^(fix|feat|chore)\//.test(pr.head.ref))
               return abort('PR branch is not an allowed release branch');
-            if (pr.mergeable !== true || !['clean', 'unstable'].includes(pr.mergeable_state))
+            if (pr.mergeable !== true || !['clean', 'unstable', 'draft'].includes(pr.mergeable_state))
               return abort('PR is not mergeable without conflicts');
 
             // Draft is not silently promoted unless the author explicitly opted in.
