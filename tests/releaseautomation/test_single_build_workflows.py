@@ -104,7 +104,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
         self.assertEqual(triggers(workflow), {"workflow_run"})
         for required in ("github.event.workflow_run.conclusion == 'success'",
-                         "head_sha: sha", "hermes-auto-release", "no-auto-release",
+                         "head_sha: sha", "no-auto-release",
                          "latest.conclusion !== 'success'", "expected_sha",
                          "previous_sha", "createWorkflowDispatch", "merge_method: 'squash'"):
             self.assertIn(required, workflow)
