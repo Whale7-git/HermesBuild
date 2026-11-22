@@ -54,7 +54,7 @@ final class HermesChatSelectionGestureUITests: XCTestCase {
                 CGVector(dx: 0.47, dy: 0.50))
             start.press(forDuration: 0.35, thenDragTo: shortEnd)
             XCTAssertFalse(close.isHittable,
-                           "Short right swipe opened drawer on attempt \\(attempt)")
+                           "Short right swipe opened drawer on attempt \(attempt)")
 
             // Do not merely assert scrollView.isHittable: that can remain true
             // while isScrollEnabled is false. Compare real static transcript
