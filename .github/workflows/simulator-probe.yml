@@ -37,6 +37,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  worker-c-offline:
+    # Branch-local deterministic model/scroll checks; never build an IPA.
+    if: github.ref == 'refs/heads/fix/worker-c-ui-batch-20261122'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Exact-HEAD offline Swift model, scroll and source regressions
+        env:
+          HERMES_TEST_JOBS: '2'
+        run: |
+          set -euo pipefail
+          swift --version
+          bash tests/run_container.sh
   simulator:
     name: simulator-${{ matrix.shard }}
     strategy:
