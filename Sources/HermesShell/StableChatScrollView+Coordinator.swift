@@ -524,10 +524,17 @@ extension ChatScrollController {
             // supplies the intent to return to latest. A downward finger
             // swipe (reading earlier) remains detached even near the bottom.
             let fingerTravel = scrollView.panGestureRecognizer.translation(in: scrollView).y
+            let hadReadingOwnership = !policy.following
             policy.updateDuringManualDrag(
                 distanceFromBottom: Double(distance),
                 movingTowardLatest: fingerTravel < -12
             )
+            if hadReadingOwnership && policy.following {
+                // The user intentionally returned to the newest reply.
+                // Retire the temporary question-top reserve, otherwise it
+                // leaves blank scrollable space after the answer finishes.
+                turnReading.reset()
+            }
         }
         publishDistance()
         checkPagination()
