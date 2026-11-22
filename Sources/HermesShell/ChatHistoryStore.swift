@@ -531,9 +531,12 @@ final class ChatHistoryStore: Sendable {
                 tools.append(Tool(tool))
                 remaining -= fullCost
             } else if identity <= remaining {
-                let keepArgs = argsBytes <= remaining - identity
-                tools.append(Tool(tool, omitResult: true, omitArgs: !keepArgs))
-                remaining -= identity + (keepArgs ? argsBytes : 0)
+                // Oversized *arguments* do not justify dropping a small result.
+                let keepResult = resultBytes <= remaining - identity
+                let keepArgs = argsBytes <= remaining - identity - (keepResult ? resultBytes : 0)
+                tools.append(Tool(tool, omitResult: !keepResult, omitArgs: !keepArgs))
+                remaining -= identity + (keepResult ? resultBytes : 0)
+                    + (keepArgs ? argsBytes : 0)
             } else {
                 omittedToolCount += 1
             }
@@ -552,6 +555,31 @@ final class ChatHistoryStore: Sendable {
             try? manager.removeItem(at: url)
             clean(root: item.root, policy: item.policy)
             return .failed(.serialization)
+        }
+        // Escaping JSON characters can exceed the conservative UTF-8 estimate.
+        // Shed tool *payloads* before removing confirmed messages. Preserve
+        // identity and a truthful omitted-byte marker on every re-encode.
+        while encoded.count > item.policy.maxEntryBytes && !envelope.tools.isEmpty {
+            let idx = envelope.tools.indices.max {
+                let a = envelope.tools[$0], b = envelope.tools[$1]
+                return a.result.utf8.count + a.args.utf8.count
+                    < b.result.utf8.count + b.args.utf8.count
+            }!
+            let candidate = envelope.tools[idx]
+            if !candidate.result.isEmpty {
+                envelope.tools[idx] = Tool(candidate.value, omitResult: true)
+            } else if !candidate.args.isEmpty {
+                envelope.tools[idx] = Tool(candidate.value, omitArgs: true)
+            } else {
+                envelope.tools.remove(at: idx)
+                envelope.omittedToolCount = (envelope.omittedToolCount ?? 0) + 1
+            }
+            guard let next = encode(envelope, using: encoder) else {
+                try? manager.removeItem(at: url)
+                clean(root: item.root, policy: item.policy)
+                return .failed(.serialization)
+            }
+            encoded = next
         }
         // Keep complete messages. If a single newest message cannot fit, remove
         // the old cache rather than silently truncating its content.
