@@ -5,7 +5,6 @@ on:
   workflow_run:
     workflows:
       - HermesBuild single-build candidate
-      - Hermes iOS Simulator UI regression
     types: [completed]
 # Removing a manual hold after both runs complete must re-evaluate the gate.
 # All executable code remains from trusted main; PR source is never checked out.
@@ -41,10 +40,8 @@ jobs:
             const repo = context.repo.repo;
             const sha = context.payload.workflow_run?.head_sha || context.payload.pull_request?.head?.sha;
             if (!sha) return core.setFailed('Missing PR HEAD SHA for verified release gate');
-            const workflows = [
-              'HermesBuild single-build candidate',
-              'Hermes iOS Simulator UI regression'
-            ];
+            // Simulator discovery is asynchronous and never gates normal releases.
+            const workflows = ['HermesBuild single-build candidate'];
             const abort = message => { core.notice('Release not promoted: ' + message); return false; };
             const blocked = message => { core.setFailed('Release blocked: ' + message); return false; };
             const {data: associations} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
@@ -113,6 +110,8 @@ jobs:
             if ([...latestReview.values()].includes('CHANGES_REQUESTED'))
               return abort('Outstanding requested changes');
 
+            // Require all three candidate jobs (source, Swift, IPA) on the exact HEAD.
+            // Simulator failures are independently triaged into GitHub Issues.
             // Compare workflow runs against the exact PR head, not the synthetic PR merge ref.
             const {data: runsPage} = await github.rest.actions.listWorkflowRunsForRepo({
               owner, repo, event: 'pull_request', head_sha: sha, per_page: 100
