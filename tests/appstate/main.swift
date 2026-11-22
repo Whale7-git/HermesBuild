@@ -1415,6 +1415,19 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         precondition(!SessionRecoveryCoordinator.mayRetireStoredReceipt(
             expected: originalReceipt, current: nil, pendingIsEmpty: true),
             "already-cleared receipt cannot be retired again")
+        // #89: a slow GET must not retire a receipt after the bounded
+        // foreground window, even if the Run and history otherwise match.
+        let cutoff = Date(timeIntervalSince1970: 1_700_000_030)
+        precondition(SessionRecoveryCoordinator.withinVerificationWindow(
+            now: cutoff.addingTimeInterval(-0.001), deadline: cutoff),
+            "in-window terminal proof may be considered")
+        precondition(!SessionRecoveryCoordinator.withinVerificationWindow(
+            now: cutoff, deadline: cutoff),
+            "deadline is exclusive; a timed-out GET must not commit")
+        precondition(!SessionRecoveryCoordinator.withinVerificationWindow(
+            now: cutoff.addingTimeInterval(45), deadline: cutoff),
+            "very late GET cannot retire a receipt or clear task attention")
+        print("RECOVERY_WINDOW_PASS before, at and after deadline")
         print("RECOVERY_RECEIPT_RACE_PASS same-run, replacement, pending and cleared")
         print("APPSTATE_PASS stale list/create isolation, session actions, account isolation, authentication retirement and awaited coalesced refresh")
     }
