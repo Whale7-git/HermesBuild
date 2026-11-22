@@ -471,6 +471,19 @@ enum ChatDrawerRailLayout {
     }
 }
 
+/// A manually captured, actually visible row owns its SCREEN position after
+/// the finger/coast ends. The target is derived from the measured row frame,
+/// not from an arbitrary scroll compensation or a streamed footer height.
+enum ChatManualTurnAnchor {
+    static func target(rowTop: Double, screenTop: Double,
+                       contentHeight: Double, viewport: Double) -> Double? {
+        guard rowTop.isFinite, rowTop >= 0, screenTop.isFinite,
+              contentHeight.isFinite, contentHeight >= 0,
+              viewport.isFinite, viewport > 0 else { return nil }
+        return min(max(0, contentHeight - viewport), max(0, rowTop - screenTop))
+    }
+}
+
 /// Per-controller, transient reading intent. A new reply may grow without
 /// moving the user question; a keyboard resize is not reply growth.
 struct ChatTurnReadingState {

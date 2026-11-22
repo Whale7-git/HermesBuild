@@ -38,6 +38,16 @@ extension ChatScrollController {
         let offset: Double
         if let turnTarget, !inMotion && !selecting {
             offset = turnTarget
+        } else if !inMotion && !selecting && !policy.following
+                    && turnReading.phase == .manualReading,
+                  let anchor = manualTurnAnchor,
+                  let frame = frame(for: anchor.id),
+                  let retained = ChatManualTurnAnchor.target(
+                      rowTop: frame.top, screenTop: anchor.screenTop,
+                      contentHeight: Double(scrollView.contentSize.height), viewport: viewport) {
+            // Preserve the user's measured question screen coordinate across
+            // streaming reflow ABOVE the anchor, without controlling dragging.
+            offset = retained
         } else {
             offset = resolvedOffset(anchors: anchors, previous: Double(previous),
                 following: policy.following && navigationTarget == nil && !inMotion && !selecting)

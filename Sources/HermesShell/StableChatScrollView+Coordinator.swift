@@ -495,6 +495,9 @@ extension ChatScrollController {
         endAnimatedJump()
         navigationTarget = nil
         navigationDetached = false
+        // The new touch now owns displacement. An anchor from the previous
+        // manual gesture must not fight this pan or its inertial deceleration.
+        manualTurnAnchor = nil
         turnReading.userBeganReading()
         // A short pan must not hand the new streamed row back to its
         // bottom-following owner immediately after finger release.
@@ -535,6 +538,7 @@ extension ChatScrollController {
                 // Retire the temporary question-top reserve, otherwise it
                 // leaves blank scrollable space after the answer finishes.
                 turnReading.reset()
+                manualTurnAnchor = nil
             }
         }
         publishDistance()
@@ -547,7 +551,10 @@ extension ChatScrollController {
             return
         }
         markInteractionDirty()
-        if !decelerate { scheduleFlush(); persistReadingPosition() }
+        if !decelerate {
+            captureManualTurnAnchor()
+            scheduleFlush(); persistReadingPosition()
+        }
         publishScrollTrace(reason: decelerate ? "pan.end.decelerating" : "pan.end",
                            anchorID: captureAnchors().first?.id)
     }
@@ -555,10 +562,31 @@ extension ChatScrollController {
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         horizontalBackPan = false
         markInteractionDirty()
+        captureManualTurnAnchor()
         scheduleFlush(); persistReadingPosition()
         publishScrollTrace(reason: "pan.decelerationEnded",
                            anchorID: captureAnchors().first?.id)
     }
+    /// Only preserve the actual user question when its measured row still
+    /// intersects the viewport at gesture end. Scrolling away intentionally
+    /// relinquishes it; streaming must not silently recreate a stale anchor.
+    func captureManualTurnAnchor() {
+        guard turnReading.phase == .manualReading,
+              let id = turnReading.rowID, let row = frame(for: id) else {
+            manualTurnAnchor = nil
+            return
+        }
+        let viewport = Double(scrollView.bounds.height)
+        let screenTop = row.top - Double(scrollView.contentOffset.y)
+        guard viewport > 0, screenTop < viewport,
+              screenTop + row.height > 0 else {
+            manualTurnAnchor = nil
+            return
+        }
+        manualTurnAnchor = (id: id, screenTop: screenTop)
+        publishScrollTrace(reason: "manualAnchor.captured", anchorID: id)
+    }
+
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         endAnimatedJump()
         markInteractionDirty()
@@ -574,6 +602,7 @@ extension ChatScrollController {
         beginAnimatedJump()
         navigationTarget = nil
         navigationDetached = false
+        manualTurnAnchor = nil
         // Tapping the status bar is a deliberate reading gesture, just like
         // dragging the transcript. Do not let the still-active streamed turn
         // recapture the scroll offset on the next Markdown/tool measurement.
@@ -645,6 +674,7 @@ extension ChatScrollController {
         guard let command = navigationTarget, let id = command.targetID,
               let frame = frame(for: id), !dirty.contains(id), !inMotion else { return }
         if command.focusTurn {
+            manualTurnAnchor = nil
             // Wait for a real measured message row, not optimistic text size.
             let viewport = Double(scrollView.bounds.height)
             guard viewport > 0 else { return }
