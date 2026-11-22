@@ -110,6 +110,7 @@ var transcriptPublications = 0
         try await runWindowTrimTests()
         try await pendingRecoveryTests()
         try await activityRecoveryTests()
+        try await automaticReconciliationTests()
         try await runPagingBudgetTests()
         runQueuePresentationTests()
         await runSendModeTests()
