@@ -182,6 +182,13 @@ private struct AttachmentPickerFile: Transferable {
             try coordinator.restorePersisted(value)
             batch = coordinator.batch
             persist(batch)
+            if batch.restoreSizeMismatches > 0 {
+                errorMessage = "已有附件的服务器大小与原始文件不同，已保留已上传引用；请核对附件内容。"
+            } else if batch.items.contains(where: { if case .ready = $0.state { return true }; return false }) {
+                // No confirmed DELETE contract exists on the deployed gateway.
+                // Never silently imply that an unsubmitted remote file was deleted.
+                errorMessage = "部分附件已上传但未确认发送；当前网关无法验证远端删除，丢弃草稿可能保留服务器副本。"
+            }
             // No implicit network request on foreground/cold restore. Upload
             // resumes only from the user's next explicit send action.
         } catch {
@@ -332,7 +339,18 @@ private struct AttachmentPickerFile: Transferable {
     func retry(_ id: UUID) {
         do { try coordinator.retry(id) } catch { errorMessage = error.localizedDescription }
     }
-    func remove(_ id: UUID) { coordinator.remove(id) }
+    func remove(_ id: UUID) {
+        if let draft = batch.items.first(where: { $0.id == id }) {
+            switch draft.state {
+            case .ready:
+                errorMessage = "已移除本地附件，但服务器删除接口尚未验证，远端文件可能保留。"
+            case .uploading:
+                errorMessage = "正在取消上传；服务器若已接收文件，当前无法验证远端删除。"
+            case .queued, .failed: break
+            }
+        }
+        coordinator.remove(id)
+    }
 
     func beginEditing(_ id: UUID) async -> AttachmentEditSelection? {
         guard !isEditing, !isImporting,
