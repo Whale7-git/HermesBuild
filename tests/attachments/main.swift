@@ -292,6 +292,15 @@ do {
             sessionID: readySource.persistedValue.sessionID,
             items: [invalidItem]))
     }
+    rejects("partial local bytes without a verified server offset/hash cannot resume") {
+        try restoredReady.restorePersisted(PersistedAttachmentBatch(
+            version: readySource.persistedValue.version,
+            sessionID: readySource.persistedValue.sessionID,
+            items: [PersistedAttachmentDraft(
+                id: UUID(), name: "partial.pdf", mime: "application/pdf",
+                byteCount: bytes.count + 10, data: bytes,
+                state: .pending, reuploading: false)]))
+    }
     var quotaBatch = AttachmentBatch(sessionID: "quota-persist", maxTotalBytes: 3)
     rejects("persisted attachment quota is rechecked") {
         try quotaBatch.restorePersisted(PersistedAttachmentBatch(
