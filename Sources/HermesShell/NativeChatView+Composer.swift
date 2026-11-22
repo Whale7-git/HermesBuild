@@ -18,36 +18,58 @@ extension NativeChatView {
                 composerFocused = false
                 showModelPicker = true
             },
-            readOnly: model.readOnly,
+            readOnly: model.readOnly || preparingAttachmentSend,
             loading: model.loading,
             running: model.running,
             stopping: model.stopping,
             canStop: model.streamID != nil && !model.submitting,
-            canSend: (model.canSend || model.canSendWhileRunning) && !attachments.isEditing,
+            canSend: (model.canSend || model.canSendWhileRunning) && !attachments.isEditing && !preparingAttachmentSend,
             hasReadyAttachments: attachments.canSend && !attachments.batch.items.isEmpty,
             hasAttachmentItems: !attachments.batch.items.isEmpty || attachments.isImporting || attachments.errorMessage != nil,
             onSend: { text in
-                // 附件未全部就绪就不能发：否则会静默发出“只有文字”的消息，
-                // 用户以为文件发出去了。
-                let payloads: [ChatAttachmentPayload]
-                do {
-                    payloads = try attachments.payload(for: sessionID).map(ChatAttachmentPayload.init(uploaded:))
-                } catch {
-                    showToast(error.localizedDescription)
-                    return
-                }
-                // 只在提交这一刻把文本交给模型：模型仍以 draft 为发送来源，
-                // 失败时也仍能把草稿还回输入框（下方 onChange 负责回填）。
-                syncedDraft = text
-                model.draft = text
-                userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
-                // A steer/queue message issued while Hermes is already
-                // running is not a fresh conversation turn. Do not force a
-                // new top anchor or steal the user's current reading position.
-                pendingUserTurnFocus = !model.running
-                Task {
-                    // A09：send 返回 false（本地被拒）也保留附件供重试；
-                    // 只有「已受理 + 无错误 + 结果确定」才清空。
+                // Prepare files only after the explicit send tap. Until every
+                // upload is confirmed, do not issue ANY Run/Session/chat POST.
+                // Lock the composer across this preflight to avoid a second
+                // tap or overwriting newly typed text during an await.
+                guard !preparingAttachmentSend else { return }
+                let ticket = UUID()
+                attachmentSendTicket = ticket
+                preparingAttachmentSend = true
+                attachmentSendTask = Task {
+                    defer {
+                        if attachmentSendTicket == ticket {
+                            preparingAttachmentSend = false
+                            attachmentSendTask = nil
+                        }
+                    }
+                    let payloads: [ChatAttachmentPayload]
+                    do {
+                        payloads = try await attachments.prepareForSend(sessionID: sessionID)
+                            .map(ChatAttachmentPayload.init(uploaded:))
+                        try Task.checkCancellation()
+                        // A navigation/account change must never submit an
+                        // upload prepared under the previous session's identity.
+                        guard visible, attachments.batch.sessionID == sessionID,
+                              model.sessionID == sessionID else { return }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        if visible { showToast(error.localizedDescription) }
+                        return
+                    }
+                    // The preflight is complete. Detach the chat POST from
+                    // cancellation on view disappearance: a submitted POST is
+                    // owned by the model's uncertain-delivery reconciliation.
+                    if attachmentSendTicket == ticket {
+                        attachmentSendTask = nil
+                        preparingAttachmentSend = false
+                    }
+                    syncedDraft = text
+                    model.draft = text
+                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    pendingUserTurnFocus = !model.running
+                    // A rejected/uncertain POST preserves the draft and ready
+                    // attachment references. No automatic replay of the POST.
                     let accepted = await model.send(attachments: payloads)
                     if !accepted { pendingUserTurnFocus = false }
                     if AttachmentResetPolicy.shouldReset(accepted: accepted,
@@ -60,17 +82,19 @@ extension NativeChatView {
             onAttach: { showAttachInfo = true },
             attachments: AnyView(
                 AttachmentComposerBar(model: attachments,
-                    isLocked: model.submitting || model.reconciling || !model.canSend,
+                    isLocked: model.submitting || model.reconciling || !model.canSend || preparingAttachmentSend,
                     showsPicker: false)
                     .padding(.top, 8)
             ),
             attachmentMenu: AnyView(
                 AttachmentComposerBar(model: attachments,
-                    isLocked: model.submitting || model.reconciling || !model.canSend,
+                    isLocked: model.submitting || model.reconciling || !model.canSend || preparingAttachmentSend,
                     showsItems: false, launchPicker: attachmentPickerTrigger)
             ),
-            readOnlyMessage: model.cachedHistoryDate != nil
-                ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil,
+            readOnlyMessage: preparingAttachmentSend
+                ? "正在上传附件，尚未提交消息…"
+                : (model.cachedHistoryDate != nil
+                    ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil),
             // Silent verified cache warmup; the editor still stays read-only
             // until the server GET establishes authority. Keep all problems
             // visible as actionable, persistent UI states.

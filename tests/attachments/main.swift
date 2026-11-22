@@ -248,6 +248,25 @@ do {
     check(restoredReady.canSend && restoredReady.items[0].data.isEmpty
           && (try? restoredReady.payload(for: "persisted")) == [readyAttachment],
           "completed server reference restores without local bytes")
+    // A remote transform may change the declared size after upload. Keep a
+    // valid server reference and charge the larger size to the quota; do not
+    // guess a resumable offset or re-upload the file from zero.
+    let transformed = UploadedAttachment(
+        name: "report.pdf", path: "/state/attachments/persisted/report.pdf",
+        size: bytes.count + 5, mime: "application/pdf", isImage: false)
+    let transformedItem = PersistedAttachmentDraft(
+        id: readyID, name: "report.pdf", mime: "application/pdf",
+        byteCount: bytes.count, data: Data(), state: .ready(transformed),
+        reuploading: false)
+    var transformedRestore = AttachmentBatch(sessionID: "persisted")
+    try transformedRestore.restorePersisted(PersistedAttachmentBatch(
+        version: PersistedAttachmentBatch.currentVersion,
+        sessionID: "persisted", items: [transformedItem]))
+    check(transformedRestore.restoreSizeMismatches == 1
+          && transformedRestore.items[0].byteCount == transformed.size
+          && (try? transformedRestore.payload(for: "persisted")) == [transformed],
+          "transformed server size is diagnosed, quota-charged and reused without re-upload")
+
 
     let wrongScope = PersistedAttachmentBatch(
         version: readySource.persistedValue.version, sessionID: "other",
@@ -272,6 +291,15 @@ do {
             version: readySource.persistedValue.version,
             sessionID: readySource.persistedValue.sessionID,
             items: [invalidItem]))
+    }
+    rejects("partial local bytes without a verified server offset/hash cannot resume") {
+        try restoredReady.restorePersisted(PersistedAttachmentBatch(
+            version: readySource.persistedValue.version,
+            sessionID: readySource.persistedValue.sessionID,
+            items: [PersistedAttachmentDraft(
+                id: UUID(), name: "partial.pdf", mime: "application/pdf",
+                byteCount: bytes.count + 10, data: bytes,
+                state: .pending, reuploading: false)]))
     }
     var quotaBatch = AttachmentBatch(sessionID: "quota-persist", maxTotalBytes: 3)
     rejects("persisted attachment quota is rechecked") {
@@ -398,69 +426,9 @@ check(AttachmentFilenameSanitizer.sanitize(family, maxBytes: 200)
 let byteCapped = AttachmentFilenameSanitizer.sanitize(String(repeating: "中", count: 100) + ".txt", maxBytes: 255)
 check(byteCapped.utf8.count <= 255 && byteCapped.hasSuffix(".txt"),
       "sanitizer truncates by UTF-8 bytes, not characters, and keeps extension")
-// T-10: eight attachments must not trigger eight simultaneous multipart
-// bodies. The controlled upload suspends until this test releases a slot.
-var activeUploads = 0
-var peakUploads = 0
-var uploadWaiters: [CheckedContinuation<UploadedAttachment, Error>] = []
-let bounded = AttachmentUploadCoordinator(sessionID: "bounded") { _, _, _ in
-    activeUploads += 1
-    peakUploads = max(peakUploads, activeUploads)
-    let result = try await withCheckedThrowingContinuation {
-        uploadWaiters.append($0)
-    }
-    activeUploads -= 1
-    return result
-}
-for index in 0..<8 {
-    _ = try bounded.add(name: "part-\(index).txt", mime: "text/plain", data: Data([1]))
-}
-for _ in 0..<200 where uploadWaiters.count < 2 {
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
-let initiallyQueued = bounded.batch.items.filter {
-    if case .queued = $0.state { return true }
-    return false
-}.count
-check(uploadWaiters.count == 2 && peakUploads == 2 && initiallyQueued == 6,
-      "eight added attachments start only two uploads; remaining six stay queued")
-for _ in 0..<8 {
-    for _ in 0..<200 where uploadWaiters.isEmpty {
-        try await Task.sleep(nanoseconds: 10_000_000)
-    }
-    check(!uploadWaiters.isEmpty, "a freed slot schedules the next queued attachment")
-    uploadWaiters.removeFirst().resume(returning: attachment)
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
-for _ in 0..<200 where !bounded.batch.canSend {
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
-check(peakUploads == 2 && activeUploads == 0 && bounded.batch.canSend,
-      "bounded upload queue drains all eight without ever exceeding two in flight")
-bounded.reset(sessionID: "after-batch")
-
-// The uploader is owned by a composer page. Destroying that page cancels its
-// pending work instead of silently keeping an upload alive in the background.
-var ownerReply: CheckedContinuation<UploadedAttachment, Error>?
-var ownerUploadCancelled = false
-var ownedCoordinator: AttachmentUploadCoordinator? = AttachmentUploadCoordinator(sessionID: "owner") { _, _, _ in
-    let result = try await withCheckedThrowingContinuation { ownerReply = $0 }
-    ownerUploadCancelled = Task.isCancelled
-    return result
-}
-weak var releasedCoordinator = ownedCoordinator
-_ = try ownedCoordinator!.add(name: "owned.txt", mime: "text/plain", data: Data([1]))
-for _ in 0..<200 where ownerReply == nil {
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
-check(ownerReply != nil, "owned upload started before owner release")
-ownedCoordinator = nil
-check(releasedCoordinator == nil, "upload task does not retain its composer coordinator")
-ownerReply?.resume(returning: attachment)
-for _ in 0..<200 where !ownerUploadCancelled {
-    try await Task.sleep(nanoseconds: 10_000_000)
-}
-check(ownerUploadCancelled, "releasing the upload coordinator cancels its task")
+// T-09/T-10: explicit-send upload, abandon/switch, 8-file and byte caps,
+// cancelled transports and retry without duplicating completed references.
+try await runCoordinatorTests()
 try await runPreviewTests()
 runKindTests()
 try runDownloadContractTests()
