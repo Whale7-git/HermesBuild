@@ -412,6 +412,9 @@ final class AppState: ObservableObject {
             let title = sessions.first { $0.sessionId == sessionID }?.displayTitle ?? ""
             notifyRecoveryIssue(sessionID: sessionID, title: title)
         }
+        if appIsActive, persisted.contains(.needsVerification), currentSessionID != sessionID {
+            scheduleTaskCenterReconciliation()
+        }
     }
 
     /// The ledger keeps one fact per exact request, even for two pending
@@ -436,6 +439,7 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
+        cancelTaskCenterReconciliation()
         invalidateCreationNavigation()
         homeSendError = nil
         openedSession = session
@@ -508,14 +512,22 @@ final class AppState: ObservableObject {
         homeSendError = nil
         currentSessionID = nil
         openedSession = nil
+        scheduleTaskCenterReconciliation(force: true)
     }
 
     /// Called by RootView on scene and overlay changes. A notification is
     /// suppressed only when the app is active and the exact conversation is
     /// unobscured.
     func setPresentationVisibility(appActive: Bool, conversationVisible: Bool) {
-        appIsActive = appActive
-        conversationIsVisible = appActive && conversationVisible
+        let becameActive = appActive && !self.appIsActive
+        self.appIsActive = appActive
+        self.conversationIsVisible = appActive && conversationVisible
+        if !appActive {
+            cancelTaskCenterReconciliation()
+            lastTaskCenterReconciliationAt = nil
+        } else if becameActive {
+            scheduleTaskCenterReconciliation(force: true)
+        }
     }
 
     /// The request identity index belongs to the current instance/account and
@@ -1000,6 +1012,11 @@ final class AppState: ObservableObject {
     /// 兜底保护仍然是 `fetchSessions` 里的 `isCurrent(scope)` —— 旧作用域的
     /// 结果永远不会写进新作用域。
     private var scopeRefreshTask: Task<Void, Never>?
+    /// Foreground-only, bounded read-only reconciliation for non-visible sessions.
+    private var taskCenterReconciliationTask: Task<Void, Never>?
+    private var taskCenterReconciliationTicket: UUID?
+    private var lastTaskCenterReconciliationAt: Date?
+    private var taskCenterReconciliationCursor: String?
     /// A-09：历史清理任务也必须持有引用，避免成为「看不见也管不着」的孤儿任务。
     ///
     /// 这里**刻意不取消**：`ChatHistoryStore.remove` 删的是刚被退役的旧账号
@@ -1466,6 +1483,9 @@ final class AppState: ObservableObject {
 
     func clearCachedHistory() async {
         guard !clearingHistory else { return }
+        cancelTaskCenterReconciliation()
+        lastTaskCenterReconciliationAt = nil
+        taskCenterReconciliationCursor = nil
         let instance = historyInstanceID
         let account = historyAccountScope
         let scope = instance + "|" + account
@@ -1622,6 +1642,9 @@ final class AppState: ObservableObject {
 
     private func switchTo(_ index: Int, snapshotDeparting: Bool) {
         guard instances.indices.contains(index) else { return }
+        cancelTaskCenterReconciliation()
+        lastTaskCenterReconciliationAt = nil
+        taskCenterReconciliationCursor = nil
         homeTurnClaim.cancel()
         homeAttachmentSessionID = nil
         homeSendError = nil
@@ -1993,6 +2016,242 @@ final class AppState: ObservableObject {
         refreshTask = nil
     }
 
+    private func scheduleTaskCenterReconciliation(force: Bool = false) {
+        guard appIsActive, !needsLogin, !clearingHistory, !damagedTaskStore,
+              taskCenterReconciliationTask == nil else { return }
+        if !force,
+           Date().timeIntervalSince(lastTaskCenterReconciliationAt ?? .distantPast) < 30 {
+            return
+        }
+        let scope = actionScope
+        let instance = historyInstanceID
+        let requestAPI = api
+        let ticket = UUID()
+        taskCenterReconciliationTicket = ticket
+        lastTaskCenterReconciliationAt = Date()
+        taskCenterReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.taskCenterReconciliationTicket == ticket {
+                    self.taskCenterReconciliationTask = nil
+                    self.taskCenterReconciliationTicket = nil
+                }
+            }
+            for pass in 0..<3 {
+                if pass > 0 { try? await Task.sleep(nanoseconds: 15_000_000_000) }
+                guard !Task.isCancelled, self.appIsActive, self.isCurrent(scope),
+                      !self.needsLogin, !self.clearingHistory else { return }
+                let ordered = self.sessionTaskObservations
+                    .filter { $0.value.signals.contains(.needsVerification)
+                        && $0.key != self.currentSessionID }
+                    .sorted {
+                        if $0.value.observedAt != $1.value.observedAt {
+                            return $0.value.observedAt < $1.value.observedAt
+                        }
+                        return $0.key < $1.key
+                    }
+                    .map(\.key)
+                if ordered.isEmpty { return }
+                let start = self.taskCenterReconciliationCursor
+                    .flatMap { cursor in ordered.firstIndex(of: cursor).map { ($0 + 1) % ordered.count } } ?? 0
+                let rotated = Array(ordered[start...]) + Array(ordered[..<start])
+                let candidates = Array(rotated.prefix(4))
+                self.taskCenterReconciliationCursor = candidates.last
+                for sessionID in candidates {
+                    guard !Task.isCancelled, self.appIsActive, self.isCurrent(scope),
+                          self.currentSessionID != sessionID else { continue }
+                    let decision = await self.reconcileTaskCenterSession(
+                        sessionID: sessionID, requestAPI: requestAPI,
+                        instanceID: instance, accountScope: scope.accountScope)
+                    guard !Task.isCancelled, self.appIsActive, self.isCurrent(scope),
+                          self.currentSessionID != sessionID else { continue }
+                    self.applyTaskCenterDecision(decision, sessionID: sessionID)
+                }
+            }
+        }
+    }
+
+    private func cancelTaskCenterReconciliation() {
+        taskCenterReconciliationTask?.cancel()
+        taskCenterReconciliationTask = nil
+        taskCenterReconciliationTicket = nil
+    }
+
+    private func reconcileTaskCenterSession(
+        sessionID: String, requestAPI: HermesBackend,
+        instanceID: String, accountScope: String
+    ) async -> SessionTaskBackgroundDecision {
+        let fileStore = LocalDataFileStore(
+            instanceID: instanceID, accountScope: accountScope, sessionID: sessionID)
+        let store = ChatDraftStore(
+            instanceID: instanceID, accountScope: accountScope, sessionID: sessionID,
+            legacyBaseURL: requestAPI.webConsoleBaseURL.absoluteString, fileStore: fileStore)
+        let pendingRead = store.loadPending()
+        let activeRead = store.loadActiveRun()
+        guard pendingRead.result.succeeded, activeRead.result.succeeded else { return .recoveryIssue }
+        var pending: PendingSendRecoveryRecord?
+        let receipt: ActiveTurnRecovery?
+        if let data = pendingRead.value {
+            guard let decoded = try? JSONDecoder().decode(PendingSendRecoveryRecord.self, from: data)
+            else { return .recoveryIssue }
+            pending = decoded
+        }
+        if let data = activeRead.value {
+            guard let decoded = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
+            else { return .recoveryIssue }
+            receipt = decoded
+        } else {
+            receipt = nil
+        }
+        let latest: ChatSnapshot
+        do { latest = try await requestAPI.history(sessionID: sessionID, before: nil) }
+        catch { return .needsVerification }
+        guard !Task.isCancelled, latest.sessionID == sessionID else { return .needsVerification }
+
+        switch latest.activeRunState {
+        case .unknown, .unresolved:
+            return .needsVerification
+        case .active(let runID):
+            let receiptMatches = receipt?.runID == runID
+            if receiptMatches, let pendingValue = pending,
+               pendingValue.text == receipt?.text,
+               Set(pendingValue.attachments.map(\.path)) == receipt?.attachmentPaths {
+                guard !Task.isCancelled, store.savePending(nil).succeeded else { return .recoveryIssue }
+                pending = nil
+            }
+            return SessionTaskBackgroundPolicy.decide(
+                runState: latest.activeRunState, storageReadable: true,
+                hasPendingSend: pending != nil, pendingResult: nil,
+                hasAcceptedRun: receipt != nil,
+                acceptedRunMatchesActive: receiptMatches,
+                acceptedRunCompleted: false)
+        case .absent:
+            var pendingResult: PendingReconcileResult?
+            if let pendingValue = pending {
+                guard let boundary = pendingValue.historyEnd,
+                      let pages = try? await taskCenterHistoryPages(
+                        api: requestAPI, sessionID: sessionID,
+                        latest: latest, boundary: boundary),
+                      !Task.isCancelled else { return .needsVerification }
+                pendingResult = DeliveryReconciliationPolicy.resolve(
+                    text: pendingValue.text, attachments: pendingValue.attachments,
+                    historyEnd: pendingValue.historyEnd, knownIDs: pendingValue.knownIDs,
+                    pages: pages)
+                if pendingResult == .delivered {
+                    guard !Task.isCancelled, store.savePending(nil).succeeded else { return .recoveryIssue }
+                    pending = nil
+                }
+            }
+            var receiptCompleted = false
+            if let receipt {
+                if let boundary = receipt.historyEnd,
+                   let pages = try? await taskCenterHistoryPages(
+                        api: requestAPI, sessionID: sessionID,
+                        latest: latest, boundary: boundary),
+                   !Task.isCancelled, receipt.confirmsCompletion(in: pages) {
+                    guard store.saveActiveRun(nil).succeeded else { return .recoveryIssue }
+                    receiptCompleted = true
+                } else {
+                    let probe: ActiveRunProbe
+                    do {
+                        probe = try await requestAPI.probeActiveRun(
+                            sessionID: sessionID, runID: receipt.runID)
+                    } catch { return .needsVerification }
+                    guard !Task.isCancelled else { return .needsVerification }
+                    switch probe {
+                    case .alive:
+                        return .active
+                    case .unknown, .unresolved:
+                        return .needsVerification
+                    case .terminal:
+                        let final: ChatSnapshot
+                        do { final = try await requestAPI.history(sessionID: sessionID, before: nil) }
+                        catch { return .needsVerification }
+                        guard !Task.isCancelled, final.sessionID == sessionID,
+                              final.activeRunState.isVerifiedAbsent, !final.readOnly else {
+                            return .needsVerification
+                        }
+                        guard store.saveActiveRun(nil).succeeded else { return .recoveryIssue }
+                        receiptCompleted = true
+                    }
+                }
+            }
+            return SessionTaskBackgroundPolicy.decide(
+                runState: latest.activeRunState, storageReadable: true,
+                hasPendingSend: pending != nil, pendingResult: pendingResult,
+                hasAcceptedRun: receipt != nil && !receiptCompleted,
+                acceptedRunMatchesActive: false,
+                acceptedRunCompleted: receiptCompleted)
+        }
+    }
+
+    private func taskCenterHistoryPages(
+        api requestAPI: HermesBackend, sessionID: String,
+        latest: ChatSnapshot, boundary: Int
+    ) async throws -> [ChatSnapshot]? {
+        guard latest.sessionID == sessionID, latest.activeRunState.isVerifiedAbsent,
+              !latest.readOnly, latest.rawMessageEndIndex >= boundary else { return nil }
+        var pages = [latest]
+        while (pages.last?.olderOffset ?? 0) > boundary && pages.count < 64 {
+            try Task.checkCancellation()
+            let cursor = pages[pages.count - 1].olderOffset
+            let older = try await requestAPI.history(sessionID: sessionID, before: cursor)
+            guard older.sessionID == sessionID, older.activeRunState.isVerifiedAbsent,
+                  !older.readOnly, older.rawMessageEndIndex == cursor,
+                  older.olderOffset < cursor else { return nil }
+            pages.append(older)
+        }
+        guard (pages.last?.olderOffset ?? Int.max) <= boundary else { return nil }
+        let current = try await requestAPI.history(sessionID: sessionID, before: nil)
+        guard current.sessionID == sessionID, current.activeRunState.isVerifiedAbsent,
+              !current.readOnly,
+              current.rawMessageEndIndex == latest.rawMessageEndIndex,
+              current.messages.last?.id == latest.messages.last?.id else { return nil }
+        return pages
+    }
+
+    private func applyTaskCenterDecision(_ decision: SessionTaskBackgroundDecision,
+                                         sessionID: String) {
+        var signals = sessionTaskObservations[sessionID]?.signals ?? []
+        switch decision {
+        case .active:
+            signals.remove(.needsVerification)
+            signals.remove(.sendNotFound)
+            setSessionStreaming(true, sessionID: sessionID)
+        case .resolved:
+            signals.remove(.needsVerification)
+            signals.remove(.sendNotFound)
+            signals.remove(.waitingForApproval)
+            signals.remove(.waitingForClarify)
+            signals.remove(.stopping)
+            setSessionStreaming(false, sessionID: sessionID)
+        case .sendNotFound:
+            signals.remove(.needsVerification)
+            signals.remove(.waitingForApproval)
+            signals.remove(.waitingForClarify)
+            signals.remove(.stopping)
+            signals.insert(.sendNotFound)
+            setSessionStreaming(false, sessionID: sessionID)
+        case .needsVerification:
+            signals.remove(.sendNotFound)
+            signals.insert(.needsVerification)
+        case .recoveryIssue:
+            signals.remove(.needsVerification)
+            signals.insert(.recoveryIssue)
+        }
+        setSessionTaskSignals(signals, for: sessionID)
+    }
+
+    private func setSessionStreaming(_ streaming: Bool, sessionID: String) {
+        sessions = sessions.map { row in
+            guard row.sessionId == sessionID else { return row }
+            var copy = row
+            copy.isStreaming = streaming
+            return copy
+        }
+        rememberSessionList(sessions, scope: sessionListScopeKey)
+    }
+
     private func fetchSessions(api requestAPI: HermesBackend, scope: ActionScope, generation: UUID) async {
         defer { if refreshGeneration == generation, isCurrent(scope) { loadingSessions = false } }
         do {
@@ -2041,6 +2300,7 @@ final class AppState: ObservableObject {
                 scope: historyInstanceID + "|" + historyAccountScope,
                 at: refreshedAt)
             lastSessionRefresh = refreshedAt
+            if appIsActive { scheduleTaskCenterReconciliation() }
         } catch is SessionRefreshTimeout {
             guard isCurrent(scope), refreshGeneration == generation, !Task.isCancelled else { return }
             errorText = sessions.isEmpty

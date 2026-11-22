@@ -177,7 +177,7 @@ enum SessionTaskBackgroundPolicy {
         switch runState {
         case .unknown, .unresolved:
             return .needsVerification
-        case .active:
+        case .active(_):
             if hasPendingSend && !acceptedRunMatchesActive { return .needsVerification }
             if hasAcceptedRun && !acceptedRunMatchesActive { return .needsVerification }
             return .active
@@ -185,7 +185,9 @@ enum SessionTaskBackgroundPolicy {
             if hasPendingSend {
                 switch pendingResult {
                 case .delivered: break
-                case .absent: return .sendNotFound
+                case .absent:
+                    return hasAcceptedRun && !acceptedRunCompleted
+                        ? .needsVerification : .sendNotFound
                 case .failed, .none: return .needsVerification
                 }
             }
