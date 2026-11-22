@@ -41,9 +41,20 @@ final class HermesAccessibilityUITests: XCTestCase {
             return app
         }
 
+        func runUnfilteredAudit(_ app: XCUIApplication) throws {
+            try app.performAccessibilityAudit(for: auditedTypes) { issue in
+                // Diagnoses actual accessibility findings; never suppress.
+                let element = issue.element
+                print("HERMES_A11Y_SESSION type=\(issue.auditType)"
+                      + " issue=\(issue.detailedDescription)"
+                      + " label=\(element?.label ?? "<none>")"
+                      + " frame=\(String(describing: element?.frame))")
+                return false
+            }
+        }
         let app = openSettledDrawer()
         do {
-            try app.performAccessibilityAudit(for: auditedTypes)
+            try runUnfilteredAudit(app)
         } catch {
             let failure = error as NSError
             // XCTest's AX audit service sometimes fails before producing any
@@ -54,7 +65,7 @@ final class HermesAccessibilityUITests: XCTestCase {
                   failure.code == -56 else { throw error }
             app.terminate()
             let retry = openSettledDrawer()
-            try retry.performAccessibilityAudit(for: auditedTypes)
+            try runUnfilteredAudit(retry)
         }
     }
 

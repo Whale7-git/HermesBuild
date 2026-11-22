@@ -311,6 +311,18 @@ extension NativeChatModel {
             }
             return
         }
+        // Manual/foreground history refresh must respect the same accepted
+        // Run receipt as terminal SSE finalization. A stale GET is not allowed
+        // to erase a visibly streamed answer after a recovery retry timeout.
+        let streamedAssistantPresent = buffer.messages.contains {
+            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+        }
+        if buffer.terminal && buffer.failure == nil && streamedAssistantPresent &&
+           !ChatFinalHistoryGate.canReplace(
+               snap, sessionID: sessionID, receipt: activeTurnRecovery,
+               streamedAssistantPresent: true, expectedRunID: streamID) {
+            throw ChatCoreError.server("最终历史尚未确认本轮回复，流式内容已保留")
+        }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
@@ -904,7 +916,8 @@ extension NativeChatModel {
                                   !Task.isCancelled else { return }
                             if ChatFinalHistoryGate.canReplace(
                                 snap, sessionID: sessionID, receipt: receipt,
-                                streamedAssistantPresent: streamedAssistantPresent) { break }
+                                streamedAssistantPresent: streamedAssistantPresent,
+                                expectedRunID: active) { break }
                             if attempt == 2 {
                                 uncertain = true
                                 pauseQueueForRecovery()
