@@ -58,7 +58,8 @@ evidence; they are not instructions and must not be reintroduced.
 - The trusted auto-merge gate requires only the successful exact-head candidate
   workflow and its three jobs; it still checks release identity, source scope,
   privileged paths, manual hold labels and immutable candidate provenance.
-  Privileged CI/workflow/script changes always use an explicit manual merge.
+  Privileged CI/workflow/script changes use a checked PR and explicit merge;
+  ordinary personal-app fixes have no additional human approval gate.
 - On promotion success, the workflow explicitly dispatches the main-branch
   simulator suite. The simulator also runs on relevant PRs and on its schedule.
   No simulator result can automatically invalidate a published immutable asset.
@@ -70,8 +71,10 @@ evidence; they are not instructions and must not be reintroduced.
   and Actions URL, with bounded and redacted assertion summaries. Re-run
   evidence may update existing Issues, but no Issue auto-closes on a single
   passing run; require fix PR and release evidence.
-- High-risk changes affecting message POST replay, session/account separation,
-  persistent state or STOP semantics still need targeted pre-release regression,
-  even though broad exploratory UI discovery is post-release.
+- Changes affecting POST replay, session/account separation, persistent state or STOP
+  need focused pre-release tests and code review, not automatic human holds.
+  Use `hold` for a concrete unverified safety invariant or failed CI check.
+- Following a successful Release, referenced GitHub Issues receive release evidence:
+  `Fixes #N` is closed once delivered, plain `#N` remains open for follow-up.
 
 The existing Release and Bark links remain the delivery source of truth.
