@@ -1,30 +1,16 @@
 ---
 name: ios-regression-guard
-description: Map HermesBuild UI, state and performance fixes to existing lightweight gates and offline tests while separating CI, IPA and device acceptance.
+description: Map HermesBuild UI, reliability and performance changes to existing Swift/Python tests and device evidence without imposing a release gate.
 ---
 
-# Hermes iOS regression guard
+# Hermes iOS regression review
 
-## Follow, do not duplicate, the current test pipeline
+Read current `AGENTS.md`, `tests/run_container.sh`, `.github/workflows/hermes-offline-diagnostics.yml` and `.github/workflows/hermesshell-single-build.yml`. Do not restore removed source inventory scripts or historical scope manifests.
 
-Read `AGENTS.md`, `tests/run_container.sh`, `tests/check_navigation_contract.py`, `tests/check_swiftui_modifiers.py`, `tests/verify_source.py`, `tests/sourcegate/main.py` and `.github/workflows/hermesshell-single-build.yml`.
+Run focused tests first, then the full applicable suite when useful. The complete local suite is `bash tests/run_container.sh`; GitHub independently runs four Ubuntu diagnostic shards (`core`, `recovery`, `interface`, `media`) plus Python checks. Tests compile Swift units but do not build an IPA.
 
-Existing local/CI entries:
-- `python3 tests/verify_source.py`
-- `python3 tests/check_navigation_contract.py`
-- `python3 tests/check_swiftui_modifiers.py`
-- `python3 tests/test_swiftui_modifiers.py`
-- `python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v`
-- `bash tests/run_container.sh` (Swift toolchain required).
+For each fix report the observed scenario, owning symbols, exact commit/SHA, test commands and actual outcome: PASS, FAIL, NOT RUN, or DEVICE PENDING. Tests should be meaningful rather than passing placeholders. Preserve POST non-replay, account/Session/Run identity and stored state.
 
-Determine the *smallest relevant* tests first, then the complete applicable suite before merge. Do not claim tests ran unless results are available from an actual invocation or verified workflow run. Tests may be extended in feature PRs, but audit-only changes should not impose a new CI check or compile.
+**All diagnostic results are informational**: a failed or unavailable test does not block product merge/Release. Track failures honestly in Issues and continue repairing. Only actual IPA build and immutable Artifact integrity affect whether there is a publishable binary.
 
-## Traceability
-
-For every fix require: failure scenario; invariant; owning source symbol; added/updated existing test; command and outcome; suspected device-only edge; version/commit checked. Use explicit labels **PASS**, **FAIL**, **NOT RUN**, **DEVICE PENDING**.
-
-Prioritize isolated tests for scroll-state hysteresis, geometry, restored reading, session ownership, queue edit/pause, uncertain send, terminal state, interrupted runs, draft persistence and navigation cancellation. Keep navigation route coverage intact.
-
-## Release boundary
-
-The existing PR workflow runs source, offline and one iPhoneOS candidate compile; main promotion reuses that candidate. Do not add separate IPA builds, SwiftPM caches, external runners, release branches or new release scripts. Audit-only PR should keep `release.json`, `Resources/Info.plist` and README version header unchanged. If a requested change needs a published binary, follow the repository's existing release engineering Skill and exact validated candidate. Real-device UX results remain separate even when CI is green.
+The candidate workflow compiles a single macOS IPA; promotion reuses identical bytes. Do not introduce duplicate IPA builds, privileged tooling or external runners. Real-device interactions are separate evidence.
