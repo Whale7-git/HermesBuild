@@ -3,6 +3,16 @@ name: HermesBuild promote verified candidate
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Verified merge commit SHA"
+        required: true
+        type: string
+      previous_sha:
+        description: "Main SHA before merge"
+        required: true
+        type: string
 
 permissions:
   contents: read
