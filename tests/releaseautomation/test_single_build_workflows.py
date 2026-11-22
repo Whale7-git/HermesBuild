@@ -252,7 +252,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertIn("Candidate and Release", agents)
         self.assertIn("权威规则来源", readme)
         self.assertIn("唯一权威规则来源", collaboration)
-        self.assertIn("唯一权威来源", template)
+        self.assertIn("single authoritative source", template)
 
     def test_reference_docs_do_not_masquerade_as_current_gateway_contracts(self):
         sse = (ROOT / "docs/sse-contract.md").read_text(encoding="utf-8")
