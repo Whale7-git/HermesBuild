@@ -33,6 +33,11 @@ concurrency:
 
 jobs:
   simulator:
+    name: simulator-${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [chat, experience]
     runs-on: macos-26
     timeout-minutes: 45
     steps:
@@ -115,13 +120,15 @@ jobs:
         shell: bash
         env:
           REQUESTED_SUITE: ${{ github.event.inputs.suite || 'all' }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          case "$REQUESTED_SUITE" in
-            gold) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
-            audit) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
-            all) selection="" ;;
-            *) echo "Unsupported suite $REQUESTED_SUITE" >&2; exit 2 ;;
+          case "$REQUESTED_SUITE:$TEST_SHARD" in
+            all:chat) selection="-only-testing:HermesUITests/HermesGoldUITests -only-testing:HermesUITests/HermesChatSelectionGestureUITests -only-testing:HermesUITests/HermesComposerStabilityUITests -only-testing:HermesUITests/HermesLongTaskRecoveryUITests" ;;
+            all:experience) selection="-only-testing:HermesUITests/HermesAccessibilityUITests -only-testing:HermesUITests/HermesRealChatDynamicTypeUITests -only-testing:HermesUITests/HermesSentImagePreviewUITests" ;;
+            gold:*) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
+            audit:*) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
+            *) echo "Unsupported suite/shard $REQUESTED_SUITE:$TEST_SHARD" >&2; exit 2 ;;
           esac
           xcodebuild test \
             -project HermesShellCI.xcodeproj \
@@ -132,7 +139,7 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/HermesUITests.xcresult" \
             $selection CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES \
             2>&1 | tee "$RUNNER_TEMP/xcodebuild-ui.log"
-          echo "### Hermes iOS UI: $REQUESTED_SUITE" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Hermes iOS UI: $REQUESTED_SUITE / $TEST_SHARD" >> "$GITHUB_STEP_SUMMARY"
           echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
           echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
 
@@ -165,6 +172,7 @@ jobs:
           STATUS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           STATUS_REPO: ${{ github.repository }}
           STATUS_RUN: ${{ github.run_id }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -175,7 +183,7 @@ jobs:
           passed = os.environ["UI_OUTCOME"] == "success"
           body = {
               "state": "success" if passed else "failure",
-              "context": f"hermes/simulator-{suite}",
+              "context": f"hermes/simulator-{suite}-{os.environ['TEST_SHARD']}",
               "description": f"{suite} UI suite passed" if passed else f"{suite} UI suite did not pass",
               "target_url": ("https://github.com/" + os.environ["STATUS_REPO"]
                              + "/actions/runs/" + os.environ["STATUS_RUN"]),
@@ -230,7 +238,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-ui-evidence-${{ github.run_id }}
+          name: hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/HermesUITests.xcresult
             ${{ runner.temp }}/xcodebuild-ui.log
@@ -252,3 +260,32 @@ jobs:
             kill "$(cat "$RUNNER_TEMP/mock.pid")" 2>/dev/null || true
           fi
           xcrun simctl shutdown all || true
+
+  simulator-result:
+    name: Aggregate isolated UI shards
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: simulator
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish exact-HEAD combined UI status
+        uses: actions/github-script@v7
+        env:
+          SHARDS_RESULT: ${{ needs.simulator.result }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const result = process.env.SHARDS_RESULT;
+            const passed = result === 'success';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: process.env.STATUS_SHA,
+              state: passed ? 'success' : 'failure',
+              context: 'hermes/simulator-all',
+              description: passed ? 'All isolated iOS simulator shards passed'
+                                  : 'One or more iOS simulator shards did not pass',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+            if (!passed) core.setFailed('iOS simulator shard result: ' + result);

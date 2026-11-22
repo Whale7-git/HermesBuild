@@ -86,6 +86,19 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("if: ${{ always() }}", text)
 
+    def test_simulator_shards_use_independent_runners_and_aggregate_status(self):
+        workflow = (ROOT / ".github/workflows/simulator-probe.yml").read_text()
+        self.assertIn("shard: [chat, experience]", workflow)
+        self.assertIn("fail-fast: false", workflow)
+        self.assertIn("name: simulator-${{ matrix.shard }}", workflow)
+        self.assertIn("HermesLongTaskRecoveryUITests", workflow)
+        self.assertIn("TEST_SHARD: ${{ matrix.shard }}", workflow)
+        self.assertIn("name: Aggregate isolated UI shards", workflow)
+        self.assertIn("needs: simulator", workflow)
+        self.assertIn("context: 'hermes/simulator-all'", workflow)
+        self.assertIn("if (!passed) core.setFailed", workflow)
+        self.assertIn("hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}", workflow)
+
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
@@ -102,7 +115,15 @@ class SingleBuildWorkflowTests(unittest.TestCase):
 
     def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
-        self.assertEqual(triggers(workflow), {"workflow_run"})
+        self.assertEqual(triggers(workflow), {"workflow_run", "pull_request_target"})
+        self.assertIn("types: [unlabeled, ready_for_review, reopened]", workflow)
+        self.assertIn("github.event.pull_request.head.sha", workflow)
+        self.assertIn("core.setFailed('Release blocked: '", workflow)
+        self.assertIn("path.startsWith('tests/model/') && path.endsWith('.swift')", workflow)
+        self.assertNotIn("path.startsWith('tests/run_container.sh')", workflow)
+        runner = (ROOT / "tests/run_container.sh").read_text()
+        self.assertIn("tests/model/*.swift", runner)
+        self.assertNotIn("tests/model/AutomaticReconciliationTests.swift", runner)
         for required in ("github.event.workflow_run.conclusion == 'success'",
                          "head_sha: sha", "no-auto-release",
                          "latest.conclusion !== 'success'", "expected_sha",
