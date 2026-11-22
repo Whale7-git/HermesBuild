@@ -359,6 +359,12 @@ final class NativeChatModel: ObservableObject {
                 text: text, attachments: attachments, historyEnd: historyEnd,
                 knownIDs: knownIDs, snapshot: snapshot)
         }
+
+        func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+            DeliveryReconciliationPolicy.resolve(
+                text: text, attachments: attachments, historyEnd: historyEnd,
+                knownIDs: knownIDs, pages: pages)
+        }
     }
     @Published var pendingRecoveryUnreadable = false
 
@@ -397,7 +403,8 @@ final class NativeChatModel: ObservableObject {
         let receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
-            attachmentPaths: Set(attachments.map(\.path)))
+            attachmentPaths: Set(attachments.map(\.path)),
+            pendingApprovals: pendingApprovals, pendingClarifies: pendingClarifies)
         guard let data = try? JSONEncoder().encode(receipt) else {
             recordLocalWrite(.failed(.encoding), kind: .runRecovery)
             return false
@@ -409,6 +416,29 @@ final class NativeChatModel: ObservableObject {
         }
         activeTurnRecovery = receipt
         return true
+    }
+
+    /// Persist approval and clarification payloads already observed for this exact
+    /// run. They are restored after process loss; no new request is synthesized.
+    func persistPendingRunRequests() {
+        guard let receipt = activeTurnRecovery else { return }
+        let updated = ActiveTurnRecovery(
+            runID: receipt.runID, historyEnd: receipt.historyEnd,
+            knownIDs: receipt.knownIDs, text: receipt.text,
+            attachmentPaths: receipt.attachmentPaths,
+            pendingApprovals: pendingApprovals, pendingClarifies: pendingClarifies)
+        guard let data = try? JSONEncoder().encode(updated) else {
+            recordLocalWrite(.failed(.encoding), kind: .runRecovery)
+            uncertain = true
+            return
+        }
+        let result = draftStore?.saveActiveRun(data) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .runRecovery)
+            uncertain = true
+            return
+        }
+        activeTurnRecovery = updated
     }
 
     /// A clear is authoritative only after its protected-file removal succeeds.
@@ -427,6 +457,8 @@ final class NativeChatModel: ObservableObject {
         }
         activeTurnRecovery = nil
         activeTurnHistoryBoundary = nil
+        pendingApprovals = []
+        pendingClarifies = []
         return true
     }
 
@@ -566,6 +598,8 @@ final class NativeChatModel: ObservableObject {
             if let receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data) {
                 activeTurnRecovery = receipt
                 activeTurnHistoryBoundary = receipt.historyEnd
+                pendingApprovals = receipt.pendingApprovals
+                pendingClarifies = receipt.pendingClarifies
                 if pendingSend == nil {
                     uncertain = true
                     notice = "上次已受理的后台任务正在核对；不会重复提交消息。"

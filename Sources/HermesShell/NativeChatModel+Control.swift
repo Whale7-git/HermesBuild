@@ -6,20 +6,28 @@ extension NativeChatModel {
     @discardableResult
     func upsertPendingApproval(_ pending: ChatPendingApproval) -> Bool {
         if let index = pendingApprovals.firstIndex(where: { $0.id == pending.id }) {
-            if pendingApprovals[index] != pending { pendingApprovals[index] = pending }
+            if pendingApprovals[index] != pending {
+                pendingApprovals[index] = pending
+                persistPendingRunRequests()
+            }
             return false
         }
         pendingApprovals.append(pending)
+        persistPendingRunRequests()
         return true
     }
 
     @discardableResult
     func upsertPendingClarify(_ pending: ChatPendingClarify) -> Bool {
         if let index = pendingClarifies.firstIndex(where: { $0.id == pending.id }) {
-            if pendingClarifies[index] != pending { pendingClarifies[index] = pending }
+            if pendingClarifies[index] != pending {
+                pendingClarifies[index] = pending
+                persistPendingRunRequests()
+            }
             return false
         }
         pendingClarifies.append(pending)
+        persistPendingRunRequests()
         return true
     }
 
@@ -28,6 +36,7 @@ extension NativeChatModel {
         let removed = pendingApprovals.remove(at: index)
         onApprovalResolved?(sessionID, removed.requestID)
         if pendingApprovals.isEmpty { approving = false }
+        persistPendingRunRequests()
     }
 
     func removePendingClarify(id: String) {
@@ -35,6 +44,7 @@ extension NativeChatModel {
         let removed = pendingClarifies.remove(at: index)
         onClarifyResolved?(sessionID, removed.requestID)
         if pendingClarifies.isEmpty { clarifying = false }
+        persistPendingRunRequests()
     }
 
     func removePendingApprovals(for runID: String?) {
@@ -144,6 +154,7 @@ extension NativeChatModel {
         for request in removed { onApprovalResolved?(sessionID, request.requestID) }
         approvalSubmission = UUID()
         approving = false
+        persistPendingRunRequests()
     }
 
     /// 回传一次补充信息答复。
@@ -215,6 +226,7 @@ extension NativeChatModel {
         for request in removed { onClarifyResolved?(sessionID, request.requestID) }
         clarifySubmission = UUID()
         clarifying = false
+        persistPendingRunRequests()
     }
 
     /// A stop POST is an acknowledgement, not proof that the run has ended.
@@ -262,11 +274,22 @@ extension NativeChatModel {
                 notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
             case .unknown:
                 notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+            case .unresolved:
+                stopStatusPollTask?.cancel()
+                stopStatusPollTask = nil
+                stopStatusPollTicket = nil
+                stopping = false
+                stopAcknowledged = false
+                streamID = nil
+                transition(to: .idle)
+                uncertain = true
+                pauseQueueForRecovery()
+                notice = "后台暂时无法查询这轮任务；消息已保留，App 会继续核对，不会重复发送。"
             case .terminal(let outcome):
                 let finalHistory = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,
-                      finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                      finalHistory.activeRunState.isVerifiedAbsent, !finalHistory.readOnly else {
                     uncertain = true
                     pauseQueueForRecovery()
                     notice = "后台已结束，但最终历史尚未确认；请稍后核对。"

@@ -730,7 +730,68 @@ extension NativeChatModel {
         guard !Task.isCancelled, error == nil else { return .failed }
         if pendingSend == nil { return .delivered }
         guard pendingSend?.id == pending.id else { return .failed }
-        return pendingAbsent ? .absent : .failed
+        if pendingAbsent { return .absent }
+        guard let latest = latestRecoverySnapshot,
+              latest.sessionID == sessionID,
+              latest.activeRunState.isVerifiedAbsent,
+              !latest.readOnly,
+              let boundary = pending.historyEnd else { return .failed }
+        var pages = [latest]
+        while (pages.last?.olderOffset ?? 0) > boundary && pages.count < 64 {
+            guard !Task.isCancelled, pendingSend?.id == pending.id else { return .failed }
+            let cursor = pages[pages.count - 1].olderOffset
+            do {
+                let older = try await api.history(sessionID: sessionID, before: cursor)
+                guard !Task.isCancelled, pendingSend?.id == pending.id,
+                      older.sessionID == sessionID,
+                      older.activeRunState.isVerifiedAbsent, !older.readOnly,
+                      older.rawMessageEndIndex == cursor, older.olderOffset < cursor else {
+                    return .failed
+                }
+                pages.append(older)
+            } catch {
+                if handleAuthenticationFailure(error) { return .failed }
+                self.error = error.localizedDescription
+                return .failed
+            }
+        }
+        guard (pages.last?.olderOffset ?? Int.max) <= boundary else { return .failed }
+        do {
+            let current = try await api.history(sessionID: sessionID, before: nil)
+            guard current.sessionID == sessionID, current.activeRunState.isVerifiedAbsent,
+                  !current.readOnly,
+                  current.rawMessageEndIndex == latest.rawMessageEndIndex,
+                  current.messages.last?.id == latest.messages.last?.id else { return .failed }
+        } catch {
+            if handleAuthenticationFailure(error) { return .failed }
+            self.error = error.localizedDescription
+            return .failed
+        }
+        guard pendingSend?.id == pending.id else { return .failed }
+        let result = pending.resolution(in: pages)
+        switch result {
+        case .delivered:
+            buffer.messages.removeAll { $0.id == pending.id }
+            pendingSend = nil
+            pendingAbsent = false
+            acknowledgeDeliveredQueuedTurn(matching: pending)
+            settledAttachmentPaths = pending.attachments.map(\.path)
+            if draft == pending.composerText { draft = "" }
+            uncertain = activeTurnRecovery != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
+            notice = uncertain ? "消息已送达，但本轮后台任务仍在核对。" : nil
+            flush()
+        case .absent:
+            pendingAbsent = true
+            uncertain = false
+            notice = "已核对完整服务端历史，未发现本次消息；你可以选择重试，不会自动重发。"
+            flush()
+        case .failed:
+            pendingAbsent = false
+            uncertain = true
+            notice = "历史证据仍不足以确认发送结果；消息已保留，不会重复提交。"
+            flush()
+        }
+        return result
     }
 
     /// 仅在核对确认后台不存在（`.absent`）后重发，附件原样带回（服务端引用，不重新上传）。
@@ -755,7 +816,8 @@ extension NativeChatModel {
     /// 放弃这条待核对消息：只清本地占位与待核对状态，不触碰服务端历史。
     func discardPending(restoreDraft: Bool = true) {
         // 提交中不收尾：此时 pendingSend 已是新一次发送的快照。
-        guard !submitting, !loading, !syncing, !reconciling, let pending = pendingSend else { return }
+        guard !submitting, !loading, !syncing, !reconciling,
+              pendingAbsent, let pending = pendingSend else { return }
         ChatAttachmentPlaceholderStore.shared.forgetLocal(
             scope: displayScope, sessionID: sessionID, id: pending.id)
         buffer.messages.removeAll { $0.id == pending.id }
