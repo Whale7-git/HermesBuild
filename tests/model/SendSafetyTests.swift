@@ -1241,6 +1241,15 @@ import Foundation
             return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
                                     gatewayPendingControls: controls)
         }
+        let unknownObject: [String: Any] = [
+            "session_id": "control-snapshot-restore", "messages": [], "read_only": false
+        ]
+        let unknownSnapshot = try ChatSnapshot(
+            data: JSONSerialization.data(withJSONObject: unknownObject), runStatusUnknown: true)
+        model.applySnapshot(unknownSnapshot)
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "unknown Run status preserves known approval and clarification cards")
+
         // Older Gateways omit the field; absence is not evidence that a known
         // approval/clarification has been resolved.
         model.applySnapshot(try snapshot(nil))
