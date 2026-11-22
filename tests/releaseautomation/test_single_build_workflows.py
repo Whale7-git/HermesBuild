@@ -28,22 +28,31 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         path = ROOT / ".github/workflows/hermesshell-single-build.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"pull_request", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["source", "offline_shards", "offline", "candidate"])
-        self.assertIn("shard: [core, recovery, interface, media]", text)
-        self.assertIn("fail-fast: false", text)
-        self.assertIn("HERMES_TEST_SHARD: ${{ matrix.shard }}", text)
-        self.assertIn("needs: offline_shards", text)
-        self.assertIn('test "$SHARDS_RESULT" = success', text)
+        self.assertEqual(jobs(text), ["candidate"])
         self.assertEqual(text.count("bash scripts/github-build-ipa-main.sh"), 1)
         self.assertEqual(text.count("actions/upload-artifact@"), 2)
-        self.assertEqual(text.count("name: hermes-candidate-diagnostics-"), 1)
         self.assertIn("HERMES_WORKFLOW_BLOB_SHA", text)
-        self.assertEqual(text.count("\n    needs:"), 1)
-        self.assertNotIn("\n    needs:", text.split("\n  offline_shards:", 1)[0])
-        self.assertNotIn("\n    needs:", text.split("\n  candidate:", 1)[1])
+        self.assertNotRegex(text, r"(?m)^    needs:")
+        self.assertNotIn("tests/run_container.sh", text)
+        self.assertNotIn("tests/verify_source.py", text)
         self.assertNotIn("publish-candidate.py", text)
         self.assertNotIn("BARK_URL", text)
         self.assertNotIn("contents: write", text)
+
+    def test_nonblocking_diagnostics_four_shards(self):
+        diagnostics = (ROOT / ".github/workflows/hermes-offline-diagnostics.yml").read_text()
+        self.assertEqual(triggers(diagnostics), {"pull_request", "workflow_dispatch"})
+        self.assertEqual(jobs(diagnostics), ["source", "offline_shards", "offline"])
+        self.assertIn("shard: [core, recovery, interface, media]", diagnostics)
+        self.assertIn("fail-fast: false", diagnostics)
+        self.assertIn("HERMES_TEST_SHARD: ${{ matrix.shard }}", diagnostics)
+        self.assertIn("needs: [source, offline_shards]", diagnostics)
+        self.assertIn('test "$SOURCE_RESULT" = success', diagnostics)
+        self.assertIn('test "$SHARDS_RESULT" = success', diagnostics)
+        # Failure is visible in this separate workflow, never in candidate.
+        candidate = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        self.assertNotIn("needs: offline_shards", candidate)
+        self.assertNotIn("hermes-offline-diagnostics.yml", candidate)
 
     def test_offline_shard_partition_is_exhaustive(self):
         runner = (ROOT / "tests/run_container.sh").read_text()
@@ -77,7 +86,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         runner = (ROOT / "tests/run_container.sh").read_text()
         self.assertNotIn("tests/verify_source.py", workflow)
         self.assertNotIn("tests/sourcegate/main.py", runner)
-        self.assertIn("tests/check_release_identity.py", workflow)
+        self.assertIn("tests/check_release_identity.py", (ROOT / ".github/workflows/hermes-offline-diagnostics.yml").read_text())
         for old in ("tests/verify_source.py", "tests/gen_release_scope.py",
                     "tests/sourcegate/main.py"):
             self.assertFalse((ROOT / old).exists(), old)
@@ -128,7 +137,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
             text.index("Write candidate diagnostics report"),
             text.index("Record candidate result"),
         )
-        self.assertEqual(text.count("if: ${{ always() }}"), 1)
+        self.assertNotIn("if: ${{ always() }}", text)
 
     def test_simulator_shards_use_independent_runners_and_aggregate_status(self):
         workflow = (ROOT / ".github/workflows/simulator-probe.yml").read_text()
@@ -158,34 +167,30 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("xcodebuild", text)
         self.assertIn("Sync GitHub Issues with verified Release", text)
 
-    def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
+    def test_auto_release_uses_candidate_only_not_quality_gates(self):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
-        self.assertEqual(triggers(workflow), {"workflow_run", "pull_request_target"})
-        self.assertNotIn("      - Hermes iOS Simulator UI regression", workflow)
-        self.assertIn("const workflows = ['HermesBuild single-build candidate']", workflow)
-        self.assertIn("types: [unlabeled, ready_for_review, reopened]", workflow)
-        self.assertIn("github.event.pull_request.head.sha", workflow)
-        self.assertIn("return abort('Privileged or non-product PR: intentional manual merge", workflow)
-        self.assertNotIn("return blocked('PR touches non-product or privileged files", workflow)
-        self.assertIn("path.startsWith('tests/')", workflow)
-        self.assertIn("!path.startsWith('tests/releaseautomation/')", workflow)
-        self.assertIn("!path.startsWith('tests/sourcegate/')", workflow)
-        self.assertNotIn("path.startsWith('tests/run_container.sh')", workflow)
+        self.assertEqual(triggers(workflow), {"workflow_run"})
+        self.assertIn("HermesBuild single-build candidate", workflow)
+        self.assertIn("conclusion == 'success'", workflow)
+        self.assertIn("getWorkflowRun", workflow)
+        self.assertNotIn("Required exact-head workflow incomplete", workflow)
+        self.assertNotIn("Missing changed full-batch acceptance matrix", workflow)
+        self.assertNotIn("matrix.issues", workflow)
+        self.assertNotIn("['hold', 'no-auto-release']", workflow)
+        self.assertIn("return skip('privileged or maintenance-only PR')", workflow)
+        self.assertIn("merge_method: 'squash'", workflow)
+        self.assertIn("createWorkflowDispatch", workflow)
+        self.assertIn("expected_sha", workflow)
+        self.assertIn("previous_sha", workflow)
+        self.assertNotIn("actions/checkout@", workflow)
+        self.assertNotIn("github-build-ipa", workflow)
         runner = (ROOT / "tests/run_container.sh").read_text()
         self.assertIn("tests/model/*.swift", runner)
         self.assertNotIn("tests/model/AutomaticReconciliationTests.swift", runner)
-        for required in ("github.event.workflow_run.conclusion == 'success'",
-                         "head_sha: sha", "no-auto-release",
-                         "latest.conclusion !== 'success'", "expected_sha",
-                         "previous_sha", "createWorkflowDispatch", "merge_method: 'squash'"):
-            self.assertIn(required, workflow)
-        self.assertNotIn("actions/checkout@", workflow)
-        self.assertNotIn("github-build-ipa", workflow)
         promote = (ROOT / ".github/workflows/hermesshell-single-promote.yml").read_text()
         self.assertIn("expected_sha:", promote)
         self.assertIn("name: Dispatch post-release simulator discovery", promote)
         self.assertIn('gh workflow run simulator-probe.yml --repo "$GITHUB_REPOSITORY" --ref main -f suite=all', promote)
-        self.assertIn("previous_sha:", promote)
         plan = (ROOT / "scripts/release-plan.py").read_text()
         self.assertIn("before != parent", plan)
 
