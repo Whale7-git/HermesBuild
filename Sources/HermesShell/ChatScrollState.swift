@@ -507,6 +507,11 @@ struct ChatTurnReadingState {
     mutating func target(contentBottom: Double, rowTop: Double?,
                          viewport: Double, allowGrowth: Bool = true) -> Double? {
         guard rowID != nil else { return nil }
+        // Keep the focused turn's temporary bottom reserve while the user
+        // reads, but NEVER apply a programmatic target once the gesture owns
+        // the offset. Dropping the reserve on finger release shrinks UIKit
+        // contentSize and clamps contentOffset, causing a visible jump.
+        if phase == .manualReading { return nil }
         guard contentBottom.isFinite, contentBottom >= 0,
               viewport.isFinite, viewport > 0 else {
             reset()
@@ -561,7 +566,9 @@ struct ChatTurnReadingState {
     }
 
     mutating func userBeganReading() {
-        rowID = nil
+        // Retain rowID only as a geometric reserve anchor. Automatic
+        // following is disabled by the manualReading target guard above.
+        // The reserve retires on an explicit jump/reset or a new turn.
         phase = .manualReading
     }
 
