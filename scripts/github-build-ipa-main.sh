@@ -42,7 +42,7 @@ rm -rf "$candidate_dir"
 mkdir -p "$candidate_dir"
 
 echo "CANDIDATE_SOURCE commit=$sha tree=$tree version=$version build=$build"
-python3 tests/verify_source.py
+python3 tests/check_release_identity.py
 
 xcodegen generate --spec ios-ci-project.yml
 
