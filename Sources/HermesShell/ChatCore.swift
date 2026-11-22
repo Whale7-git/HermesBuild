@@ -3,6 +3,12 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// Shared STOP transport classification. Only an exact HTTP response can
+/// report a rejected request; timeouts and network failures remain unknown.
+enum ChatStopHTTPError: Error {
+    case rejected(Int)
+}
+
 struct SSEFrame: Sendable {
     var event: String
     var data: String
