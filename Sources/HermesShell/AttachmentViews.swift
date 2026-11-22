@@ -126,11 +126,26 @@ private struct AttachmentPickerFile: Transferable {
     }
 
     var isEditing: Bool { editingID != nil }
-    var canSend: Bool { !isImporting && !isEditing && batch.canSend }
-    func payload(for sessionID: String) throws -> [UploadedAttachment] {
+    /// Queued local files are sendable: preflight uploads them BEFORE any chat
+    /// POST. Do not require a server reference just to enable the send button.
+    var canSend: Bool { !isImporting && !isEditing }
+    func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
         guard !isImporting, !isEditing else { throw AttachmentError.invalidMetadata }
-        return try batch.payload(for:sessionID)
+        do {
+            let payloads = try await coordinator.prepareForSend(sessionID: sessionID)
+            try Task.checkCancellation()
+            guard !isImporting, !isEditing, batch.sessionID == sessionID else {
+                throw AttachmentError.invalidMetadata
+            }
+            errorMessage = nil
+            return payloads
+        } catch {
+            if error is CancellationError { coordinator.cancelUploads() }
+            else { errorMessage = "附件尚未提交：\(error.localizedDescription)。草稿和已完成的附件引用已保留。" }
+            throw error
+        }
     }
+    func cancelUploads() { coordinator.cancelUploads() }
 
     private func persist(_ batch: AttachmentBatch) {
         let value = batch.persistedValue
@@ -167,9 +182,8 @@ private struct AttachmentPickerFile: Transferable {
             try coordinator.restorePersisted(value)
             batch = coordinator.batch
             persist(batch)
-            for item in batch.items where item.canResumeUpload {
-                retry(item.id)
-            }
+            // No implicit network request on foreground/cold restore. Upload
+            // resumes only from the user's next explicit send action.
         } catch {
             errorMessage = "草稿附件无法恢复：\(error.localizedDescription)"
             onPersistenceResult(.failed(.corruptFile))
