@@ -730,7 +730,69 @@ extension NativeChatModel {
         guard !Task.isCancelled, error == nil else { return .failed }
         if pendingSend == nil { return .delivered }
         guard pendingSend?.id == pending.id else { return .failed }
-        return pendingAbsent ? .absent : .failed
+        if pendingAbsent { return .absent }
+
+        // If the latest page does not cover the pre-POST boundary, read back
+        // through contiguous raw history indexes. These GETs never send a turn.
+        guard let historyEnd = pending.historyEnd,
+              let latest = latestRecoverySnapshot,
+              latest.sessionID == sessionID, !latest.readOnly,
+              latest.activeStreamID == nil,
+              latest.olderOffset > historyEnd else { return .failed }
+        let generation = revision
+        var pages = [latest]
+        for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > historyEnd {
+            guard !Task.isCancelled, generation == revision,
+                  pendingSend?.id == pending.id, !suspended else { return .failed }
+            let cursor = pages[pages.count - 1].olderOffset
+            do {
+                let older = try await api.history(sessionID: sessionID, before: cursor)
+                guard generation == revision, pendingSend?.id == pending.id,
+                      !Task.isCancelled, !suspended,
+                      older.sessionID == sessionID, !older.readOnly,
+                      older.activeStreamID == nil,
+                      older.rawMessageEndIndex == cursor,
+                      older.olderOffset < cursor else { return .failed }
+                pages.append(older)
+            } catch {
+                if handleAuthenticationFailure(error) { return .failed }
+                notice = "历史分页核对暂不可用；已保留发送记录，不会自动重发。"
+                return .failed
+            }
+        }
+        guard (pages.last?.olderOffset ?? Int.max) <= historyEnd else { return .failed }
+        let decision = DeliveryReconciliationPolicy.resolve(
+            text: pending.text, attachments: pending.attachments,
+            historyEnd: historyEnd, knownIDs: pending.knownIDs, pages: pages)
+        guard decision != .failed else { return .failed }
+        do {
+            let current = try await api.history(sessionID: sessionID, before: nil)
+            guard generation == revision, pendingSend?.id == pending.id,
+                  !Task.isCancelled, !suspended,
+                  current.sessionID == sessionID, !current.readOnly,
+                  current.activeStreamID == nil,
+                  current.rawMessageEndIndex == latest.rawMessageEndIndex,
+                  current.messages.last?.id == latest.messages.last?.id else { return .failed }
+        } catch {
+            if handleAuthenticationFailure(error) { return .failed }
+            return .failed
+        }
+        if decision == .delivered {
+            buffer.messages.removeAll { $0.id == pending.id }
+            pendingSend = nil
+            acknowledgeDeliveredQueuedTurn(matching: pending)
+            if draft == pending.composerText { draft = "" }
+            notice = "已从完整历史确认消息送达；没有重新提交。"
+            uncertain = false
+            pendingAbsent = false
+        } else {
+            // A proven absence enables only explicit user choice, never POST.
+            pendingAbsent = true
+            uncertain = false
+            notice = "完整历史核对未发现这条消息，可自行决定是否重发。"
+        }
+        flush()
+        return decision
     }
 
     /// 仅在核对确认后台不存在（`.absent`）后重发，附件原样带回（服务端引用，不重新上传）。

@@ -109,13 +109,33 @@ enum DeliveryReconciliationPolicy {
     static func resolve(text: String, attachments: [ChatAttachmentPayload],
                         historyEnd: Int?, knownIDs: Set<String>,
                         snapshot: ChatSnapshot) -> PendingReconcileResult {
+        resolve(text: text, attachments: attachments, historyEnd: historyEnd,
+                knownIDs: knownIDs, pages: [snapshot])
+    }
+
+    /// A bounded, contiguous read-only history window, newest page first.
+    /// A partial page must never prove that a POST was absent.
+    static func resolve(text: String, attachments: [ChatAttachmentPayload],
+                        historyEnd: Int?, knownIDs: Set<String>,
+                        pages: [ChatSnapshot]) -> PendingReconcileResult {
         guard let historyEnd, historyEnd >= 0,
-              !snapshot.readOnly,
-              snapshot.rawMessageEndIndex >= historyEnd,
-              snapshot.olderOffset <= historyEnd else { return .failed }
-        let newer = snapshot.messages.filter {
+              let newest = pages.first, let oldest = pages.last,
+              oldest.olderOffset <= historyEnd,
+              newest.rawMessageEndIndex >= historyEnd else { return .failed }
+        for index in pages.indices {
+            let page = pages[index]
+            guard page.sessionID == newest.sessionID,
+                  !page.readOnly, page.activeStreamID == nil else { return .failed }
+            if index > 0 {
+                let later = pages[index - 1]
+                guard page.rawMessageEndIndex == later.olderOffset,
+                      page.olderOffset < later.olderOffset else { return .failed }
+            }
+        }
+        let newer = pages.reversed().flatMap(\.messages).filter {
             $0.role == "user" && ($0.sourceIndex ?? -1) >= historyEnd
                 && !knownIDs.contains($0.id)
+                && ChatBackgroundEnvelope.userBody($0) == nil
         }
         if newer.count == 1, let only = newer.first {
             let expected = Set(attachments.map(\.path))
@@ -124,9 +144,9 @@ enum DeliveryReconciliationPolicy {
                 return .delivered
             }
         }
-        // No new user row + no active run is the only trustworthy absence proof
-        // available with this protocol. Any other case remains locked.
-        if newer.isEmpty && snapshot.activeStreamID == nil { return .absent }
+        // Absence is a much stronger assertion than not finding a row in the
+        // newest page. Require a complete suffix and a stable final head.
+        if newer.isEmpty { return .absent }
         return .failed
     }
 }
