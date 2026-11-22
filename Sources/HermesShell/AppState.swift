@@ -509,6 +509,7 @@ final class AppState: ObservableObject {
         homeSendError = nil
         currentSessionID = nil
         openedSession = nil
+        scheduleUnopenedSessionRecovery()
     }
 
     /// Called by RootView on scene and overlay changes. A notification is

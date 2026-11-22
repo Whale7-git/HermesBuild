@@ -322,8 +322,32 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                                           runStatusUnknown: evidence == .unknown)
     }
 
+    /// An unresolved tombstone is sticky until the exact same Run reports a
+    /// real terminal status. Alive and transient failure never resurrect it.
+    private func verifyUnresolvedRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        do {
+            let data = try await perform(requests.runStatus(runID: runID))
+            guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  root["run_id"] as? String == runID,
+                  root["session_id"] as? String == sessionID,
+                  let status = root["status"] as? String,
+                  let terminal = RunTerminalStatus(rawValue: status) else { return .unresolved }
+            return runStore.clearUnresolved(runID: runID, sessionID: sessionID)
+                ? .terminal(terminal) : .unknown
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 401 || code == 403 { throw error }
+            return .unresolved
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return .unresolved
+        }
+    }
+
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
-        if runStore.unresolvedRunID(for: sessionID) == runID { return .unresolved }
+        if runStore.unresolvedRunID(for: sessionID) == runID {
+            return try await verifyUnresolvedRun(sessionID: sessionID, runID: runID)
+        }
         let now = Date().timeIntervalSince1970
         if let retryAt = nextRunProbeAt[runID], now < retryAt {
             return .unknown

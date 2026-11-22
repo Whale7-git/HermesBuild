@@ -30,6 +30,7 @@ final class SessionRecoveryCoordinator {
         }.sorted { $0.value.observedAt < $1.value.observedAt }.prefix(5)
         guard !candidates.isEmpty else { return }
         let owner = UUID()
+        let deadline = Date().addingTimeInterval(30)
         ticket = owner
         worker = Task { [weak self] in
             guard let self else { return }
@@ -38,7 +39,8 @@ final class SessionRecoveryCoordinator {
             }
             // Serial work prevents burst polling on foreground transitions.
             for (sessionID, observation) in candidates {
-                guard !Task.isCancelled, self.ticket == owner else { return }
+                guard !Task.isCancelled, self.ticket == owner,
+                      Date() < deadline else { return }
                 let key = instanceID + "|" + accountScope + "|" + sessionID
                 self.attempted[key] = Date()
                 let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
@@ -66,7 +68,8 @@ final class SessionRecoveryCoordinator {
                     var pages = [latest]
                     var valid = true
                     for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
-                        guard !Task.isCancelled, self.ticket == owner else { return }
+                        guard !Task.isCancelled, self.ticket == owner,
+                              Date() < deadline else { return }
                         let cursor = pages[pages.count - 1].olderOffset
                         let older = try await api.history(sessionID: sessionID, before: cursor)
                         guard older.sessionID == sessionID, !older.readOnly,

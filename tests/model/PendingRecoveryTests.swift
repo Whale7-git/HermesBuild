@@ -206,8 +206,16 @@ extension ModelTests {
         deep.disconnect()
         print("PENDING_PASS pending message confirmed across 145 tool rows")
 
+        let hiddenRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesHiddenPending-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: hiddenRoot) }
+        let hiddenStore = ChatDraftStore(instanceID: "hidden", accountScope: "account",
+            sessionID: "test", fileStore: LocalDataFileStore(
+                instanceID: "hidden", accountScope: "account",
+                sessionID: "test", rootDirectory: hiddenRoot))
         let hiddenService = PendingRecoveryService()
-        let hidden = NativeChatModel(sessionID: "test", api: hiddenService)
+        let hidden = NativeChatModel(sessionID: "test", api: hiddenService,
+                                     draftStore: hiddenStore)
         await hidden.load()
         hidden.draft = "hidden unresolved"
         await hidden.send()
@@ -216,11 +224,16 @@ extension ModelTests {
                      && hidden.uncertain && !hidden.canSend
                      && hiddenService.startCalls == 1,
                      "discard must preserve unverified delivery evidence")
-        await hidden.refresh()
-        precondition(hidden.pendingSend == nil && !hidden.uncertain
-                     && hiddenService.startCalls == 1,
-                     "verified absence retires hidden record without resending")
         hidden.disconnect()
+        let hiddenRestart = NativeChatModel(sessionID: "test",
+            api: PendingRecoveryService(), draftStore: hiddenStore)
+        precondition(hiddenRestart.pendingSend?.hiddenFromTranscript == true
+                     && hiddenRestart.buffer.messages.isEmpty && !hiddenRestart.canSend,
+                     "cold restart preserves the hidden disposition and send lock")
+        await hiddenRestart.refresh()
+        precondition(hiddenRestart.pendingSend == nil && !hiddenRestart.uncertain,
+                     "verified absence retires hidden record without resending")
+        hiddenRestart.disconnect()
 
         // Two new identical user rows after the POST boundary may come from
         // concurrent clients. No receipt exists to attribute either one.

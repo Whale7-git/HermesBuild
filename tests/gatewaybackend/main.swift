@@ -287,6 +287,10 @@ actor ConcurrencyProbe {
             $0.url?.path == "/v1/runs" && $0.httpMethod == "POST"
         }.count == beforeProbePOSTs, "verification cannot submit a second POST")
         transport.status = "completed"
+        let confirmedTerminal = try await missing.probeActiveRun(sessionID: "s", runID: run)
+        check(confirmedTerminal == .terminal(.completed)
+              && missingStore.unresolvedRunID(for: "s") == nil,
+              "exact terminal status can safely retire the unresolved tombstone")
 
         let unauthScope = "instance|build166-auth"
         let unauth = backend(scope: unauthScope)

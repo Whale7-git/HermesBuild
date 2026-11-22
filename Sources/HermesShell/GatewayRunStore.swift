@@ -97,6 +97,22 @@ final class GatewayRunStore {
             ?? unresolved[sessionID]
     }
 
+    /// Drop the tombstone only after a fresh, exact-ID terminal response.
+    /// A random later alive response never grants permission to resurrect.
+    @discardableResult
+    func clearUnresolved(runID: String, sessionID: String) -> Bool {
+        guard isValid, unresolvedRunID(for: sessionID) == runID else { return false }
+        var next = defaults?.dictionary(forKey: unresolvedKey) as? [String: String] ?? unresolved
+        next.removeValue(forKey: sessionID)
+        if let defaults {
+            defaults.set(next, forKey: unresolvedKey)
+            guard (defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]) == next
+            else { persistenceFailed = true; return false }
+        }
+        unresolved = next
+        return true
+    }
+
     /// Mark only the exact current Run unresolved. Persist the tombstone first,
     /// then retire its misleading running flag. A failed write stays fail-closed.
     @discardableResult

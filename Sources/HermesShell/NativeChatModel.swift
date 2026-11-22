@@ -600,10 +600,12 @@ final class NativeChatModel: ObservableObject {
             if let pending = try? JSONDecoder().decode(PendingSend.self, from: data) {
                 pendingSend = pending
                 uncertain = true
-                buffer.messages = [ChatMessage(id: pending.id, role: "user", content: pending.text,
-                    timestamp: pending.createdAt, sourceIndex: nil,
-                    attachmentPaths: pending.attachments.map(\.path), delivery: .unconfirmed)]
-                transcript = buffer
+                if pending.hiddenFromTranscript != true {
+                    buffer.messages = [ChatMessage(id: pending.id, role: "user", content: pending.text,
+                        timestamp: pending.createdAt, sourceIndex: nil,
+                        attachmentPaths: pending.attachments.map(\.path), delivery: .unconfirmed)]
+                    transcript = buffer
+                }
                 notice = "上次发送结果待核对，核对前不会自动重发。"
             } else {
                 uncertain = true
