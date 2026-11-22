@@ -203,6 +203,9 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
     var navigationTarget: ChatScrollCommand?
     var navigationDetached = false
     var turnReading = ChatTurnReadingState()
+    /// Captured only AFTER the user's deceleration completes, and released
+    /// before any new drag/navigation. No programmatic correction during pan.
+    var manualTurnAnchor: (id: String, screenTop: Double)?
     var resizingViewport = false
     var findRetryScheduled = false
     var findRetries = 0
@@ -378,6 +381,7 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
         // An explicit user command may interrupt momentum. Ordinary content
         // updates wait until UIKit relinquishes the drag/deceleration offset.
         if input.command.sequence != lastCommand {
+            manualTurnAnchor = nil
             if !input.command.focusTurn { turnReading.reset() }
             findRetries = 0
             endAnimatedJump()
