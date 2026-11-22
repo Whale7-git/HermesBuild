@@ -9,6 +9,17 @@ func expect(_ condition: @autoclosure () -> Bool, _ message:String) {
 // 追加时按跟随意图决定滚不滚。
 // 所以这里只锁一件事——什么时候算"跟着底部"，并且必须带迟滞、不抖。
 
+
+expect(ChatViewportSizePolicy.changed(previousWidth: 390, previousHeight: 480,
+                                      width: 390, height: 440, scale: 3),
+       "keyboard viewport resize is committed")
+expect(!ChatViewportSizePolicy.changed(previousWidth: 390, previousHeight: 480,
+                                       width: 390.04, height: 480.04, scale: 3),
+       "subpixel jitter does not repeatedly recommit scroll anchors")
+expect(ChatViewportSizePolicy.changed(previousWidth: 390, previousHeight: 480,
+                                      width: 389.6, height: 480, scale: 3),
+       "one-pixel width change remains measurable")
+
 var ownership = ChatPaginationOwnership()
 let pageA = ownership.begin()
 expect(ownership.owns(pageA), "initial older-page task owns its completion")
