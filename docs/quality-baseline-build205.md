@@ -33,6 +33,10 @@
 | Performance regression | **NOT VERIFIED** | No comparable before/after measurements available in this review |
 | Release build | **NOT RUN** | No app or version changes are proposed in this initial baseline |
 
+> **Historical build205 audit snapshot only.** This document does not control
+> the current hourly Issue-repair workflow. Use `AGENTS.md` and the live
+> `.agents/skills/ios-quality-review/SKILL.md` for fix-mode behavior.
+
 ## Recommended first audit pass
 
 1. Run `ios-quality-review` in read-only mode against a newly pinned main SHA; begin with `ios-design-audit` and `ios-interaction-audit`.

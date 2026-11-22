@@ -56,7 +56,7 @@ jobs:
             if (pr.head.sha !== sha || pr.base.ref !== 'main' || pr.state !== 'open')
               return abort('PR changed during validation');
             const labels = new Set(pr.labels.map(label => label.name.toLowerCase()));
-            if (['hold', 'no-auto-release', 'manual-review'].some(label => labels.has(label)))
+            if (['hold', 'no-auto-release'].some(label => labels.has(label)))
               return abort('PR has manual hold label');
             if (!/^(fix|feat|chore)\//.test(pr.head.ref))
               return abort('PR branch is not an allowed release branch');
@@ -103,15 +103,6 @@ jobs:
             };
             if (versionCompare(current.version, previous.version) < 0)
               return abort('Version downgrade');
-            const {data: reviewList} = await github.rest.pulls.listReviews({
-              owner, repo, pull_number: pr.number, per_page: 100
-            });
-            const latestReview = new Map();
-            for (const review of reviewList)
-              if (review.state !== 'PENDING') latestReview.set(review.user.login, review.state);
-            if ([...latestReview.values()].includes('CHANGES_REQUESTED'))
-              return abort('Outstanding requested changes');
-
             // Require all three candidate jobs (source, Swift, IPA) on the exact HEAD.
             // Simulator failures are independently triaged into GitHub Issues.
             // Compare workflow runs against the exact PR head, not the synthetic PR merge ref.

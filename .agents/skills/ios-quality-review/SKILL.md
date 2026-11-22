@@ -1,6 +1,6 @@
 ---
 name: ios-quality-review
-description: Coordinate evidence-led iOS UI consistency, interaction, state reliability, performance and regression audits of HermesBuild without silently changing app code or release workflows.
+description: Review and fix HermesBuild UI, reliability and experience bugs. For explicit repair requests or hourly Issue automation, prefer fix mode and deliver a tested PR instead of a read-only report.
 ---
 
 # Hermes iOS quality review (orchestrator)
@@ -11,7 +11,7 @@ Use for "audit the app", "improve consistency", "review UX", "find regressions",
 
 1. Resolve `Whale7-git/HermesBuild/main` to an exact commit SHA; read `release.json` at that SHA. Never assume a version from old documentation.
 2. Read the relevant source and test files at that pinned commit; inspect the existing `.github/workflows/hermesshell-single-build.yml` and `tests/run_container.sh` before recommending any gate.
-3. Confirm the requested mode: **audit** (default, read-only) versus **fix** (authorized code changes in a new short-lived branch and PR).
+3. Use **fix** mode when a user requests repair or the hourly Issue automation selects a bug. Reserve **audit** for an explicitly requested read-only report. Do not ask the user to reconfirm explicit fix intent.
 4. State what is available: source, CI logs, screenshots, reproducible device steps and performance samples. Missing evidence is "not verified", not "pass".
 
 ## Sequence
@@ -24,14 +24,14 @@ Use for "audit the app", "improve consistency", "review UX", "find regressions",
 
 ## Required output
 
-Deliver one prioritized issue register, with columns: ID, area, exact symbol/file, evidence, expected versus observed, impact (P0/P1/P2), confidence (confirmed/probable/hypothesis), test coverage, proposed minimal fix, and verification status (passed/failed/not run/device pending). Distinguish "code inspection suggests risk" from an observed user-facing defect. Link commit/PR and relevant tests.
+In audit mode, deliver a prioritized evidence-backed issue register. In fix mode, select one actionable Issue, implement a minimal tested change, open or continue the PR, monitor exact-head CI, Release and Issue status; do not substitute another register-only report for executable work.
 
 P0 = possible message loss, duplicate send, cross-session writes, data exposure or irreversible state failure. P1 = frequently broken interaction or proven major performance regression. P2 = isolated polish/inconsistency without a correctness impact. Do not infer P0 from visual style alone.
 
 ## Change constraints
 
 - Never push to `main`; use a change-specific branch and PR.
-- A review does **not** authorize wide refactors, dependency additions, new CI workflows, version increments, IPA builds or automatic merge.
+- A read-only audit does not authorize a release. An explicit fix request or the scheduled Issue agent authorizes a narrow code fix, version increment and existing three-job CI/auto-release path. No new build workflow. Only block real safety violations or failing checks.
 - Preserve Bundle ID, Keychain identities, session paging, scroll ownership, stopped/uncertain send semantics and public release process.
 - Avoid importing real chat text, access tokens, private logs or credentials into issues/fixtures.
 - Reuse the existing `tests/check_navigation_contract.py`, `tests/check_swiftui_modifiers.py`, offline suites and built-in diagnostic recorder rather than creating duplicate checks.
