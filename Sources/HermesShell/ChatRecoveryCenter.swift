@@ -10,6 +10,7 @@ struct ChatRecoveryCenter: View {
     @State private var confirmAbandonUnreadable = false
     @State private var confirmAbandonActive = false
     @State private var confirmAbandonCorruptActive = false
+    @State private var confirmAbandonPending = false
     @State private var reconciling = false
     @State private var queueRecoveryID: String?
     @State private var resultText: String?
@@ -31,23 +32,40 @@ struct ChatRecoveryCenter: View {
                     statusRow(icon: model.hasPendingSend ? "paperplane.badge.clock" : "checkmark.circle",
                               color: model.hasPendingSend ? AppTheme.warning : AppTheme.success,
                               title: model.hasPendingSend ? "有一笔发送等待核对" : "没有待核对发送",
-                              detail: model.hasPendingSend
-                                ? "核对只读取服务端历史；确认不存在前不会自动重发。"
-                                : "普通发送没有留下未决记录。")
+                              detail: model.pendingAbsent
+                                ? "已确认服务端未收到这条消息；需要时可选择重试。"
+                                : (model.hasPendingSend
+                                   ? "App 会自动核对；状态不明时不会重复发送。"
+                                   : "普通发送没有留下未决记录。"))
                     if model.hasPendingSend {
-                        Button {
-                            reconcile()
-                        } label: {
-                            HStack {
-                                Label(reconciling ? "正在核对…" : "核对发送状态",
-                                      systemImage: "checkmark.shield")
-                                Spacer()
-                                if reconciling { ProgressView().controlSize(.small) }
+                        if model.pendingAbsent {
+                            Button {
+                                Task { await model.resendPending() }
+                            } label: {
+                                Label("重试发送", systemImage: "paperplane")
+                                    .frame(minHeight: 44)
                             }
-                            .frame(minHeight: 44)
+                            .disabled(!model.canResendPending || model.loading || model.syncing
+                                      || model.submitting || model.stopping)
+                            Button("放弃这条未送达消息", role: .destructive) {
+                                confirmAbandonPending = true
+                            }
+                            .disabled(!model.pendingAbsent || model.submitting || model.syncing)
+                        } else {
+                            Button {
+                                reconcile()
+                            } label: {
+                                HStack {
+                                    Label(reconciling ? "正在核对…" : "App 自动核对中",
+                                          systemImage: "checkmark.shield")
+                                    Spacer()
+                                    if reconciling { ProgressView().controlSize(.small) }
+                                }
+                                .frame(minHeight: 44)
+                            }
+                            .disabled(reconciling || model.loading || model.syncing
+                                      || model.submitting || model.reconciling)
                         }
-                        .disabled(reconciling || model.loading || model.syncing
-                                  || model.submitting || model.reconciling)
                     }
                 }
 
@@ -197,6 +215,12 @@ struct ChatRecoveryCenter: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+            .confirmationDialog("放弃这条未送达消息？", isPresented: $confirmAbandonPending, titleVisibility: .visible) {
+                Button("仅移除本地待发送消息", role: .destructive) { model.discardPending() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("服务端完整历史已确认没有收到这条消息。放弃只移除本机保存的待发送记录，不会删除服务端内容。")
             }
             .confirmationDialog("放弃损坏的本地发送记录？", isPresented: $confirmAbandonUnreadable, titleVisibility: .visible) {
                 Button("放弃本地记录", role: .destructive) { model.abandonUnreadablePending() }

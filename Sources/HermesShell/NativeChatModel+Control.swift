@@ -55,6 +55,7 @@ extension NativeChatModel {
         pendingApprovals.removeAll { $0.runID != runID }
         for request in removed { onApprovalResolved?(sessionID, request.requestID) }
         if pendingApprovals.isEmpty { approving = false }
+        persistPendingRunRequests()
     }
 
     func removePendingApproval(requestID: String, runID: String) {
@@ -70,6 +71,7 @@ extension NativeChatModel {
         pendingClarifies.removeAll { $0.runID != runID }
         for request in removed { onClarifyResolved?(sessionID, request.requestID) }
         if pendingClarifies.isEmpty { clarifying = false }
+        persistPendingRunRequests()
     }
 
     func removePendingClarify(requestID: String) {

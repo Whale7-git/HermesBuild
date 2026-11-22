@@ -79,13 +79,21 @@ extension NativeChatModel {
                 if handleAuthenticationFailure(error) { return }
                 self.error = error.localizedDescription
                 RuntimeLogRecorder.shared.record(.error, "history", "load fail err=\(error.localizedDescription)")
-                uncertain = true
-                // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
+                if pendingSend != nil || activeTurnRecovery != nil || streamID != nil {
+                    uncertain = true
+                    pauseQueueForRecovery()
+                } else {
+                    // A transient history GET failure is not evidence of a
+                    // lost POST/run. Keep the view read-only, but do not create
+                    // a false task-center action item.
+                    uncertain = false
+                }
                 if let savedAt = cachedHistoryDate {
                     transition(to: .cached(savedAt: savedAt, syncing: false))
-                    notice = "已显示本地历史，联网核对成功前不能发送。"
+                    notice = "已显示本地历史；网络恢复后 App 会自动同步。"
                 } else {
                     transition(to: .idle)
+                    notice = "暂时无法连接服务端；本地内容已保留，恢复网络后会自动同步。"
                 }
             }
         }
@@ -412,10 +420,17 @@ extension NativeChatModel {
         if let receipt = activeTurnRecovery, !submitting {
             if snap.activeStreamID == receipt.runID {
                 if pendingSend == nil { uncertain = false }
+                resumeQueueAfterRecovery()
             } else if receipt.confirmsCompletion(in: snap) {
                 if clearAcceptedTurnRecovery(), pendingSend == nil {
                     uncertain = false
                     notice = nil
+                    resumeQueueAfterRecovery()
+                    Task { [weak self] in
+                        guard let self, self.sessionID == snap.sessionID,
+                              self.activeTurnRecovery == nil, !self.uncertain else { return }
+                        await self.flushQueuedIfNeeded(completedStreamID: receipt.runID)
+                    }
                 }
             } else {
                 uncertain = true
@@ -671,8 +686,12 @@ extension NativeChatModel {
                         self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
                             || self.activeRecoveryUnreadable
                         self.notice = outcome.notice
-                        self.resumeQueueAfterRecovery()
-                        await self.flushQueuedIfNeeded(completedStreamID: receipt.runID)
+                        if outcome == .completed {
+                            self.resumeQueueAfterRecovery()
+                            await self.flushQueuedIfNeeded(completedStreamID: receipt.runID)
+                        } else {
+                            self.pauseQueueForRecovery()
+                        }
                     } catch {
                         guard generation == self.revision, !Task.isCancelled,
                               self.activeTurnRecovery == receipt else { return }

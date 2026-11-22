@@ -422,8 +422,11 @@ extension NativeChatView {
         if model.cachedHistoryDate != nil && model.error != nil {
             return "联网核对失败 · 显示本地历史"
         }
-        if model.hasPendingSend { return model.notice ?? "发送结果待核对 · 文字和附件已保留" }
-        if model.uncertain { return model.notice ?? "后台状态待核对，不会自动重发消息" }
+        if model.hasPendingSend && model.pendingAbsent {
+            return model.notice ?? "已确认服务端未收到这条消息；可选择重试或放弃"
+        }
+        if model.hasPendingSend { return model.notice ?? "App 正在核对发送结果 · 文字和附件已保留" }
+        if model.uncertain { return model.notice ?? "App 正在后台核对；状态不明时不会重复发送" }
         return model.error ?? model.activity.title
     }
     @ViewBuilder
