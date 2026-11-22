@@ -359,6 +359,9 @@ struct NativeChatView: View {
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
                   app.currentSessionID == sessionID else { return }
             await model.load()
+            // The initial disk restore may already contain an unresolved
+            // accepted POST; onChange cannot see that pre-existing value.
+            model.scheduleAutomaticReconciliation()
             guard !Task.isCancelled, visible, app.active.id == instance,
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
                   app.currentSessionID == sessionID else { return }
@@ -449,7 +452,15 @@ struct NativeChatView: View {
                 onlyIfCurrent: value.isEmpty ? previous : nil,
                 onlyIfEmpty: !value.isEmpty)
         }
-        .onChange(of: model.uncertain) { _, value in if value { noticeBarDismissed = false } }
+        .onChange(of: model.uncertain) { _, value in
+            if value {
+                noticeBarDismissed = false
+                model.scheduleAutomaticReconciliation()
+            }
+        }
+        .onChange(of: model.running) { _, running in
+            if !running { model.scheduleAutomaticReconciliation() }
+        }
         .onChange(of: model.localPersistenceIssue) { _, value in if value != nil { noticeBarDismissed = false } }
         .onChange(of: model.queuePersistenceFailed) { _, value in if value { noticeBarDismissed = false } }
         .onChange(of: attachments.errorMessage) { _, value in
@@ -543,6 +554,7 @@ struct NativeChatView: View {
                 foregroundResumeTask = Task {
                     defer { if foregroundResumeTicket == ticket { foregroundResumeTask = nil } }
                     await model.resumeForeground()
+                    model.scheduleAutomaticReconciliation()
                     guard !Task.isCancelled, foregroundResumeTicket == ticket, scenePhase == .active, visible,
                           !model.syncing, !model.loading else { return }
                     let position = readingStore.load()
