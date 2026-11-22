@@ -69,7 +69,7 @@ jobs:
               owner, repo, pull_number: pr.number, per_page: 100
             });
             const allowed = path =>
-              path === 'release.json' || path === 'README.md' ||
+              path === 'release.json' || path === 'tests/release-batch-acceptance.json' || path === 'README.md' ||
               path === 'Resources/Info.plist' || path === 'ios-ci-project.yml' ||
               path.startsWith('Sources/HermesShell/') ||
               path.startsWith('UITests/') ||
@@ -103,6 +103,52 @@ jobs:
             };
             if (versionCompare(current.version, previous.version) < 0)
               return abort('Version downgrade');
+            // Machine-checked full-Issue batch acceptance, evaluated by trusted main code.
+            // The versioned PR must carry this exact-HEAD manifest; partial releases
+            // cannot pass merely by incrementing release.json and satisfying CI.
+            const manifestPath = 'tests/release-batch-acceptance.json';
+            if (!files.some(file => file.filename === manifestPath))
+              return abort('Missing changed full-batch acceptance matrix');
+            let matrix;
+            try {
+              const {data: file} = await github.rest.repos.getContent({
+                owner, repo, path: manifestPath, ref: sha
+              });
+              if (!('content' in file)) return abort('Batch matrix is not a file');
+              matrix = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
+            } catch (error) {
+              return abort('Batch matrix cannot be parsed: ' + error.message);
+            }
+            if (matrix.schema !== 1 || matrix.head_sha !== sha ||
+                matrix.base_sha !== pr.base.sha ||
+                matrix.version !== current.version || Number(matrix.build) !== Number(current.build) ||
+                !Array.isArray(matrix.issues))
+              return abort('Batch matrix does not match exact PR head/base/release');
+            const liveIssues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100
+            });
+            const openNumbers = liveIssues.filter(item => !item.pull_request)
+              .map(item => item.number).sort((a,b) => a-b);
+            const entries = new Map();
+            for (const entry of matrix.issues) {
+              if (!Number.isInteger(entry.number) || entries.has(entry.number))
+                return abort('Invalid or duplicated Issue in batch matrix');
+              entries.set(entry.number, entry);
+            }
+            if (entries.size !== openNumbers.length ||
+                openNumbers.some(number => !entries.has(number)))
+              return abort('Batch matrix must enumerate every currently open Issue');
+            for (const number of openNumbers) {
+              const item = entries.get(number);
+              if (!['fixed', 'already_released', 'test_false_positive', 'external_blocked'].includes(item.disposition) ||
+                  typeof item.evidence !== 'string' ||
+                  !/^https:\/\/github\.com\/Whale7-git\/HermesBuild\//.test(item.evidence) ||
+                  typeof item.acceptance !== 'string' || item.acceptance.trim().length < 24)
+                return abort('Incomplete acceptance evidence for Issue #' + number);
+              if (item.disposition === 'external_blocked' &&
+                  (typeof item.blocker_contract !== 'string' || item.blocker_contract.trim().length < 24))
+                return abort('External blocker lacks contract/failure evidence for Issue #' + number);
+            }
             // Require all three candidate jobs (source, Swift, IPA) on the exact HEAD.
             // Simulator failures are independently triaged into GitHub Issues.
             // Compare workflow runs against the exact PR head, not the synthetic PR merge ref.
