@@ -454,7 +454,13 @@ struct AttachmentBatch: Sendable {
                 item.state = .ready(uploaded)
                 if item.releasesBytesAfterUpload { item.data = Data() }
             case .pending:
-                guard !persisted.data.isEmpty else { throw AttachmentError.invalidMetadata }
+                // No server offset/hash contract exists: a shorter local prefix
+                // is NOT a resumable body and must never be uploaded as a
+                // complete file under the original attachment metadata.
+                guard !persisted.data.isEmpty,
+                      persisted.data.count == persisted.byteCount else {
+                    throw AttachmentError.invalidMetadata
+                }
                 item.state = .queued
             }
             restored.append(item)
