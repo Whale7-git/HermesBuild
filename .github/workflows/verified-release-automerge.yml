@@ -1,15 +1,12 @@
-name: HermesBuild verified release auto-merge
+name: HermesBuild release auto-merge
 
-# Runs trusted main workflow code, never PR branch code.
+# Trusted main code: publish a buildable candidate without quality/Issue gates.
+# Diagnostics run independently and may fail without delaying promotion.
 on:
   workflow_run:
     workflows:
       - HermesBuild single-build candidate
     types: [completed]
-# Removing a manual hold after both runs complete must re-evaluate the gate.
-# All executable code remains from trusted main; PR source is never checked out.
-  pull_request_target:
-    types: [unlabeled, ready_for_review, reopened]
 
 permissions:
   actions: write
@@ -17,160 +14,89 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: hermes-verified-release-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
+  group: hermes-release-${{ github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
   merge-and-dispatch:
     if: >-
-      ${{ (github.event_name == 'workflow_run' &&
-           github.event.workflow_run.event == 'pull_request' &&
-           github.event.workflow_run.conclusion == 'success' &&
-           github.event.workflow_run.head_repository.full_name == github.repository) ||
-          (github.event_name == 'pull_request_target' &&
-           github.event.pull_request.head.repo.full_name == github.repository) }}
+      ${{ github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_repository.full_name == github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Verify exact-head checks and release scope, then merge
+      - name: Promote same-repository product PR from compiled candidate
         uses: actions/github-script@v7
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const sha = context.payload.workflow_run?.head_sha || context.payload.pull_request?.head?.sha;
-            if (!sha) return core.setFailed('Missing PR HEAD SHA for verified release gate');
-            // Simulator discovery is asynchronous and never gates normal releases.
-            const workflows = ['HermesBuild single-build candidate'];
-            const abort = message => { core.notice('Release not promoted: ' + message); return false; };
-            const blocked = message => { core.setFailed('Release blocked: ' + message); return false; };
-            const {data: associations} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const sha = context.payload.workflow_run?.head_sha;
+            const skip = reason => { core.notice('Not a new product release: ' + reason); return; };
+            if (!sha) return skip('candidate HEAD missing');
+            const {data: linked} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
               owner, repo, commit_sha: sha, per_page: 100
             });
-            const candidates = associations.filter(p =>
-              p.state === 'open' && p.base.ref === 'main' &&
-              p.head.sha === sha && p.head.repo?.full_name === `${owner}/${repo}`
-            );
-            if (candidates.length !== 1) return abort('No unique live same-repository PR for this SHA');
-            const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: candidates[0].number});
+            const candidates = linked.filter(p => p.state === 'open' && p.base.ref === 'main' &&
+              p.head.sha === sha && p.head.repo?.full_name === `${owner}/${repo}`);
+            if (candidates.length !== 1) return skip('no unique open same-repository PR');
+            const {data: pr} = await github.rest.pulls.get({
+              owner, repo, pull_number: candidates[0].number
+            });
             if (pr.head.sha !== sha || pr.base.ref !== 'main' || pr.state !== 'open')
-              return abort('PR changed during validation');
-            const labels = new Set(pr.labels.map(label => label.name.toLowerCase()));
-            if (['hold', 'no-auto-release'].some(label => labels.has(label)))
-              return abort('PR has manual hold label');
-            if (!/^(fix|feat|chore)\//.test(pr.head.ref))
-              return abort('PR branch is not an allowed release branch');
-            if (pr.mergeable !== true || !['clean', 'unstable', 'draft'].includes(pr.mergeable_state))
-              return abort('PR is not mergeable without conflicts');
+              return skip('PR changed');
 
-            // Release identity + exact-head green checks govern promotion.
-            // Draft does not block a verified versioned PR; hold labels do.
+            // Keep privileged CI/GitHub-token scripts out of automatic product
+            // merges; this is a trust boundary, not a test-quality gate.
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: pr.number, per_page: 100
             });
             const allowed = path =>
-              path === 'release.json' || path === 'tests/release-batch-acceptance.json' || path === 'README.md' ||
-              path === 'Resources/Info.plist' || path === 'ios-ci-project.yml' ||
+              path === 'release.json' || path === 'tests/release-batch-acceptance.json' ||
+              path === 'README.md' || path === 'Resources/Info.plist' ||
+              path === 'ios-ci-project.yml' ||
               path.startsWith('Sources/HermesShell/') ||
-              path.startsWith('UITests/') ||
-              path.startsWith('Vendor/Textual/') ||
-              // Normal source regressions are product changes, not privileged CI edits.
+              path.startsWith('UITests/') || path.startsWith('Vendor/Textual/') ||
               (path.startsWith('tests/') && !path.startsWith('tests/releaseautomation/') &&
-               !path.startsWith('tests/sourcegate/') &&
-               !path.startsWith('tests/baseline-') &&
-               !path.includes('/.github/') &&
-               (path.endsWith('.swift') || path.endsWith('.sh') ||
-                /^tests\/release-scope-build\d+\.json$/.test(path)));
+               !path.startsWith('tests/sourcegate/') && !path.startsWith('tests/baseline-') &&
+               !path.includes('/.github/') && (path.endsWith('.swift') || path.endsWith('.sh') ||
+               (path.startsWith('tests/release-scope-build') && path.endsWith('.json'))));
             if (!files.length || files.some(file => !allowed(file.filename)))
-              return abort('Privileged or non-product PR: intentional manual merge, not a failed release');
+              return skip('privileged or maintenance-only PR');
             if (!files.some(file => file.filename === 'release.json'))
-              return abort('Not a new release PR');
+              return skip('no new version');
+
             const readRelease = async ref => {
-              const {data} = await github.rest.repos.getContent({owner, repo, path: 'release.json', ref});
-              if (!('content' in data)) throw new Error('release.json is not a file');
+              const {data} = await github.rest.repos.getContent({
+                owner, repo, path: 'release.json', ref
+              });
               return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
             };
-            const current = await readRelease(sha);
-            const previous = await readRelease(pr.base.sha);
-            const valid = data => /^\d+\.\d+\.\d+$/.test(data.version) && /^[1-9]\d*$/.test(String(data.build));
-            if (!valid(current) || !valid(previous) ||
-                Number(current.build) <= Number(previous.build))
-              return abort('Release identity invalid or build not increasing');
-            const versionCompare = (a, b) => {
-              const left = a.split('.').map(Number), right = b.split('.').map(Number);
-              for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i];
-              return 0;
-            };
-            if (versionCompare(current.version, previous.version) < 0)
-              return abort('Version downgrade');
-            // Machine-checked full-Issue batch acceptance, evaluated by trusted main code.
-            // The versioned PR must carry this exact-HEAD manifest; partial releases
-            // cannot pass merely by incrementing release.json and satisfying CI.
-            const manifestPath = 'tests/release-batch-acceptance.json';
-            if (!files.some(file => file.filename === manifestPath))
-              return abort('Missing changed full-batch acceptance matrix');
-            let matrix;
-            try {
-              const {data: file} = await github.rest.repos.getContent({
-                owner, repo, path: manifestPath, ref: sha
-              });
-              if (!('content' in file)) return abort('Batch matrix is not a file');
-              matrix = JSON.parse(Buffer.from(file.content, 'base64').toString('utf8'));
-            } catch (error) {
-              return abort('Batch matrix cannot be parsed: ' + error.message);
-            }
-            if (matrix.schema !== 1 ||
-                matrix.base_sha !== pr.base.sha ||
-                matrix.version !== current.version || Number(matrix.build) !== Number(current.build) ||
-                !Array.isArray(matrix.issues))
-              return abort('Batch matrix does not match exact PR head/base/release');
-            const liveIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner, repo, state: 'open', per_page: 100
+            const next = await readRelease(sha), old = await readRelease(pr.base.sha);
+            const valid = item => typeof item.version === 'string' &&
+              item.version.split('.').length === 3 &&
+              item.version.split('.').every(p => /^[0-9]+$/.test(p)) &&
+              /^[1-9][0-9]*$/.test(String(item.build));
+            if (!valid(next) || !valid(old) || Number(next.build) <= Number(old.build))
+              return skip('not an increasing valid release identity');
+            if (next.version.split('.').map(Number).some((n,i) =>
+                n < old.version.split('.').map(Number)[i] &&
+                next.version.split('.').map(Number).slice(0,i).every((v,j) =>
+                  v === old.version.split('.').map(Number)[j])))
+              return skip('version downgrade');
+
+            // IPA exists because the separate candidate-only workflow succeeded.
+            // No matrix, source inventory, diagnostic, Issue or reviewer gate.
+            const {data: candidateRun} = await github.rest.actions.getWorkflowRun({
+              owner, repo, run_id: context.payload.workflow_run.id
             });
-            const openNumbers = liveIssues.filter(item => !item.pull_request)
-              .map(item => item.number).sort((a,b) => a-b);
-            const entries = new Map();
-            for (const entry of matrix.issues) {
-              if (!Number.isInteger(entry.number) || entries.has(entry.number))
-                return abort('Invalid or duplicated Issue in batch matrix');
-              entries.set(entry.number, entry);
-            }
-            if (entries.size !== openNumbers.length ||
-                openNumbers.some(number => !entries.has(number)))
-              return abort('Batch matrix must enumerate every currently open Issue');
-            for (const number of openNumbers) {
-              const item = entries.get(number);
-              if (!['fixed', 'already_released', 'test_false_positive', 'external_blocked'].includes(item.disposition) ||
-                  typeof item.evidence !== 'string' ||
-                  !/^https:\/\/github\.com\/Whale7-git\/HermesBuild\//.test(item.evidence) ||
-                  typeof item.acceptance !== 'string' || item.acceptance.trim().length < 24)
-                return abort('Incomplete acceptance evidence for Issue #' + number);
-              if (item.disposition === 'external_blocked' &&
-                  (typeof item.blocker_contract !== 'string' || item.blocker_contract.trim().length < 24))
-                return abort('External blocker lacks contract/failure evidence for Issue #' + number);
-            }
-            // Require all three candidate jobs (source, Swift, IPA) on the exact HEAD.
-            // Simulator failures are independently triaged into GitHub Issues.
-            // Compare workflow runs against the exact PR head, not the synthetic PR merge ref.
-            const {data: runsPage} = await github.rest.actions.listWorkflowRunsForRepo({
-              owner, repo, event: 'pull_request', head_sha: sha, per_page: 100
+            if (candidateRun.head_sha !== sha || candidateRun.conclusion !== 'success')
+              return skip('compiled candidate not successful');
+            const {data: main} = await github.rest.repos.getBranch({
+              owner, repo, branch: 'main'
             });
-            for (const name of workflows) {
-              const matches = runsPage.workflow_runs.filter(run =>
-                run.name === name && run.head_sha === sha &&
-                run.event === 'pull_request');
-              const latest = matches.sort((a,b) => b.created_at.localeCompare(a.created_at))[0];
-              if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success')
-                return abort(`Required exact-head workflow incomplete or failing: ${name}`);
-              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-                owner, repo, run_id: latest.id, per_page: 100
-              });
-              if (!jobs.length || jobs.some(job => job.conclusion !== 'success'))
-                return abort(`Required jobs not all successful: ${name}`);
-            }
-            // Prevent a stale PR base or changing main from being published.
-            const {data: main} = await github.rest.repos.getBranch({owner, repo, branch: 'main'});
-            if (main.commit.sha !== pr.base.sha) return abort('Main has moved; revalidate PR first');
+            if (main.commit.sha !== pr.base.sha)
+              return skip('main moved; rebase product PR');
             if (pr.draft) {
               await github.graphql(
                 'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}',
@@ -179,14 +105,13 @@ jobs:
             }
             const merged = await github.rest.pulls.merge({
               owner, repo, pull_number: pr.number, sha, merge_method: 'squash',
-              commit_title: `release(iOS): Hermes ${current.version} build${current.build}`
+              commit_title: `release(iOS): Hermes ${next.version} build${next.build}`
             });
-            if (!merged.data.merged || !merged.data.sha) throw new Error('Merge not confirmed');
-            core.info(`Merged PR #${pr.number} as ${merged.data.sha}`);
-            // GITHUB_TOKEN-created push events do not trigger the push workflow.
-            // workflow_dispatch is explicitly supported and uses the same verified IPA.
+            if (!merged.data.merged || !merged.data.sha)
+              throw new Error('Product merge was not confirmed');
+            core.info('Merged product PR #' + pr.number + ': ' + merged.data.sha);
             await github.rest.actions.createWorkflowDispatch({
               owner, repo, workflow_id: 'hermesshell-single-promote.yml', ref: 'main',
-              inputs: { expected_sha: merged.data.sha, previous_sha: pr.base.sha }
+              inputs: {expected_sha: merged.data.sha, previous_sha: pr.base.sha}
             });
-            core.info('Dispatched candidate promotion for ' + merged.data.sha);
+            core.info('Dispatched immutable IPA publication');

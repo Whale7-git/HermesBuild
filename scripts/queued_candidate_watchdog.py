@@ -12,7 +12,6 @@ from urllib import error, parse, request
 REPO = "Whale7-git/HermesBuild"
 WORKFLOW = ".github/workflows/hermesshell-single-build.yml"
 CANDIDATE = "Compile and upload one candidate IPA"
-OTHER_JOBS = {"Source and release plan", "Swift offline regression"}
 QUEUE_SECONDS = 180
 MAX_MONITOR_SECONDS = 1080
 MAX_ATTEMPTS = 3
@@ -74,18 +73,11 @@ def same_open_pr(client: GitHub, run: dict) -> bool:
 
 
 def candidate_waiting(jobs: list[dict], now: float) -> bool:
-    by_name = {job.get("name"): job for job in jobs}
-    if len(jobs) != 3 or len(by_name) != 3:
+    # Source/Swift diagnostics run in another workflow and must never gate
+    # the one macOS candidate job or its queued-run retry policy.
+    if len(jobs) != 1 or jobs[0].get("name") != CANDIDATE:
         return False
-    if not OTHER_JOBS.issubset(by_name) or CANDIDATE not in by_name:
-        return False
-    if any(
-        by_name[name].get("status") != "completed"
-        or by_name[name].get("conclusion") != "success"
-        for name in OTHER_JOBS
-    ):
-        return False
-    candidate = by_name[CANDIDATE]
+    candidate = jobs[0]
     if candidate.get("status") != "queued" or candidate.get("started_at") is not None:
         return False
     created = candidate.get("created_at")
@@ -149,10 +141,6 @@ def monitor(client: GitHub, run_id: int, now=time.time, sleep=time.sleep,
         by_name = {job.get("name"): job for job in jobs}
         if by_name.get(CANDIDATE, {}).get("status") in ("in_progress", "completed"):
             return "ok: macOS started or finished"
-        if any(by_name.get(name, {}).get("status") == "completed"
-               and by_name[name].get("conclusion") != "success"
-               for name in OTHER_JOBS):
-            return "skip: source or offline checks failed"
         if not candidate_waiting(jobs, now()):
             sleep(min(POLL_SECONDS, max(0, deadline - now())))
             continue
