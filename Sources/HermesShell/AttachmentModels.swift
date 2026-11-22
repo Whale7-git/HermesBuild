@@ -944,7 +944,7 @@ enum AttachmentFileImport {
         guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
         for draft in batch.items {
             if case .failed = draft.state { try batch.requeue(draft.id) }
-            if draft.canResumeUpload && !waiting.contains(draft.id) && tasks[draft.id] == nil {
+            if draft.canResumeUpload && !waiting.contains(draft.id) {
                 waiting.append(draft.id)
             }
         }
