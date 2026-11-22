@@ -239,9 +239,10 @@ class SingleBuildWorkflowTests(unittest.TestCase):
                 self.assertNotIn(forbidden, guidance)
         self.assertIn("hermesshell-single-build.yml", guidance)
         self.assertIn("hermesshell-single-promote.yml", guidance)
-        self.assertIn("without compiling again", guidance)
+        self.assertIn("hermes-offline-diagnostics.yml", guidance)
+        self.assertIn("nonblocking", guidance.lower())
         self.assertIn("historical", guidance.lower())
-        self.assertIn("not instructions", guidance.lower())
+        self.assertNotIn("tests/gen_release_scope.py", guidance)
 
     def test_workflow_referenced_scripts_exist(self):
         workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
