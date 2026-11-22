@@ -550,12 +550,18 @@ extension NativeChatModel {
                 }
                 guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.authenticationRequired, !self.stopping,
-                      self.activeTurnRecovery?.runID == runID ||
-                      (runID != nil && self.activeTurnRecovery == nil) else { return }
+                      (self.activeTurnRecovery?.runID == runID ||
+                       (runID != nil && self.activeTurnRecovery == nil)),
+                      (self.pendingSend?.id == pendingID ||
+                       (pendingID != nil && self.pendingSend == nil)) else { return }
                 if let probe = self.activeRunProbeTask { await probe.value }
                 guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.stopping, !self.authenticationRequired else { return }
-                if self.activeTurnRecovery != nil && !self.running && self.error == nil {
+                // A deep history crawl is expensive; try it only twice in
+                // this recovery window, after the status probe and latest GET.
+                if self.activeTurnRecovery != nil && !self.running && self.error == nil,
+                   delay == self.automaticReconciliationDelaysNanoseconds[1] ||
+                   delay == self.automaticReconciliationDelaysNanoseconds.last {
                     _ = await self.reconcileLongAcceptedRun()
                 }
                 if self.running || (!self.uncertain && self.pendingSend == nil &&
