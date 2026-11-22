@@ -208,10 +208,42 @@ actor ConcurrencyProbe {
         let unknown = try await restarted.history(sessionID: "s", before: nil)
         check(unknown.activeStreamID == nil,
               "missing status is unknown, not a fabricated live stream")
-        try await restarted.stopNativeTurn(streamID: run)
-        let stopped = try await restarted.history(sessionID: "s", before: nil)
-        check(stopped.activeStreamID == nil, "explicit stop settles missing run record")
+        do {
+            try await restarted.stopNativeTurn(streamID: run)
+            preconditionFailure("404 STOP response was treated as acknowledgement")
+        } catch let error as APIError {
+            if case .http(let code, _) = error {
+                check(code == 404, "404 STOP remains a rejected request")
+            } else { throw error }
+        }
+        let restartedStore = GatewayRunStore(scope: "instance|account", defaults: defaults)
+        check(restartedStore.runID(for: "s") == run,
+              "404 STOP preserves the exact durable Run identity")
+        let stillUnknown = try await restarted.history(sessionID: "s", before: nil)
+        check(stillUnknown.activeStreamID == nil && restartedStore.runID(for: "s") == run,
+              "404 STOP does not turn unknown status into terminal absence")
+
+        // A 409 is also a conflict, not proof that the Run stopped.
+        let conflictScope = "instance|build228-stop-409"
+        let conflict = backend(scope: conflictScope)
+        let conflictRun = try await conflict.startNativeTurn(sessionID: "s", text: "fixture")
+        transport.statusCode = 409
+        do {
+            try await conflict.stopNativeTurn(streamID: conflictRun)
+            preconditionFailure("409 STOP response was treated as acknowledgement")
+        } catch let error as APIError {
+            if case .http(let code, _) = error {
+                check(code == 409, "409 STOP remains a rejected request")
+            } else { throw error }
+        }
+        let conflictStore = GatewayRunStore(scope: conflictScope, defaults: defaults)
+        check(conflictStore.runID(for: "s") == conflictRun,
+              "409 STOP preserves the exact durable Run identity")
         transport.statusCode = 200
+        transport.status = "running"
+        let stillAlive = try await conflict.probeActiveRun(sessionID: "s", runID: conflictRun)
+        check(stillAlive == .alive && conflictStore.runID(for: "s") == conflictRun,
+              "a 409 STOP cannot retire a still-running Run")
         _ = try await restarted.startNativeTurn(sessionID: "s", text: "fixture")
         transport.failure = URLError(.notConnectedToInternet)
         do { _ = try await restarted.history(sessionID: "s", before: nil); preconditionFailure("offline considered idle") }
