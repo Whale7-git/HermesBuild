@@ -66,6 +66,34 @@ struct ChatScrollState: Equatable {
         return true
     }
 
+    /// A vertical finger pan always owns the reading position, including a
+    /// short swipe within the ordinary 40/80pt follow hysteresis. Do not let
+    /// streamed row growth pull the viewport back as the finger is released.
+    /// A later deliberate upward swipe toward the latest reply may reattach.
+    @discardableResult
+    mutating func beginManualReading() -> Bool {
+        let previous = self
+        following = false
+        return self != previous
+    }
+
+    /// Only a real gesture toward the latest content may reattach after the
+    /// user takes reading ownership. Geometry and keyboard notifications must
+    /// continue to use update/geometryReportedDistance instead.
+    @discardableResult
+    mutating func updateDuringManualDrag(distanceFromBottom distance: Double,
+                                         movingTowardLatest: Bool) -> Bool {
+        guard distance.isFinite else { return false }
+        let previous = self
+        if movingTowardLatest && distance < Self.resumeThreshold {
+            following = true
+            hasUnreadContent = false
+        } else if distance > Self.detachThreshold {
+            following = false
+        }
+        return self != previous
+    }
+
     mutating func jumpToLatest() {
         following = true
         hasUnreadContent = false
