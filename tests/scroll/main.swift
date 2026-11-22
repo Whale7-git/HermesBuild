@@ -340,6 +340,23 @@ expect(!ChatDrawerInteraction.shouldTrack(startX: 90, translationX: -120, transl
        "sidebar instance switcher horizontal gestures must not dismiss the drawer")
 expect(!ChatDrawerInteraction.finishOpen(width: 330, wasOpen: false, predictedTranslation: 50),
        "short reveal springs back when released")
+expect(!ChatDrawerInteraction.finishOpen(width: 330, wasOpen: false,
+                                         predictedTranslation: 300, actualTranslation: 42),
+       "short actual drag cannot open drawer from inflated predicted endpoint")
+expect(ChatDrawerInteraction.finishOpen(width: 330, wasOpen: false,
+                                        predictedTranslation: 270, actualTranslation: 120),
+       "deliberate full-card right swipe still opens")
+expect(ChatDrawerInteraction.finishOpen(width: 330, wasOpen: true,
+                                        predictedTranslation: -300, actualTranslation: -28),
+       "short left drag does not unexpectedly close an open drawer")
+var partialSwipeOwner = RootDrawerGestureOwnership()
+partialSwipeOwner.changed(open: false, startX: 170, horizontal: 42,
+                          vertical: 1, width: 330)
+expect(partialSwipeOwner.ended(open: false, width: 330,
+                              predictedTranslation: 300, actualTranslation: 42) == false,
+       "short full-card swipe releases to closed state despite aggressive prediction")
+expect(!partialSwipeOwner.claimed, "short release clears the root gesture owner")
+
 expect(ChatDrawerInteraction.finishOpen(width: 330, wasOpen: false, predictedTranslation: 200),
        "decisive right swipe completes opening")
 expect(ChatDrawerInteraction.finishOpen(width: 330, wasOpen: true, predictedTranslation: -50),
