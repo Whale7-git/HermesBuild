@@ -8,6 +8,53 @@ import FoundationNetworking
     let base = URL(string:ProcessInfo.processInfo.environment["ATTACHMENT_FIXTURE_URL"]!)!
     let config = URLSessionConfiguration.ephemeral
     let policy = try AttachmentPreviewPolicy(baseURL:base)
+    func pathQuery(_ request: URLRequest) -> String? {
+        guard let url = request.url,
+              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        return items.first(where: { $0.name == "path" })?.value
+    }
+    let agentArtifactPath = "/opt/data/agent-artifact.png"
+    let mediaArtifact = try policy.mediaRequest(sessionID: "s", path: agentArtifactPath)
+    let gatewayArtifact = try policy.gatewayFileRequest(path: agentArtifactPath)
+    check(pathQuery(mediaArtifact) == agentArtifactPath,
+          "valid absolute Agent Artifact path remains available through WebUI media")
+    check(pathQuery(gatewayArtifact) == agentArtifactPath,
+          "valid absolute Agent Artifact path remains available through Gateway Files")
+    for unsafePath in [
+        "/opt/data/../etc/passwd",
+        "/opt/data/%2e%2e/etc/passwd",
+        "/opt/data/%252e%252e/etc/passwd",
+        "/opt/data/%252e%252e%252fetc/passwd",
+        "/opt/data/..\\etc\\passwd"
+    ] {
+        do {
+            _ = try policy.mediaRequest(sessionID: "s", path: unsafePath)
+            check(false, "path traversal is rejected: \\(unsafePath)")
+        } catch AttachmentError.unsafeURL {
+            check(true, "path traversal is rejected: \\(unsafePath)")
+        } catch {
+            check(false, "path traversal uses the expected unsafeURL error: \\(unsafePath)")
+        }
+    }
+
+    // A selected regular file is allowed; a symlink leaf is not imported.
+    let temporaryRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hermes-attachment-path-\\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+    let regularFile = temporaryRoot.appendingPathComponent("artifact.bin")
+    try Data([1, 2, 3]).write(to: regularFile)
+    let symbolicLink = temporaryRoot.appendingPathComponent("artifact-link.bin")
+    try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: regularFile)
+    do {
+        _ = try AttachmentFileImport.read(symbolicLink, maxBytes: 1024)
+        check(false, "symlink attachment import is rejected")
+    } catch AttachmentError.invalidMetadata {
+        check(true, "symlink attachment import is rejected")
+    }
+    let imported = try AttachmentFileImport.read(regularFile, maxBytes: 1024)
+    check(imported == Data([1, 2, 3]), "regular attachment import remains supported")
+
     func file(_ path: String) throws -> UploadedAttachment {
         let obj:[String:Any] = ["filename":"a.png", "path":path, "mime":"image/png", "size":3, "is_image":true]
         return try UploadedAttachment(data:JSONSerialization.data(withJSONObject:obj))
