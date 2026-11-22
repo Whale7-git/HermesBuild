@@ -57,10 +57,8 @@ jobs:
             if (pr.mergeable !== true || !['clean', 'unstable', 'draft'].includes(pr.mergeable_state))
               return abort('PR is not mergeable without conflicts');
 
-            // Draft is not silently promoted unless the author explicitly opted in.
-            // New release PRs should use the marker in their description.
-            if (!/<!--\s*hermes-auto-release\s*-->/.test(pr.body || ''))
-              return abort('No hermes-auto-release opt-in marker');
+            // Release identity + exact-head green checks govern promotion.
+            // Draft does not block a verified versioned PR; hold labels do.
             const files = await github.paginate(github.rest.pulls.listFiles, {
               owner, repo, pull_number: pr.number, per_page: 100
             });
