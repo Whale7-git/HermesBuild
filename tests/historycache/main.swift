@@ -198,8 +198,9 @@ import Foundation
         let marker = ChatHistoryStore(instanceID: namespace, sessionID: "marker",
             accountScope: "marker", rootDirectory: bigRoot, policy: markerPolicy)
         var markerRecord = ChatHistoryRecord(snapshot: try snapshot(session: "marker"))
-        markerRecord.tools = [ChatTool(id: "not-cacheable", name: "search", args: "",
-            result: String(repeating: "k", count: 5000), done: true, isError: false)]
+        markerRecord.tools = [ChatTool(id: "not-cacheable-" + String(repeating: "i", count: 1100),
+            name: "search", args: "", result: String(repeating: "k", count: 5000),
+            done: true, isError: false)]
         marker.schedule(markerRecord)
         await marker.flush()
         let markerCold = await marker.load()
