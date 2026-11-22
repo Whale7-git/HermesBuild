@@ -28,15 +28,59 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         path = ROOT / ".github/workflows/hermesshell-single-build.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"pull_request", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["source", "offline", "candidate"])
+        self.assertEqual(jobs(text), ["source", "offline_shards", "offline", "candidate"])
+        self.assertIn("shard: [core, recovery, interface, media]", text)
+        self.assertIn("fail-fast: false", text)
+        self.assertIn("HERMES_TEST_SHARD: ${{ matrix.shard }}", text)
+        self.assertIn("needs: offline_shards", text)
+        self.assertIn('test "$SHARDS_RESULT" = success', text)
         self.assertEqual(text.count("bash scripts/github-build-ipa-main.sh"), 1)
         self.assertEqual(text.count("actions/upload-artifact@"), 2)
         self.assertEqual(text.count("name: hermes-candidate-diagnostics-"), 1)
         self.assertIn("HERMES_WORKFLOW_BLOB_SHA", text)
-        self.assertNotRegex(text, r"(?m)^    needs:")
+        self.assertEqual(text.count("\n    needs:"), 1)
+        self.assertNotIn("\n    needs:", text.split("\n  offline_shards:", 1)[0])
+        self.assertNotIn("\n    needs:", text.split("\n  candidate:", 1)[1])
         self.assertNotIn("publish-candidate.py", text)
         self.assertNotIn("BARK_URL", text)
         self.assertNotIn("contents: write", text)
+
+    def test_offline_shard_partition_is_exhaustive(self):
+        runner = (ROOT / "tests/run_container.sh").read_text()
+        declared = re.findall(r"(?m)^run ([a-z0-9]+) ", runner)
+        mapping = re.findall(
+            r"(?m)^    ([a-z0-9|]+)\) echo (core|recovery|interface|media) ;;",
+            runner,
+        )
+        self.assertEqual(len(mapping), 4)
+        assigned = [name for names, _ in mapping for name in names.split("|")]
+        self.assertEqual(len(declared), 51)
+        self.assertEqual(len(declared), len(set(declared)))
+        self.assertEqual(len(assigned), len(set(assigned)))
+        self.assertEqual(set(declared), set(assigned))
+        extras = re.findall(
+            r"(?m)^run_extra (core|recovery|interface|media) ([a-z0-9-]+) ",
+            runner,
+        )
+        self.assertEqual(
+            {name for _, name in extras},
+            {"renderpipeline", "textualprimitives", "attachments",
+             "selectionactivity", "gatewaybackend", "uitest-contract"},
+        )
+        self.assertEqual(len(extras), 6)
+        self.assertIn("HERMES_OFFLINE_TESTS_PASS shard=$SHARD", runner)
+        self.assertIn('with_deadline "$EXEC_LIMIT"', runner)
+        self.assertIn('with_deadline "$COMPILE_LIMIT"', runner)
+
+    def test_obsolete_source_hash_inventory_is_not_executed(self):
+        workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
+        runner = (ROOT / "tests/run_container.sh").read_text()
+        self.assertNotIn("tests/verify_source.py", workflow)
+        self.assertNotIn("tests/sourcegate/main.py", runner)
+        self.assertIn("tests/check_release_identity.py", workflow)
+        for old in ("tests/verify_source.py", "tests/gen_release_scope.py",
+                    "tests/sourcegate/main.py"):
+            self.assertFalse((ROOT / old).exists(), old)
 
     def test_candidate_concurrency_cancels_stale_pr_builds(self):
         text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
@@ -84,7 +128,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
             text.index("Write candidate diagnostics report"),
             text.index("Record candidate result"),
         )
-        self.assertNotIn("if: ${{ always() }}", text)
+        self.assertEqual(text.count("if: ${{ always() }}"), 1)
 
     def test_simulator_shards_use_independent_runners_and_aggregate_status(self):
         workflow = (ROOT / ".github/workflows/simulator-probe.yml").read_text()
