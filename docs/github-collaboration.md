@@ -8,7 +8,7 @@ Use `main` as the product source of truth. Develop in short-lived branches, open
 |---|---|---|
 | `hermesshell-single-build.yml` | Compile and package the exact candidate IPA once; upload immutable Artifact | **Only if IPA cannot be built or verified** |
 | `hermes-offline-diagnostics.yml` | Four parallel Swift shards, Python/static diagnostics, full logs and visible failure status | **No** |
-| `simulator-probe.yml` | Simulator UI checks and discovered issues | **No** |
+| `simulator-probe.yml` | Manual-only Simulator UI diagnostics (`Actions → Run workflow`, choose suite); no PR/daily/post-release auto-trigger | **No** |
 | `verified-release-automerge.yml` | Automatically merge a valid version-bumped product PR after candidate success | No Issue, source hash, test or manual-approval gate |
 | `hermesshell-single-promote.yml` | Select exact PR candidate and publish identical bytes; best-effort Bark notification | Actual Artifact identity/integrity required |
 
