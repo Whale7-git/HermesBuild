@@ -12,6 +12,7 @@ and server deployment outside this repository.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
+- Version-bumped product PRs are eligible for trusted default-branch auto-merge only after both exact-head CI workflows succeed. To block, add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for a fully verified release PR. Maintenance, infrastructure, CI, and script changes always require manual merge.
 - Rebase or merge the latest `main` before requesting review. Resolve conflicts
   on the feature branch.
 - Shared GitHub identities cannot approve their own pull requests. In that
@@ -54,7 +55,8 @@ separate.
   toolchain, redacted build logs, and `build-report.json`. They do not alter the
   candidate file contract or Release assets. A diagnostic upload failure must
   not hide a verified candidate.
-- Build, validate, and publish only through the two workflows and the existing
+- The trusted `verified-release-automerge.yml` gate checks eligible release PRs and explicitly dispatches promotion after merge because GitHub-token merges do not start ordinary push workflows. Never skip the exact-head CI, artifact, or release identity checks.
+- Build, validate, and publish only through the candidate/promotion workflows and the existing
   test entry points listed above. Historical manifests and backlog records are
   audit evidence, not runnable instructions. Do not claim device behavior was
   verified without a real-device result.

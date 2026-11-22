@@ -1,0 +1,144 @@
+name: HermesBuild verified release auto-merge
+
+# Runs trusted main workflow code, never PR branch code.
+on:
+  workflow_run:
+    workflows:
+      - HermesBuild single-build candidate
+      - Hermes iOS Simulator UI regression
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: hermes-verified-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  merge-and-dispatch:
+    if: >-
+      ${{ github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_repository.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Verify exact-head checks and release scope, then merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.payload.workflow_run.head_sha;
+            const workflows = [
+              'HermesBuild single-build candidate',
+              'Hermes iOS Simulator UI regression'
+            ];
+            const abort = message => { core.notice(message); return false; };
+            const {data: associations} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner, repo, commit_sha: sha, per_page: 100
+            });
+            const candidates = associations.filter(p =>
+              p.state === 'open' && p.base.ref === 'main' &&
+              p.head.sha === sha && p.head.repo?.full_name === `${owner}/${repo}`
+            );
+            if (candidates.length !== 1) return abort('No unique live same-repository PR for this SHA');
+            const {data: pr} = await github.rest.pulls.get({owner, repo, pull_number: candidates[0].number});
+            if (pr.head.sha !== sha || pr.base.ref !== 'main' || pr.state !== 'open')
+              return abort('PR changed during validation');
+            const labels = new Set(pr.labels.map(label => label.name.toLowerCase()));
+            if (['hold', 'no-auto-release', 'manual-review'].some(label => labels.has(label)))
+              return abort('PR has manual hold label');
+            if (!/^(fix|feat|chore)\//.test(pr.head.ref))
+              return abort('PR branch is not an allowed release branch');
+            if (pr.mergeable !== true || !['clean', 'unstable', 'draft'].includes(pr.mergeable_state))
+              return abort('PR is not mergeable without conflicts');
+
+            // Release identity + exact-head green checks govern promotion.
+            // Draft does not block a verified versioned PR; hold labels do.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number, per_page: 100
+            });
+            const allowed = path =>
+              path === 'release.json' || path === 'README.md' ||
+              path === 'Resources/Info.plist' || path === 'ios-ci-project.yml' ||
+              path.startsWith('Sources/HermesShell/') ||
+              path.startsWith('UITests/') ||
+              path.startsWith('Vendor/Textual/') ||
+              /^tests\/release-scope-build\d+\.json$/.test(path) ||
+              path.startsWith('tests/attachments/') ||
+              path.startsWith('tests/scroll/') ||
+              path.startsWith('tests/uitest/');
+            if (!files.length || files.some(file => !allowed(file.filename)))
+              return abort('PR touches non-product or privileged files; manual merge required');
+            if (!files.some(file => file.filename === 'release.json'))
+              return abort('Not a new release PR');
+            const readRelease = async ref => {
+              const {data} = await github.rest.repos.getContent({owner, repo, path: 'release.json', ref});
+              if (!('content' in data)) throw new Error('release.json is not a file');
+              return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+            };
+            const current = await readRelease(sha);
+            const previous = await readRelease(pr.base.sha);
+            const valid = data => /^\d+\.\d+\.\d+$/.test(data.version) && /^[1-9]\d*$/.test(String(data.build));
+            if (!valid(current) || !valid(previous) ||
+                Number(current.build) <= Number(previous.build))
+              return abort('Release identity invalid or build not increasing');
+            const versionCompare = (a, b) => {
+              const left = a.split('.').map(Number), right = b.split('.').map(Number);
+              for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i];
+              return 0;
+            };
+            if (versionCompare(current.version, previous.version) < 0)
+              return abort('Version downgrade');
+            const {data: reviewList} = await github.rest.pulls.listReviews({
+              owner, repo, pull_number: pr.number, per_page: 100
+            });
+            const latestReview = new Map();
+            for (const review of reviewList)
+              if (review.state !== 'PENDING') latestReview.set(review.user.login, review.state);
+            if ([...latestReview.values()].includes('CHANGES_REQUESTED'))
+              return abort('Outstanding requested changes');
+
+            // Compare workflow runs against the exact PR head, not the synthetic PR merge ref.
+            const {data: runsPage} = await github.rest.actions.listWorkflowRunsForRepo({
+              owner, repo, event: 'pull_request', head_sha: sha, per_page: 100
+            });
+            for (const name of workflows) {
+              const matches = runsPage.workflow_runs.filter(run =>
+                run.name === name && run.head_sha === sha &&
+                run.event === 'pull_request');
+              const latest = matches.sort((a,b) => b.created_at.localeCompare(a.created_at))[0];
+              if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success')
+                return abort(`Required exact-head workflow incomplete or failing: ${name}`);
+              const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+                owner, repo, run_id: latest.id, per_page: 100
+              });
+              if (!jobs.length || jobs.some(job => job.conclusion !== 'success'))
+                return abort(`Required jobs not all successful: ${name}`);
+            }
+            // Prevent a stale PR base or changing main from being published.
+            const {data: main} = await github.rest.repos.getBranch({owner, repo, branch: 'main'});
+            if (main.commit.sha !== pr.base.sha) return abort('Main has moved; revalidate PR first');
+            if (pr.draft) {
+              await github.graphql(
+                'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){clientMutationId}}',
+                {id: pr.node_id}
+              );
+            }
+            const merged = await github.rest.pulls.merge({
+              owner, repo, pull_number: pr.number, sha, merge_method: 'squash',
+              commit_title: `release(iOS): Hermes ${current.version} build${current.build}`
+            });
+            if (!merged.data.merged || !merged.data.sha) throw new Error('Merge not confirmed');
+            core.info(`Merged PR #${pr.number} as ${merged.data.sha}`);
+            // GITHUB_TOKEN-created push events do not trigger the push workflow.
+            // workflow_dispatch is explicitly supported and uses the same verified IPA.
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo, workflow_id: 'hermesshell-single-promote.yml', ref: 'main',
+              inputs: { expected_sha: merged.data.sha, previous_sha: pr.base.sha }
+            });
+            core.info('Dispatched candidate promotion for ' + merged.data.sha);

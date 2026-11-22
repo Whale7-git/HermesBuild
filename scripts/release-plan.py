@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decide whether an exact main push introduces a new release identity."""
+"""Decide whether an authorized main push or explicit merge dispatch publishes a release."""
 import json
 import os
 from pathlib import Path
@@ -19,7 +19,7 @@ def identity(data):
 def plan(current, previous, event, ref):
     version, build = identity(current)
     release = False
-    if event == 'push' and ref == 'refs/heads/main':
+    if event in ('push', 'workflow_dispatch') and ref == 'refs/heads/main':
         if previous is None:
             raise ValueError('previous main release metadata is required')
         old_version, old_build = identity(previous)
@@ -35,9 +35,18 @@ def main():
     event = os.environ['GITHUB_EVENT_NAME']
     ref = os.environ['GITHUB_REF']
     previous = None
-    if event == 'push' and ref == 'refs/heads/main':
+    if event in ('push', 'workflow_dispatch') and ref == 'refs/heads/main':
         payload = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-        before = payload.get('before', '')
+        if event == 'workflow_dispatch':
+            inputs = payload.get('inputs') or {}
+            expected = inputs.get('expected_sha', '')
+            before = inputs.get('previous_sha', '')
+            actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+            parent = subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip()
+            if expected != actual or before != parent or os.environ.get('GITHUB_SHA') != actual:
+                raise ValueError('dispatch commit or first parent mismatch')
+        else:
+            before = payload.get('before', '')
         if not re.fullmatch(r'[0-9a-f]{40}', before) or before == '0' * 40:
             raise ValueError('cannot establish previous main commit; refusing automatic release')
         raw = subprocess.check_output(['git', 'show', f'{before}:release.json'], text=True)
