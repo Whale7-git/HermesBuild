@@ -5,114 +5,130 @@ import Foundation
 final class GatewayRunStore {
     private let defaults: UserDefaults?
     private let key: String
+    private let unresolvedKey: String
     private let generationKey: String
     private let generation: String
     private var values: [String: String]
+    private var unresolvedValues: [String: String]
+    private var activePersistenceFailed = false
+    private var unresolvedPersistenceFailed = false
 
-    /// F-55d：本轮 run 记录**写盘失败**。写失败意味着「不自动重发」的保证不再可靠，
-    /// UI 需要据此提示「本轮恢复能力不可用」。
-    ///
-    /// 每次写入都按本次 `persist` 的结果重置（不是一旦置位就永久保留）：失败时
-    /// `current()` 会切到内存真源，成功时切回磁盘，避免一次瞬时失败把本进程
-    /// 永久钉在降级态。内存值本身始终正确，从不回滚。
-    private(set) var persistenceFailed = false
-
-    /// 失效诊断只写一次：`runID(for:)` 会被反复调用，逐次写 stderr 只会刷屏。
+    var persistenceFailed: Bool { activePersistenceFailed || unresolvedPersistenceFailed }
     private var didDiagnoseRetired = false
 
     init(scope: String?, defaults: UserDefaults = .standard) {
         self.defaults = scope == nil ? nil : defaults
         key = "HermesNative.gatewayRuns.v1." + (scope ?? "ephemeral")
+        unresolvedKey = "HermesNative.gatewayUnresolvedRuns.v1." + (scope ?? "ephemeral")
         generationKey = "HermesNative.gatewayRunGeneration.v1." + (scope ?? "ephemeral")
         generation = defaults.string(forKey: generationKey) ?? UUID().uuidString
         if scope != nil { defaults.set(generation, forKey: generationKey) }
         values = scope == nil ? [:] : (defaults.dictionary(forKey: key) as? [String: String] ?? [:])
+        unresolvedValues = scope == nil ? [:]
+            : (defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:])
     }
 
-    /// F-72：`removeAll` 轮换 generation 之后，**已经存在的旧实例**会读到与自身
-    /// `generation` 不同的值，于是失效并返回空记录。这是预期行为（防止旧账号的
-    /// 迟到回调把记录复活），留一行诊断只是为了让排查时能看出「记录为什么没了」，
-    /// 而不是把它当成一次数据丢失。
     private var isValid: Bool {
         defaults == nil || defaults?.string(forKey: generationKey) == generation
     }
 
-    /// 读当前记录。
-    ///
-    /// 正常情况下磁盘是唯一真源：多实例（同一 scope 的两个 `GatewayRunStore`）靠
-    /// 回读 `UserDefaults` 互相看见对方的写入，谁也不能拿自己那份旧内存覆盖别人。
-    ///
-    /// 但**写盘失败之后**磁盘是已知的坏数据（可能是旧值、也可能是 nil），此时必须
-    /// 退回内存：`remember` 已经把正确值放进 `values`，若继续以磁盘为准，
-    /// `runID(for:)` 会立刻返回 nil —— 「不自动重发」的保证在**当前进程内**就失效了，
-    /// 这比「重启后恢复不了」严重得多。所以只在 `persistenceFailed` 时切换真源。
-    ///
-    /// 代价：写失败期间看不到同 scope 其他实例的更新。这是降级态的取舍——
-    /// 记录已经不可持久化，优先保住本进程的正确性。
     private func current() -> [String: String] {
-        guard isValid else {
-            noteRetired()
-            return [:]
-        }
-        if persistenceFailed { return values }
+        guard isValid else { noteRetired(); return [:] }
+        if activePersistenceFailed { return values }
         if let defaults { return defaults.dictionary(forKey: key) as? [String: String] ?? [:] }
         return values
     }
 
-    /// 失效只留一行诊断。
-    ///
-    /// 不用运行时日志记录器：本文件在 `tests/gatewaybackend` 里被单独编译，那个
-    /// 套件没有链接日志模块。内容只含状态描述，不含任何 session/run/实例 id。
-    /// 只写一次：`runID(for:)` 会被反复调用，逐次写 stderr 只会刷屏。
+    private func currentUnresolved() -> [String: String] {
+        guard isValid else { noteRetired(); return [:] }
+        if unresolvedPersistenceFailed { return unresolvedValues }
+        if let defaults {
+            return defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]
+        }
+        return unresolvedValues
+    }
+
     private func noteRetired() {
         guard !didDiagnoseRetired else { return }
         didDiagnoseRetired = true
         Self.diagnose("run records unavailable: generation rotated, this scope instance is retired")
     }
 
-    /// 写入后回读比对：`UserDefaults.set` 没有返回值，`synchronize()` 在 iOS 上也
-    /// 不保证真正落盘，但能反映内存态是否已经一致。回读不一致就认为这次持久化
-    /// 失败（F-55d / F-71）。
     private func persist(_ values: [String: String]) -> Bool {
         guard let defaults else { return true }
         defaults.set(values, forKey: key)
-        // `synchronize()` 在 iOS 上不保证真正落盘，但能让内存态与磁盘态对齐后再回读。
         _ = defaults.synchronize()
-        // 空字典回读可能是 nil（UserDefaults 不一定保留空容器），按空字典比较，
-        // 否则「把所有记录清空」这一合法结果会被误判成写失败。
         let readBack = defaults.dictionary(forKey: key) as? [String: String] ?? [:]
         return readBack == values
     }
 
-    func runID(for sessionID: String) -> String? { current()[sessionID] }
+    private func persistUnresolved(_ values: [String: String]) -> Bool {
+        guard let defaults else { return true }
+        defaults.set(values, forKey: unresolvedKey)
+        _ = defaults.synchronize()
+        let readBack = defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]
+        return readBack == values
+    }
 
-    /// Snapshot the run dictionary once for a whole session list. Calling
-    /// runID(for:) once per row repeatedly materializes UserDefaults values.
+    /// Only verified active runs are returned to the session-list running indicator.
+    /// An unresolved record is retained separately so a later probe can re-arm it.
+    func runID(for sessionID: String) -> String? {
+        let active = current()[sessionID]
+        return active == currentUnresolved()[sessionID] ? nil : active
+    }
+
+    func unresolvedRunID(for sessionID: String) -> String? {
+        currentUnresolved()[sessionID]
+    }
+
     func runIDs(for sessionIDs: [String]) -> [String: String] {
-        let snapshot = current()
+        let active = current()
+        let unresolved = currentUnresolved()
         var found: [String: String] = [:]
         for sessionID in sessionIDs {
-            if let runID = snapshot[sessionID] { found[sessionID] = runID }
+            if let runID = active[sessionID], unresolved[sessionID] != runID {
+                found[sessionID] = runID
+            }
         }
         return found
     }
 
+    func unresolvedRunIDs(for sessionIDs: [String]) -> [String: String] {
+        let unresolved = currentUnresolved()
+        return Dictionary(uniqueKeysWithValues: sessionIDs.compactMap { id in
+            unresolved[id].map { (id, $0) }
+        })
+    }
+
     func remember(runID: String, sessionID: String) {
         guard isValid else { noteRetired(); return }
+        unresolvedValues = currentUnresolved()
+        unresolvedValues.removeValue(forKey: sessionID)
+        unresolvedPersistenceFailed = !persistUnresolved(unresolvedValues)
         values = current()
         values[sessionID] = runID
-        // Active records are intentionally not expired by time: elapsed time cannot prove a run ended.
-        // 内存值必须保持正确，写盘失败只置标记、不回滚。
-        persistenceFailed = !persist(values)
+        activePersistenceFailed = !persist(values)
+    }
+
+    func markUnresolved(runID: String, sessionID: String) {
+        guard isValid else { noteRetired(); return }
+        // Persist unresolved first so a crash cannot leave a stale active indicator.
+        unresolvedValues = currentUnresolved()
+        unresolvedValues[sessionID] = runID
+        unresolvedPersistenceFailed = !persistUnresolved(unresolvedValues)
+        values = current()
+        if values[sessionID] == runID { values.removeValue(forKey: sessionID) }
+        activePersistenceFailed = !persist(values)
     }
 
     func finish(runID: String) {
         guard isValid else { noteRetired(); return }
         values = current().filter { $0.value != runID }
-        persistenceFailed = !persist(values)
+        activePersistenceFailed = !persist(values)
+        unresolvedValues = currentUnresolved().filter { $0.value != runID }
+        unresolvedPersistenceFailed = !persistUnresolved(unresolvedValues)
     }
 
-    /// 只写一行状态，不带任何会话/run 标识。
     private static func diagnose(_ message: String) {
         _ = try? FileHandle.standardError.write(contentsOf: Data(("[HermesNative][gateway-run] " + message + "\n").utf8))
     }
@@ -120,19 +136,23 @@ final class GatewayRunStore {
     static func removeAll(instanceID: String, accountScope: String? = nil,
                           defaults: UserDefaults = .standard) {
         let prefix = "HermesNative.gatewayRuns.v1." + instanceID + "|"
+        let unresolvedPrefix = "HermesNative.gatewayUnresolvedRuns.v1." + instanceID + "|"
         let generationPrefix = "HermesNative.gatewayRunGeneration.v1." + instanceID + "|"
         if let accountScope {
             defaults.removeObject(forKey: prefix + accountScope)
+            defaults.removeObject(forKey: unresolvedPrefix + accountScope)
             defaults.set(UUID().uuidString, forKey: generationPrefix + accountScope)
         } else {
             let keys = defaults.dictionaryRepresentation().keys
             let accounts = Set(keys.compactMap { key -> String? in
                 if key.hasPrefix(prefix) { return String(key.dropFirst(prefix.count)) }
+                if key.hasPrefix(unresolvedPrefix) { return String(key.dropFirst(unresolvedPrefix.count)) }
                 if key.hasPrefix(generationPrefix) { return String(key.dropFirst(generationPrefix.count)) }
                 return nil
             })
             for account in accounts {
                 defaults.removeObject(forKey: prefix + account)
+                defaults.removeObject(forKey: unresolvedPrefix + account)
                 defaults.set(UUID().uuidString, forKey: generationPrefix + account)
             }
         }

@@ -39,12 +39,16 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// converts repeated 404/unknown/5xx/malformed/network failures to a
     /// user-visible verification error while retaining the durable run ID.
     private var failedRunProbes: [String: Int] = [:]
+    private var missingRunProbes: [String: Int] = [:]
+    private var missingRunProbeStartedAt: [String: TimeInterval] = [:]
     private var nextRunProbeAt: [String: TimeInterval] = [:]
+    private let missingRunGraceInterval: TimeInterval
     private static let maxFailedRunProbes = 5
+    private static let maxMissingRunProbes = 3
 
     init(gatewayBaseURL: URL, apiKey: String, webuiBaseURL: URL?, gatewayDataPath: String = "",
          recoveryScope: String? = nil, transport: GatewayTransport? = nil,
-         runStore: GatewayRunStore? = nil) {
+         runStore: GatewayRunStore? = nil, missingRunGraceInterval: TimeInterval = 15) {
         self.gatewayBaseURL = gatewayBaseURL
         self.apiKey = apiKey
         self.webuiBaseURL = webuiBaseURL
@@ -53,6 +57,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         self.runStore = runStore ?? GatewayRunStore(scope: recoveryScope)
         self.fallback = webuiBaseURL.map { HermesAPI(baseURL: $0.absoluteString) }
         self.gatewayDataPath = gatewayDataPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.missingRunGraceInterval = max(0, missingRunGraceInterval)
     }
 
     // MARK: - 传输
@@ -211,8 +216,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // 收敛时才 `finish`。用它补齐这个字段，不必新增网络往返。
         // Refresh known runs when returning to the list as well as inside a chat.
         // Unknown/network failure keeps the durable record; it is not completion.
-        let knownRuns = runStore.runIDs(for: decoded.map(\.sessionId))
-        scheduleRunProbes(knownRuns: knownRuns)
+        let sessionIDs = decoded.map(\.sessionId)
+        let knownRuns = runStore.runIDs(for: sessionIDs)
+        let unresolvedRuns = runStore.unresolvedRunIDs(for: sessionIDs)
+        let probeCandidates = knownRuns.merging(unresolvedRuns) { active, _ in active }
+        scheduleRunProbes(knownRuns: probeCandidates)
         return decoded.map { row in
             var copy = row
             copy.isStreaming = knownRuns[row.sessionId] != nil
@@ -230,7 +238,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         runProbeTask = Task { [weak self] in
             guard let self else { return }
             defer { self.runProbeTask = nil }
-            let before = self.runStore.runIDs(for: known)
+            let beforeActive = self.runStore.runIDs(for: known)
+            let beforeUnresolved = self.runStore.unresolvedRunIDs(for: known)
             await withTaskGroup(of: Void.self) { group in
                 var iterator = known.makeIterator()
                 for _ in 0..<4 {
@@ -244,7 +253,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                     }
                 }
             }
-            if before != self.runStore.runIDs(for: known) {
+            if beforeActive != self.runStore.runIDs(for: known)
+                || beforeUnresolved != self.runStore.unresolvedRunIDs(for: known) {
                 NotificationCenter.default.post(name: Self.runsChanged, object: self)
             }
         }
@@ -279,7 +289,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
 
     func deleteSession(sessionID: String) async throws {
         _ = try await perform(try requests.deleteSession(sessionID: sessionID))
-        if let runID = runStore.runID(for: sessionID) {
+        if let runID = runStore.runID(for: sessionID)
+            ?? runStore.unresolvedRunID(for: sessionID) {
             runStore.finish(runID: runID)
             clearFailedRunProbes(runID: runID)
         }
@@ -315,176 +326,164 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
-                                          activeRunID: active, requestedSessionID: sessionID)
+                                          requestedSessionID: sessionID,
+                                          activeRunState: active)
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         let now = Date().timeIntervalSince1970
         if let retryAt = nextRunProbeAt[runID], now < retryAt {
-            return .unknown
+            return runStore.unresolvedRunID(for: sessionID) == runID ? .unresolved : .unknown
         }
+        if let active = runStore.runID(for: sessionID), active != runID { return .unknown }
+        if let unresolved = runStore.unresolvedRunID(for: sessionID), unresolved != runID { return .unknown }
         let data: Data
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error, code == 401 || code == 403 { throw error }
+            if case .http(let code, _) = error, code == 404 {
+                return recordMissingRunProbe(runID: runID, sessionID: sessionID)
             }
-            return recordProbeFailure(runID: runID)
+            return recordProbeFailure(runID: runID, sessionID: sessionID)
         } catch {
             if error is CancellationError { throw error }
-            return recordProbeFailure(runID: runID)
+            return recordProbeFailure(runID: runID, sessionID: sessionID)
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
               let status = root["status"] as? String,
               let returnedSessionID = root["session_id"] as? String,
               returnedSessionID == sessionID else {
-            return recordProbeFailure(runID: runID)
+            return recordProbeFailure(runID: runID, sessionID: sessionID)
         }
         switch status {
         case "queued", "running", "waiting_for_approval", "stopping":
             clearFailedRunProbes(runID: runID)
-            // The receipt can outlive a local run-store cleanup after a crash or
-            // account-scope repair. A status response that proves both the
-            // exact run ID and session ownership is sufficient to re-arm it.
-            if runStore.runID(for: sessionID) == nil {
-                runStore.remember(runID: runID, sessionID: sessionID)
-            } else if runStore.runID(for: sessionID) != runID {
-                return .unknown
-            }
+            runStore.remember(runID: runID, sessionID: sessionID)
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            if runStore.runID(for: sessionID) == runID {
-                runStore.finish(runID: runID)
-            }
+            runStore.finish(runID: runID)
             guard let terminal = RunTerminalStatus(rawValue: status) else { return .unknown }
             return .terminal(terminal)
         default:
-            return recordProbeFailure(runID: runID)
+            return recordProbeFailure(runID: runID, sessionID: sessionID)
         }
     }
 
     private func activeRun(sessionID: String, allowBackoff: Bool = true) async throws -> String? {
-        guard let runID = runStore.runID(for: sessionID) else { return nil }
-        let now = Date().timeIntervalSince1970
-        if allowBackoff, let retryAt = nextRunProbeAt[runID], now < retryAt {
-            throw GatewayDecodeError.malformed(
-                "后台任务状态仍待核对；已暂停频繁重试，不会清除运行记录或自动重发。")
+        guard let runID = runStore.runID(for: sessionID)
+            ?? runStore.unresolvedRunID(for: sessionID) else { return nil }
+        if allowBackoff, let retryAt = nextRunProbeAt[runID],
+           Date().timeIntervalSince1970 < retryAt {
+            return runStore.runID(for: sessionID) == runID ? runID : nil
         }
-        let data: Data
-        do {
-            data = try await perform(requests.runStatus(runID: runID))
-        } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error // Credential errors must not be hidden as "running".
-            }
-            return try unresolvedRun(runID: runID)
-        } catch {
-            if error is CancellationError { throw error }
-            return try unresolvedRun(runID: runID)
-        }
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              root["run_id"] as? String == runID,
-              root["session_id"] as? String == sessionID,
-              let status = root["status"] as? String else {
-            return try unresolvedRun(runID: runID)
-        }
-        guard runStore.runID(for: sessionID) == runID else {
-            throw GatewayDecodeError.malformed("任务状态已变化，请刷新核对")
-        }
-        switch status {
-        case "queued", "running", "waiting_for_approval", "stopping":
-            clearFailedRunProbes(runID: runID)
-            return runID
-        case "completed", "failed", "cancelled", "interrupted":
-            // Only an explicit terminal status can retire the recovery record.
-            clearFailedRunProbes(runID: runID)
-            runStore.finish(runID: runID)
-            return nil
-        default:
-            return try unresolvedRun(runID: runID)
+        switch try await probeActiveRun(sessionID: sessionID, runID: runID) {
+        case .alive: return runID
+        case .terminal, .unresolved: return nil
+        case .unknown: return runStore.runID(for: sessionID) == runID ? runID : nil
         }
     }
 
-    /// History is the completion authority; run status is only a recovery hint.
-    /// An unavailable status is unknown, not proof that execution is still live.
-    /// Return no active ID so completed history can reconcile, while the durable
-    /// run-store entry remains available for a later bounded probe. Authentication
-    /// and cancellation still abort.
-    private func activeRunForHistory(sessionID: String) async throws -> String? {
-        guard let runID = runStore.runID(for: sessionID) else { return nil }
+    /// Status lookup is evidence, not a prerequisite for reading canonical history.
+    /// A transient failure is unknown; a bounded failure is unresolved, never absent.
+    /// Only an explicit terminal status proves absence.
+    private func activeRunForHistory(sessionID: String) async throws -> ActiveRunState {
+        guard let runID = runStore.runID(for: sessionID)
+            ?? runStore.unresolvedRunID(for: sessionID) else { return .absent }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
-            return nil
+            return runStore.unresolvedRunID(for: sessionID) == runID
+                ? .unresolved(runID) : .unknown
         }
         let data: Data
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error, code == 401 || code == 403 { throw error }
+            if case .http(let code, _) = error, code == 404 {
+                return activeRunState(from: recordMissingRunProbe(runID: runID, sessionID: sessionID),
+                                      runID: runID)
             }
-            _ = recordProbeFailure(runID: runID)
-            return nil
+            return activeRunState(from: recordProbeFailure(runID: runID, sessionID: sessionID),
+                                  runID: runID)
         } catch let error as CancellationError {
             throw error
         } catch {
-            _ = recordProbeFailure(runID: runID)
-            return nil
+            return activeRunState(from: recordProbeFailure(runID: runID, sessionID: sessionID),
+                                  runID: runID)
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
               root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
-            _ = recordProbeFailure(runID: runID)
-            return nil
+            return activeRunState(from: recordProbeFailure(runID: runID, sessionID: sessionID),
+                                  runID: runID)
         }
-        guard runStore.runID(for: sessionID) == runID else {
-            return nil
-        }
+        if let active = runStore.runID(for: sessionID), active != runID { return .unknown }
+        if let unresolved = runStore.unresolvedRunID(for: sessionID), unresolved != runID { return .unknown }
         switch status {
         case "queued", "running", "waiting_for_approval", "stopping":
             clearFailedRunProbes(runID: runID)
-            return runID
+            runStore.remember(runID: runID, sessionID: sessionID)
+            return .active(runID)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
             runStore.finish(runID: runID)
-            return nil
+            return .absent
         default:
-            _ = recordProbeFailure(runID: runID)
-            return nil
+            return activeRunState(from: recordProbeFailure(runID: runID, sessionID: sessionID),
+                                  runID: runID)
+        }
+    }
+
+    private func activeRunState(from probe: ActiveRunProbe, runID: String) -> ActiveRunState {
+        switch probe {
+        case .alive: return .active(runID)
+        case .terminal: return .absent
+        case .unknown: return .unknown
+        case .unresolved: return .unresolved(runID)
         }
     }
 
     private func clearFailedRunProbes(runID: String) {
         failedRunProbes.removeValue(forKey: runID)
+        missingRunProbes.removeValue(forKey: runID)
+        missingRunProbeStartedAt.removeValue(forKey: runID)
         nextRunProbeAt.removeValue(forKey: runID)
     }
 
-    private func recordProbeFailure(runID: String) -> ActiveRunProbe {
+    private func recordProbeFailure(runID: String, sessionID: String) -> ActiveRunProbe {
         let failures = min(32, (failedRunProbes[runID] ?? 0) + 1)
         failedRunProbes[runID] = failures
         if failures >= Self.maxFailedRunProbes {
-            let exponent = min(5, failures - Self.maxFailedRunProbes)
-            nextRunProbeAt[runID] = Date().timeIntervalSince1970
-                + Double(min(60, 2 << exponent))
+            runStore.markUnresolved(runID: runID, sessionID: sessionID)
+            nextRunProbeAt[runID] = Date().timeIntervalSince1970 + 30
+            return .unresolved
         }
         return .unknown
     }
 
-    /// Never erase runStore for a guessed terminal state. Bounded exponential
-    /// backoff stops a dead gateway from polling forever at full frequency.
-    private func unresolvedRun(runID: String) throws -> String {
-        let failures = min(32, (failedRunProbes[runID] ?? 0) + 1)
-        failedRunProbes[runID] = failures
-        guard failures >= Self.maxFailedRunProbes else { return runID }
-        let exponent = min(5, failures - Self.maxFailedRunProbes)
-        nextRunProbeAt[runID] = Date().timeIntervalSince1970
-            + Double(min(60, 2 << exponent))
-        throw GatewayDecodeError.malformed(
-            "后台任务连续无法确认状态；运行记录已保留，请稍后核对，不会自动重发。")
+    private func recordMissingRunProbe(runID: String, sessionID: String) -> ActiveRunProbe {
+        let now = Date().timeIntervalSince1970
+        let count = min(32, (missingRunProbes[runID] ?? 0) + 1)
+        missingRunProbes[runID] = count
+        let first = missingRunProbeStartedAt[runID] ?? now
+        missingRunProbeStartedAt[runID] = first
+        if count >= Self.maxMissingRunProbes && now - first >= missingRunGraceInterval {
+            runStore.markUnresolved(runID: runID, sessionID: sessionID)
+            nextRunProbeAt[runID] = now + 30
+            return .unresolved
+        }
+        if missingRunGraceInterval == 0 {
+            nextRunProbeAt[runID] = now
+        } else if count >= 2 {
+            nextRunProbeAt[runID] = max(now + 2, first + missingRunGraceInterval)
+        } else {
+            nextRunProbeAt[runID] = now + 2
+        }
+        return .unknown
     }
 
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
