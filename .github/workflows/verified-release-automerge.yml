@@ -7,8 +7,8 @@ on:
       - HermesBuild single-build candidate
       - Hermes iOS Simulator UI regression
     types: [completed]
-  # Removing a manual hold after both runs complete must re-evaluate the gate.
-  # All executable code remains from trusted main; PR source is never checked out.
+# Removing a manual hold after both runs complete must re-evaluate the gate.
+# All executable code remains from trusted main; PR source is never checked out.
   pull_request_target:
     types: [unlabeled, ready_for_review, reopened]
 
