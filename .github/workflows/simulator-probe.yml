@@ -260,3 +260,32 @@ jobs:
             kill "$(cat "$RUNNER_TEMP/mock.pid")" 2>/dev/null || true
           fi
           xcrun simctl shutdown all || true
+
+  simulator-result:
+    name: Aggregate isolated UI shards
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    needs: simulator
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Publish exact-HEAD combined UI status
+        uses: actions/github-script@v7
+        env:
+          SHARDS_RESULT: ${{ needs.simulator.result }}
+          STATUS_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const result = process.env.SHARDS_RESULT;
+            const passed = result === 'success';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner, repo: context.repo.repo,
+              sha: process.env.STATUS_SHA,
+              state: passed ? 'success' : 'failure',
+              context: 'hermes/simulator-all',
+              description: passed ? 'All isolated iOS simulator shards passed'
+                                  : 'One or more iOS simulator shards did not pass',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+            });
+            if (!passed) core.setFailed('iOS simulator shard result: ' + result);
