@@ -624,11 +624,13 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
-    /// 网关原生审批回传。`choice` 走服务端白名单（once/session/always/deny）。
-    func approveNativeTurn(runID: String, choice: String, requestID: String?) async throws -> String? {
+    /// Canonical approval answers must carry prompt identity and generation.
+    func approveNativeTurn(runID: String, choice: String, requestID: String,
+                           executionGeneration: Int) async throws -> String? {
         do {
-            _ = try await perform(try requests.approveRun(runID: runID, choice: choice,
-                                                          requestID: requestID))
+            _ = try await perform(try requests.approveRun(
+                runID: runID, choice: choice, requestID: requestID,
+                executionGeneration: executionGeneration))
             return nil
         } catch let error as APIError {
             // 409 = 这个审批已经不在等待了（超时、被别处处理、或 run 已结束）。
