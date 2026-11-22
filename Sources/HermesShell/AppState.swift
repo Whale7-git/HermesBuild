@@ -536,12 +536,25 @@ final class AppState: ObservableObject {
             accountScope: historyAccountScope,
             observations: sessionTaskObservations,
             visibleSessionID: currentSessionID
-        ) { [weak self] sessionID, observedVersion in
+        ) { [weak self] sessionID, observedVersion, receipt in
             guard let self, self.isCurrent(originalScope),
                   self.appIsActive, self.currentSessionID != sessionID,
                   let current = self.sessionTaskObservations[sessionID],
                   current.signals.contains(.needsVerification),
                   current.version(for: .needsVerification) == observedVersion else { return }
+            let store = ChatDraftStore(
+                instanceID: self.historyInstanceID,
+                accountScope: self.historyAccountScope,
+                sessionID: sessionID,
+                fileStore: LocalDataFileStore(
+                    instanceID: self.historyInstanceID,
+                    accountScope: self.historyAccountScope,
+                    sessionID: sessionID))
+            let saved = store.loadActiveRun()
+            guard saved.result.succeeded, store.loadPending().value == nil,
+                  let bytes = saved.value,
+                  (try? JSONDecoder().decode(ActiveTurnRecovery.self, from: bytes)) == receipt,
+                  store.saveActiveRun(nil).succeeded else { return }
             var remaining = current.signals
             remaining.remove(.needsVerification)
             remaining.remove(.running)

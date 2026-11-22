@@ -19,7 +19,7 @@ final class SessionRecoveryCoordinator {
                   instanceID: String, accountScope: String,
                   observations: [String: SessionTaskObservation],
                   visibleSessionID: String?,
-                  onVerified: @escaping @MainActor (String, Double) -> Void) {
+                  onVerified: @escaping @MainActor (String, Double, ActiveTurnRecovery) -> Void) {
         guard worker == nil else { return }
         let now = Date()
         let candidates = observations.filter { sessionID, observation in
@@ -91,9 +91,9 @@ final class SessionRecoveryCoordinator {
                           head.activeStreamID == nil,
                           head.rawMessageEndIndex == latest.rawMessageEndIndex,
                           head.messages.last?.id == latest.messages.last?.id else { continue }
-                    // Write durable receipt retirement before notifying AppState.
-                    guard store.saveActiveRun(nil).succeeded else { continue }
-                    onVerified(sessionID, observation.version(for: .needsVerification))
+                    // AppState owns the final scoped compare-and-clear; user
+                    // navigation may have changed while the GET was in flight.
+                    onVerified(sessionID, observation.version(for: .needsVerification), receipt)
                 } catch is CancellationError {
                     return
                 } catch {
