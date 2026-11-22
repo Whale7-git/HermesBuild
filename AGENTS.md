@@ -12,7 +12,7 @@ and server deployment outside this repository.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
-- Personal project: **ordinary and high-risk iOS product fixes both require no human review or approval**. A version-bumped product PR auto-merges only after the batch acceptance matrix is verified against the full open-Issue set, all three exact-HEAD source/scope, Swift offline and IPA checks pass. High-risk changes additionally require targeted deterministic safety regression and code-level agent self-review. Simulator UI regression remains independent; a real-phone test is not a routine prerequisite. Use `hold` or `no-auto-release` only for a concrete unresolved correctness/security failure or an explicit user pause; risk classification or Draft alone is not a hold. CI/workflow/privileged scripts require a separate checked PR and an agent-initiated explicit merge (not a product auto-release); no human reviewer is required.
+- Personal project: **ordinary and high-risk iOS product fixes both require no human review or approval**. A version-bumped product PR auto-merges only after the batch acceptance matrix is verified against the full open-Issue set, exact-HEAD release identity, all four Swift offline shards and the IPA check pass. High-risk changes additionally require targeted deterministic safety regression and code-level agent self-review. Simulator UI regression remains independent; a real-phone test is not a routine prerequisite. Use `hold` or `no-auto-release` only for a concrete unresolved correctness/security failure or an explicit user pause; risk classification or Draft alone is not a hold. CI/workflow/privileged scripts require a separate checked PR and an agent-initiated explicit merge (not a product auto-release); no human reviewer is required.
 - Rebase or merge the latest `main` before requesting merge. Resolve conflicts
   on the feature branch.
 - Do not wait for another GitHub identity, human review or manual approval for any iOS product fix, including Run/Session/POST/queue/STOP changes. Three exact-head CI checks are the routine gate; targeted deterministic regression and code self-review are mandatory for high-risk fixes.
@@ -38,13 +38,14 @@ suite before requesting review. State what was actually run and keep offline
 tests, Release compilation, IPA inspection, and physical-device acceptance
 separate.
 
-- Source verification: `python tests/verify_source.py`
-- Source-gate regression: `python tests/sourcegate/main.py`
+- Release identity (version/Info.plist/Bundle ID only): `python tests/check_release_identity.py`
+- Historical file-hash inventories and per-build Release Scope manifests are not release gates.
 - Core tests: included in `bash tests/run_container.sh`
-- Native tests: `bash tests/run_container.sh` (uses the runner’s preinstalled Swift in CI; its version is logged)
+- Native tests: `bash tests/run_container.sh` for all suites locally, or `HERMES_TEST_SHARD=core|recovery|interface|media bash tests/run_container.sh` in four independent Ubuntu CI shards. Each suite has a time limit.
 - Release automation: `python -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v`
-- iPhoneOS candidate: the same-repository PR workflow runs all three jobs in
-  parallel, compiles once, and retains an immutable candidate Artifact. Main
+- iPhoneOS candidate: the same-repository PR workflow runs release identity checks,
+  four independent offline test shards with one mandatory aggregate, and a single
+  IPA build in parallel; it retains one immutable candidate Artifact. Main
   promotion requires the successful PR run and verifies that exact Artifact
   without compiling again or rerunning PR checks. `workflow_dispatch` on the candidate workflow
   builds and retains a candidate but never publishes.
@@ -81,7 +82,7 @@ separate.
 2. The project manager owns **one** product integration branch. Workers create independent branches and PRs targeting that integration branch, not `main`; they may not bump versions, create product Release PRs, or publish IPA/Bark. Review worker changes, preserve safety invariants, and integrate compatible fixes into the same batch.
 3. Each Issue must have a concrete conclusion with code and test evidence: fixed and verified, already fixed in an earlier Release with proof, test false positive with proof, or externally blocked with a specific contract/failure and safe client fallback. Partial fixes and unexamined Issues do not satisfy batch acceptance.
 4. A batch can span multiple scheduled runs. **Never release a subset merely because its three CI jobs passed.** Continue the same integration branch until all executable fixes have been implemented and all remaining external blockers are documented.
-5. Only the project manager updates the release identity and the machine-readable batch acceptance matrix, opens the one versioned product PR against `main`, and runs exact-head source/scope, offline Swift, IPA and applicable simulator checks. High-risk fixes additionally require focused safety regression and self-review; no human review is needed. A trusted release gate must reject absent, stale or incomplete batch acceptance evidence.
+5. Only the project manager updates the release identity and the machine-readable batch acceptance matrix, opens the one versioned product PR against `main`, and runs exact-head release identity, all offline Swift shards, IPA and applicable simulator checks. High-risk fixes additionally require focused safety regression and self-review; no human review is needed. A trusted release gate must reject absent, stale or incomplete batch acceptance evidence.
 6. Following a verified Release and identical IPA promotion, reconcile each Issue against its full acceptance criteria; close only proven fixes. Aggregate audit Issues close only after all children are resolved. Do not split the remaining queue into default partial releases.
 7. Changes to `AGENTS.md`, CI/workflow or privileged scripts require a separate maintenance PR based on `main`, tested and explicitly merged by the project manager; they are not product release changes.
 
