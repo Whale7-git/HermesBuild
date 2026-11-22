@@ -41,11 +41,11 @@ class SingleBuildWorkflowTests(unittest.TestCase):
 
     def test_maintenance_pr_skips_mac_candidate(self):
         text = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
-        preflight = text.split("  preflight:\\n", 1)[1].split("\\n  source:\\n", 1)[0]
+        preflight = text.split("  preflight:\n", 1)[1].split("\n  source:\n", 1)[0]
         self.assertIn("github.rest.pulls.listFiles", preflight)
         self.assertIn("file.filename === 'release.json'", preflight)
         self.assertIn("core.setOutput('required', 'false')", preflight)
-        candidate = text.split("\\n  candidate:\\n", 1)[1]
+        candidate = text.split("\n  candidate:\n", 1)[1]
         self.assertIn("needs: preflight", candidate)
         self.assertIn("needs.preflight.outputs.required == 'true'", candidate)
 
