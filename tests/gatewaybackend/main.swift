@@ -213,8 +213,8 @@ actor ConcurrencyProbe {
         do {
             try await restarted.stopNativeTurn(streamID: run)
             preconditionFailure("404 STOP response was treated as acknowledgement")
-        } catch let error as APIError {
-            if case .http(let code, _) = error {
+        } catch let error as ChatStopHTTPError {
+            if case .rejected(let code) = error {
                 check(code == 404, "404 STOP remains a rejected request")
             } else { throw error }
         }
@@ -233,8 +233,8 @@ actor ConcurrencyProbe {
         do {
             try await conflict.stopNativeTurn(streamID: conflictRun)
             preconditionFailure("409 STOP response was treated as acknowledgement")
-        } catch let error as APIError {
-            if case .http(let code, _) = error {
+        } catch let error as ChatStopHTTPError {
+            if case .rejected(let code) = error {
                 check(code == 409, "409 STOP remains a rejected request")
             } else { throw error }
         }
