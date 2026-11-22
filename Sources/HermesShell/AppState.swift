@@ -17,6 +17,48 @@ struct BatchActionResult: Equatable {
     var isFullSuccess: Bool { failed == 0 }
 }
 
+enum SessionTaskBackgroundDecision: Equatable {
+    case active
+    case resolved
+    case sendNotFound
+    case needsVerification
+    case recoveryIssue
+}
+
+/// Pure decision policy for the foreground reconciler. Unknown and unresolved
+/// status can never clear a send/run receipt or manufacture a terminal result.
+enum SessionTaskBackgroundPolicy {
+    static func decide(runState: ActiveRunState,
+                       storageReadable: Bool,
+                       hasPendingSend: Bool,
+                       pendingResult: PendingReconcileResult?,
+                       hasAcceptedRun: Bool,
+                       acceptedRunMatchesActive: Bool,
+                       acceptedRunCompleted: Bool) -> SessionTaskBackgroundDecision {
+        guard storageReadable else { return .recoveryIssue }
+        switch runState {
+        case .unknown, .unresolved:
+            return .needsVerification
+        case .active(_):
+            if hasPendingSend && !acceptedRunMatchesActive { return .needsVerification }
+            if hasAcceptedRun && !acceptedRunMatchesActive { return .needsVerification }
+            return .active
+        case .absent:
+            if hasPendingSend {
+                switch pendingResult {
+                case .delivered: break
+                case .absent:
+                    return hasAcceptedRun && !acceptedRunCompleted
+                        ? .needsVerification : .sendNotFound
+                case .failed, .none: return .needsVerification
+                }
+            }
+            if hasAcceptedRun && !acceptedRunCompleted { return .needsVerification }
+            return .resolved
+        }
+    }
+}
+
 /// 一次首页刷新从发出第一条请求到发布结果的总时限。
 ///
 /// 单页请求各自设有超时仍不足以保证整轮刷新有界：网关可能连续翻很多页，

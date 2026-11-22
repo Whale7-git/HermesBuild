@@ -155,48 +155,6 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-enum SessionTaskBackgroundDecision: Equatable {
-    case active
-    case resolved
-    case sendNotFound
-    case needsVerification
-    case recoveryIssue
-}
-
-/// Pure decision policy for the foreground reconciler. Unknown and unresolved
-/// status can never clear a send/run receipt or manufacture a terminal result.
-enum SessionTaskBackgroundPolicy {
-    static func decide(runState: ActiveRunState,
-                       storageReadable: Bool,
-                       hasPendingSend: Bool,
-                       pendingResult: PendingReconcileResult?,
-                       hasAcceptedRun: Bool,
-                       acceptedRunMatchesActive: Bool,
-                       acceptedRunCompleted: Bool) -> SessionTaskBackgroundDecision {
-        guard storageReadable else { return .recoveryIssue }
-        switch runState {
-        case .unknown, .unresolved:
-            return .needsVerification
-        case .active(_):
-            if hasPendingSend && !acceptedRunMatchesActive { return .needsVerification }
-            if hasAcceptedRun && !acceptedRunMatchesActive { return .needsVerification }
-            return .active
-        case .absent:
-            if hasPendingSend {
-                switch pendingResult {
-                case .delivered: break
-                case .absent:
-                    return hasAcceptedRun && !acceptedRunCompleted
-                        ? .needsVerification : .sendNotFound
-                case .failed, .none: return .needsVerification
-                }
-            }
-            if hasAcceptedRun && !acceptedRunCompleted { return .needsVerification }
-            return .resolved
-        }
-    }
-}
-
 /// A pure merge policy. Local observations can add facts that the list cannot
 /// expose, while server `is_streaming` can remove a stale local `running` fact.
 enum SessionTaskCenter {
