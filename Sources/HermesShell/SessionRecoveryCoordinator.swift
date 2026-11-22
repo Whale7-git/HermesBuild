@@ -21,7 +21,7 @@ final class SessionRecoveryCoordinator {
             snapshot.activeRunEvidence == .absent
     }
 
-    func schedule(api: HermesBackend,
+    /// A foreground GET may finish after a new send/Run receipt is saved. Only\n    /// retire the exact original receipt while no new pending POST exists.\n    static func mayRetireStoredReceipt(expected: Data, current: Data?,\n                                       pendingIsEmpty: Bool) -> Bool {\n        pendingIsEmpty && current == expected\n    }\n\n    func schedule(api: HermesBackend,
                   instanceID: String, accountScope: String,
                   observations: [String: SessionTaskObservation],
                   visibleSessionID: String?,
