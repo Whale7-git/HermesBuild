@@ -36,6 +36,39 @@ final class HermesChatSelectionGestureUITests: XCTestCase {
                        "Dragging a native text selection unexpectedly revealed the drawer")
     }
 
+    /// A short, cancelled full-card drawer gesture must never leave the
+    /// underlying UIKit transcript scroll-disabled. The static long-answer
+    /// fixture gives enough vertical content for actual pixel movement.
+    @MainActor func testShortRightSwipeReturnsToVerticalScrolling() {
+        let app = HermesUITestHarness.launchAndConnect()
+        HermesUITestHarness.openSession(app)
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10) && transcript.isHittable)
+        let close = app.buttons["关闭会话列表"]
+        XCTAssertFalse(close.isHittable, "Drawer must initially be closed")
+
+        for attempt in 0..<2 {
+            let start = transcript.coordinate(withNormalizedOffset:
+                CGVector(dx: 0.36, dy: 0.50))
+            let shortEnd = transcript.coordinate(withNormalizedOffset:
+                CGVector(dx: 0.47, dy: 0.50))
+            start.press(forDuration: 0.35, thenDragTo: shortEnd)
+            XCTAssertFalse(close.isHittable,
+                           "Short right swipe opened drawer on attempt \\(attempt)")
+
+            // Do not merely assert scrollView.isHittable: that can remain true
+            // while isScrollEnabled is false. Compare real static transcript
+            // pixels after a user-driven vertical pan.
+            transcript.swipeDown()
+            let before = transcript.screenshot().pngRepresentation
+            transcript.swipeUp()
+            transcript.swipeUp()
+            let after = transcript.screenshot().pngRepresentation
+            XCTAssertNotEqual(before, after,
+                              "Vertical transcript remained frozen after cancelled drawer drag")
+        }
+    }
+
     @MainActor func testOrdinaryFullCardSwipeStillOpensDrawer() {
         let app = HermesUITestHarness.launchAndConnect()
         HermesUITestHarness.openSession(app)
