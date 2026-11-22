@@ -160,9 +160,10 @@ extension NativeChatModel {
         approvalSubmission = submission
         defer { if approvalSubmission == submission { approving = false } }
         do {
-            let outcome = try await api.approveNativeTurn(runID: pending.runID,
-                                                          choice: choice,
-                                                          requestID: pending.requestID)
+            guard let requestID = pending.requestID else { return }
+            let outcome = try await api.approveNativeTurn(
+                runID: pending.runID, choice: choice, requestID: requestID,
+                executionGeneration: pending.executionGeneration)
             noteRunRecoveryState()
             guard generation == revision, !suspended,
                   pendingApprovals.contains(pending), !Task.isCancelled else { return }
