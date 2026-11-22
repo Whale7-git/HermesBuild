@@ -258,8 +258,8 @@ import Foundation
         precondition(model.stopping && !model.canSend && service.startCalls == 1
                      && service.stopCalls == 1,
                      "exhausted polling must not unlock, dispatch or issue another STOP")
-        precondition(model.notice?.contains("已停止自动核对") == true,
-                     "poll budget exhaustion is visible, not an indefinite spinner")
+        precondition(model.notice?.contains("返回会话时将自动继续核对") == true,
+                     "poll budget exhaustion preserves lock and clearly explains safe foreground follow-up")
         model.disconnect()
     }
 
