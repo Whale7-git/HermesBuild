@@ -574,7 +574,7 @@
     ".gitattributes": "9788d0e6cd3af8c37e4fb2aeaaf816111d8f2d534bbd95554922375036366fb1",
     ".github/pull_request_template.md": "5af82bcc25a30030a52bcdb6752d7fc05a5ebed12eb4009a35fa660db8cae0b7",
     ".github/workflows/hermes-candidate-queue-watchdog.yml": "be8249ff09744c184ebaa41876e4f22eb433c10c65aef9933284e132c7b0eb87",
-    ".github/workflows/hermesshell-single-build.yml": "372bd1e539f534e94f29585790b6d22041aa7657ac787391fe11f6eea79e19d1",
+    ".github/workflows/hermesshell-single-build.yml": "b99e3f659a3c58c63ecddaa4590b73e1ffae1832d74a9340c83bc03f043d80a5",
     ".github/workflows/hermesshell-single-promote.yml": "7cda3435cb8cf8afcc3df01f49fc2e06385b5ee7412039c18076a293a8d8502e",
     ".github/workflows/simulator-issue-triage.yml": "4f36c744dbe529fd046fa415aef0471598fa64495e63b18cc3c8e59651eb440e",
     ".github/workflows/simulator-probe.yml": "f0526b48caa1a82bcea17014dcabf29ba335fd04501ae45a099938d481557fb0",
