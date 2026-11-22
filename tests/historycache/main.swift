@@ -165,10 +165,12 @@ import Foundation
                      "three 5MiB tool results must restore identities and missing-payload state under budget")
         let otherAccount = ChatHistoryStore(instanceID: namespace, sessionID: "large-tools",
             accountScope: "other-account", rootDirectory: bigRoot)
-        precondition(await otherAccount.load() == nil,
+        let isolatedLarge = await otherAccount.load()
+        precondition(isolatedLarge == nil,
                      "omission metadata must not escape instance/session/account scope")
         await bigStore.remove()
-        precondition(await bigStore.load() == nil,
+        let missingAfterRemoval = await bigStore.load()
+        precondition(missingAfterRemoval == nil,
                      "cleared cache cannot retain references to missing results")
         print("HISTORY_PASS >4MiB results, cold boot, isolation and deletion")
 
