@@ -105,32 +105,6 @@ struct ChatQueuedTurn: Identifiable, Equatable {
 /// One conservative history reconciliation policy for manual and queued POSTs.
 /// Without a server-issued receipt, multiple new user rows are ambiguous even
 /// when only one echoes our text. Never unlock automatic resend on ambiguity.
-enum DeliveryReconciliationPolicy {
-    static func resolve(text: String, attachments: [ChatAttachmentPayload],
-                        historyEnd: Int?, knownIDs: Set<String>,
-                        snapshot: ChatSnapshot) -> PendingReconcileResult {
-        guard let historyEnd, historyEnd >= 0,
-              !snapshot.readOnly,
-              snapshot.rawMessageEndIndex >= historyEnd,
-              snapshot.olderOffset <= historyEnd else { return .failed }
-        let newer = snapshot.messages.filter {
-            $0.role == "user" && ($0.sourceIndex ?? -1) >= historyEnd
-                && !knownIDs.contains($0.id)
-        }
-        if newer.count == 1, let only = newer.first {
-            let expected = Set(attachments.map(\.path))
-            if only.content.trimmingCharacters(in: .whitespacesAndNewlines) == text,
-               expected.isSubset(of: Set(only.attachmentPaths)) {
-                return .delivered
-            }
-        }
-        // No new user row + no active run is the only trustworthy absence proof
-        // available with this protocol. Any other case remains locked.
-        if newer.isEmpty && snapshot.activeStreamID == nil { return .absent }
-        return .failed
-    }
-}
-
 /// Delivery state is local-only. It never grants permission to resend; an
 /// uncertain turn must be reconciled or discarded explicitly.
 enum ChatQueuedDelivery: String, Equatable {

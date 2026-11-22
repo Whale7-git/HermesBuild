@@ -21,7 +21,7 @@ struct SSEFrame {
 /// 定义在 `ChatCore.swift` 而不是 `NativeChatModel.swift`：它由 SSE 帧解析出来，
 /// 而 `gatewaybackend` 套件只编译本文件、不编译模型；放在模型里会让那个套件
 /// 「cannot find type 'ChatPendingClarify' in scope」。
-struct ChatPendingClarify: Identifiable, Equatable {
+struct ChatPendingClarify: Identifiable, Codable, Equatable {
     let id: String
     let runID: String
     /// 服务端的 `prompt_id`，答复时当 `request_id` 发回去。
@@ -62,6 +62,125 @@ struct ChatPendingClarify: Identifiable, Equatable {
             question: question,
             choices: choices,
             multiSelect: multi)
+    }
+}
+
+/// 一条等待用户决定的审批请求。
+///
+/// 网关把 run 挂在 `waiting_for_approval` 上、SSE 不断开，所以这张卡片出现时
+/// 本轮并没有结束；不回答的话任务会一直停在这儿。可选项由服务端给（两项或四项），
+/// 客户端不猜——不同场景下 `session` / `always` 未必允许。
+struct ChatPendingApproval: Identifiable, Codable, Equatable {
+    let id: String
+    let runID: String
+    let requestID: String?
+    let detail: String
+    let command: String?
+    let choices: [String]
+
+    static func make(from frame: SSEFrame, runID: String?) -> ChatPendingApproval? {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8)))
+                as? [String: Any] else { return nil }
+        let detail = ["message", "description", "question", "command"]
+            .compactMap { object[$0] as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        guard let detail else { return nil }
+        let requestID = (object["request_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawChoices = (object["choices"] as? [Any])?
+            .compactMap { $0 as? String }
+            .filter { !$0.isEmpty } ?? []
+        var seenChoices = Set<String>()
+        let choices = (rawChoices.isEmpty ? ["once", "deny"] : rawChoices)
+            .filter { seenChoices.insert($0).inserted }
+        let command = (object["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ChatPendingApproval(
+            id: requestID ?? "\(runID ?? frame.id ?? "approval")-\(detail.prefix(32))",
+            runID: runID ?? "",
+            requestID: requestID?.isEmpty == true ? nil : requestID,
+            detail: detail,
+            command: command?.isEmpty == true ? nil : command,
+            choices: choices)
+    }
+}
+
+enum ActiveRunState: Equatable, Sendable {
+    case active(String)
+    case absent
+    case unknown
+    /// The server has repeatedly stopped exposing this run. This is not proof
+    /// of completion: keep the accepted-turn receipt and send lock, but stop
+    /// presenting a permanently running indicator.
+    case unresolved(String)
+
+    var activeID: String? {
+        if case .active(let id) = self { return id }
+        return nil
+    }
+
+    var isVerifiedAbsent: Bool {
+        if case .absent = self { return true }
+        return false
+    }
+}
+
+enum PendingReconcileResult: Equatable {
+    case delivered
+    case absent
+    case failed
+}
+
+struct PendingSendRecoveryRecord: Decodable {
+    let id: String
+    let text: String
+    let attachments: [ChatAttachmentPayload]
+    let historyEnd: Int?
+    let knownIDs: Set<String>
+    let createdAt: Double
+}
+
+enum DeliveryReconciliationPolicy {
+    static func resolve(text: String, attachments: [ChatAttachmentPayload],
+                        historyEnd: Int?, knownIDs: Set<String>,
+                        snapshot: ChatSnapshot) -> PendingReconcileResult {
+        resolve(text: text, attachments: attachments, historyEnd: historyEnd,
+                knownIDs: knownIDs, pages: [snapshot])
+    }
+
+    /// Pages are ordered newest first and must form a contiguous suffix covering
+    /// the pre-POST boundary. Unknown/unresolved run state can never prove absence.
+    static func resolve(text: String, attachments: [ChatAttachmentPayload],
+                        historyEnd: Int?, knownIDs: Set<String>,
+                        pages: [ChatSnapshot]) -> PendingReconcileResult {
+        guard let newest = pages.first, let oldest = pages.last,
+              let historyEnd, historyEnd >= 0, pages.count <= 64,
+              !newest.readOnly, newest.rawMessageEndIndex >= historyEnd,
+              oldest.olderOffset <= historyEnd,
+              pages.allSatisfy({ $0.sessionID == newest.sessionID
+                  && !$0.readOnly && $0.activeRunState.isVerifiedAbsent }) else {
+            return .failed
+        }
+        for index in pages.indices where index > 0 {
+            let older = pages[index]
+            let newer = pages[index - 1]
+            guard older.rawMessageEndIndex == newer.olderOffset,
+                  older.olderOffset < newer.olderOffset else { return .failed }
+        }
+        let fresh = pages.reversed().flatMap { $0.messages }.filter {
+            guard let sourceIndex = $0.sourceIndex else { return false }
+            return sourceIndex >= historyEnd && !knownIDs.contains($0.id)
+                && ChatBackgroundEnvelope.userBody($0) == nil
+        }
+        let newerUsers = fresh.filter { $0.role == "user" }
+        if newerUsers.count == 1, let only = newerUsers.first {
+            let expected = Set(attachments.map(\.path))
+            if only.content.trimmingCharacters(in: .whitespacesAndNewlines) == text,
+               expected.isSubset(of: Set(only.attachmentPaths)) {
+                return .delivered
+            }
+        }
+        return newerUsers.isEmpty ? .absent : .failed
     }
 }
 
@@ -381,7 +500,8 @@ struct ChatSnapshot: Sendable {
     let sessionID: String
     let messages: [ChatMessage]
     let tools: [ChatTool]
-    let activeStreamID: String?
+    let activeRunState: ActiveRunState
+    var activeStreamID: String? { activeRunState.activeID }
     let olderOffset: Int
     let readOnly: Bool
     let messagesTruncated: Bool
@@ -424,7 +544,17 @@ struct ChatSnapshot: Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         modelProvider = (rawProvider?.isEmpty ?? true) ? nil : rawProvider
         let active = (session["active_stream_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        activeStreamID = active?.isEmpty == false ? active : nil
+        let state = session["_active_run_state"] as? String
+        if let active, !active.isEmpty {
+            activeRunState = .active(active)
+        } else if state == "unknown" {
+            activeRunState = .unknown
+        } else if state == "unresolved",
+                  let runID = session["_unresolved_run_id"] as? String, !runID.isEmpty {
+            activeRunState = .unresolved(runID)
+        } else {
+            activeRunState = .absent
+        }
         usage = ChatUsage(fields: session)
         messages = rows.enumerated().compactMap { index, row in
             let role = row["role"] as? String ?? ""
@@ -513,7 +643,7 @@ struct ChatSnapshot: Sendable {
     /// an older assistant response plus a temporarily missing active run ID
     /// cannot complete this turn or unlock a queued POST.
     func confirmsRunFinished(afterRawIndex boundary: Int?) -> Bool {
-        guard activeStreamID == nil, let boundary else { return false }
+        guard activeRunState.isVerifiedAbsent, let boundary else { return false }
         let fresh = messages.filter { message in
             guard let sourceIndex = message.sourceIndex else { return false }
             return sourceIndex >= boundary
@@ -523,7 +653,7 @@ struct ChatSnapshot: Sendable {
     }
 
     var confirmsRunFinished: Bool {
-        guard activeStreamID == nil else { return false }
+        guard activeRunState.isVerifiedAbsent else { return false }
         guard let last = messages.last else { return false }
         if last.role == "assistant" { return true }
         // 末条是用户消息但已有用量：这一轮的收尾记录已落地。
@@ -540,6 +670,46 @@ struct ActiveTurnRecovery: Codable, Equatable {
     let knownIDs: Set<String>
     let text: String
     let attachmentPaths: Set<String>
+    var pendingApprovals: [ChatPendingApproval]
+    var pendingClarifies: [ChatPendingClarify]
+
+    init(runID: String, historyEnd: Int?, knownIDs: Set<String>, text: String,
+         attachmentPaths: Set<String>, pendingApprovals: [ChatPendingApproval] = [],
+         pendingClarifies: [ChatPendingClarify] = []) {
+        self.runID = runID
+        self.historyEnd = historyEnd
+        self.knownIDs = knownIDs
+        self.text = text
+        self.attachmentPaths = attachmentPaths
+        self.pendingApprovals = pendingApprovals
+        self.pendingClarifies = pendingClarifies
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runID, historyEnd, knownIDs, text, attachmentPaths, pendingApprovals, pendingClarifies
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        runID = try values.decode(String.self, forKey: .runID)
+        historyEnd = try values.decodeIfPresent(Int.self, forKey: .historyEnd)
+        knownIDs = try values.decode(Set<String>.self, forKey: .knownIDs)
+        text = try values.decode(String.self, forKey: .text)
+        attachmentPaths = try values.decode(Set<String>.self, forKey: .attachmentPaths)
+        pendingApprovals = try values.decodeIfPresent([ChatPendingApproval].self, forKey: .pendingApprovals) ?? []
+        pendingClarifies = try values.decodeIfPresent([ChatPendingClarify].self, forKey: .pendingClarifies) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(runID, forKey: .runID)
+        try values.encodeIfPresent(historyEnd, forKey: .historyEnd)
+        try values.encode(knownIDs, forKey: .knownIDs)
+        try values.encode(text, forKey: .text)
+        try values.encode(attachmentPaths, forKey: .attachmentPaths)
+        try values.encode(pendingApprovals, forKey: .pendingApprovals)
+        try values.encode(pendingClarifies, forKey: .pendingClarifies)
+    }
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.
@@ -552,12 +722,12 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// there was only one user submission after the accepted POST.
     func confirmsCompletion(in pages: [ChatSnapshot]) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
-              let historyEnd, newest.activeStreamID == nil, !newest.readOnly,
+              let historyEnd, newest.activeRunState.isVerifiedAbsent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
         for index in pages.indices {
             let page = pages[index]
             guard page.sessionID == newest.sessionID,
-                  page.activeStreamID == nil, !page.readOnly else { return false }
+                  page.activeRunState.isVerifiedAbsent, !page.readOnly else { return false }
             if index > 0 {
                 let later = pages[index - 1]
                 guard page.rawMessageEndIndex == later.olderOffset,
@@ -588,7 +758,7 @@ enum ChatFinalHistoryGate {
                            receipt: ActiveTurnRecovery?,
                            streamedAssistantPresent: Bool) -> Bool {
         guard snapshot.sessionID == sessionID, !snapshot.readOnly,
-              snapshot.activeStreamID == nil else { return false }
+              snapshot.activeRunState.isVerifiedAbsent else { return false }
         guard streamedAssistantPresent else { return true }
         return receipt?.confirmsCompletion(in: snapshot) == true
     }

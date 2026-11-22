@@ -54,57 +54,6 @@ enum ChatSendMode: String, CaseIterable, Identifiable {
 /// 才允许重发：`.delivered` 说明服务端已受理，重发会重复执行工具调用；
 /// `.failed` 说明核对本身没完成，任何重发都必须继续锁住。
 
-/// 一条等待用户决定的审批请求。
-///
-/// 网关把 run 挂在 `waiting_for_approval` 上、SSE 不断开，所以这张卡片出现时
-/// 本轮并没有结束；不回答的话任务会一直停在这儿。可选项由服务端给（两项或四项），
-/// 客户端不猜——不同场景下 `session` / `always` 未必允许。
-struct ChatPendingApproval: Identifiable, Equatable {
-    let id: String
-    let runID: String
-    let requestID: String?
-    let detail: String
-    let command: String?
-    let choices: [String]
-
-    /// 解析一张审批帧。服务端两种形态都见过：WebUI 的 `question`/`description`，
-    /// 网关的 `message` + `choices`。解析失败返回 nil，调用方退回到普通提示，
-    /// 绝不能让一张看不懂的卡片占着屏幕。
-    static func make(from frame: SSEFrame, runID: String?) -> ChatPendingApproval? {
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8)))
-                as? [String: Any] else { return nil }
-        let detail = ["message", "description", "question", "command"]
-            .compactMap { object[$0] as? String }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { !$0.isEmpty }
-        guard let detail else { return nil }
-        let requestID = (object["request_id"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let rawChoices = (object["choices"] as? [Any])?
-            .compactMap { $0 as? String }
-            .filter { !$0.isEmpty } ?? []
-        // 服务端没给选项时按最常见的两者兜底：只读/写两种结果，
-        // 不擅自加 session/always（那等于替用户扩大授权范围）。
-        var seenChoices = Set<String>()
-        let choices = (rawChoices.isEmpty ? ["once", "deny"] : rawChoices)
-            .filter { seenChoices.insert($0).inserted }
-        let command = (object["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ChatPendingApproval(
-            id: requestID ?? "\(runID ?? frame.id ?? "approval")-\(detail.prefix(32))",
-            runID: runID ?? "",
-            requestID: requestID?.isEmpty == true ? nil : requestID,
-            detail: detail,
-            command: command?.isEmpty == true ? nil : command,
-            choices: choices)
-    }
-}
-
-enum PendingReconcileResult: Equatable {
-    case delivered
-    case absent
-    case failed
-}
-
 @MainActor
 final class NativeChatModel: ObservableObject {
     // 这些状态分散在 `NativeChatModel+Send/Stream/Control` 三个扩展文件里被写入。

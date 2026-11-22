@@ -17,6 +17,9 @@ enum ActiveRunProbe: Equatable, Sendable {
     case alive
     case terminal(RunTerminalStatus)
     case unknown
+    /// Bounded missing/unavailable status: stop showing an endless live run,
+    /// but do not treat it as terminal or release the accepted-turn send lock.
+    case unresolved
 }
 
 @MainActor

@@ -98,7 +98,8 @@ enum GatewayDecode {
     /// `offset` 是该窗口在原始历史里的起点，原样写进 `_messages_offset`，
     /// `ChatSnapshot` 据此算出每行稳定的 `sourceIndex`。
     static func snapshot(_ data: Data, offset: Int, activeRunID: String? = nil,
-                         requestedSessionID: String? = nil) throws -> ChatSnapshot {
+                         requestedSessionID: String? = nil,
+                         activeRunState: ActiveRunState? = nil) throws -> ChatSnapshot {
         let root = try gatewayRoot(data, what: "会话消息")
         if let error = root["error"], !(error is NSNull) {
             throw GatewayDecodeError.server(gatewayString(error) ?? "会话消息读取失败")
@@ -258,9 +259,25 @@ enum GatewayDecode {
             // 显式给空数组，免得 ChatSnapshot 认为字段类型不对。
             "tool_calls": [] as [Any]
         ]
-        if let active = activeRunID ?? gatewayIdentifier(root["active_stream_id"])
-            ?? gatewayIdentifier(root["active_run_id"]) {
+        let rootActive = gatewayIdentifier(root["active_stream_id"])
+            ?? gatewayIdentifier(root["active_run_id"])
+        if let active = rootActive ?? activeRunID {
             session["active_stream_id"] = active
+            session["_active_run_state"] = "active"
+        } else {
+            switch activeRunState ?? .absent {
+            case .active(let id):
+                session["active_stream_id"] = id
+                session["_active_run_state"] = "active"
+            case .absent:
+                session["active_stream_id"] = NSNull()
+                session["_active_run_state"] = "absent"
+            case .unknown:
+                session["_active_run_state"] = "unknown"
+            case .unresolved(let id):
+                session["_active_run_state"] = "unresolved"
+                session["_unresolved_run_id"] = id
+            }
         }
         if let model = gatewayString(root["model"]), !model.isEmpty { session["model"] = model }
         if let provider = gatewayString(root["model_provider"]), !provider.isEmpty {
