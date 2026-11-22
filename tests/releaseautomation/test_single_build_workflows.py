@@ -103,7 +103,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"push", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["plan", "promote", "notify", "ui-discovery"])
+        self.assertEqual(jobs(text), ["plan", "promote", "notify", "issue-sync", "ui-discovery"])
         self.assertNotIn("tests/run_container.sh", text)
         self.assertNotIn("tests/verify_source.py", text)
         self.assertIn("actions/artifacts/${ARTIFACT_ID}/zip", text)
@@ -112,6 +112,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("github-build-ipa", text)
         self.assertNotIn("xcodegen", text)
         self.assertNotIn("xcodebuild", text)
+        self.assertIn("Sync GitHub Issues with verified Release", text)
 
     def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()

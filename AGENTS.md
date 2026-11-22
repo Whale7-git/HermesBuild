@@ -12,13 +12,10 @@ and server deployment outside this repository.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
-- Version-bumped ordinary product PRs are eligible for trusted default-branch auto-merge after the exact-head candidate workflow succeeds (source/scope, full Swift offline, and verified IPA). Simulator UI regression is independent discovery, not a required release gate. To block, add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for a fully verified release PR. Maintenance, infrastructure, CI, and script changes always require manual merge.
+- Personal project: version-bumped product PRs auto-merge on exact-HEAD source/scope, Swift offline and IPA checks, without human approval or a real-phone test prerequisite. Simulator UI regression remains independent. Use `hold` or `no-auto-release` only for a concrete unresolved correctness/security failure or explicit user pause; Draft alone is not a hold. CI/workflow/privileged scripts still require a checked PR and explicit merge, and must not trigger an app Release.
 - Rebase or merge the latest `main` before requesting review. Resolve conflicts
   on the feature branch.
-- Shared GitHub identities cannot approve their own pull requests. In that
-  setup, another agent reviews through PR comments and the required CI check
-  must pass before the lead merges. Require an approving review only after the
-  repository has at least two independent GitHub identities.
+- Do not wait for a second GitHub identity or formal approval for normal app changes. Three exact-head CI checks are the routine gate.
 
 ## Scope and invariants
 
@@ -70,8 +67,11 @@ separate.
   deduplicated Issues with test names, SHA and CI evidence. Runner failures
   are classified separately.
 - Ordinary UI test failures after publication do not retract or block a Release.
-  High-risk edits affecting POST replay, user/session isolation, data durability,
-  or STOP/queue safety require explicit focused tests and review before release.
+  Changes involving POST replay, user/session isolation, data durability, STOP or queue
+  safety require focused deterministic regression and code-level self-review, but not
+  an automatic human approval hold. Block only when a concrete safety invariant is
+  unverified, incorrect, or a required CI check fails.
+- Each PR must link affected Issues: use `Fixes #N` when all acceptance requirements are implemented and tested; plain `#N` for partial work. Following a successful Release, the workflow comments on referenced Issues and closes only explicit fixes.
 - Only mark a fix delivered after the exact IPA appears in a successful Release.
   Never claim a real-phone acceptance based only on XCTest or an IPA compilation.
 

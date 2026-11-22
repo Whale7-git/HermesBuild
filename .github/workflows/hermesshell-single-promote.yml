@@ -112,6 +112,55 @@ jobs:
             bash ci/notify-release-bark.sh failure
           fi
 
+  issue-sync:
+    name: Sync GitHub Issues with verified Release
+    if: ${{ needs.promote.result == 'success' }}
+    needs: promote
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Mark released PR references in Issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const {data: prs} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner, repo, commit_sha: context.sha, per_page: 100
+            });
+            const matches = prs.filter(p => p.merged_at && p.merge_commit_sha === context.sha);
+            if (matches.length !== 1) return core.warning('No unique merged PR; skipping issue sync');
+            const pr = matches[0], body = pr.body || '';
+            const refs = [...new Set([...body.matchAll(/#([1-9][0-9]*)\\b/g)]
+              .map(x => Number(x[1])))].slice(0,20);
+            const fixes = new Set([...body.matchAll(/\\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\\s+#([1-9][0-9]*)\\b/gi)]
+              .map(x => Number(x[1])));
+            const {data: raw} = await github.rest.repos.getContent({owner, repo, path:'release.json', ref: context.sha});
+            const {version, build} = JSON.parse(Buffer.from(raw.content,'base64').toString('utf8'));
+            const url = `https://github.com/${owner}/${repo}/releases/tag/release-${version}-build${build}`;
+            for (const number of refs) {
+              let issue;
+              try {
+                ({data: issue} = await github.rest.issues.get({owner, repo, issue_number:number}));
+              } catch (err) {
+                if (err.status === 404) continue;
+                throw err;
+              }
+              if (issue.pull_request) continue;
+              const marker = `<!-- hermes-release:${context.sha}:${number} -->`;
+              const comments = await github.paginate(github.rest.issues.listComments,
+                {owner, repo, issue_number:number, per_page:100});
+              if (!comments.some(c => (c.body || '').includes(marker))) {
+                await github.rest.issues.createComment({owner, repo, issue_number:number,
+                  body: `${marker}Included in [Hermes ${version}/build${build}](${url}) via PR #${pr.number}. ${fixes.has(number) ? 'Explicitly marked resolved by the release PR.' : 'Related changes shipped; remaining acceptance criteria stay open.'}`});
+              }
+              if (fixes.has(number) && issue.state !== 'closed')
+                await github.rest.issues.update({owner,repo,issue_number:number,state:'closed',state_reason:'completed'});
+            }
+
   # GitHub_TOKEN-created Release events do not start ordinary release workflows.
   # Explicit dispatch launches the independent, post-release UI discovery run.
   ui-discovery:
