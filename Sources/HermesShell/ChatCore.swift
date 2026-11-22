@@ -3,10 +3,18 @@ import Foundation
 import FoundationNetworking
 #endif
 
-struct SSEFrame {
+struct SSEFrame: Sendable {
     var event: String
     var data: String
     var id: String?
+}
+
+/// A server-authoritative snapshot of controls currently blocking a Run.
+/// nil on ChatSnapshot means the Gateway did not provide this capability;
+/// an empty frame list means it explicitly reported no pending controls.
+struct GatewayPendingControlSnapshot: Sendable {
+    let frames: [SSEFrame]
+    let hasIncompleteControl: Bool
 }
 
 /// 一条等待用户补充信息的请求（clarify）。
@@ -401,8 +409,10 @@ struct ChatSnapshot: Sendable {
     /// client cannot tell two same-named models apart.
     let modelProvider: String?
     let usage: ChatUsage
+    let gatewayPendingControls: GatewayPendingControlSnapshot?
 
-    init(data: Data, runStatusUnknown: Bool = false) throws {
+    init(data: Data, runStatusUnknown: Bool = false,
+         gatewayPendingControls: GatewayPendingControlSnapshot? = nil) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ChatCoreError.malformed("expected object")
         }
@@ -418,6 +428,7 @@ struct ChatSnapshot: Sendable {
             throw ChatCoreError.malformed("expected tool_calls array")
         }
         sessionID = id
+        self.gatewayPendingControls = gatewayPendingControls
         let offset = max(0, session["_messages_offset"] as? Int ?? 0)
         guard offset <= Int.max - rows.count else {
             throw ChatCoreError.malformed("history offset exceeds supported range")

@@ -114,8 +114,12 @@ enum GatewayEventMap {
                     .filter { !$0.isEmpty && allowed.contains($0.lowercased()) }
                 if !usable.isEmpty { payload["choices"] = usable }
             }
-            if let requestID = text(body["request_id"]), !requestID.isEmpty {
+            if let requestID = text(body["prompt_id"]) ?? text(body["request_id"]),
+               !requestID.isEmpty {
                 payload["request_id"] = requestID
+            }
+            if let generation = body["execution_generation"] as? Int {
+                payload["execution_generation"] = generation
             }
             if let command = text(body["command"]), !command.isEmpty, command != detail {
                 payload["command"] = command

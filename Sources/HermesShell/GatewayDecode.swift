@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// 网关解码失败的原因。
 ///
@@ -87,6 +88,104 @@ enum GatewayDecode {
         return result
     }
 
+    /// Decode the optional authoritative pending-control projection from
+    /// GET /v1/runs/{id}. Missing means the Gateway does not expose this
+    /// capability; an empty array means it explicitly reports no pending controls.
+    static func pendingControlSnapshot(from root: [String: Any]) -> GatewayPendingControlSnapshot? {
+        guard let raw = root["pending_controls"] else { return nil }
+        guard let controls = raw as? [[String: Any]] else {
+            return GatewayPendingControlSnapshot(frames: [], hasIncompleteControl: true)
+        }
+
+        func nonempty(_ value: Any?) -> String? {
+            guard let value = value as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        func integer(_ value: Any?) -> Int? {
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            let double = number.doubleValue
+            guard double.isFinite, double >= 0,
+                  double.rounded(.towardZero) == double,
+                  let result = Int(exactly: number.int64Value),
+                  Double(result) == double else { return nil }
+            return result
+        }
+
+        var frames: [SSEFrame] = []
+        var incomplete = false
+        var seenPromptIDs = Set<String>()
+        for control in controls {
+            guard let kind = nonempty(control["kind"]),
+                  let promptID = nonempty(control["prompt_id"]),
+                  seenPromptIDs.insert(promptID).inserted,
+                  let generation = integer(control["execution_generation"]) else {
+                incomplete = true
+                continue
+            }
+
+            var body: [String: Any]
+            switch kind.lowercased() {
+            case "approval":
+                let detail = nonempty(control["description"])
+                    ?? nonempty(control["command"]) ?? nonempty(control["tool"])
+                let allowed: Set<String> = ["once", "deny", "reject", "cancel"]
+                let choices = ((control["choices"] as? [Any])?.compactMap { $0 as? String } ?? [])
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && allowed.contains($0.lowercased()) }
+                // Do not let ChatPendingApproval's legacy once/deny fallback
+                // invent a card when the server did not supply usable choices.
+                guard let detail, !choices.isEmpty else {
+                    incomplete = true
+                    continue
+                }
+                body = [
+                    "event": "approval.request",
+                    "request_id": promptID,
+                    "execution_generation": generation,
+                    "description": detail,
+                    "choices": choices
+                ]
+                if let command = nonempty(control["command"]) { body["command"] = command }
+            case "clarify":
+                let question = nonempty(control["question"])
+                    ?? nonempty(control["description"]) ?? nonempty(control["message"])
+                guard let question else {
+                    incomplete = true
+                    continue
+                }
+                let choices = ((control["choices"] as? [Any])?.compactMap { $0 as? String } ?? [])
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                body = [
+                    "event": "clarify.request",
+                    "prompt_id": promptID,
+                    "execution_generation": generation,
+                    "question": question,
+                    "choices": choices
+                ]
+                if let multi = control["multi_select"] as? Bool { body["multi_select"] = multi }
+            default:
+                incomplete = true
+                continue
+            }
+
+            guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
+                  let text = String(data: data, encoding: .utf8) else {
+                incomplete = true
+                continue
+            }
+            let mapped = GatewayEventMap.map(SSEFrame(event: "message", data: text, id: nil))
+            guard mapped.count == 1 else {
+                incomplete = true
+                continue
+            }
+            frames.append(mapped[0])
+        }
+        return GatewayPendingControlSnapshot(frames: frames, hasIncompleteControl: incomplete)
+    }
+
     // MARK: - 2) 会话消息 → ChatSnapshot
 
     /// `GET /api/sessions/{id}/messages?order=latest` → `ChatSnapshot`。
@@ -99,7 +198,8 @@ enum GatewayDecode {
     /// `ChatSnapshot` 据此算出每行稳定的 `sourceIndex`。
     static func snapshot(_ data: Data, offset: Int, activeRunID: String? = nil,
                          requestedSessionID: String? = nil,
-                         runStatusUnknown: Bool = false) throws -> ChatSnapshot {
+                         runStatusUnknown: Bool = false,
+                         pendingControls: GatewayPendingControlSnapshot? = nil) throws -> ChatSnapshot {
         let root = try gatewayRoot(data, what: "会话消息")
         if let error = root["error"], !(error is NSNull) {
             throw GatewayDecodeError.server(gatewayString(error) ?? "会话消息读取失败")
@@ -269,7 +369,8 @@ enum GatewayDecode {
         }
 
         let assembled = try JSONSerialization.data(withJSONObject: ["session": session])
-        return try ChatSnapshot(data: assembled, runStatusUnknown: runStatusUnknown)
+        return try ChatSnapshot(data: assembled, runStatusUnknown: runStatusUnknown,
+                                gatewayPendingControls: pendingControls)
     }
 
     // MARK: - 3) 模型目录占位判定

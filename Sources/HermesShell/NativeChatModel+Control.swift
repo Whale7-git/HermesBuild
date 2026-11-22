@@ -62,6 +62,66 @@ extension NativeChatModel {
         if pendingClarifies.isEmpty { clarifying = false }
     }
 
+    /// Replace only the controls for the exact active Run. This is used when
+    /// a Gateway status snapshot explicitly supplies its current pending set.
+    /// Missing capability is represented by nil and never clears known cards.
+    func restorePendingControls(_ snapshot: GatewayPendingControlSnapshot, runID: String) {
+        // Parse before mutating. A partial projection cannot revoke a card
+        // that remains actionable on the same Run, nor silently resume a queue.
+        var nextApprovals: [ChatPendingApproval] = []
+        var nextClarifies: [ChatPendingClarify] = []
+        var incomplete = snapshot.hasIncompleteControl
+        for frame in snapshot.frames {
+            switch frame.event {
+            case "approval":
+                guard let pending = ChatPendingApproval.make(from: frame, runID: runID),
+                      pending.runID == runID, pending.requestID != nil else {
+                    incomplete = true
+                    continue
+                }
+                nextApprovals.append(pending)
+            case "clarify":
+                guard let pending = ChatPendingClarify.make(from: frame, runID: runID),
+                      pending.runID == runID else {
+                    incomplete = true
+                    continue
+                }
+                nextClarifies.append(pending)
+            default:
+                incomplete = true
+            }
+        }
+
+        if incomplete {
+            for pending in nextApprovals { _ = upsertPendingApproval(pending) }
+            for pending in nextClarifies { _ = upsertPendingClarify(pending) }
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "后台仍有待处理审批或澄清，但快照数据不完整；已保留原卡片并锁定发送。"
+            return
+        }
+
+        let oldApprovals = pendingApprovals.filter { $0.runID == runID }
+        let oldClarifies = pendingClarifies.filter { $0.runID == runID }
+        pendingApprovals.removeAll { $0.runID == runID }
+        pendingClarifies.removeAll { $0.runID == runID }
+        for pending in nextApprovals { _ = upsertPendingApproval(pending) }
+        for pending in nextClarifies { _ = upsertPendingClarify(pending) }
+
+        let approvalIDs = Set(nextApprovals.map(\.id))
+        let clarifyIDs = Set(nextClarifies.map(\.id))
+        for request in oldApprovals where !approvalIDs.contains(request.id) {
+            onApprovalResolved?(sessionID, request.requestID)
+        }
+        for request in oldClarifies where !clarifyIDs.contains(request.id) {
+            onClarifyResolved?(sessionID, request.requestID)
+        }
+        if pendingApprovals.isEmpty { approving = false }
+        if pendingClarifies.isEmpty { clarifying = false }
+        // Only an independent, fully verified Run/POST reconciliation may
+        // clear queueRecoveryPaused. The control projection never authorizes it.
+    }
+
     func removePendingClarify(requestID: String) {
         guard let pending = pendingClarifies.first(where: { $0.requestID == requestID }) else { return }
         removePendingClarify(id: pending.id)
@@ -107,9 +167,10 @@ extension NativeChatModel {
         approvalSubmission = submission
         defer { if approvalSubmission == submission { approving = false } }
         do {
-            let outcome = try await api.approveNativeTurn(runID: pending.runID,
-                                                          choice: choice,
-                                                          requestID: pending.requestID)
+            guard let requestID = pending.requestID else { return }
+            let outcome = try await api.approveNativeTurn(
+                runID: pending.runID, choice: choice, requestID: requestID,
+                executionGeneration: pending.executionGeneration)
             noteRunRecoveryState()
             guard generation == revision, !suspended,
                   pendingApprovals.contains(pending), !Task.isCancelled else { return }

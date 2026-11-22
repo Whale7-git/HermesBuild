@@ -144,13 +144,17 @@ struct GatewayRequests {
 
     /// 回答网关的审批请求。
     ///
-    /// 服务端只接受 `once` / `session` / `always` / `deny`（`allow`/`approve` 会被
-    /// 别名成 `once`，但不依赖别名更稳）。`requestID` 能取到就带上：同一 run 上
-    /// 可能同时挂着多个待批请求，不带 id 会命中错的那个。
-    func approveRun(runID: String, choice: String, requestID: String?) throws -> URLRequest {
+    /// Canonical approval responses require the exact prompt ID and execution
+    /// generation. An identityless request could approve another pending tool.
+    func approveRun(runID: String, choice: String, requestID: String,
+                    executionGeneration: Int) throws -> URLRequest {
         let id = try Self.validatedID(runID)
-        var body: [String: Any] = ["choice": choice]
-        if let requestID, !requestID.isEmpty { body["request_id"] = requestID }
+        guard !requestID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              executionGeneration >= 0 else { throw APIError.badResponse }
+        let body: [String: Any] = [
+            "choice": choice, "request_id": requestID,
+            "execution_generation": executionGeneration
+        ]
         return try make("v1/runs/\(id)/approval", body: body)
     }
 
