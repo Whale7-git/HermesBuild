@@ -248,6 +248,62 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
         scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating || animatedJump
     }
 
+    private let scrollTraceLabel = UILabel()
+    var scrollTraceEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("--hermes-scroll-trace")
+    }
+
+    /// Test-only accessibility diagnostics. No message text or credentials are recorded.
+    /// The value is updated at real UIKit gesture and geometry boundaries.
+    func publishScrollTrace(reason: String, resolvedTarget: Double? = nil,
+                            anchorID: String? = nil, beforeOffset: Double? = nil,
+                            offsetAfterResize: Double? = nil) {
+        guard scrollTraceEnabled else { return }
+        let selectedID = turnReading.rowID ?? anchorID ?? navigationTarget?.targetID
+        let contentFrame = selectedID.flatMap { frame(for: $0) }
+        let userFrame: CGRect?
+        if let selectedID, let host = mounted[selectedID]?.host.view {
+            userFrame = host.convert(host.bounds, to: nil)
+        } else {
+            userFrame = nil
+        }
+        let transcriptFrame = scrollView.convert(scrollView.bounds, to: nil)
+        func number(_ value: Double?) -> String {
+            guard let value, value.isFinite else { return "none" }
+            return String(format: "%.2f", value)
+        }
+        func rect(_ value: CGRect?) -> String {
+            guard let value else { return "none" }
+            return String(format: "(%.2f,%.2f,%.2f,%.2f)",
+                          Double(value.minX), Double(value.minY),
+                          Double(value.width), Double(value.height))
+        }
+        let rowContent = contentFrame.map {
+            String(format: "(top=%.2f,height=%.2f,bottom=%.2f)", $0.top, $0.height, $0.bottom)
+        } ?? "none"
+        let focusApplied = turnReading.rowID != nil && navigationTarget == nil
+        scrollTraceLabel.accessibilityValue = [
+            "reason=\(reason)",
+            "focus=\(focusApplied ? "applied" : "pending")",
+            "offset=\(number(Double(scrollView.contentOffset.y)))",
+            "target=\(number(resolvedTarget))",
+            "turnTarget=\(number(turnReading.targetOffset))",
+            "turnAnchor=\(turnReading.rowID ?? "none")",
+            "viewportAnchor=\(anchorID ?? "none")",
+            "rowContent=\(rowContent)",
+            "userFrame=\(rect(userFrame))",
+            "transcriptFrame=\(rect(transcriptFrame))",
+            "contentSize=\(number(Double(scrollView.contentSize.height)))",
+            "viewport=\(number(Double(scrollView.bounds.height)))",
+            "inMotion=\(inMotion)",
+            "phase=\(String(describing: turnReading.phase))",
+            "navigationTarget=\(navigationTarget?.targetID ?? "none")",
+            "beforeCommitOffset=\(number(beforeOffset))",
+            "offsetAfterResize=\(number(offsetAfterResize))",
+            "following=\(policy.following)"
+        ].joined(separator: ";")
+    }
+
     override func loadView() {
         view = UIView()
         view.backgroundColor = .clear
@@ -262,6 +318,15 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
         scrollView.automaticallyAdjustsScrollIndicatorInsets = false
         scrollView.keyboardDismissMode = .interactive
         view.addSubview(scrollView)
+        if scrollTraceEnabled {
+            scrollTraceLabel.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+            scrollTraceLabel.alpha = 0.1
+            scrollTraceLabel.isAccessibilityElement = true
+            scrollTraceLabel.accessibilityIdentifier = "HermesScrollTrace"
+            scrollTraceLabel.accessibilityLabel = "Hermes scroll trace"
+            scrollTraceLabel.isUserInteractionEnabled = false
+            view.addSubview(scrollTraceLabel)
+        }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(backgroundTapped))
         tap.cancelsTouchesInView = false

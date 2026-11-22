@@ -159,7 +159,7 @@ final class HermesGoldUITests: XCTestCase {
             XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         }
         try await control("/__control/reset")
-        let app = HermesUITestHarness.launchAndConnect()
+        let app = HermesUITestHarness.launchAndConnect(extraLaunchArguments: ["--hermes-scroll-trace"])
         HermesUITestHarness.openSession(app)
         try await control("/__control/stream-interval", body: #"{"delay_ms":1200}"#)
         let editor = app.textViews.matching(
@@ -175,20 +175,44 @@ final class HermesGoldUITests: XCTestCase {
             NSPredicate(format: "label CONTAINS[cd] %@", "UI streamed reading anchor")).firstMatch
         XCTAssertTrue(user.waitForExistence(timeout: 12),
                       "Sent question must be present before the manual pan")
-        XCTAssertTrue(user.isHittable,
-                      "Question was already outside viewport before manual pan: frame=\(user.frame)")
         let transcript = app.scrollViews.firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 10))
+        let trace = app.descendants(matching: .any).matching(identifier: "HermesScrollTrace").firstMatch
+        XCTAssertTrue(trace.waitForExistence(timeout: 10),
+                      "Opt-in UIKit scroll diagnostics must be exposed to XCTest")
+
+        // isHittable alone does not prove the post-send focus command has
+        // completed. A pan intentionally cancels a still-pending navigation;
+        // wait for the measured question row to reach its focus position.
+        let focusReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                let value = trace.value as? String ?? ""
+                return value.contains("focus=applied")
+                    && value.contains("navigationTarget=none")
+                    && user.isHittable
+                    && user.frame.minY <= transcript.frame.minY + 180
+                    && user.frame.maxY <= transcript.frame.maxY
+            },
+            object: trace)
+        let focusResult = XCTWaiter.wait(for: [focusReady], timeout: 10)
+        let prePanTrace = trace.value as? String ?? "missing"
+        print("HERMES_MANUAL_ANCHOR prePan frame=\(user.frame)"
+              + " transcript=\(transcript.frame) trace=\(prePanTrace)")
+        XCTAssertEqual(focusResult, .completed,
+                       "The measured user-turn focus must settle before manual reading: \(prePanTrace)")
+
         let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.38))
         let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.52))
         start.press(forDuration: 0.25, thenDragTo: end)
         // Let UIKit deceleration settle before measuring. A new SSE delta
         // arrives during the next interval, while the reader is detached.
         try await Task.sleep(nanoseconds: 650_000_000)
+        let postPanTrace = trace.value as? String ?? "missing"
         if !user.exists || !user.isHittable {
             let postCount = try await acceptedRunPOSTCount()
             print("HERMES_MANUAL_ANCHOR postPan frame=\(user.frame)"
                   + " transcript=\(transcript.frame)"
+                  + " trace=\(postPanTrace)"
                   + " acceptedPOSTs=\(postCount)")
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "manual-pan-question-not-visible"
@@ -196,14 +220,17 @@ final class HermesGoldUITests: XCTestCase {
             XCTContext.runActivity(named: "Post-pan viewport evidence") { $0.add(screenshot) }
         }
         XCTAssertTrue(user.exists && user.isHittable,
-                      "Manual pan should retain the original question in view")
+                      "Manual pan should retain the original question in view: \(postPanTrace)")
         let before = user.frame.midY
         try await Task.sleep(nanoseconds: 2_300_000_000)
+        let postStreamTrace = trace.value as? String ?? "missing"
         XCTAssertTrue(user.exists && user.isHittable,
-                      "Streaming layout update should not evict the reading anchor")
+                      "Streaming layout update should not evict the reading anchor: \(postStreamTrace)")
         let after = user.frame.midY
+        print("HERMES_MANUAL_ANCHOR postStream before=\(before) after=\(after)"
+              + " trace=\(postStreamTrace)")
         XCTAssertLessThan(abs(after - before), 28,
-                          "New reply text moved the visible question during manual reading")
+                          "New reply text moved the visible question during manual reading: \(postStreamTrace)")
         // Observing the transcript must never cause the client to replay POST.
         let finalPOSTCount = try await acceptedRunPOSTCount()
         XCTAssertEqual(finalPOSTCount, 1,
