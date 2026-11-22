@@ -642,8 +642,8 @@ private struct AttachmentChip: View {
     private var status: some View {
         switch draft.state {
         case .queued:
-            // 编辑保存后字节已替换、正在重新上传：与首次等待区分，避免看起来没生效。
-            Text(draft.reuploading ? "正在重新上传编辑版…" : "等待上传").font(.caption)
+            // Unsent local bytes never start a gateway request until Send.
+            Text(draft.reuploading ? "编辑版将在发送时上传" : "发送时上传").font(.caption)
         case .uploading(let fraction):
             // 有确定比例就画进度条 + 百分比；`fraction` 为 0 且还没收到首个
             // 回调时仍显示不确定态，避免「0%」看起来像卡住。
@@ -660,17 +660,17 @@ private struct AttachmentChip: View {
             }
             .accessibilityLabel("正在上传 \(draft.name)，已完成 \(Int(fraction * 100))%")
         case .ready:
-            Label("已上传", systemImage: "checkmark.circle")
+            Label("已上传 · 待发送", systemImage: "checkmark.circle")
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let message):
             // 编辑版重新上传失败要和首次上传失败区分：否则用户不知道重试的是编辑版。
             Text(draft.reuploading ? "编辑版上传失败：\(message)" : message)
                 .font(.caption).foregroundStyle(.red).lineLimit(3)
                 .frame(maxWidth: 200, alignment: .leading)
-            Button("重试", action: retry)
+            Button("下次发送时重试", action: retry)
                 .frame(minHeight: 44)
                 .disabled(isLocked)
-                .accessibilityLabel("重试上传 \(draft.name)")
+                .accessibilityLabel("下次发送时重试上传 \(draft.name)")
         }
     }
 }
