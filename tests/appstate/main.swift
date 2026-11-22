@@ -223,6 +223,45 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         }
     }
 
+    @MainActor static func pendingSessionRecoveryTests() async throws {
+        let instance = "pending-recovery-" + UUID().uuidString
+        let sessionID = "pending-session"
+        let store = ChatDraftStore(instanceID: instance, accountScope: "account",
+            sessionID: sessionID, fileStore: LocalDataFileStore(
+                instanceID: instance, accountScope: "account", sessionID: sessionID))
+        defer {
+            _ = store.savePending(nil)
+            HermesAPI.modelHistoryOverride = nil
+        }
+        let bytes = try JSONSerialization.data(withJSONObject: [
+            "id": "local-pending", "text": "hello",
+            "attachments": [], "historyEnd": 0, "knownIDs": []
+        ])
+        precondition(store.savePending(bytes).succeeded)
+        HermesAPI.modelHistoryOverride = [
+            "session_id": sessionID, "_messages_offset": 0,
+            "messages": [["id": "delivered", "role": "user", "content": "hello"]]
+        ]
+        let coordinator = SessionRecoveryCoordinator()
+        let api = HermesAPI(baseURL: "https://recovery.example")
+        let observation = SessionTaskObservation(signals: [.needsVerification])
+        var verified = false
+        coordinator.schedule(api: api, instanceID: instance,
+            accountScope: "account", observations: [sessionID: observation],
+            visibleSessionID: nil) { sid, version, proof in
+            guard sid == sessionID,
+                  version == observation.version(for: .needsVerification) else { return }
+            if case .deliveredPending(let evidence) = proof {
+                verified = evidence == bytes
+            }
+        }
+        await spin { verified }
+        precondition(store.loadPending().value == bytes,
+            "coordinator must not erase POST evidence before AppState scope validation")
+        coordinator.cancel()
+        print("SESSION_RECOVERY_PASS read-only detached pending evidence")
+    }
+
     @MainActor static func homeCreateNavigationTests() async throws {
         let old = HermesInstance(name: "Create A", baseURL: "https://create-a.example")
         let other = HermesInstance(name: "Create B", baseURL: "https://create-b.example")
@@ -1148,6 +1187,7 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
     }
 
     @MainActor static func main() async throws {
+        try await pendingSessionRecoveryTests()
         try await firstLaunchSetupTests()
         try taskSignalDedupTests()
         try await notificationRoutingTests()

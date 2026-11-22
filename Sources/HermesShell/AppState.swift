@@ -536,7 +536,7 @@ final class AppState: ObservableObject {
             accountScope: historyAccountScope,
             observations: sessionTaskObservations,
             visibleSessionID: currentSessionID
-        ) { [weak self] sessionID, observedVersion, receipt in
+        ) { [weak self] sessionID, observedVersion, proof in
             guard let self, self.isCurrent(originalScope),
                   self.appIsActive, self.currentSessionID != sessionID,
                   let current = self.sessionTaskObservations[sessionID],
@@ -550,11 +550,19 @@ final class AppState: ObservableObject {
                     instanceID: self.historyInstanceID,
                     accountScope: self.historyAccountScope,
                     sessionID: sessionID))
-            let saved = store.loadActiveRun()
-            guard saved.result.succeeded, store.loadPending().value == nil,
-                  let bytes = saved.value,
-                  (try? JSONDecoder().decode(ActiveTurnRecovery.self, from: bytes)) == receipt,
-                  store.saveActiveRun(nil).succeeded else { return }
+            switch proof {
+            case .acceptedRun(let receipt):
+                let saved = store.loadActiveRun()
+                guard saved.result.succeeded, store.loadPending().value == nil,
+                      let bytes = saved.value,
+                      (try? JSONDecoder().decode(ActiveTurnRecovery.self, from: bytes)) == receipt,
+                      store.saveActiveRun(nil).succeeded else { return }
+            case .deliveredPending(let bytes):
+                let saved = store.loadPending()
+                guard saved.result.succeeded, saved.value == bytes,
+                      store.loadActiveRun().value == nil,
+                      store.savePending(nil).succeeded else { return }
+            }
             var remaining = current.signals
             remaining.remove(.needsVerification)
             remaining.remove(.running)
