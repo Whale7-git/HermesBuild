@@ -137,6 +137,7 @@ struct NativeChatView: View {
     /// Explicit send tap owns the entire lazy-upload preflight. Navigation and
     /// background transitions cancel it before any chat submission.
     @State var preparingAttachmentSend = false
+    @State var attachmentSendTicket = UUID()
     @State var attachmentSendTask: Task<Void, Never>?
     @State var scroll = ChatScrollState()
     @State var cellStates: [String: ChatCellState] = [:]
