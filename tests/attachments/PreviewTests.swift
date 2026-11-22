@@ -189,11 +189,19 @@ import FoundationNetworking
     interrupted.failNext()
     do { _ = try await firstAttempt.value; check(false, "failed preflight cannot submit") }
     catch AttachmentError.uploadFailed { check(true, "failure blocks chat submission") }
-    interrupted.finishNext() // Old cancelled transport ignores task cancellation.
     await waitFor("failed preflight leaves one ready attachment",
                   { restart.batch.items.filter { if case .ready = $0.state { return true }; return false }.count == 1 })
+    // Retry while the cancelled third transport still owns its physical slot.
+    // The scheduler must queue that draft and start it after the old transport
+    // tears down, rather than silently dropping it from the retry batch.
     let secondAttempt = Task { try await restart.prepareForSend(sessionID: "retry") }
-    await waitFor("retry starts two not-ready files", { interrupted.sessions.count == 5 })
+    await waitFor("retry starts first incomplete file while old slot is occupied",
+                  { interrupted.sessions.count == 4 })
+    check(interrupted.maximumActive <= 2,
+          "retry never exceeds two physical uploads while an old cancellation drains")
+    interrupted.finishNext() // Old cancelled transport ignores task cancellation.
+    await waitFor("retry starts second incomplete file after old slot is released",
+                  { interrupted.sessions.count == 5 })
     interrupted.finishNext()
     interrupted.finishNext()
     let retried = try await secondAttempt.value
