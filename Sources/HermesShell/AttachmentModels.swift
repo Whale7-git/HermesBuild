@@ -921,19 +921,29 @@ enum AttachmentFileImport {
     func replace(_ id: UUID, name: String, mime: String, data: Data) throws {
         try batch.replace(id, name: name, mime: mime, data: data)
         waiting.removeAll { $0 == id }
-        tasks.removeValue(forKey: id)?.task.cancel()
-        try retry(id)
+        // A cancelled URLSession may still be in flight until its completion.
+        // Keep its slot occupied and queue the replacement after it exits.
+        if let old = tasks[id] {
+            old.task.cancel()
+            waiting.append(id)
+            onChange?(batch)
+        } else {
+            try retry(id)
+        }
     }
     func remove(_ id: UUID) {
         waiting.removeAll { $0 == id }
-        tasks.removeValue(forKey: id)?.task.cancel()
+        // Cancellation is asynchronous; do not free a slot before the old
+        // transport finishes, or the effective in-flight cap is bypassed.
+        tasks[id]?.task.cancel()
         batch.remove(id)
         startQueuedIfPossible()
         onChange?(batch)
     }
     func reset(sessionID: String) {
         for value in tasks.values { value.task.cancel() }
-        tasks.removeAll()
+        // Old-session requests continue to occupy slots until they exit.
+        // A new session must not exceed the shared transport budget.
         waiting.removeAll()
         batch.reset(sessionID: sessionID)
         onChange?(batch)
