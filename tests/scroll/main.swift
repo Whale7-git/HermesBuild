@@ -302,6 +302,13 @@ do {
 // effectively identical; jitter amplified by SwiftUI can move the reader.
 expect(!ChatOffsetCommitPolicy.shouldAssign(current: 500, target: 500, interacting: false),
        "identical offsets must not be assigned")
+// UIKit may clamp contentOffset immediately after contentSize shrinks.
+// The geometry committer must pass the post-resize value (430), not the
+// stale pre-resize value (500), or it silently skips restoring the anchor.
+expect(ChatOffsetCommitPolicy.shouldAssign(current: 430, target: 500, interacting: false),
+       "a post-contentSize clamp must restore the user's manual anchor")
+expect(!ChatOffsetCommitPolicy.shouldAssign(current: 430, target: 500, interacting: true),
+       "UIKit keeps gesture ownership even after a contentSize clamp")
 expect(!ChatOffsetCommitPolicy.shouldAssign(current: 500, target: 500.3, interacting: false),
        "fractional rounding jitter must be ignored")
 expect(ChatOffsetCommitPolicy.shouldAssign(current: 500, target: 501, interacting: false),

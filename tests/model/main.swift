@@ -97,6 +97,19 @@ var transcriptPublications = 0
             data: JSONSerialization.data(withJSONObject: [
                 "session_id": "test", "messages": initial + [sent, answer]
             ]), runStatusUnknown: true)
+        // A stale history payload may still include an active_stream_id from another
+        // Run while the independent status probe fails. Neither its presence nor
+        // its mismatch is proof that our accepted POST has finished.
+        let contradictoryUnknown = try ChatSnapshot(
+            data: JSONSerialization.data(withJSONObject: [
+                "session_id": "test", "active_stream_id": "different-run",
+                "messages": initial + [sent, answer]
+            ]), runStatusUnknown: true)
+        precondition(contradictoryUnknown.activeRunEvidence == .unknown
+                     && !ChatFinalHistoryGate.canReplace(
+                         contradictoryUnknown, sessionID: "test", receipt: receipt,
+                         streamedAssistantPresent: true, expectedRunID: "run-1"),
+                     "failed Run probe cannot authorize a cross-Run history replacement")
         precondition(unknownStatus.activeRunEvidence == .unknown
                      && !ChatFinalHistoryGate.canReplace(
                          unknownStatus, sessionID: "test",
