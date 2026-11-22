@@ -262,6 +262,13 @@ extension NativeChatModel {
                 notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
             case .unknown:
                 notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+            case .unresolved:
+                uncertain = true
+                pauseQueueForRecovery()
+                streamID = nil
+                stopAcknowledged = false
+                transition(to: .idle)
+                notice = "后台未找到原任务；已停止本地运行指示，原发送结果仍待核对。"
             case .terminal(let outcome):
                 let finalHistory = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }

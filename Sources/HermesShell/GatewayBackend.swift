@@ -39,6 +39,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// converts repeated 404/unknown/5xx/malformed/network failures to a
     /// user-visible verification error while retaining the durable run ID.
     private var failedRunProbes: [String: Int] = [:]
+    private var notFoundProbes: [String: Int] = [:]
     private var nextRunProbeAt: [String: TimeInterval] = [:]
     private static let maxFailedRunProbes = 5
 
@@ -322,6 +323,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if runStore.unresolvedRunID(for: sessionID) == runID { return .unresolved }
         let now = Date().timeIntervalSince1970
         if let retryAt = nextRunProbeAt[runID], now < retryAt {
             return .unknown
@@ -330,8 +332,12 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404 {
+                    return recordRunNotFound(runID: runID, sessionID: sessionID)
+                        ? .unresolved : .unknown
+                }
             }
             return recordProbeFailure(runID: runID)
         } catch {
@@ -380,8 +386,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error // Credential errors must not be hidden as "running".
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404, recordRunNotFound(runID: runID, sessionID: sessionID) {
+                    return nil // Local running indicator retired; receipt remains unresolved.
+                }
             }
             return try unresolvedRun(runID: runID)
         } catch {
@@ -417,7 +426,9 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// run-store entry remains available for a later bounded probe. Authentication
     /// and cancellation still abort.
     private func activeRunForHistory(sessionID: String) async throws -> ActiveRunEvidence {
-        guard let runID = runStore.runID(for: sessionID) else { return .absent }
+        guard let runID = runStore.runID(for: sessionID) else {
+            return runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown
+        }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
             return .unknown
@@ -426,8 +437,12 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404 {
+                    _ = recordRunNotFound(runID: runID, sessionID: sessionID)
+                    return .unknown
+                }
             }
             _ = recordProbeFailure(runID: runID)
             return .unknown
@@ -462,8 +477,20 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     private func clearFailedRunProbes(runID: String) {
+        notFoundProbes.removeValue(forKey: runID)
         failedRunProbes.removeValue(forKey: runID)
         nextRunProbeAt.removeValue(forKey: runID)
+    }
+
+    /// Only real 404 responses contribute to the bounded not-found window.
+    /// A transport error/5xx has no authority to retire a Run.
+    private func recordRunNotFound(runID: String, sessionID: String) -> Bool {
+        let attempts = min(3, (notFoundProbes[runID] ?? 0) + 1)
+        notFoundProbes[runID] = attempts
+        guard attempts >= 3,
+              runStore.markUnresolved(runID: runID, sessionID: sessionID) else { return false }
+        clearFailedRunProbes(runID: runID)
+        return true
     }
 
     private func recordProbeFailure(runID: String) -> ActiveRunProbe {

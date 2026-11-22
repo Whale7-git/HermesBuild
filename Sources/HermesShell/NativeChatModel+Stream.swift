@@ -649,6 +649,11 @@ extension NativeChatModel {
                         self.uncertain = true
                         self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
                     }
+                case .unresolved:
+                    self.uncertain = true
+                    self.pauseQueueForRecovery()
+                    self.streamID = nil
+                    self.notice = "服务端连续未找到原 Run；本地运行标记已收敛，消息仍待核对。"
                 case .unknown:
                     self.uncertain = true
                     self.pauseQueueForRecovery()
