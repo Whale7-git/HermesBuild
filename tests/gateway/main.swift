@@ -293,8 +293,8 @@ private func gatewayEventMappingTests() throws {
     expect(err.first?.event == "apperror", "error maps to apperror")
     expect(payload(err[0])["message"] as? String == "boom", "apperror carries message")
 
-    // The raw terminal whitelist is independent of mapping. Only "error"
-    // terminates here: replay.truncated is a cursor gap, not a completed Run.
+    // The raw terminal whitelist is independent of mapping. Explicit error
+    // and Run completion terminate; replay.truncated is only a cursor gap.
     // Preserve that distinction so an approval waiting on the same Run does
     // not disappear just because the event replay window expired.
     let truncated = GatewayEventMap.map(frame("replay.truncated",
