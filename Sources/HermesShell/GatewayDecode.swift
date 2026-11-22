@@ -98,7 +98,8 @@ enum GatewayDecode {
     /// `offset` 是该窗口在原始历史里的起点，原样写进 `_messages_offset`，
     /// `ChatSnapshot` 据此算出每行稳定的 `sourceIndex`。
     static func snapshot(_ data: Data, offset: Int, activeRunID: String? = nil,
-                         requestedSessionID: String? = nil) throws -> ChatSnapshot {
+                         requestedSessionID: String? = nil,
+                         runStatusUnknown: Bool = false) throws -> ChatSnapshot {
         let root = try gatewayRoot(data, what: "会话消息")
         if let error = root["error"], !(error is NSNull) {
             throw GatewayDecodeError.server(gatewayString(error) ?? "会话消息读取失败")
@@ -268,7 +269,7 @@ enum GatewayDecode {
         }
 
         let assembled = try JSONSerialization.data(withJSONObject: ["session": session])
-        return try ChatSnapshot(data: assembled)
+        return try ChatSnapshot(data: assembled, runStatusUnknown: runStatusUnknown)
     }
 
     // MARK: - 3) 模型目录占位判定

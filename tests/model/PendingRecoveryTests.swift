@@ -184,6 +184,57 @@ extension ModelTests {
         accepted.disconnect()
         print("PENDING_PASS lost response reconciles new authoritative row with no POST replay or duplicate bubble")
 
+        // build224: the accepted user row is hidden behind >145 tool rows.
+        let deepService = PendingRecoveryService()
+        deepService.historyPageLimit = 60
+        let deep = NativeChatModel(sessionID: "test", api: deepService)
+        await deep.load()
+        deep.draft = "deep message"
+        await deep.send()
+        deepService.rows.append(["id": "deep-user", "role": "user",
+                                 "content": "deep message"])
+        deepService.rows += (0..<145).map { n in
+            ["id": "deep-tool-\(n)", "role": "tool", "content": "done",
+             "tool_call_id": "deep-tool-\(n)"]
+        }
+        deepService.rows.append(["id": "deep-reply", "role": "assistant",
+                                 "content": "finished"])
+        let deepResult = await deep.reconcilePending()
+        precondition(deepResult == .delivered && deepService.historyPageCalls >= 2
+                     && deepService.startCalls == 1 && deep.pendingSend == nil,
+                     "long pending send needs contiguous read-only pages, never replay")
+        deep.disconnect()
+        print("PENDING_PASS pending message confirmed across 145 tool rows")
+
+        let hiddenRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesHiddenPending-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: hiddenRoot) }
+        let hiddenStore = ChatDraftStore(instanceID: "hidden", accountScope: "account",
+            sessionID: "test", fileStore: LocalDataFileStore(
+                instanceID: "hidden", accountScope: "account",
+                sessionID: "test", rootDirectory: hiddenRoot))
+        let hiddenService = PendingRecoveryService()
+        let hidden = NativeChatModel(sessionID: "test", api: hiddenService,
+                                     draftStore: hiddenStore)
+        await hidden.load()
+        hidden.draft = "hidden unresolved"
+        await hidden.send()
+        hidden.discardPending()
+        precondition(hidden.pendingSend?.hiddenFromTranscript == true
+                     && hidden.uncertain && !hidden.canSend
+                     && hiddenService.startCalls == 1,
+                     "discard must preserve unverified delivery evidence")
+        hidden.disconnect()
+        let hiddenRestart = NativeChatModel(sessionID: "test",
+            api: PendingRecoveryService(), draftStore: hiddenStore)
+        precondition(hiddenRestart.pendingSend?.hiddenFromTranscript == true
+                     && hiddenRestart.buffer.messages.isEmpty && !hiddenRestart.canSend,
+                     "cold restart preserves the hidden disposition and send lock")
+        await hiddenRestart.refresh()
+        precondition(hiddenRestart.pendingSend == nil && !hiddenRestart.uncertain,
+                     "verified absence retires hidden record without resending")
+        hiddenRestart.disconnect()
+
         // Two new identical user rows after the POST boundary may come from
         // concurrent clients. No receipt exists to attribute either one.
         let collidingService = PendingRecoveryService()

@@ -213,6 +213,7 @@ final class AppState: ObservableObject {
     private var visibleRevision: UInt64 = 0
     private var damagedTaskStore = false
     private var taskDerivedState = SessionTaskDerivedState()
+    private let sessionRecovery = SessionRecoveryCoordinator()
     /// 通知投递。默认走系统实现，测试可注入替身。
     let notifier: any TaskNotificationDelivering
     /// Exact IDs delivered for unresolved requests, grouped by the immutable
@@ -508,14 +509,44 @@ final class AppState: ObservableObject {
         homeSendError = nil
         currentSessionID = nil
         openedSession = nil
+        scheduleUnopenedSessionRecovery()
     }
 
     /// Called by RootView on scene and overlay changes. A notification is
     /// suppressed only when the app is active and the exact conversation is
     /// unobscured.
     func setPresentationVisibility(appActive: Bool, conversationVisible: Bool) {
+        let wasActive = appIsActive
         appIsActive = appActive
         conversationIsVisible = appActive && conversationVisible
+        if !appActive {
+            sessionRecovery.cancel()
+        } else if !wasActive {
+            scheduleUnopenedSessionRecovery()
+        }
+    }
+
+    /// Only a matching, durable final reply may retire this observation.
+    /// Do not let stale async work clear a newly recorded verification signal.
+    private func scheduleUnopenedSessionRecovery() {
+        guard appIsActive, !needsLogin, !needsInstanceSetup else { return }
+        let originalScope = actionScope
+        sessionRecovery.schedule(
+            api: api, instanceID: historyInstanceID,
+            accountScope: historyAccountScope,
+            observations: sessionTaskObservations,
+            visibleSessionID: currentSessionID
+        ) { [weak self] sessionID, observedVersion in
+            guard let self, self.isCurrent(originalScope),
+                  self.appIsActive, self.currentSessionID != sessionID,
+                  let current = self.sessionTaskObservations[sessionID],
+                  current.signals.contains(.needsVerification),
+                  current.version(for: .needsVerification) == observedVersion else { return }
+            var remaining = current.signals
+            remaining.remove(.needsVerification)
+            remaining.remove(.running)
+            self.setSessionTaskSignals(remaining, for: sessionID)
+        }
     }
 
     /// The request identity index belongs to the current instance/account and
@@ -1402,6 +1433,7 @@ final class AppState: ObservableObject {
     /// `clearMarkdownCache` 默认 true：渲染缓存按正文内容寻址，留着不会串内容，
     /// 但会把上一个实例/账号的对话正文继续留在内存里——跨作用域必须清。
     private func resetScopeView(clearMarkdownCache: Bool = true) {
+        sessionRecovery.cancel()
         // A-09：先取消上一代残留的自动刷新，别让它继续持有旧 api 跑网络。
         cancelScopeRefresh()
         invalidateListRefresh()
@@ -2041,6 +2073,7 @@ final class AppState: ObservableObject {
                 scope: historyInstanceID + "|" + historyAccountScope,
                 at: refreshedAt)
             lastSessionRefresh = refreshedAt
+            scheduleUnopenedSessionRecovery()
         } catch is SessionRefreshTimeout {
             guard isCurrent(scope), refreshGeneration == generation, !Task.isCancelled else { return }
             errorText = sessions.isEmpty

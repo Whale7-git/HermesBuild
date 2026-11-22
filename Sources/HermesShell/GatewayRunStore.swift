@@ -6,6 +6,8 @@ final class GatewayRunStore {
     private let defaults: UserDefaults?
     private let key: String
     private let generationKey: String
+    private let unresolvedKey: String
+    private var unresolved: [String: String]
     private let generation: String
     private var values: [String: String]
 
@@ -24,9 +26,11 @@ final class GatewayRunStore {
         self.defaults = scope == nil ? nil : defaults
         key = "HermesNative.gatewayRuns.v1." + (scope ?? "ephemeral")
         generationKey = "HermesNative.gatewayRunGeneration.v1." + (scope ?? "ephemeral")
+        unresolvedKey = key + ".unresolved"
         generation = defaults.string(forKey: generationKey) ?? UUID().uuidString
         if scope != nil { defaults.set(generation, forKey: generationKey) }
         values = scope == nil ? [:] : (defaults.dictionary(forKey: key) as? [String: String] ?? [:])
+        unresolved = scope == nil ? [:] : (defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:])
     }
 
     /// F-72：`removeAll` 轮换 generation 之后，**已经存在的旧实例**会读到与自身
@@ -86,6 +90,51 @@ final class GatewayRunStore {
 
     func runID(for sessionID: String) -> String? { current()[sessionID] }
 
+    /// An unresolved 404 is a durable diagnostic, not verified absence.
+    func unresolvedRunID(for sessionID: String) -> String? {
+        guard isValid else { return nil }
+        if persistenceFailed { return unresolved[sessionID] }
+        if let defaults {
+            return (defaults.dictionary(forKey: unresolvedKey) as? [String: String])?[sessionID]
+        }
+        return unresolved[sessionID]
+    }
+
+    /// Drop the tombstone only after a fresh, exact-ID terminal response.
+    /// A random later alive response never grants permission to resurrect.
+    @discardableResult
+    func clearUnresolved(runID: String, sessionID: String) -> Bool {
+        guard isValid, unresolvedRunID(for: sessionID) == runID else { return false }
+        var next = defaults?.dictionary(forKey: unresolvedKey) as? [String: String] ?? unresolved
+        next.removeValue(forKey: sessionID)
+        if let defaults {
+            defaults.set(next, forKey: unresolvedKey)
+            guard (defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]) == next
+            else { persistenceFailed = true; return false }
+        }
+        unresolved = next
+        return true
+    }
+
+    /// Mark only the exact current Run unresolved. Persist the tombstone first,
+    /// then retire its misleading running flag. A failed write stays fail-closed.
+    @discardableResult
+    func markUnresolved(runID: String, sessionID: String) -> Bool {
+        guard isValid, current()[sessionID] == runID else { return false }
+        var next = defaults?.dictionary(forKey: unresolvedKey) as? [String: String] ?? unresolved
+        next[sessionID] = runID
+        if let defaults {
+            defaults.set(next, forKey: unresolvedKey)
+            guard (defaults.dictionary(forKey: unresolvedKey) as? [String: String]) == next
+            else { persistenceFailed = true; return false }
+        }
+        unresolved = next
+        let remaining = current().filter { !($0.key == sessionID && $0.value == runID) }
+        values = remaining
+        persistenceFailed = !persist(remaining)
+        return !persistenceFailed
+    }
+
     /// Snapshot the run dictionary once for a whole session list. Calling
     /// runID(for:) once per row repeatedly materializes UserDefaults values.
     func runIDs(for sessionIDs: [String]) -> [String: String] {
@@ -99,11 +148,21 @@ final class GatewayRunStore {
 
     func remember(runID: String, sessionID: String) {
         guard isValid else { noteRetired(); return }
+        // A delayed status response must not resurrect a 404-retired Run.
+        if unresolvedRunID(for: sessionID) == runID { return }
         values = current()
         values[sessionID] = runID
         // Active records are intentionally not expired by time: elapsed time cannot prove a run ended.
         // 内存值必须保持正确，写盘失败只置标记、不回滚。
         persistenceFailed = !persist(values)
+        if !persistenceFailed, unresolvedRunID(for: sessionID) != nil {
+            unresolved.removeValue(forKey: sessionID)
+            if let defaults {
+                var next = defaults.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]
+                next.removeValue(forKey: sessionID)
+                defaults.set(next, forKey: unresolvedKey)
+            }
+        }
     }
 
     func finish(runID: String) {
@@ -123,6 +182,7 @@ final class GatewayRunStore {
         let generationPrefix = "HermesNative.gatewayRunGeneration.v1." + instanceID + "|"
         if let accountScope {
             defaults.removeObject(forKey: prefix + accountScope)
+            defaults.removeObject(forKey: prefix + accountScope + ".unresolved")
             defaults.set(UUID().uuidString, forKey: generationPrefix + accountScope)
         } else {
             let keys = defaults.dictionaryRepresentation().keys
