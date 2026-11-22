@@ -161,20 +161,3 @@ jobs:
                 await github.rest.issues.update({owner,repo,issue_number:number,state:'closed',state_reason:'completed'});
             }
 
-  # GitHub_TOKEN-created Release events do not start ordinary release workflows.
-  # Explicit dispatch launches the independent, post-release UI discovery run.
-  ui-discovery:
-    name: Dispatch post-release simulator discovery
-    if: ${{ needs.promote.result == 'success' }}
-    needs: promote
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Dispatch trusted main simulator tests
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run simulator-probe.yml --repo "$GITHUB_REPOSITORY" --ref main -f suite=all

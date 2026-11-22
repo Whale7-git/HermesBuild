@@ -28,7 +28,7 @@ This is a personal iOS repository. Read the live `main` HEAD, `release.json`, co
 - `.github/workflows/hermesshell-single-build.yml` compiles **one** unsigned iOS candidate on macOS, checks the actual IPA, and uploads an immutable candidate Artifact; source/Swift diagnostics never delay it.
 - `.github/workflows/verified-release-automerge.yml` uses trusted `main` code to merge a valid version-increasing product PR once its candidate compilation succeeds. It does **not** require an Issue acceptance file, test success, simulator outcome or a reviewer.
 - `.github/workflows/hermesshell-single-promote.yml` publishes the exact candidate bytes with tree/SHA/digest verification; it does not recompile. A mismatch, missing file, failed compilation, or duplicate release identity cannot be published, because there would be no trustworthy IPA.
-- Simulator UI checks independently discover issues and never block a published binary. Bark success/failure notification is best effort and distinct from actual Release status.
+- Simulator UI checks are **manual-only** (`Actions → Hermes iOS Simulator UI regression → Run workflow`, select `gold`, `audit` or `all`). No PR, schedule or post-Release trigger, no simulated UI commit-status gate. Launch only when a concrete UI symptom requires XCTest evidence; do not require simulator passes for Release. Bark success/failure notification is best effort and distinct from actual Release status.
 - For a concentrated repair project, an agent should still aim to finish all executable fixes in one Release. But an unfinished Issue or diagnostic FAIL must be **visible and tracked, not a hidden build gate**. Close Issues only when fixes are truly delivered, not merely because publication succeeded.
 
 ## Documentation
