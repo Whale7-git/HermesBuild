@@ -7,6 +7,10 @@ on:
       - HermesBuild single-build candidate
       - Hermes iOS Simulator UI regression
     types: [completed]
+  # Removing a manual hold after both runs complete must re-evaluate the gate.
+  # All executable code remains from trusted main; PR source is never checked out.
+  pull_request_target:
+    types: [unlabeled, ready_for_review, reopened]
 
 permissions:
   actions: write
@@ -14,15 +18,18 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: hermes-verified-release-${{ github.event.workflow_run.head_sha }}
+  group: hermes-verified-release-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
   merge-and-dispatch:
     if: >-
-      ${{ github.event.workflow_run.event == 'pull_request' &&
-          github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.head_repository.full_name == github.repository }}
+      ${{ (github.event_name == 'workflow_run' &&
+           github.event.workflow_run.event == 'pull_request' &&
+           github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_repository.full_name == github.repository) ||
+          (github.event_name == 'pull_request_target' &&
+           github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -32,12 +39,14 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const sha = context.payload.workflow_run.head_sha;
+            const sha = context.payload.workflow_run?.head_sha || context.payload.pull_request?.head?.sha;
+            if (!sha) return core.setFailed('Missing PR HEAD SHA for verified release gate');
             const workflows = [
               'HermesBuild single-build candidate',
               'Hermes iOS Simulator UI regression'
             ];
-            const abort = message => { core.notice(message); return false; };
+            const abort = message => { core.notice('Release not promoted: ' + message); return false; };
+            const blocked = message => { core.setFailed('Release blocked: ' + message); return false; };
             const {data: associations} = await github.rest.repos.listPullRequestsAssociatedWithCommit({
               owner, repo, commit_sha: sha, per_page: 100
             });
@@ -67,13 +76,14 @@ jobs:
               path === 'Resources/Info.plist' || path === 'ios-ci-project.yml' ||
               path.startsWith('Sources/HermesShell/') ||
               path.startsWith('UITests/') ||
+              (path.startsWith('tests/model/') && path.endsWith('.swift')) ||
               path.startsWith('Vendor/Textual/') ||
               /^tests\/release-scope-build\d+\.json$/.test(path) ||
               path.startsWith('tests/attachments/') ||
               path.startsWith('tests/scroll/') ||
               path.startsWith('tests/uitest/');
             if (!files.length || files.some(file => !allowed(file.filename)))
-              return abort('PR touches non-product or privileged files; manual merge required');
+              return blocked('PR touches non-product or privileged files; manual merge required');
             if (!files.some(file => file.filename === 'release.json'))
               return abort('Not a new release PR');
             const readRelease = async ref => {
