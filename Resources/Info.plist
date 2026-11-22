@@ -7,9 +7,9 @@
     <key>CADisableMinimumFrameDurationOnPhone</key>
     <true/>
     <key>CFBundleShortVersionString</key>
-    <string>2.52.7</string>
+    <string>2.53.0</string>
     <key>CFBundleVersion</key>
-    <string>223</string>
+    <string>224</string>
     <key>UILaunchScreen</key>
     <dict>
         <key>UIColorName</key>
