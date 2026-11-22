@@ -134,9 +134,9 @@ jobs:
             const matches = prs.filter(p => p.merged_at && p.merge_commit_sha === context.sha);
             if (matches.length !== 1) return core.warning('No unique merged PR; skipping issue sync');
             const pr = matches[0], body = pr.body || '';
-            const refs = [...new Set([...body.matchAll(/#([1-9][0-9]*)\\b/g)]
+            const refs = [...new Set([...body.matchAll(/#([1-9][0-9]*)(?![0-9])/g)]
               .map(x => Number(x[1])))].slice(0,20);
-            const fixes = new Set([...body.matchAll(/\\b(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?)\\s+#([1-9][0-9]*)\\b/gi)]
+            const fixes = new Set([...body.matchAll(/(?:^|[^A-Za-z])(?:fix(?:es|ed)?|close[sd]?|resolve[sd]?) +#([1-9][0-9]*)(?![0-9])/gi)]
               .map(x => Number(x[1])));
             const {data: raw} = await github.rest.repos.getContent({owner, repo, path:'release.json', ref: context.sha});
             const {version, build} = JSON.parse(Buffer.from(raw.content,'base64').toString('utf8'));

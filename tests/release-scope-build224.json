@@ -575,7 +575,7 @@
     ".github/pull_request_template.md": "2f6c171b861e73b2cdf24805cc9e7af90a5587002f75a2ffce014316d12f6a0c",
     ".github/workflows/hermes-candidate-queue-watchdog.yml": "be8249ff09744c184ebaa41876e4f22eb433c10c65aef9933284e132c7b0eb87",
     ".github/workflows/hermesshell-single-build.yml": "288788d8e0d014c99d847d869c8e5278c16500fe252eb0db7a45c24610022773",
-    ".github/workflows/hermesshell-single-promote.yml": "2e2ae82f9557c98f25e9422877b1a62eafe893ba651873e0c16369af0ba0792d",
+    ".github/workflows/hermesshell-single-promote.yml": "7cda3435cb8cf8afcc3df01f49fc2e06385b5ee7412039c18076a293a8d8502e",
     ".github/workflows/simulator-issue-triage.yml": "4f36c744dbe529fd046fa415aef0471598fa64495e63b18cc3c8e59651eb440e",
     ".github/workflows/simulator-probe.yml": "f0526b48caa1a82bcea17014dcabf29ba335fd04501ae45a099938d481557fb0",
     ".github/workflows/verified-release-automerge.yml": "eb9d27d331f4f2807f1588583ac74308e9295ccf9c44d3f8738f72d62c7249c5",
