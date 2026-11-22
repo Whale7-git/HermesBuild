@@ -3,6 +3,9 @@ name: Hermes iOS Simulator UI regression
 # Real UI regression for iOS-affecting pull requests, plus manual/scheduled probes.
 # Separate from candidate IPA building; this workflow never publishes an IPA.
 on:
+  # Temporary QA-only branch. This workflow change never merges to main.
+  push:
+    branches: [test/hermes-all-issues-sim-20261122]
   pull_request:
     branches: [main]
     paths:
