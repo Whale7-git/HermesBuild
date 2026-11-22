@@ -15,6 +15,12 @@ final class SessionRecoveryCoordinator {
         attempted.removeAll()
     }
 
+    /// An unknown run status is not authoritative evidence of no active Run.
+    static func canRetireAcceptedReceipt(from snapshot: ChatSnapshot, sessionID: String) -> Bool {
+        snapshot.sessionID == sessionID && !snapshot.readOnly &&
+            snapshot.activeRunEvidence == .absent
+    }
+
     func schedule(api: HermesBackend,
                   instanceID: String, accountScope: String,
                   observations: [String: SessionTaskObservation],
@@ -62,8 +68,7 @@ final class SessionRecoveryCoordinator {
                     guard case .terminal(.completed) = run else { continue }
                     let latest = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
-                          latest.sessionID == sessionID, !latest.readOnly,
-                          latest.activeStreamID == nil,
+                          Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID),
                           let boundary = receipt.historyEnd else { continue }
                     var pages = [latest]
                     var valid = true
@@ -72,8 +77,7 @@ final class SessionRecoveryCoordinator {
                               Date() < deadline else { return }
                         let cursor = pages[pages.count - 1].olderOffset
                         let older = try await api.history(sessionID: sessionID, before: cursor)
-                        guard older.sessionID == sessionID, !older.readOnly,
-                              older.activeStreamID == nil,
+                        guard Self.canRetireAcceptedReceipt(from: older, sessionID: sessionID),
                               older.rawMessageEndIndex == cursor,
                               older.olderOffset < cursor else {
                             valid = false
@@ -87,8 +91,7 @@ final class SessionRecoveryCoordinator {
                     // be confused with the accepted turn being verified.
                     let head = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
-                          head.sessionID == sessionID, !head.readOnly,
-                          head.activeStreamID == nil,
+                          Self.canRetireAcceptedReceipt(from: head, sessionID: sessionID),
                           head.rawMessageEndIndex == latest.rawMessageEndIndex,
                           head.messages.last?.id == latest.messages.last?.id else { continue }
                     // Write durable receipt retirement before notifying AppState.
