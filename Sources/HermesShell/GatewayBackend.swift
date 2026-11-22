@@ -586,20 +586,13 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func stopNativeTurn(streamID: String) async throws {
-        do {
-            _ = try await perform(try requests.stopRun(runID: streamID))
-        } catch let error as APIError {
-            // 404/409 = 这轮已经结束或没有可停的 run。用户点「停止」时
-            // 界面上仍显示在跑，这种竞态不该弹成错误。
-            if case .http(let code, _) = error, code == 404 || code == 409 {
-                runStore.finish(runID: streamID)
-                clearFailedRunProbes(runID: streamID)
-                return
-            }
-            throw error
-        }
-        // A successful stop is an acknowledgement, not a terminal state.
-        // Keep the record until GET status confirms the task actually stopped.
+        // A fresh status GET must be allowed after every STOP attempt, including
+        // 404/409 and transport failures. None of those responses proves a
+        // terminal Run, so the durable Run identity must remain untouched.
+        defer { clearFailedRunProbes(runID: streamID) }
+        _ = try await perform(try requests.stopRun(runID: streamID))
+        // A 2xx is an acknowledgement, not a terminal state. Keep the record
+        // until GET status and final history confirm the exact Run has ended.
     }
 
     /// 引导：网关原生 `/v1/runs/{id}/steer`，不需要 WebUI 转发。

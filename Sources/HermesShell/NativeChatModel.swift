@@ -294,14 +294,15 @@ final class NativeChatModel: ObservableObject {
         2_000_000_000, 5_000_000_000, 10_000_000_000,
         20_000_000_000, 40_000_000_000, 60_000_000_000
     ]
-    /// A bounded read-only follow-up after STOP acknowledgement. Never sends a
-    /// second STOP or replays a chat POST.
+    /// A bounded read-only follow-up after any STOP attempt with no verified
+    /// terminal result. Polling never sends a second STOP or chat POST.
     var stopStatusPollTask: Task<Void, Never>?
     var stopStatusPollTicket: UUID?
     var stopStatusProbeInFlight = false
-    /// Intent is orthogonal to SSE completion. Only a matching verified stop
-    /// terminal may release the STOP-owned send lock.
+    /// A 2xx response acknowledges the request, not completion. A 404/409 is
+    /// a rejected request and must never be presented as a successful stop.
     var stopAcknowledged = false
+    var stopRejectedStatusCode: Int?
     var stopStatusPollDelaysNanoseconds: [UInt64] = [
         1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000,
         15_000_000_000, 30_000_000_000, 60_000_000_000, 60_000_000_000
