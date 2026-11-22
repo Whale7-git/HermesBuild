@@ -1,0 +1,79 @@
+name: Hermes offline diagnostics (nonblocking)
+
+# Diagnostics do NOT gate candidate IPA builds or release promotion.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-offline-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source:
+    name: Source diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Version and bundle identity
+        run: python3 tests/check_release_identity.py
+      - name: Navigation and SwiftUI source regressions
+        run: |
+          python3 tests/check_navigation_contract.py
+          python3 tests/check_swiftui_modifiers.py
+          python3 tests/test_swiftui_modifiers.py
+      - name: Release workflow unit tests
+        run: python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
+
+  offline_shards:
+    name: Swift offline ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [core, recovery, interface, media]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Swift toolchain
+        run: swift --version
+      - name: Compile and run offline shard
+        run: bash tests/run_container.sh
+        env:
+          HERMES_TEST_SHARD: ${{ matrix.shard }}
+          HERMES_TEST_JOBS: "4"
+          HERMES_TEST_COMPILE_TIMEOUT: "300"
+          HERMES_TEST_EXEC_TIMEOUT: "180"
+          HERMES_TEST_EXTRA_TIMEOUT: "360"
+
+  offline:
+    name: Swift offline diagnostics summary
+    needs: [source, offline_shards]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Display diagnostics results
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+          SHARDS_RESULT: ${{ needs.offline_shards.result }}
+        run: |
+          echo "Source diagnostics: $SOURCE_RESULT"
+          echo "Four Swift shards: $SHARDS_RESULT"
+          {
+            echo "## Nonblocking diagnostics"
+            echo "- Source: $SOURCE_RESULT"
+            echo "- Swift shards: $SHARDS_RESULT"
+            echo "- Failures are reported but do not block IPA build or publication."
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$SOURCE_RESULT" = success
+          test "$SHARDS_RESULT" = success
