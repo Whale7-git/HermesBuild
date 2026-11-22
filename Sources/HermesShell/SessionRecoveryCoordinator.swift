@@ -21,7 +21,14 @@ final class SessionRecoveryCoordinator {
             snapshot.activeRunEvidence == .absent
     }
 
-    /// A foreground GET may finish after a new send/Run receipt is saved. Only\n    /// retire the exact original receipt while no new pending POST exists.\n    static func mayRetireStoredReceipt(expected: Data, current: Data?,\n                                       pendingIsEmpty: Bool) -> Bool {\n        pendingIsEmpty && current == expected\n    }\n\n    func schedule(api: HermesBackend,
+    /// A foreground GET may finish after a new send/Run receipt is saved. Only
+    /// retire the exact original receipt while no new pending POST exists.
+    static func mayRetireStoredReceipt(expected: Data, current: Data?,
+                                       pendingIsEmpty: Bool) -> Bool {
+        pendingIsEmpty && current == expected
+    }
+
+    func schedule(api: HermesBackend,
                   instanceID: String, accountScope: String,
                   observations: [String: SessionTaskObservation],
                   visibleSessionID: String?,
@@ -94,7 +101,16 @@ final class SessionRecoveryCoordinator {
                           Self.canRetireAcceptedReceipt(from: head, sessionID: sessionID),
                           head.rawMessageEndIndex == latest.rawMessageEndIndex,
                           head.messages.last?.id == latest.messages.last?.id else { continue }
-                    // Write durable receipt retirement before notifying AppState.
+                    // The GETs above may have awaited while another task
+                    // accepted a newer Run or persisted a pending original POST.
+                    // No await may occur between this recheck and the retirement
+                    // write: MainActor serialization prevents a lost update.
+                    let latestPending = store.loadPending()
+                    let latestReceipt = store.loadActiveRun()
+                    guard latestPending.result.succeeded, latestReceipt.result.succeeded,
+                          Self.mayRetireStoredReceipt(
+                              expected: data, current: latestReceipt.value,
+                              pendingIsEmpty: latestPending.value == nil) else { continue }
                     guard store.saveActiveRun(nil).succeeded else { continue }
                     onVerified(sessionID, observation.version(for: .needsVerification))
                 } catch is CancellationError {
