@@ -24,6 +24,12 @@ var transcriptPublications = 0
     var lastAttachmentPaths:[String] = []
     var failTerminalHistory = false
     var historyRows: [[String: Any]] = []
+    var probeResult: ActiveRunProbe = .unknown
+    var probeCalls = 0
+    func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe {
+        probeCalls += 1
+        return probeResult
+    }
     func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload]) async throws -> String {
         lastAttachmentPaths = attachments.map(\.path)
         return try await startNativeTurn(sessionID:sessionID,text:text)
@@ -115,8 +121,52 @@ var transcriptPublications = 0
         print("MODEL_PASS never replace streamed text with stale terminal history")
     }
 
+    @MainActor static func unresolvedProbeSafetyTests() async throws {
+        let service = FakeChatService()
+        service.historyRows = [[
+            "id": "retained-user", "role": "user", "content": "retain this transcript"
+        ]]
+        let model = NativeChatModel(sessionID: "test", api: service)
+        await model.load()
+        let receipt = ActiveTurnRecovery(
+            runID: "test-stream", historyEnd: 1,
+            knownIDs: ["retained-user"], text: "accepted POST",
+            attachmentPaths: [])
+        model.activeTurnRecovery = receipt
+        model.streamID = receipt.runID
+        model.lastEventID = "sse-event-12"
+        model.transition(to: .reconnecting)
+        let renderedIDs = model.transcript.messages.map(\.id)
+        let unknown = try ChatSnapshot(
+            data: JSONSerialization.data(withJSONObject: [
+                "session_id": "test", "messages": service.historyRows
+            ]), runStatusUnknown: true)
+        service.probeResult = .unknown
+        try model.applySnapshot(unknown, preserveLoadedOlder: true)
+        precondition(model.lastEventID == "sse-event-12"
+                     && model.streamID == receipt.runID
+                     && model.transcript.messages.map(\.id) == renderedIDs,
+                     "unknown status cannot discard SSE cursor, stream, or transcript")
+        try await eventually { service.probeCalls == 1 && model.activeRunProbeTask == nil }
+        precondition(model.phase == .reconnecting && model.uncertain && !model.canSend,
+                     "unconfirmed status must keep the original run locked")
+        service.probeResult = .unresolved
+        model.probeAcceptedRun(receipt)
+        try await eventually { service.probeCalls == 2 && model.activeRunProbeTask == nil }
+        precondition(model.phase == .idle && !model.running && model.streamID == nil,
+                     "bounded 404 must retire the live UI phase, not remain reconnecting")
+        precondition(model.activeTurnRecovery == receipt && model.uncertain && !model.canSend,
+                     "unresolved 404 preserves accepted POST receipt and send lock")
+        precondition(model.transcript.messages.map(\.id) == renderedIDs
+                     && service.startCalls == 0,
+                     "unresolved recovery must preserve history and never replay POST")
+        model.disconnect()
+        print("MODEL_PASS unknown repeated probe converges without replay or transcript loss")
+    }
+
     @MainActor static func main() async throws {
         try finalHistoryGateTests()
+        try await unresolvedProbeSafetyTests()
         try await placeholderOriginTests()
         try await cacheTests()
         try await placeholderBindingTests()
