@@ -360,6 +360,7 @@ struct RootView: View {
                         guard let shouldOpen = drawerGestureOwner.ended(
                             open: sidebarOpen, width: Double(width),
                             predictedTranslation: Double(value.predictedEndTranslation.width),
+                            actualTranslation: Double(value.translation.width),
                             textSelecting: textSelectionActive)
                         else { return }
                         if shouldOpen && !sidebarOpen { openSidebar() }
