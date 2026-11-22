@@ -661,6 +661,25 @@ expect(draggedCard.cornerRadius > 0 && draggedCard.cornerRadius < revealedCard.c
 expect(revealedCard.cornerRadius == 44 && revealedCard.cardDim > 0,
        "fully opened card keeps its rounded clipped silhouette")
 
+// build229: the measured question row owns its post-pan SCREEN position.
+// Unlike a stream-follow target, its offset changes only when geometry above
+// the row changes, not when paragraphs are appended below it.
+expect(ChatManualTurnAnchor.target(rowTop: 500, screenTop: 95,
+                                   contentHeight: 1700, viewport: 600) == 405,
+       "manual row anchor reconstructs its actual on-screen coordinate")
+expect(ChatManualTurnAnchor.target(rowTop: 620, screenTop: 95,
+                                   contentHeight: 1850, viewport: 600) == 525,
+       "120pt of earlier-row reflow shifts offset by exactly 120pt")
+expect(ChatManualTurnAnchor.target(rowTop: 500, screenTop: 95,
+                                   contentHeight: 2200, viewport: 600) == 405,
+       "SSE growth BELOW the anchored row never moves the question")
+expect(ChatManualTurnAnchor.target(rowTop: 500, screenTop: 95,
+                                   contentHeight: 520, viewport: 600) == 0,
+       "a removed reserve safely clamps to the actual scroll range")
+expect(ChatManualTurnAnchor.target(rowTop: .nan, screenTop: 95,
+                                   contentHeight: 1700, viewport: 600) == nil,
+       "invalid row measurement never assigns an offset")
+
 var turnReading = ChatTurnReadingState()
 expect(turnReading.phase == .idle && turnReading.rowID == nil,
        "controller starts without a user-turn focus")
