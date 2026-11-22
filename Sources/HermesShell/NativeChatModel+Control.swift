@@ -273,7 +273,7 @@ extension NativeChatModel {
                 let finalHistory = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,
-                      finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                      finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                     uncertain = true
                     pauseQueueForRecovery()
                     notice = "后台已结束，但最终历史尚未确认；请稍后核对。"
