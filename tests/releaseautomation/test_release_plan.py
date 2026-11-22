@@ -38,13 +38,20 @@ class ReleasePlanTests(unittest.TestCase):
     def test_pull_request_manual_and_other_branch_never_publish(self):
         for event, ref in (
             ("pull_request", "refs/pull/14/merge"),
-            ("workflow_dispatch", "refs/heads/main"),
             ("push", "refs/heads/topic"),
         ):
             with self.subTest(event=event, ref=ref):
                 self.assertEqual(
                     planner.plan(self.new, None, event, ref)["release"], "false"
                 )
+
+    def test_verified_dispatch_requires_previous_version(self):
+        self.assertEqual(
+            planner.plan(self.new, self.old, "workflow_dispatch", "refs/heads/main")["release"],
+            "true",
+        )
+        with self.assertRaises(ValueError):
+            planner.plan(self.new, None, "workflow_dispatch", "refs/heads/main")
 
     def test_missing_base_rollback_and_output_injection_fail_closed(self):
         invalid = (
