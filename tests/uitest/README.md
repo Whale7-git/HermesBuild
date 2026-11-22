@@ -1,19 +1,21 @@
 # Hermes iOS UI test Gateway
 
-Runs **only** on 127.0.0.1. The server never connects to real instances and uses only public synthetic data. Routes come directly from Sources/HermesShell/GatewayRequests.swift and GatewayBackend.swift. JSON shapes follow GatewayDecode.swift and GatewayEventMap.swift.
+`mock_gateway.py` 是供 UI 测试使用的本地合成 Gateway。它只监听 loopback（`127.0.0.1`），不连接真实实例，不使用真实账号或用户数据。
 
-Run: python3 tests/uitest/mock_gateway.py --port 8765
-Check: python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
+## 运行
 
-- GET /api/sessions, GET /api/sessions/{id} (nested session metadata), GET /api/sessions/{id}/messages
-- POST /api/sessions, POST /v1/runs, GET /v1/runs/{id}, GET /v1/runs/{id}/events
-- POST /v1/runs/{id}/stop, POST /v1/files, GET /v1/files/by-path
-- GET /api/model/options
-- POST /__control/stub with {"method":"GET","path":"/api/sessions","status":429,"body":{"error":{"message":"Rate limited"}}} or {"disconnect":true}, optional "delay_ms"
-- GET /__control/log, POST /__control/reset
+```sh
+python3 tests/uitest/mock_gateway.py --port 8765
+python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
+```
 
-All unknown routes return **501 MOCK_UNKNOWN_ROUTE** and are separately recorded. The request log exposes only presence/scheme of Authorization and cookie presence, never actual values, message bodies or user credentials. No uploaded files are written to disk. The synthetic PNG is embedded in the test server.
+## 测试数据与安全边界
 
-The initial fixture includes a 1000+ UTF-16-unit answer so XCUITest can check reader scrolling without relying on live LLM output. The synthetic stream follows the Gateway SSE JSON "event" convention and terminates with "run.completed". State resets between tests.
+- 固定响应数据保存在 `tests/uitest/fixtures/`；服务端路由、状态和故障注入实现位于 `mock_gateway.py`，对应契约测试位于 `test_mock_gateway.py`。修改路由或响应时同步更新测试，不要维护第二份路由清单。
+- `/__control` 路由仅用于测试控制、重置和检查请求记录。请求日志只记录认证信息是否存在及其方案，不保存密钥、Cookie 值或消息正文。
+- 未知路由返回 `501 MOCK_UNKNOWN_ROUTE`，并记录下来；不要为了让测试通过而静默模拟未实现的生产接口。
+- 测试中的图片为内嵌合成 PNG，不会写入真实用户文件。
 
-**Scope:** Gateway-mode flows only. The WebUI cookie/login flow is a separate contract, not emulated by pretending Gateway API-key authentication has cookies. Actual iOS UI behavior is not validated by these Python tests; Stage 3 must operate the Simulator.
+## 范围
+
+Python 测试验证 mock Gateway 的 HTTP 契约和故障注入，不验证 iOS 真实手势、排版或设备行为。模拟器 UI 回归是独立的手动工作流；真机结果必须单独记录。
