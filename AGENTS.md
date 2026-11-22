@@ -12,7 +12,7 @@ and server deployment outside this repository.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
-- Version-bumped product PRs are eligible for trusted default-branch auto-merge only after both exact-head CI workflows succeed. To block, add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for a fully verified release PR. Maintenance, infrastructure, CI, and script changes always require manual merge.
+- Version-bumped ordinary product PRs are eligible for trusted default-branch auto-merge after the exact-head candidate workflow succeeds (source/scope, full Swift offline, and verified IPA). Simulator UI regression is independent discovery, not a required release gate. To block, add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for a fully verified release PR. Maintenance, infrastructure, CI, and script changes always require manual merge.
 - Rebase or merge the latest `main` before requesting review. Resolve conflicts
   on the feature branch.
 - Shared GitHub identities cannot approve their own pull requests. In that
@@ -60,6 +60,20 @@ separate.
   test entry points listed above. Historical manifests and backlog records are
   audit evidence, not runnable instructions. Do not claim device behavior was
   verified without a real-device result.
+
+## GitHub Issues and background simulator findings
+
+- Record user-requested features and confirmed defects as Issues; search existing open
+  and closed Issues first, then reference the Issue from the PR.
+- Test-only findings are **suspected**, not confirmed App defects. On simulator
+  failures, the trusted default-branch triage workflow creates or updates
+  deduplicated Issues with test names, SHA and CI evidence. Runner failures
+  are classified separately.
+- Ordinary UI test failures after publication do not retract or block a Release.
+  High-risk edits affecting POST replay, user/session isolation, data durability,
+  or STOP/queue safety require explicit focused tests and review before release.
+- Only mark a fix delivered after the exact IPA appears in a successful Release.
+  Never claim a real-phone acceptance based only on XCTest or an IPA compilation.
 
 ## Pull requests
 

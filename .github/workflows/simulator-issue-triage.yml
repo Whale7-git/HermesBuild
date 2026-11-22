@@ -1,0 +1,52 @@
+name: Hermes simulator issue triage
+
+# This workflow ALWAYS runs trusted default-branch code. The simulator PR
+# supplies DATA artifacts only; it never receives an Issues write token.
+on:
+  workflow_run:
+    workflows: [Hermes iOS Simulator UI regression]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: hermes-simulator-triage-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Classify simulator failures and upsert Issues
+    if: >-
+      ${{ github.event.workflow_run.repository.full_name == github.repository &&
+          github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      # Only lightweight JSON summaries are needed. Never download or execute
+      # PR code or the large xcresult artifacts into this privileged job.
+      - name: Download bounded simulator summaries
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: hermes-ui-triage-${{ github.event.workflow_run.id }}-*
+          path: ${{ runner.temp }}/triage-reports
+          merge-multiple: false
+
+      - name: Upsert deduplicated simulator issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIMULATOR_RUN_ID: ${{ github.event.workflow_run.id }}
+          SIMULATOR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SIMULATOR_EVENT: ${{ github.event.workflow_run.event }}
+          SIMULATOR_REPORT_DIR: ${{ runner.temp }}/triage-reports
+        run: python3 scripts/triage_simulator_issues.py
