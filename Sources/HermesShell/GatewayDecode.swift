@@ -143,6 +143,7 @@ enum GatewayDecode {
                 body = [
                     "event": "approval.request",
                     "request_id": promptID,
+                    "execution_generation": generation,
                     "description": detail,
                     "choices": choices
                 ]
