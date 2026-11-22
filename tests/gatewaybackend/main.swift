@@ -21,6 +21,7 @@ actor ConcurrencyProbe {
     var status = "running"
     var statusSessionID = "s"
     var statusCode = 200
+    var pendingControls: [[String: Any]]?
     var failure: Error?
     var requests: [URLRequest] = []
     var frames: [SSEFrame] = []
@@ -42,6 +43,7 @@ actor ConcurrencyProbe {
             body = ["run_id": "run-fixture", "status": "queued"]
         } else if url.path == "/v1/runs/run-fixture" {
             body = ["run_id": "run-fixture", "session_id": statusSessionID, "status": status]
+            if let pendingControls { body["pending_controls"] = pendingControls }
             code = statusCode
         } else if url.path.hasSuffix("/stop") {
             code = statusCode
@@ -208,10 +210,42 @@ actor ConcurrencyProbe {
         let unknown = try await restarted.history(sessionID: "s", before: nil)
         check(unknown.activeStreamID == nil,
               "missing status is unknown, not a fabricated live stream")
-        try await restarted.stopNativeTurn(streamID: run)
-        let stopped = try await restarted.history(sessionID: "s", before: nil)
-        check(stopped.activeStreamID == nil, "explicit stop settles missing run record")
+        do {
+            try await restarted.stopNativeTurn(streamID: run)
+            preconditionFailure("404 STOP response was treated as acknowledgement")
+        } catch let error as ChatStopHTTPError {
+            if case .rejected(let code) = error {
+                check(code == 404, "404 STOP remains a rejected request")
+            } else { throw error }
+        }
+        let restartedStore = GatewayRunStore(scope: "instance|account", defaults: defaults)
+        check(restartedStore.runID(for: "s") == run,
+              "404 STOP preserves the exact durable Run identity")
+        let stillUnknown = try await restarted.history(sessionID: "s", before: nil)
+        check(stillUnknown.activeStreamID == nil && restartedStore.runID(for: "s") == run,
+              "404 STOP does not turn unknown status into terminal absence")
+
+        // A 409 is also a conflict, not proof that the Run stopped.
+        let conflictScope = "instance|build228-stop-409"
+        let conflict = backend(scope: conflictScope)
+        let conflictRun = try await conflict.startNativeTurn(sessionID: "s", text: "fixture")
+        transport.statusCode = 409
+        do {
+            try await conflict.stopNativeTurn(streamID: conflictRun)
+            preconditionFailure("409 STOP response was treated as acknowledgement")
+        } catch let error as ChatStopHTTPError {
+            if case .rejected(let code) = error {
+                check(code == 409, "409 STOP remains a rejected request")
+            } else { throw error }
+        }
+        let conflictStore = GatewayRunStore(scope: conflictScope, defaults: defaults)
+        check(conflictStore.runID(for: "s") == conflictRun,
+              "409 STOP preserves the exact durable Run identity")
         transport.statusCode = 200
+        transport.status = "running"
+        let stillAlive = try await conflict.probeActiveRun(sessionID: "s", runID: conflictRun)
+        check(stillAlive == .alive && conflictStore.runID(for: "s") == conflictRun,
+              "a 409 STOP cannot retire a still-running Run")
         _ = try await restarted.startNativeTurn(sessionID: "s", text: "fixture")
         transport.failure = URLError(.notConnectedToInternet)
         do { _ = try await restarted.history(sessionID: "s", before: nil); preconditionFailure("offline considered idle") }
@@ -385,6 +419,95 @@ actor ConcurrencyProbe {
         check(already.isEmpty, "already-streamed commentary is not duplicated")
         let snapshot = try GatewayDecode.snapshot(Data(#"{"session_id":"s","active_run_id":"r","data":[]}"#.utf8), offset: 0)
         check(snapshot.activeStreamID == "r", "explicit active run survives decoding")
+        let pendingControls = GatewayDecode.pendingControlSnapshot(from: [
+            "pending_controls": [
+                ["kind": "approval", "prompt_id": "approval-1", "execution_generation": 4,
+                 "description": "Run a shell command", "command": "make test",
+                 "choices": ["once", "deny", "always"]],
+                ["kind": "clarify", "prompt_id": "clarify-1", "execution_generation": 7,
+                 "question": "Choose a target", "choices": ["A", "B"], "multi_select": false]
+            ]
+        ])
+        check(pendingControls?.frames.count == 2
+              && pendingControls?.hasIncompleteControl == false,
+              "current Gateway pending_controls projection decodes both control kinds")
+        let restoredApprovalFrame = pendingControls?.frames.first(where: { $0.event == "approval" })
+        let restoredApprovalBody = restoredApprovalFrame.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.data.utf8))) as? [String: Any]
+        }
+        check(restoredApprovalBody?["request_id"] as? String == "approval-1"
+              && restoredApprovalBody?["execution_generation"] as? Int == 4
+              && restoredApprovalBody?["choices"] as? [String] == ["once", "deny"],
+              "approval snapshot maps prompt_id, generation and excludes persistent grants")
+        let restoredClarifyFrame = pendingControls?.frames.first(where: { $0.event == "clarify" })
+        let restoredClarify = restoredClarifyFrame.flatMap {
+            ChatPendingClarify.make(from: $0, runID: "run-x")
+        }
+        check(restoredClarify?.requestID == "clarify-1"
+              && restoredClarify?.executionGeneration == 7
+              && restoredClarify?.question == "Choose a target"
+              && restoredClarify?.choices == ["A", "B"],
+              "clarification snapshot preserves prompt identity, generation and choices")
+        let emptyControls = GatewayDecode.pendingControlSnapshot(from: ["pending_controls": []])
+        check(emptyControls?.frames.isEmpty == true
+              && emptyControls?.hasIncompleteControl == false,
+              "an explicit empty pending_controls list is authoritative")
+        check(GatewayDecode.pendingControlSnapshot(from: [:]).map { $0.frames.count } == nil,
+              "missing pending_controls means the Gateway capability is unavailable")
+        let malformedControls = GatewayDecode.pendingControlSnapshot(from: [
+            "pending_controls": [
+                ["kind": "approval", "prompt_id": "bad-approval", "execution_generation": 4,
+                 "description": "Run command", "choices": ["always"]]
+            ]
+        ])
+        check(malformedControls?.frames.isEmpty == true
+              && malformedControls?.hasIncompleteControl == true,
+              "incomplete approval data fails closed instead of inventing a card")
+        let snapshotWithControls = try GatewayDecode.snapshot(
+            Data(#"{"session_id":"s","data":[]}"#.utf8), offset: 0,
+            activeRunID: "r", requestedSessionID: "s", pendingControls: pendingControls)
+        check(snapshotWithControls.gatewayPendingControls?.frames.count == 2,
+              "Gateway history snapshot carries the authoritative pending-control projection")
+
+        let controlScope = "instance|control-snapshot"
+        let controlStore = GatewayRunStore(scope: controlScope, defaults: defaults)
+        controlStore.remember(runID: "run-fixture", sessionID: "s")
+        transport.status = "waiting_for_clarification"
+        transport.pendingControls = [
+            ["kind": "clarify", "prompt_id": "live-clarify", "execution_generation": 9,
+             "question": "Choose a deployment", "choices": ["A", "B"], "multi_select": false]
+        ]
+        let controlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(controlHistory.activeStreamID == "run-fixture"
+              && controlHistory.gatewayPendingControls?.frames.count == 1,
+              "active clarification status and pending controls survive the real history path")
+        let activeClarify = controlHistory.gatewayPendingControls?.frames.first.flatMap {
+            ChatPendingClarify.make(from: $0, runID: controlHistory.activeStreamID)
+        }
+        check(activeClarify?.requestID == "live-clarify"
+              && activeClarify?.executionGeneration == 9,
+              "Gateway history uses the exact Run identity for restored clarification")
+        transport.pendingControls = []
+        let emptyControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(emptyControlHistory.gatewayPendingControls?.frames.isEmpty == true
+              && emptyControlHistory.gatewayPendingControls?.hasIncompleteControl == false,
+              "live Gateway empty control set clears stale approval/clarification cards")
+        // Running without pending_controls is an older/unsupported Gateway.
+        // A waiting_for_clarification state without that field is different:
+        // it must be marked incomplete to preserve the send lock.
+        transport.pendingControls = nil
+        transport.status = "running"
+        let unsupportedControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(unsupportedControlHistory.gatewayPendingControls.map { $0.frames.count } == nil,
+              "older Gateway without pending_controls does not fabricate an empty set")
+        transport.status = "waiting_for_approval"
+        let missingApprovalSnapshot = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(missingApprovalSnapshot.activeStreamID == "run-fixture"
+              && missingApprovalSnapshot.gatewayPendingControls?.hasIncompleteControl == true
+              && missingApprovalSnapshot.gatewayPendingControls?.frames.isEmpty == true,
+              "waiting_for_approval without complete control data is marked incomplete, not fabricated")
+        transport.pendingControls = nil
+        transport.status = "running"
         GatewayRunStore.removeAll(instanceID: "instance", accountScope: "account", defaults: defaults)
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == nil, "account retirement cleans recovery records")
         let retired = GatewayRunStore(scope: "instance|account", defaults: defaults)
@@ -712,14 +835,16 @@ actor ConcurrencyProbe {
         check(sentBody?["choice"] == nil,
               "clarify never sends approval's `choice` field")
 
-        // ⑥ 审批的合同不能被改动（clarify 加进来时最容易顺手改坏这里）
-        let approvalRequest = try requests.approveRun(runID: "run-x", choice: "once", requestID: "p-9")
+        // ⑥ Canonical approvals require the same exact generation fence as clarify.
+        let approvalRequest = try requests.approveRun(
+            runID: "run-x", choice: "once", requestID: "p-9", executionGeneration: 7)
         let approvalBody = (try? JSONSerialization.jsonObject(with: approvalRequest.httpBody ?? Data())) as? [String: Any]
         check(approvalRequest.url?.path == "/v1/runs/run-x/approval",
-              "approval still POSTs to /v1/runs/{id}/approval")
+              "approval POSTs to /v1/runs/{id}/approval")
         let approvalBodyKeys = Set((approvalBody ?? [:]).keys.map { String($0) })
-        check(approvalBodyKeys == Set(["choice", "request_id"]),
-              "approval body stays {choice, request_id} — no execution_generation, no answer")
+        check(approvalBodyKeys == Set(["choice", "request_id", "execution_generation"])
+              && approvalBody?["execution_generation"] as? Int == 7,
+              "approval body is exactly {choice, request_id, execution_generation}")
 
         // F-XX（P0）：同会话并发读取必须真正串行。
         //

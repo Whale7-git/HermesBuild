@@ -944,7 +944,7 @@ enum AttachmentFileImport {
         guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
         for draft in batch.items {
             if case .failed = draft.state { try batch.requeue(draft.id) }
-            if draft.canResumeUpload && !waiting.contains(draft.id) && tasks[draft.id] == nil {
+            if draft.canResumeUpload && !waiting.contains(draft.id) {
                 waiting.append(draft.id)
             }
         }
@@ -1297,16 +1297,22 @@ struct AttachmentPreviewPolicy: Sendable {
     }
 
     /// 拒绝任何 `..` 段：服务端把 path 直接拼进文件系统路径，`../` 会越出附件根目录。
-    /// 同时检查百分号编码形式（`%2e%2e`、`%2E%2E`），否则编码一次就能绕过（F-75）。
+    /// 对百分号编码最多解码四层，覆盖代理/框架重复解码造成的双重编码绕过。
     private static func containsParentTraversal(_ path: String) -> Bool {
         func hasDotDotSegment(_ value: String) -> Bool {
             value.replacingOccurrences(of: "\\", with: "/")
                 .split(separator: "/", omittingEmptySubsequences: false)
                 .contains { $0 == ".." }
         }
-        if hasDotDotSegment(path) { return true }
-        if let decoded = path.removingPercentEncoding, decoded != path, hasDotDotSegment(decoded) { return true }
-        return false
+        var candidate = path
+        for _ in 0..<4 {
+            if hasDotDotSegment(candidate) { return true }
+            guard let decoded = candidate.removingPercentEncoding, decoded != candidate else {
+                return false
+            }
+            candidate = decoded
+        }
+        return hasDotDotSegment(candidate)
     }
 
     private func opaqueFilePath(_ raw: String) throws -> String {

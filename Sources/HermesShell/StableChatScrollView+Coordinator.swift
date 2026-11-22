@@ -499,6 +499,7 @@ extension ChatScrollController {
         // A short pan must not hand the new streamed row back to its
         // bottom-following owner immediately after finger release.
         policy.beginManualReading()
+        publishScrollTrace(reason: "pan.begin", anchorID: captureAnchors().first?.id)
         publishDistance()
         current?.onUserScroll()
         hasInteracted = true
@@ -547,12 +548,16 @@ extension ChatScrollController {
         }
         markInteractionDirty()
         if !decelerate { scheduleFlush(); persistReadingPosition() }
+        publishScrollTrace(reason: decelerate ? "pan.end.decelerating" : "pan.end",
+                           anchorID: captureAnchors().first?.id)
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         horizontalBackPan = false
         markInteractionDirty()
         scheduleFlush(); persistReadingPosition()
+        publishScrollTrace(reason: "pan.decelerationEnded",
+                           anchorID: captureAnchors().first?.id)
     }
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         endAnimatedJump()
@@ -652,10 +657,10 @@ extension ChatScrollController {
             let bottom = frames.last?.bottom ?? 0
             scrollView.contentSize = CGSize(width: scrollView.bounds.width,
                 height: turnReading.contentHeight(contentBottom: bottom, viewport: viewport))
-            scrollView.setContentOffset(CGPoint(x: 0,
-                y: turnReading.target(contentBottom: bottom, rowTop: frame.top,
-                                      viewport: viewport) ?? frame.top),
-                animated: false)
+            let targetOffset = turnReading.target(
+                contentBottom: bottom, rowTop: frame.top, viewport: viewport) ?? frame.top
+            scrollView.setContentOffset(CGPoint(x: 0, y: targetOffset), animated: false)
+            publishScrollTrace(reason: "focus.applied", resolvedTarget: targetOffset, anchorID: id)
             updateWindow()
             publishDistance()
             return

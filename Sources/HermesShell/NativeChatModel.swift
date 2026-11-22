@@ -63,6 +63,8 @@ struct ChatPendingApproval: Identifiable, Equatable {
     let id: String
     let runID: String
     let requestID: String?
+    /// The server's execution generation, required for canonical approval POST.
+    let executionGeneration: Int
     let detail: String
     let command: String?
     let choices: [String]
@@ -78,21 +80,23 @@ struct ChatPendingApproval: Identifiable, Equatable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
         guard let detail else { return nil }
-        let requestID = (object["request_id"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let requestID = (object["request_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !requestID.isEmpty,
+              let generation = object["execution_generation"] as? Int,
+              generation >= 0, let runID, !runID.isEmpty else { return nil }
+        let allowed: Set<String> = ["once", "deny", "reject", "cancel"]
         let rawChoices = (object["choices"] as? [Any])?
             .compactMap { $0 as? String }
-            .filter { !$0.isEmpty } ?? []
-        // 服务端没给选项时按最常见的两者兜底：只读/写两种结果，
-        // 不擅自加 session/always（那等于替用户扩大授权范围）。
+            .filter { !$0.isEmpty && allowed.contains($0.lowercased()) } ?? []
+        // Neither a missing request identity nor absent server-provided choices
+        // is an actionable approval. Never invent a grant from a partial SSE.
         var seenChoices = Set<String>()
-        let choices = (rawChoices.isEmpty ? ["once", "deny"] : rawChoices)
-            .filter { seenChoices.insert($0).inserted }
+        let choices = rawChoices.filter { seenChoices.insert($0).inserted }
+        guard !choices.isEmpty else { return nil }
         let command = (object["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return ChatPendingApproval(
-            id: requestID ?? "\(runID ?? frame.id ?? "approval")-\(detail.prefix(32))",
-            runID: runID ?? "",
-            requestID: requestID?.isEmpty == true ? nil : requestID,
+            id: requestID, runID: runID, requestID: requestID,
+            executionGeneration: generation,
             detail: detail,
             command: command?.isEmpty == true ? nil : command,
             choices: choices)
@@ -294,14 +298,15 @@ final class NativeChatModel: ObservableObject {
         2_000_000_000, 5_000_000_000, 10_000_000_000,
         20_000_000_000, 40_000_000_000, 60_000_000_000
     ]
-    /// A bounded read-only follow-up after STOP acknowledgement. Never sends a
-    /// second STOP or replays a chat POST.
+    /// A bounded read-only follow-up after any STOP attempt with no verified
+    /// terminal result. Polling never sends a second STOP or chat POST.
     var stopStatusPollTask: Task<Void, Never>?
     var stopStatusPollTicket: UUID?
     var stopStatusProbeInFlight = false
-    /// Intent is orthogonal to SSE completion. Only a matching verified stop
-    /// terminal may release the STOP-owned send lock.
+    /// A 2xx response acknowledges the request, not completion. A 404/409 is
+    /// a rejected request and must never be presented as a successful stop.
     var stopAcknowledged = false
+    var stopRejectedStatusCode: Int?
     var stopStatusPollDelaysNanoseconds: [UInt64] = [
         1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000,
         15_000_000_000, 30_000_000_000, 60_000_000_000, 60_000_000_000

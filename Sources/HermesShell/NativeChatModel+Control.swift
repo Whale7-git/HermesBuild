@@ -62,6 +62,66 @@ extension NativeChatModel {
         if pendingClarifies.isEmpty { clarifying = false }
     }
 
+    /// Replace only the controls for the exact active Run. This is used when
+    /// a Gateway status snapshot explicitly supplies its current pending set.
+    /// Missing capability is represented by nil and never clears known cards.
+    func restorePendingControls(_ snapshot: GatewayPendingControlSnapshot, runID: String) {
+        // Parse before mutating. A partial projection cannot revoke a card
+        // that remains actionable on the same Run, nor silently resume a queue.
+        var nextApprovals: [ChatPendingApproval] = []
+        var nextClarifies: [ChatPendingClarify] = []
+        var incomplete = snapshot.hasIncompleteControl
+        for frame in snapshot.frames {
+            switch frame.event {
+            case "approval":
+                guard let pending = ChatPendingApproval.make(from: frame, runID: runID),
+                      pending.runID == runID, pending.requestID != nil else {
+                    incomplete = true
+                    continue
+                }
+                nextApprovals.append(pending)
+            case "clarify":
+                guard let pending = ChatPendingClarify.make(from: frame, runID: runID),
+                      pending.runID == runID else {
+                    incomplete = true
+                    continue
+                }
+                nextClarifies.append(pending)
+            default:
+                incomplete = true
+            }
+        }
+
+        if incomplete {
+            for pending in nextApprovals { _ = upsertPendingApproval(pending) }
+            for pending in nextClarifies { _ = upsertPendingClarify(pending) }
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "后台仍有待处理审批或澄清，但快照数据不完整；已保留原卡片并锁定发送。"
+            return
+        }
+
+        let oldApprovals = pendingApprovals.filter { $0.runID == runID }
+        let oldClarifies = pendingClarifies.filter { $0.runID == runID }
+        pendingApprovals.removeAll { $0.runID == runID }
+        pendingClarifies.removeAll { $0.runID == runID }
+        for pending in nextApprovals { _ = upsertPendingApproval(pending) }
+        for pending in nextClarifies { _ = upsertPendingClarify(pending) }
+
+        let approvalIDs = Set(nextApprovals.map(\.id))
+        let clarifyIDs = Set(nextClarifies.map(\.id))
+        for request in oldApprovals where !approvalIDs.contains(request.id) {
+            onApprovalResolved?(sessionID, request.requestID)
+        }
+        for request in oldClarifies where !clarifyIDs.contains(request.id) {
+            onClarifyResolved?(sessionID, request.requestID)
+        }
+        if pendingApprovals.isEmpty { approving = false }
+        if pendingClarifies.isEmpty { clarifying = false }
+        // Only an independent, fully verified Run/POST reconciliation may
+        // clear queueRecoveryPaused. The control projection never authorizes it.
+    }
+
     func removePendingClarify(requestID: String) {
         guard let pending = pendingClarifies.first(where: { $0.requestID == requestID }) else { return }
         removePendingClarify(id: pending.id)
@@ -107,9 +167,10 @@ extension NativeChatModel {
         approvalSubmission = submission
         defer { if approvalSubmission == submission { approving = false } }
         do {
-            let outcome = try await api.approveNativeTurn(runID: pending.runID,
-                                                          choice: choice,
-                                                          requestID: pending.requestID)
+            guard let requestID = pending.requestID else { return }
+            let outcome = try await api.approveNativeTurn(
+                runID: pending.runID, choice: choice, requestID: requestID,
+                executionGeneration: pending.executionGeneration)
             noteRunRecoveryState()
             guard generation == revision, !suspended,
                   pendingApprovals.contains(pending), !Task.isCancelled else { return }
@@ -224,6 +285,7 @@ extension NativeChatModel {
         guard let active = streamID, !stopping, !submitting else { return }
         let generation = revision
         stopAcknowledged = false
+        stopRejectedStatusCode = nil
         // STOP is an explicit cancellation boundary: preserve any user pause
         // and prohibit ordinary terminal-event queue dispatch from now on.
         pauseQueueForRecovery()
@@ -233,6 +295,7 @@ extension NativeChatModel {
             noteRunRecoveryState()
             guard generation == revision, streamID == active, !Task.isCancelled else { return }
             stopAcknowledged = true
+            stopRejectedStatusCode = nil
             notice = "停止请求已受理，正在核对后台任务是否真正结束。"
             await verifyPendingStop()
             if stopping { scheduleStopStatusPolling() }
@@ -242,7 +305,18 @@ extension NativeChatModel {
             self.error = error.localizedDescription
             uncertain = true
             pauseQueueForRecovery()
-            notice = "停止请求结果未确认；本轮发送仍锁定，请核对后台状态。"
+            if let stopError = error as? ChatStopHTTPError,
+               case .rejected(let code) = stopError {
+                stopRejectedStatusCode = code
+                notice = "停止请求被服务端拒绝（HTTP \(code)）；正在核对原 Run，发送保持锁定。"
+            } else {
+                stopRejectedStatusCode = nil
+                notice = "停止请求结果未知；正在核对原 Run，发送保持锁定。"
+            }
+            // A failed/unknown STOP response is not terminal evidence. Perform
+            // a fresh GET-only check, then continue the bounded poll if needed.
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
         }
     }
 
@@ -259,9 +333,21 @@ extension NativeChatModel {
             guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
-                notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
+                if stopAcknowledged {
+                    notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
+                } else if let code = stopRejectedStatusCode {
+                    notice = "停止请求被服务端拒绝（HTTP \(code)），原任务仍运行；发送保持锁定。"
+                } else {
+                    notice = "停止请求结果未知，原任务仍运行；发送保持锁定。"
+                }
             case .unknown:
-                notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+                if stopAcknowledged {
+                    notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
+                } else if let code = stopRejectedStatusCode {
+                    notice = "停止请求被服务端拒绝（HTTP \(code)），后台状态仍未知；发送保持锁定。"
+                } else {
+                    notice = "停止请求结果未知，后台状态仍未知；发送保持锁定。"
+                }
             case .unresolved:
                 uncertain = true
                 pauseQueueForRecovery()
@@ -283,6 +369,7 @@ extension NativeChatModel {
                 stopStatusPollTask = nil
                 stopStatusPollTicket = nil
                 stopAcknowledged = false
+                stopRejectedStatusCode = nil
                 revision &+= 1
                 streamTask?.cancel()
                 streamTask = nil
@@ -311,7 +398,7 @@ extension NativeChatModel {
         }
     }
 
-    /// Only a few status GETs are permitted after an acknowledged STOP.
+    /// Only a few status GETs are permitted after an attempted STOP.
     /// A still-running/unknown run stays locked; polling never changes queue
     /// preferences or grants permission to dispatch the next turn.
     func scheduleStopStatusPolling() {
@@ -359,6 +446,7 @@ extension NativeChatModel {
         stopStatusPollTask = nil
         stopStatusPollTicket = nil
         stopAcknowledged = false
+        stopRejectedStatusCode = nil
         buffer = ChatTranscript()
         confirmedHistory = nil
         confirmedHistoryEnd = nil

@@ -8,13 +8,14 @@ import FoundationNetworking
 /// 与 `ChatRequests` 的差别只在认证与路由：网关没有 WebUI 的登录 cookie，
 /// 每条请求都必须带 API key；会话/运行因此走另一套 `/api/sessions`、`/v1/runs`。
 enum GatewayRequestError: LocalizedError {
-    case invalidBaseURL, invalidID, invalidReasoningEffort
+    case invalidBaseURL, invalidID, invalidReasoningEffort, invalidApprovalRequest
 
     var errorDescription: String? {
         switch self {
         case .invalidBaseURL: return "网关地址无效：仅支持 http/https，且不能带用户信息、查询或片段"
         case .invalidID: return "会话或运行标识无效"
         case .invalidReasoningEffort: return "无效的推理强度，消息未提交"
+        case .invalidApprovalRequest: return "审批缺少服务端请求标识或执行代次，未发送"
         }
     }
 }
@@ -144,13 +145,17 @@ struct GatewayRequests {
 
     /// 回答网关的审批请求。
     ///
-    /// 服务端只接受 `once` / `session` / `always` / `deny`（`allow`/`approve` 会被
-    /// 别名成 `once`，但不依赖别名更稳）。`requestID` 能取到就带上：同一 run 上
-    /// 可能同时挂着多个待批请求，不带 id 会命中错的那个。
-    func approveRun(runID: String, choice: String, requestID: String?) throws -> URLRequest {
+    /// Canonical approval responses require the exact prompt ID and execution
+    /// generation. An identityless request could approve another pending tool.
+    func approveRun(runID: String, choice: String, requestID: String,
+                    executionGeneration: Int) throws -> URLRequest {
         let id = try Self.validatedID(runID)
-        var body: [String: Any] = ["choice": choice]
-        if let requestID, !requestID.isEmpty { body["request_id"] = requestID }
+        guard !requestID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              executionGeneration >= 0 else { throw GatewayRequestError.invalidApprovalRequest }
+        let body: [String: Any] = [
+            "choice": choice, "request_id": requestID,
+            "execution_generation": executionGeneration
+        ]
         return try make("v1/runs/\(id)/approval", body: body)
     }
 

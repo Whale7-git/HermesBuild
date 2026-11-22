@@ -6,6 +6,11 @@ import Combine
 import FoundationNetworking
 #endif
 
+private struct GatewayActiveRunHistory {
+    let evidence: ActiveRunEvidence
+    let pendingControls: GatewayPendingControlSnapshot?
+}
+
 /// 直连 Hermes 网关的后端。
 ///
 /// 分工：
@@ -312,14 +317,15 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // Run-status lookup is a recovery hint, not a prerequisite for reading
         // history. A transient /v1/runs failure must not prevent the user from
         // loading the canonical transcript that can prove completion.
-        let evidence = try await activeRunForHistory(sessionID: sessionID)
+        let runSnapshot = try await activeRunForHistory(sessionID: sessionID)
         let active: String?
-        if case .active(let runID) = evidence { active = runID } else { active = nil }
+        if case .active(let runID) = runSnapshot.evidence { active = runID } else { active = nil }
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
                                           activeRunID: active, requestedSessionID: sessionID,
-                                          runStatusUnknown: evidence == .unknown)
+                                          runStatusUnknown: runSnapshot.evidence == .unknown,
+                                          pendingControls: runSnapshot.pendingControls)
     }
 
     /// An unresolved tombstone is sticky until the exact same Run reports a
@@ -376,7 +382,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return recordProbeFailure(runID: runID)
         }
         switch status {
-        case "queued", "running", "waiting_for_approval", "stopping":
+        case "queued", "running", "waiting_for_approval", "waiting_for_clarification", "stopping":
             clearFailedRunProbes(runID: runID)
             // The receipt can outlive a local run-store cleanup after a crash or
             // account-scope repair. A status response that proves both the
@@ -431,7 +437,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             throw GatewayDecodeError.malformed("任务状态已变化，请刷新核对")
         }
         switch status {
-        case "queued", "running", "waiting_for_approval", "stopping":
+        case "queued", "running", "waiting_for_approval", "waiting_for_clarification", "stopping":
             clearFailedRunProbes(runID: runID)
             return runID
         case "completed", "failed", "cancelled", "interrupted":
@@ -449,13 +455,15 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// Return no active ID so completed history can reconcile, while the durable
     /// run-store entry remains available for a later bounded probe. Authentication
     /// and cancellation still abort.
-    private func activeRunForHistory(sessionID: String) async throws -> ActiveRunEvidence {
+    private func activeRunForHistory(sessionID: String) async throws -> GatewayActiveRunHistory {
         guard let runID = runStore.runID(for: sessionID) else {
-            return runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown
+            return GatewayActiveRunHistory(
+                evidence: runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown,
+                pendingControls: nil)
         }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
         let data: Data
         do {
@@ -465,38 +473,44 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 if code == 401 || code == 403 { throw error }
                 if code == 404 {
                     _ = recordRunNotFound(runID: runID, sessionID: sessionID)
-                    return .unknown
+                    return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
                 }
             }
             _ = recordProbeFailure(runID: runID)
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         } catch let error as CancellationError {
             throw error
         } catch {
             _ = recordProbeFailure(runID: runID)
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
               root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
             _ = recordProbeFailure(runID: runID)
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
         guard runStore.runID(for: sessionID) == runID else {
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
+        let pendingControls = GatewayDecode.pendingControlSnapshot(from: root)
         switch status {
-        case "queued", "running", "waiting_for_approval", "stopping":
+        case "queued", "running", "waiting_for_approval",
+             "waiting_for_clarification", "stopping":
             clearFailedRunProbes(runID: runID)
-            return .active(runID)
+            let controls = pendingControls ?? (
+                status == "waiting_for_approval" || status == "waiting_for_clarification"
+                    ? GatewayPendingControlSnapshot(frames: [], hasIncompleteControl: true)
+                    : nil)
+            return GatewayActiveRunHistory(evidence: .active(runID), pendingControls: controls)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
             runStore.finish(runID: runID)
-            return .absent
+            return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
         default:
             _ = recordProbeFailure(runID: runID)
-            return .unknown
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
     }
 
@@ -586,20 +600,20 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func stopNativeTurn(streamID: String) async throws {
+        // A fresh status GET must be allowed after every STOP attempt, including
+        // 404/409 and transport failures. None of those responses proves a
+        // terminal Run, so the durable Run identity must remain untouched.
+        defer { clearFailedRunProbes(runID: streamID) }
         do {
             _ = try await perform(try requests.stopRun(runID: streamID))
         } catch let error as APIError {
-            // 404/409 = 这轮已经结束或没有可停的 run。用户点「停止」时
-            // 界面上仍显示在跑，这种竞态不该弹成错误。
             if case .http(let code, _) = error, code == 404 || code == 409 {
-                runStore.finish(runID: streamID)
-                clearFailedRunProbes(runID: streamID)
-                return
+                throw ChatStopHTTPError.rejected(code)
             }
             throw error
         }
-        // A successful stop is an acknowledgement, not a terminal state.
-        // Keep the record until GET status confirms the task actually stopped.
+        // A 2xx is an acknowledgement, not a terminal state. Keep the record
+        // until GET status and final history confirm the exact Run has ended.
     }
 
     /// 引导：网关原生 `/v1/runs/{id}/steer`，不需要 WebUI 转发。
@@ -617,11 +631,13 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
-    /// 网关原生审批回传。`choice` 走服务端白名单（once/session/always/deny）。
-    func approveNativeTurn(runID: String, choice: String, requestID: String?) async throws -> String? {
+    /// Canonical approval answers must carry prompt identity and generation.
+    func approveNativeTurn(runID: String, choice: String, requestID: String,
+                           executionGeneration: Int) async throws -> String? {
         do {
-            _ = try await perform(try requests.approveRun(runID: runID, choice: choice,
-                                                          requestID: requestID))
+            _ = try await perform(try requests.approveRun(
+                runID: runID, choice: choice, requestID: requestID,
+                executionGeneration: executionGeneration))
             return nil
         } catch let error as APIError {
             // 409 = 这个审批已经不在等待了（超时、被别处处理、或 run 已结束）。

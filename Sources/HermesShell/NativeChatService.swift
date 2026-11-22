@@ -50,7 +50,8 @@ protocol NativeChatService:AnyObject {
     /// 回答服务端的审批请求。nil 表示已受理；非 nil 是降级原因（例如该后端没有
     /// 审批通道）。`choice` 用网关的取值：once / session / always / deny。
     /// 同样必须在协议里声明——否则调用只会命中 extension 的默认实现。
-    func approveNativeTurn(runID:String,choice:String,requestID:String?) async throws -> String?
+    func approveNativeTurn(runID:String,choice:String,requestID:String,
+                           executionGeneration:Int) async throws -> String?
     /// 回答服务端的补充信息请求。nil 表示已受理；非 nil 是降级原因。
     /// 与审批分开：服务端字段是 `answer`，且必须带 `execution_generation`。
     func clarifyNativeTurn(runID:String,answer:String,requestID:String,
@@ -68,7 +69,8 @@ extension NativeChatService {
     func steerNativeTurn(sessionID:String,text:String) async throws -> String? { "unsupported" }
     /// 没有审批通道的服务：明确回报「不支持」，让界面提示去对应终端处理，
     /// 而不是把一个永远不会被受理的确认按钮留在屏幕上。
-    func approveNativeTurn(runID:String,choice:String,requestID:String?) async throws -> String? { "unsupported" }
+    func approveNativeTurn(runID:String,choice:String,requestID:String,
+                           executionGeneration:Int) async throws -> String? { "unsupported" }
     /// 没有 clarify 通道的服务：明确回报「不支持」，让界面提示去对应终端处理。
     func clarifyNativeTurn(runID:String,answer:String,requestID:String,
                            executionGeneration:Int) async throws -> String? { "unsupported" }

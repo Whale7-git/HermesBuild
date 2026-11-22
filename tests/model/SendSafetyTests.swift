@@ -9,14 +9,18 @@ import Foundation
     var failHistory = false
     var failHistoryAfterStop = false
     var stopAcknowledgementOnly = false
+    var stopErrorCode: Int?
+    var stopTimeout = false
     var stopCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
     var holdSteer = false
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
+    var approvalCalls: [(String, Int, String)] = []
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
+    var pendingControlSnapshot: GatewayPendingControlSnapshot?
     var historyCalls = 0
     var recoveryUnavailable = false
     var runRecoveryUnavailable: Bool { recoveryUnavailable }
@@ -27,7 +31,8 @@ import Foundation
         var object: [String: Any] = ["session_id": sessionID, "messages": historyRows,
                                      "read_only": false]
         if let active { object["active_stream_id"] = active }
-        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object))
+        return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
+                                gatewayPendingControls: pendingControlSnapshot)
     }
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
         try await startNativeTurn(sessionID: sessionID, text: text, attachments: [])
@@ -42,6 +47,8 @@ import Foundation
     }
     func stopNativeTurn(streamID: String) async throws {
         stopCalls += 1
+        if let stopErrorCode { throw ChatStopHTTPError.rejected(stopErrorCode) }
+        if stopTimeout { throw URLError(.timedOut) }
         if stopAcknowledgementOnly { return }
         active = nil
         if failHistoryAfterStop { failHistory = true; return }
@@ -63,8 +70,10 @@ import Foundation
         if holdSteer { return try await withCheckedThrowingContinuation { pendingSteer = $0 } }
         return nil
     }
-    func approveNativeTurn(runID: String, choice: String, requestID: String?) async throws -> String? {
-        try await withCheckedThrowingContinuation { pendingApproval = $0 }
+    func approveNativeTurn(runID: String, choice: String, requestID: String,
+                           executionGeneration: Int) async throws -> String? {
+        approvalCalls.append((requestID, executionGeneration, choice))
+        return try await withCheckedThrowingContinuation { pendingApproval = $0 }
     }
     func clarifyNativeTurn(runID: String, answer: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
@@ -81,8 +90,14 @@ import Foundation
         }
     }
     func approval(_ id: String) {
-        frames.append(SSEFrame(event: "approval", data:
-            "{\"request_id\":\"\(id)\",\"message\":\"Review command\",\"choices\":[\"once\",\"deny\"]}", id: id))
+        let payload: [String: Any] = [
+            "request_id": id, "execution_generation": 7,
+            "message": "Review command", "choices": ["once", "deny"]
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload)).map {
+            String(decoding: $0, as: UTF8.self)
+        } ?? "{}"
+        frames.append(SSEFrame(event: "approval", data: data, id: id))
     }
 
     func clarify(_ id: String, generation: Int, choices: [String] = []) {
@@ -242,6 +257,47 @@ import Foundation
         try await ModelTests.eventually { !model.stopping }
         precondition(model.canSend && service.startCalls == 1 && service.stopCalls == 1,
                      "bounded GET-only polling resolves terminal without repeating either POST")
+        model.disconnect()
+    }
+
+    // A 404/409 is a rejected STOP request, not a successful cancellation.
+    // The exact Run remains active and the client verifies it with GET only.
+    for code in [404, 409] {
+        let service = SendSafetyService()
+        service.stopErrorCode = code
+        let model = NativeChatModel(sessionID: "stop-rejected-\(code)", api: service)
+        model.stopStatusPollDelaysNanoseconds = [5_000_000_000]
+        await model.load()
+        model.draft = "work"; _ = await model.send()
+        await model.stop()
+        precondition(model.stopping && model.uncertain && !model.canSend
+                     && !model.stopAcknowledged && model.stopRejectedStatusCode == code,
+                     "HTTP \(code) must remain a rejected, locked STOP outcome")
+        precondition(service.active == "run-1" && service.startCalls == 1
+                     && service.stopCalls == 1,
+                     "rejected STOP preserves the live Run and never repeats either POST")
+        precondition(model.notice?.contains("HTTP \(code)") == true,
+                     "rejected STOP status is shown distinctly from an accepted STOP")
+        model.disconnect()
+    }
+
+    // A timeout is different from an HTTP rejection: the STOP result is unknown.
+    do {
+        let service = SendSafetyService()
+        service.stopTimeout = true
+        let model = NativeChatModel(sessionID: "stop-timeout-unknown", api: service)
+        model.stopStatusPollDelaysNanoseconds = [5_000_000_000]
+        await model.load()
+        model.draft = "work"; _ = await model.send()
+        await model.stop()
+        precondition(model.stopping && model.uncertain && !model.canSend
+                     && !model.stopAcknowledged && model.stopRejectedStatusCode == nil,
+                     "STOP timeout remains unknown and locked")
+        precondition(service.active == "run-1" && service.startCalls == 1
+                     && service.stopCalls == 1,
+                     "STOP timeout is reconciled by GET without repeating POST")
+        precondition(model.notice?.contains("结果未知") == true,
+                     "STOP timeout is not presented as an HTTP rejection or success")
         model.disconnect()
     }
 
@@ -886,6 +942,11 @@ import Foundation
         try await ModelTests.eventually { model.pendingApproval?.requestID == "old" }
         let response = Task { await model.respondToApproval("once") }
         try await ModelTests.eventually { service.pendingApproval != nil }
+        precondition(service.approvalCalls.count == 1
+                     && service.approvalCalls[0].0 == "old"
+                     && service.approvalCalls[0].1 == 7
+                     && service.approvalCalls[0].2 == "once",
+                     "approval POST carries the chosen prompt identity and generation")
         service.approval("new")
         try await ModelTests.eventually { model.pendingApproval?.requestID == "new" }
         service.pendingApproval!.resume(returning: nil); service.pendingApproval = nil
@@ -924,9 +985,10 @@ import Foundation
         precondition(!model.canRespondToApproval(requestID: "missing", choice: "once"),
                      "a missing request ID must never fall back to another approval")
         let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
+                                      executionGeneration: 3,
                                       detail: "", command: nil, choices: ["once"])
         let current = ChatPendingApproval(id: "current", runID: "current-run",
-                                          requestID: "current", detail: "",
+                                          requestID: "current", executionGeneration: 4, detail: "",
                                           command: nil, choices: ["once"])
         model.pendingApprovals = [old, current]
         model.removePendingApprovals(for: "current-run")
@@ -1155,6 +1217,88 @@ import Foundation
         editingID: "turn", original: "same", current: "same"))
     precondition(QueueEditorExitPolicy.needsDiscardConfirmation(
         editingID: "turn", original: "original", current: "edited"))
+
+    // Cold recovery rebuilds approval and clarification cards only from a
+    // complete, exact-Run Gateway snapshot. Missing capability preserves known
+    // cards; an explicit empty set removes them; malformed state keeps sending locked.
+    do {
+        let service = SendSafetyService()
+        service.active = "run-1"
+        service.pendingControlSnapshot = GatewayPendingControlSnapshot(
+            frames: [
+                SSEFrame(event: "approval", data:
+                    #"{"request_id":"approval-1","execution_generation":7,"message":"Run command","choices":["once","deny"]}"#,
+                    id: nil),
+                SSEFrame(event: "clarify", data:
+                    #"{"request_id":"clarify-1","execution_generation":7,"question":"Choose a target","choices":["A","B"],"multi_select":false}"#,
+                    id: nil)
+            ],
+            hasIncompleteControl: false)
+        let model = NativeChatModel(sessionID: "control-snapshot-restore", api: service)
+        await model.load()
+        precondition(model.pendingApprovals.count == 1
+                     && model.pendingApprovals.first?.runID == "run-1"
+                     && model.pendingApprovals.first?.requestID == "approval-1",
+                     "cold snapshot restores the approval card for the exact Run")
+        precondition(model.pendingClarifies.count == 1
+                     && model.pendingClarifies.first?.runID == "run-1"
+                     && model.pendingClarifies.first?.requestID == "clarify-1"
+                     && model.pendingClarifies.first?.executionGeneration == 7,
+                     "cold snapshot restores the clarification card with generation")
+
+        func snapshot(_ controls: GatewayPendingControlSnapshot?) throws -> ChatSnapshot {
+            let object: [String: Any] = [
+                "session_id": "control-snapshot-restore",
+                "active_stream_id": "run-1",
+                "messages": [],
+                "read_only": false
+            ]
+            return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
+                                    gatewayPendingControls: controls)
+        }
+        let unknownObject: [String: Any] = [
+            "session_id": "control-snapshot-restore", "messages": [], "read_only": false
+        ]
+        let unknownSnapshot = try ChatSnapshot(
+            data: JSONSerialization.data(withJSONObject: unknownObject), runStatusUnknown: true)
+        try model.applySnapshot(unknownSnapshot)
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "unknown Run status preserves known approval and clarification cards")
+
+        // Older Gateways omit the field; absence is not evidence that a known
+        // approval/clarification has been resolved.
+        try model.applySnapshot(try snapshot(nil))
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "missing Gateway capability preserves known pending cards")
+
+        try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+            frames: [], hasIncompleteControl: false)))
+        precondition(model.pendingApprovals.isEmpty && model.pendingClarifies.isEmpty,
+                     "an authoritative empty pending_controls list removes stale cards")
+
+        let preserved = GatewayPendingControlSnapshot(
+            frames: [SSEFrame(event: "clarify", data:
+                #"{"request_id":"partial-new","execution_generation":8,"question":"Still waiting"}"#,
+                id: nil)],
+            hasIncompleteControl: true)
+        // A new valid prompt in an incomplete status snapshot must not silently
+        // revoke a previously known prompt.
+        try model.applySnapshot(try snapshot(service.pendingControlSnapshot))
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "complete control projection re-establishes canonical cards")
+        try model.applySnapshot(try snapshot(preserved))
+        precondition(model.pendingApprovals.count == 1
+                     && model.pendingClarifies.count == 2
+                     && model.uncertain && model.queueRecoveryPaused,
+                     "partial projection preserves existing prompts and locks sending")
+
+        try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+            frames: [], hasIncompleteControl: true)))
+        precondition(model.uncertain && model.queueRecoveryPaused
+                     && model.notice?.contains("快照数据不完整") == true,
+                     "incomplete control data fails closed and preserves the send lock")
+        model.disconnect()
+    }
 
     print("SEND_SAFETY_PASS complete queue payload, no overwrite, persistence, steer lock, interrupt verification, cancellation, approval identity and clarify reply contract")
 }
