@@ -118,7 +118,31 @@ var transcriptPublications = 0
             receipt: receipt, streamedAssistantPresent: true))
         precondition(ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
             receipt: receipt, streamedAssistantPresent: false))
-        print("MODEL_PASS never replace streamed text with stale terminal history")
+        precondition(!ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true, expectedRunID: "another-run"),
+            "same-session final history of a different accepted Run is not authorization")
+        precondition(ChatFinalHistoryGate.canReplace(final, sessionID: "test",
+            receipt: receipt, streamedAssistantPresent: true, expectedRunID: "run-1"),
+            "matching Run and receipt can finalize the streamed reply")
+        let model = NativeChatModel(sessionID: "test", api: FakeChatService())
+        model.streamID = "run-1"
+        model.activeTurnRecovery = receipt
+        model.buffer.messages = [ChatMessage(id: "streaming:run-1", role: "assistant",
+                                            content: "visible streamed reply")]
+        model.buffer.terminal = true
+        do {
+            try model.applySnapshot(stale)
+            preconditionFailure("stale refresh must not clear streamed reply")
+        } catch {
+            precondition(model.buffer.messages.first?.content == "visible streamed reply",
+                         "stale GET must leave visible streamed text intact")
+            precondition(model.activeTurnRecovery?.runID == "run-1",
+                         "stale GET must preserve original POST receipt")
+        }
+        try model.applySnapshot(final)
+        precondition(model.buffer.messages.contains { $0.id == "new-answer" },
+                     "matching final history replaces the temporary streamed row")
+        print("MODEL_PASS never replace streamed text with stale or cross-Run history")
     }
 
     @MainActor static func unresolvedProbeSafetyTests() async throws {
