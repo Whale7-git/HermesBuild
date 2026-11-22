@@ -431,16 +431,16 @@ actor ConcurrencyProbe {
         check(pendingControls?.frames.count == 2
               && pendingControls?.hasIncompleteControl == false,
               "current Gateway pending_controls projection decodes both control kinds")
-        let approvalFrame = pendingControls?.frames.first(where: { $0.event == "approval" })
-        let approvalBody = approvalFrame.flatMap {
+        let restoredApprovalFrame = pendingControls?.frames.first(where: { $0.event == "approval" })
+        let restoredApprovalBody = restoredApprovalFrame.flatMap {
             (try? JSONSerialization.jsonObject(with: Data($0.data.utf8))) as? [String: Any]
         }
-        check(approvalBody?["request_id"] as? String == "approval-1"
-              && approvalBody?["execution_generation"] as? Int == 4
-              && approvalBody?["choices"] as? [String] == ["once", "deny"],
+        check(restoredApprovalBody?["request_id"] as? String == "approval-1"
+              && restoredApprovalBody?["execution_generation"] as? Int == 4
+              && restoredApprovalBody?["choices"] as? [String] == ["once", "deny"],
               "approval snapshot maps prompt_id, generation and excludes persistent grants")
-        let clarifyFrame = pendingControls?.frames.first(where: { $0.event == "clarify" })
-        let restoredClarify = clarifyFrame.flatMap {
+        let restoredClarifyFrame = pendingControls?.frames.first(where: { $0.event == "clarify" })
+        let restoredClarify = restoredClarifyFrame.flatMap {
             ChatPendingClarify.make(from: $0, runID: "run-x")
         }
         check(restoredClarify?.requestID == "clarify-1"
