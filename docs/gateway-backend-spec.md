@@ -1,4 +1,6 @@
-# Hermes 全网关后端 · 当前实现契约
+# Hermes Gateway 历史协议与客户端设计笔记
+
+> **历史参考，非当前运行契约。** 本文包含 build65/build142 时期的设计和抓包信息，并非 2026-11 的部署能力保证。当前行为以 `Sources/HermesShell/GatewayBackend.swift`、`GatewayEventMap.swift`、`GatewayRunStore.swift`、真实服务器版本及实时抓包为准。尤其不能从本文推断 `resolve-unknown`、孤儿文件 DELETE、断点续传或 pending_controls 已获服务端支持。
 
 > **2.9.4 / build142 说明：** Gateway 实例运行时不再采用 WebUI fallback。
 > 原生上传 `POST /v1/files`，原生附件下载与预览 `GET /v1/files/by-path`。
