@@ -89,7 +89,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
-        self.assertEqual(triggers(text), {"push"})
+        self.assertEqual(triggers(text), {"push", "workflow_dispatch"})
         self.assertEqual(jobs(text), ["plan", "promote", "notify"])
         self.assertNotIn("tests/run_container.sh", text)
         self.assertNotIn("tests/verify_source.py", text)
@@ -99,6 +99,22 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("github-build-ipa", text)
         self.assertNotIn("xcodegen", text)
         self.assertNotIn("xcodebuild", text)
+
+    def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
+        workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
+        self.assertEqual(triggers(workflow), {"workflow_run"})
+        for required in ("github.event.workflow_run.conclusion == 'success'",
+                         "head_sha: sha", "hermes-auto-release", "no-auto-release",
+                         "latest.conclusion !== 'success'", "expected_sha",
+                         "previous_sha", "createWorkflowDispatch", "merge_method: 'squash'"):
+            self.assertIn(required, workflow)
+        self.assertNotIn("actions/checkout@", workflow)
+        self.assertNotIn("github-build-ipa", workflow)
+        promote = (ROOT / ".github/workflows/hermesshell-single-promote.yml").read_text()
+        self.assertIn("expected_sha:", promote)
+        self.assertIn("previous_sha:", promote)
+        plan = (ROOT / "scripts/release-plan.py").read_text()
+        self.assertIn("before != parent", plan)
 
     def test_removed_legacy_build_entries_stay_absent(self):
         removed = (
