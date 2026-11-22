@@ -19,6 +19,11 @@ extension NativeChatModel {
             $0.afterMessageID.map { visibleIDs.contains($0) } ?? true
         }.suffix(Self.cachedWarmupMessages))
         buffer.usage = cached.usage
+        // The cache is intentionally bounded. Never present missing tool IDs
+        // as proof that the server history contains no other tools.
+        if cached.uncachedToolCount > 0 && notice == nil {
+            notice = "本地缓存尚缺 \(cached.uncachedToolCount) 项工具记录；联网刷新后核对。"
+        }
         olderOffset = max(cached.olderOffset, buffer.messages.first?.sourceIndex ?? cached.olderOffset)
         sessionModel = cached.model
         readOnly = true
