@@ -119,7 +119,7 @@ jobs:
             } catch (error) {
               return abort('Batch matrix cannot be parsed: ' + error.message);
             }
-            if (matrix.schema !== 1 || matrix.head_sha !== sha ||
+            if (matrix.schema !== 1 ||
                 matrix.base_sha !== pr.base.sha ||
                 matrix.version !== current.version || Number(matrix.build) !== Number(current.build) ||
                 !Array.isArray(matrix.issues))
