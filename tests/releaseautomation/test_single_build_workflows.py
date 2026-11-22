@@ -244,6 +244,28 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertIn("historical", guidance.lower())
         self.assertNotIn("tests/gen_release_scope.py", guidance)
 
+    def test_documentation_has_one_authoritative_rules_source(self):
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        collaboration = (ROOT / "docs/github-collaboration.md").read_text(encoding="utf-8")
+        template = (ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8")
+        self.assertIn("Candidate and Release", agents)
+        self.assertIn("权威规则来源", readme)
+        self.assertIn("唯一权威规则来源", collaboration)
+        self.assertIn("唯一权威来源", template)
+
+    def test_reference_docs_do_not_masquerade_as_current_gateway_contracts(self):
+        sse = (ROOT / "docs/sse-contract.md").read_text(encoding="utf-8")
+        ui = (ROOT / "tests/uitest/README.md").read_text(encoding="utf-8")
+        manual = (ROOT / "tests/manual-master.md").read_text(encoding="utf-8")
+        self.assertIn("不是当前 API 契约", sse)
+        self.assertIn("单次历史抓包", sse)
+        self.assertIn("127.0.0.1", ui)
+        self.assertIn("mock_gateway.py", ui)
+        self.assertIn("fixtures/", ui)
+        self.assertNotIn("GET /api/sessions", ui)
+        self.assertIn("不是每次提交或发版的必跑清单", manual)
+
     def test_obsolete_historical_documents_removed(self):
         for relative in (
             "docs/perf-baseline-build131.json",
