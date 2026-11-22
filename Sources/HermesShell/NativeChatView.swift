@@ -134,6 +134,10 @@ struct NativeChatView: View {
     /// 「用户正在输入」：只有前者才需要把内容推回输入框。
     @State var syncedDraft = ""
     @StateObject var attachments: AttachmentComposerModel
+    /// Explicit send tap owns the entire lazy-upload preflight. Navigation and
+    /// background transitions cancel it before any chat submission.
+    @State var preparingAttachmentSend = false
+    @State var attachmentSendTask: Task<Void, Never>?
     @State var scroll = ChatScrollState()
     @State var cellStates: [String: ChatCellState] = [:]
     @State var scrollCommand = ChatScrollCommand()
@@ -414,6 +418,9 @@ struct NativeChatView: View {
             }
         }
         .onDisappear {
+            attachmentSendTask?.cancel(); attachmentSendTask = nil
+            attachments.cancelUploads()
+            preparingAttachmentSend = false
             retirePagination()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
@@ -505,6 +512,9 @@ struct NativeChatView: View {
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
             focusedUserTurnText = nil
+            attachmentSendTask?.cancel(); attachmentSendTask = nil
+            attachments.cancelUploads()
+            preparingAttachmentSend = false
             attachments.reset(sessionID: sessionID)
             cancelExport()
             foregroundResumeTask?.cancel(); foregroundResumeTask = nil
@@ -563,6 +573,12 @@ struct NativeChatView: View {
                     await restoreReadingPosition(position)
                 }
             } else if phase == .background {
+                // Background URLSession without a verified resumable gateway
+                // contract is unsafe: keep original bytes and require a new
+                // explicit send after foreground return.
+                attachmentSendTask?.cancel(); attachmentSendTask = nil
+                attachments.cancelUploads()
+                preparingAttachmentSend = false
                 cancelExport()
                 foregroundResumeTask?.cancel(); foregroundResumeTask = nil
                 restoreCancelled = true
