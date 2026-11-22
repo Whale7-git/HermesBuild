@@ -16,7 +16,7 @@ The release path has two workflows:
   candidate from the successful PR run. It verifies the candidate and publishes
   the same bytes without compiling again or rerunning the PR checks.
 
-All PR checks must pass on the exact head and tree that will be merged. The
+The mandatory candidate workflow (source/scope, Swift offline, and IPA compilation) must pass on the exact head and tree that will be merged. Simulator UI checks are independent and non-blocking for ordinary product releases. The
 resulting `main` tree must match the candidate manifest. The candidate Artifact
 contains the IPA, `build-info.json`, `validation.json`,
 `candidate-manifest.json`, and `SHA256SUMS.txt`. A Release publishes the first
@@ -49,3 +49,29 @@ The only current build and publication workflows are
 `hermesshell-single-build.yml` and `hermesshell-single-promote.yml`. Historical
 manifests may mention removed external build and publication entry points as
 evidence; they are not instructions and must not be reintroduced.
+
+## Issues, fast releases, and simulator discovery
+
+- Start every user-requested feature/fix by searching GitHub Issues, creating or
+  updating one when there is concrete scope, and linking its PR. Publishing the
+  Release (not merely merging a PR) completes delivery.
+- The trusted auto-merge gate requires only the successful exact-head candidate
+  workflow and its three jobs; it still checks release identity, source scope,
+  privileged paths, manual hold labels and immutable candidate provenance.
+  Privileged CI/workflow/script changes always use an explicit manual merge.
+- On promotion success, the workflow explicitly dispatches the main-branch
+  simulator suite. The simulator also runs on relevant PRs and on its schedule.
+  No simulator result can automatically invalidate a published immutable asset.
+- The trusted `.github/workflows/simulator-issue-triage.yml` watches completed
+  failed simulator runs, reads only small JSON test evidence, deduplicates
+  fingerprints and upserts GitHub Issues. Distinguish XCTest assertion failures
+  from infrastructure failures; a red run alone is not a confirmed App bug.
+- Simulator Issue evidence includes failed test identity, exact source commit
+  and Actions URL, with bounded and redacted assertion summaries. Re-run
+  evidence may update existing Issues, but no Issue auto-closes on a single
+  passing run; require fix PR and release evidence.
+- High-risk changes affecting message POST replay, session/account separation,
+  persistent state or STOP semantics still need targeted pre-release regression,
+  even though broad exploratory UI discovery is post-release.
+
+The existing Release and Bark links remain the delivery source of truth.
