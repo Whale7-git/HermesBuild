@@ -73,12 +73,14 @@ jobs:
               path === 'Resources/Info.plist' || path === 'ios-ci-project.yml' ||
               path.startsWith('Sources/HermesShell/') ||
               path.startsWith('UITests/') ||
-              (path.startsWith('tests/model/') && path.endsWith('.swift')) ||
               path.startsWith('Vendor/Textual/') ||
-              /^tests\/release-scope-build\d+\.json$/.test(path) ||
-              path.startsWith('tests/attachments/') ||
-              path.startsWith('tests/scroll/') ||
-              path.startsWith('tests/uitest/');
+              // Normal source regressions are product changes, not privileged CI edits.
+              (path.startsWith('tests/') && !path.startsWith('tests/releaseautomation/') &&
+               !path.startsWith('tests/sourcegate/') &&
+               !path.startsWith('tests/baseline-') &&
+               !path.includes('/.github/') &&
+               (path.endsWith('.swift') || path.endsWith('.sh') ||
+                /^tests\/release-scope-build\d+\.json$/.test(path)));
             if (!files.length || files.some(file => !allowed(file.filename)))
               return blocked('PR touches non-product or privileged files; manual merge required');
             if (!files.some(file => file.filename === 'release.json'))
