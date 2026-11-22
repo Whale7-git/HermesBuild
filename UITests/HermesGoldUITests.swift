@@ -6,6 +6,31 @@ final class HermesGoldUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Distinguish a real accepted POST from optimistic local bubbles before
+    /// diagnosing SSE rendering or manual-reading scroll. This endpoint is
+    /// loopback-only and never retries the original chat submission.
+    @MainActor private func acceptedRunPOSTCount() async throws -> Int {
+        let (data, response) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:8765/__control/log")!)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200,
+                       "Mock request ledger must be readable")
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let requests = try XCTUnwrap(root["requests"] as? [[String: Any]])
+        return requests.filter {
+            ($0["method"] as? String) == "POST" && ($0["path"] as? String) == "/v1/runs"
+        }.count
+    }
+
+    @MainActor private func waitForSingleAcceptedPOST() async throws {
+        for attempt in 0..<30 {
+            let count = try await acceptedRunPOSTCount()
+            if count == 1 { return }
+            XCTAssertLessThanOrEqual(count, 1, "Client replayed the accepted chat POST")
+            if attempt < 29 { try await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        XCTFail("No accepted /v1/runs POST after send tap; cannot attribute missing text or scroll jump to SSE")
+    }
+
     /// Gold 1: the real session row must open a functioning chat composer.
     func test01ConnectionAndSessionList() {
         let app = HermesUITestHarness.launchAndConnect()
@@ -51,6 +76,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 15), "Send control missing")
         XCTAssertTrue(send.isEnabled)
         send.tap()
+        try await waitForSingleAcceptedPOST()
         let text = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "第二段回复已送达")).firstMatch
         // The transcript virtualizes long histories; a completed reply can
@@ -144,10 +170,13 @@ final class HermesGoldUITests: XCTestCase {
         let send = app.buttons["发送消息"]
         XCTAssertTrue(send.waitForExistence(timeout: 12) && send.isEnabled)
         send.tap()
+        try await waitForSingleAcceptedPOST()
         let user = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "UI streamed reading anchor")).firstMatch
         XCTAssertTrue(user.waitForExistence(timeout: 12),
                       "Sent question must be present before the manual pan")
+        XCTAssertTrue(user.isHittable,
+                      "Question was already outside viewport before manual pan: frame=\(user.frame)")
         let transcript = app.scrollViews.firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 10))
         let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.38))
@@ -156,6 +185,16 @@ final class HermesGoldUITests: XCTestCase {
         // Let UIKit deceleration settle before measuring. A new SSE delta
         // arrives during the next interval, while the reader is detached.
         try await Task.sleep(nanoseconds: 650_000_000)
+        if !user.exists || !user.isHittable {
+            let postCount = try await acceptedRunPOSTCount()
+            print("HERMES_MANUAL_ANCHOR postPan frame=\(user.frame)"
+                  + " transcript=\(transcript.frame)"
+                  + " acceptedPOSTs=\(postCount)")
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "manual-pan-question-not-visible"
+            screenshot.lifetime = .keepAlways
+            XCTContext.runActivity(named: "Post-pan viewport evidence") { $0.add(screenshot) }
+        }
         XCTAssertTrue(user.exists && user.isHittable,
                       "Manual pan should retain the original question in view")
         let before = user.frame.midY
@@ -166,13 +205,9 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertLessThan(abs(after - before), 28,
                           "New reply text moved the visible question during manual reading")
         // Observing the transcript must never cause the client to replay POST.
-        let (data, _) = try await URLSession.shared.data(
-            from: URL(string: "http://127.0.0.1:8765/__control/log")!)
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let requests = try XCTUnwrap(root["requests"] as? [[String: Any]])
-        XCTAssertEqual(requests.filter {
-            ($0["method"] as? String) == "POST" && ($0["path"] as? String) == "/v1/runs"
-        }.count, 1, "Streaming gestures must not submit another chat request")
+        let finalPOSTCount = try await acceptedRunPOSTCount()
+        XCTAssertEqual(finalPOSTCount, 1,
+                       "Streaming gestures must not submit another chat request")
     }
 
 }
