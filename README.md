@@ -27,6 +27,8 @@ Swift 离线测试在 `.github/workflows/hermes-offline-diagnostics.yml` 中按 
 2. `.github/workflows/verified-release-automerge.yml` 只对版本递增且不涉及特权 CI 脚本的同仓产品 PR 自动合并，随后调度发布。它**不读取 Issue 验收矩阵或测试分片结果**。
 3. `.github/workflows/hermesshell-single-promote.yml` 复用同一 PR 的 IPA，不重新编译。保留精确源码树、候选身份、Artifact digest 和正式 Release 文件校验，以防发布错包。
 
+模拟器 UI 测试已改为**仅手动启动**：GitHub Actions → `Hermes iOS Simulator UI regression` → `Run workflow`，选择 `gold`（聊天/滚动）、`audit`（无障碍）或 `all`。每次 PR 更新、每天定时和 Release 成功后均不再自动调用；它不是发布条件。
+
 普通维护 PR 不递增版本、不会触发产品 Release。CI/工作流/特权脚本修改仍走独立维护 PR，避免未审查的自动化脚本直接获取 GitHub 写权限——这是权限边界，不是测试门禁。
 
 发布命名：`release-<version>-build<build>`，IPA 为 `Hermes-<version>-build<build>-unsigned.ipa`。已发布 tag 不覆盖。通知可选 `BARK_URL` Secret；真实 iPhone 使用仍需自行签名。
