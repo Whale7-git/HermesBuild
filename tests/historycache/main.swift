@@ -43,6 +43,23 @@ import Foundation
         let json = String(decoding: try Data(contentsOf: file), as: UTF8.self)
         precondition(!json.contains("old-running-stream") && !json.contains("activeStream") && !json.contains("lastEventID"))
         precondition(!file.lastPathComponent.contains(namespace), "names must stay opaque in directory listings")
+        // Build228 envelopes did not have omission metadata. Decoding them
+        // must keep the real stored result, not invent an unavailable marker.
+        var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+        legacy.removeValue(forKey: "omittedToolCount")
+        var legacyTools = legacy["tools"] as! [[String: Any]]
+        for index in legacyTools.indices {
+            legacyTools[index].removeValue(forKey: "omittedResultBytes")
+            legacyTools[index].removeValue(forKey: "omittedArgsBytes")
+        }
+        legacy["tools"] = legacyTools
+        try JSONSerialization.data(withJSONObject: legacy).write(to: file)
+        let upgraded = await store.load()
+        precondition(upgraded?.tools.first?.result == "result"
+                     && upgraded?.tools.first?.uncachedResultBytes == nil
+                     && upgraded?.uncachedToolCount == 0,
+                     "build228 cached result is backward compatible with omission metadata")
+        print("HISTORY_PASS build228 envelope upgrades without false cache loss")
         print("HISTORY_PASS display snapshot round trip excludes runtime stream state")
 
         // Write failures are classified without changing the cache contract:
