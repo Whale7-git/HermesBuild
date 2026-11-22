@@ -806,7 +806,7 @@
     "tests/model/PendingRecoveryTests.swift": "5461f2b64ad5a87863c3ce4823335474b6dc234b06c3ac0505153337e240a850",
     "tests/model/PhaseTransitionTests.swift": "57eed4ad9f2a1f290e8165d98c1fa3795f62b55b9a39e0bb676222514435aa17",
     "tests/model/SendModeTests.swift": "dc39e0daeed4d6d2be443d8c6d5b1692227b3e67911351f950b392a4a8bd9f6a",
-    "tests/model/SendSafetyTests.swift": "6dbc65fae70f37b4313cf8c1da1c56e276148b570a3deaedbe4cbc3577c4a21d",
+    "tests/model/SendSafetyTests.swift": "b727e91057b28cbe70d6a381d661f73e3dfae185a7573878be8ea24c84267c87",
     "tests/model/WindowTrimTests.swift": "49b6062fedc4dfd07bf2444781731a4c88ff3c9cb55de5e1a07e3911665b20bd",
     "tests/model/main.swift": "e8149d69d4c4062b3bc163ea1aed9f8c5bd5f180e6e6e07dde19621951c02995",
     "tests/modeleffort/main.swift": "5dd885c9abd9dfabc9a4bea90287e8ba68e6de07f3e7afa4cd67303c76eef740",
