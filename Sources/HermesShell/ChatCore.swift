@@ -377,11 +377,19 @@ struct MessageForkPlan: Equatable {
     }
 }
 
+/// A failed status lookup never proves that a server Run has ended.
+enum ActiveRunEvidence: Equatable, Sendable {
+    case active(String)
+    case absent
+    case unknown
+}
+
 struct ChatSnapshot: Sendable {
     let sessionID: String
     let messages: [ChatMessage]
     let tools: [ChatTool]
     let activeStreamID: String?
+    let activeRunEvidence: ActiveRunEvidence
     let olderOffset: Int
     let readOnly: Bool
     let messagesTruncated: Bool
@@ -394,7 +402,7 @@ struct ChatSnapshot: Sendable {
     let modelProvider: String?
     let usage: ChatUsage
 
-    init(data: Data) throws {
+    init(data: Data, runStatusUnknown: Bool = false) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ChatCoreError.malformed("expected object")
         }
@@ -425,6 +433,13 @@ struct ChatSnapshot: Sendable {
         modelProvider = (rawProvider?.isEmpty ?? true) ? nil : rawProvider
         let active = (session["active_stream_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         activeStreamID = active?.isEmpty == false ? active : nil
+        if runStatusUnknown {
+            activeRunEvidence = .unknown
+        } else if let activeStreamID {
+            activeRunEvidence = .active(activeStreamID)
+        } else {
+            activeRunEvidence = .absent
+        }
         usage = ChatUsage(fields: session)
         messages = rows.enumerated().compactMap { index, row in
             let role = row["role"] as? String ?? ""
@@ -513,7 +528,7 @@ struct ChatSnapshot: Sendable {
     /// an older assistant response plus a temporarily missing active run ID
     /// cannot complete this turn or unlock a queued POST.
     func confirmsRunFinished(afterRawIndex boundary: Int?) -> Bool {
-        guard activeStreamID == nil, let boundary else { return false }
+        guard activeRunEvidence == .absent, let boundary else { return false }
         let fresh = messages.filter { message in
             guard let sourceIndex = message.sourceIndex else { return false }
             return sourceIndex >= boundary
@@ -523,7 +538,7 @@ struct ChatSnapshot: Sendable {
     }
 
     var confirmsRunFinished: Bool {
-        guard activeStreamID == nil else { return false }
+        guard activeRunEvidence == .absent else { return false }
         guard let last = messages.last else { return false }
         if last.role == "assistant" { return true }
         // 末条是用户消息但已有用量：这一轮的收尾记录已落地。
@@ -552,12 +567,12 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// there was only one user submission after the accepted POST.
     func confirmsCompletion(in pages: [ChatSnapshot]) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
-              let historyEnd, newest.activeStreamID == nil, !newest.readOnly,
+              let historyEnd, newest.activeRunEvidence == .absent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
         for index in pages.indices {
             let page = pages[index]
             guard page.sessionID == newest.sessionID,
-                  page.activeStreamID == nil, !page.readOnly else { return false }
+                  page.activeRunEvidence == .absent, !page.readOnly else { return false }
             if index > 0 {
                 let later = pages[index - 1]
                 guard page.rawMessageEndIndex == later.olderOffset,
@@ -588,7 +603,7 @@ enum ChatFinalHistoryGate {
                            receipt: ActiveTurnRecovery?,
                            streamedAssistantPresent: Bool) -> Bool {
         guard snapshot.sessionID == sessionID, !snapshot.readOnly,
-              snapshot.activeStreamID == nil else { return false }
+              snapshot.activeRunEvidence == .absent else { return false }
         guard streamedAssistantPresent else { return true }
         return receipt?.confirmsCompletion(in: snapshot) == true
     }

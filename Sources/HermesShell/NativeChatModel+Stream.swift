@@ -73,7 +73,7 @@ extension NativeChatModel {
             // Do not erase the unresolved accepted-run status after history GET.
             if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
-            if let active = snap.activeStreamID { attach(streamID:active) }
+            if case .active(let active) = snap.activeRunEvidence { attach(streamID:active) }
         } catch {
             if generation == revision {
                 if handleAuthenticationFailure(error) { return }
@@ -297,6 +297,14 @@ extension NativeChatModel {
 
     func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
+        // A status GET failure is not authoritative absence. Preserve the
+        // streamed accumulator, SSE cursor, request cards and send lock.
+        if snap.activeRunEvidence == .unknown {
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "后台状态暂时无法确认；已保留当前回复与待处理请求，不会自动重发。"
+            return
+        }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset

@@ -311,11 +311,14 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // Run-status lookup is a recovery hint, not a prerequisite for reading
         // history. A transient /v1/runs failure must not prevent the user from
         // loading the canonical transcript that can prove completion.
-        let active = try await activeRunForHistory(sessionID: sessionID)
+        let evidence = try await activeRunForHistory(sessionID: sessionID)
+        let active: String?
+        if case .active(let runID) = evidence { active = runID } else { active = nil }
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
-                                          activeRunID: active, requestedSessionID: sessionID)
+                                          activeRunID: active, requestedSessionID: sessionID,
+                                          runStatusUnknown: evidence == .unknown)
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
@@ -413,11 +416,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// Return no active ID so completed history can reconcile, while the durable
     /// run-store entry remains available for a later bounded probe. Authentication
     /// and cancellation still abort.
-    private func activeRunForHistory(sessionID: String) async throws -> String? {
-        guard let runID = runStore.runID(for: sessionID) else { return nil }
+    private func activeRunForHistory(sessionID: String) async throws -> ActiveRunEvidence {
+        guard let runID = runStore.runID(for: sessionID) else { return .absent }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
-            return nil
+            return .unknown
         }
         let data: Data
         do {
@@ -427,34 +430,34 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 throw error
             }
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         } catch let error as CancellationError {
             throw error
         } catch {
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
               root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
         guard runStore.runID(for: sessionID) == runID else {
-            return nil
+            return .unknown
         }
         switch status {
         case "queued", "running", "waiting_for_approval", "stopping":
             clearFailedRunProbes(runID: runID)
-            return runID
+            return .active(runID)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
             runStore.finish(runID: runID)
-            return nil
+            return .absent
         default:
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
     }
 
