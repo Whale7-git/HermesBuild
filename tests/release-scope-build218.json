@@ -564,7 +564,7 @@
     ".github/workflows/hermesshell-single-build.yml": "288788d8e0d014c99d847d869c8e5278c16500fe252eb0db7a45c24610022773",
     ".github/workflows/hermesshell-single-promote.yml": "8846cc38f71376eb7da571465b1fd0c22eb645e1edbd25c3652f07cb98e3dda7",
     ".github/workflows/simulator-probe.yml": "624ce2858ce19bc50061ae8813cdbaaf960ca965754c2ca7bb48675238d2376b",
-    ".github/workflows/verified-release-automerge.yml": "42e05e17adcce310b96bdc37c983badb2d311cf19f751f71495d9b4c23cc9290",
+    ".github/workflows/verified-release-automerge.yml": "480d9fab236654c975e2737e616d6ffa9ba37e13e83cf149648edd56956df735",
     ".gitignore": "476ac675e84496b4e18f6a3f859ac9f9a75df3666dd54a8f759e5db057cdab52",
     ".gitleaks.toml": "5307f38355ab307558ca86d20cfdaa6746b4cea5ce2c4d60d2d49a792504558e",
     "AGENTS.md": "93e16449acc34988815a5f501dae6c284fd87d1c13eb19d240c9095fa5ba6936",
