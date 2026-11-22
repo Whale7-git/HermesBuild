@@ -3,6 +3,11 @@ name: Hermes iOS Simulator UI regression
 # Real UI regression for iOS-affecting pull requests, plus manual/scheduled probes.
 # Separate from candidate IPA building; this workflow never publishes an IPA.
 on:
+  # Worker C PR targets the integration branch, not main. Its pushes must
+  # independently run the same real chat/experience suites on their exact SHA.
+  # This workflow never signs/releases an IPA or calls Bark.
+  push:
+    branches: [fix/worker-c-ui-batch-20261122]
   pull_request:
     branches: [main]
     paths:
