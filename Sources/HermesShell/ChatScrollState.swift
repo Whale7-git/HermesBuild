@@ -173,8 +173,17 @@ enum ChatDrawerInteraction {
         return validOrigin && validDirection
     }
 
-    static func finishOpen(width: Double, wasOpen: Bool, predictedTranslation: Double) -> Bool {
+    static func finishOpen(width: Double, wasOpen: Bool, predictedTranslation: Double,
+                           actualTranslation: Double? = nil) -> Bool {
         guard width.isFinite, width > 0, predictedTranslation.isFinite else { return wasOpen }
+        // UIKit may forecast a long fling from a very short movement. Do not
+        // open or close a full-screen drawer based on that forecast alone.
+        // A partial swipe must spring back and must not cover the transcript.
+        if let actualTranslation {
+            guard actualTranslation.isFinite else { return wasOpen }
+            let minimumTravel = max(72, width * 0.22)
+            if abs(actualTranslation) < minimumTravel { return wasOpen }
+        }
         let destination = reveal(width: width, open: wasOpen, translation: predictedTranslation)
         return wasOpen ? destination >= width * 0.56 : destination > width * 0.44
     }
@@ -243,11 +252,13 @@ struct RootDrawerGestureOwnership: Equatable {
     /// A cancelled, vertical, or text-selection-owned gesture has no destination.
     /// The caller changes the drawer only when a claimed gesture has ended.
     mutating func ended(open: Bool, width: Double,
-                        predictedTranslation: Double, textSelecting: Bool = false) -> Bool? {
+                        predictedTranslation: Double, actualTranslation: Double? = nil,
+                        textSelecting: Bool = false) -> Bool? {
         defer { claimed = false }
         guard claimed, !textSelecting else { return nil }
         return ChatDrawerInteraction.finishOpen(
-            width: width, wasOpen: open, predictedTranslation: predictedTranslation)
+            width: width, wasOpen: open, predictedTranslation: predictedTranslation,
+            actualTranslation: actualTranslation)
     }
 
     mutating func cancelled() { claimed = false }

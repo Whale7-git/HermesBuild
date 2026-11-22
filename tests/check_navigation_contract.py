@@ -410,6 +410,16 @@ def violations(contents: dict[str, str]) -> list[str]:
         failures.append("Only routine cached verification may silence read-only notice")
     if "guard !browserOpen, sidebarGesture.claimed" in root:
         failures.append("RootView: onEnded still reads resettable GestureState.claimed")
+    # build220: a short cancelled full-card right drag must never make the
+    # mounted UIKit transcript's isScrollEnabled depend on @GestureState.
+    # Pushed browser-chat navigation may still temporarily suppress scrolling.
+    if '(!browserOpen && sidebarGesture.claimed)' in root:
+        failures.append("RootView: drawer gesture must not disable chat vertical scrolling")
+    if "suppressVerticalScroll: browserSessionOpen" not in root or (
+        "&& (sessionBackDrag.claimed || settlingPage == .chat)" not in root):
+        failures.append("RootView: browser page return scroll gate missing")
+    if "actualTranslation: Double(value.translation.width)" not in root:
+        failures.append("RootView: sidebar release must supply real finger travel")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
         failures.append("Chrome: external browser action was reintroduced")
     if "self.webURL =" in chat or "let webURL: URL" in chat:
