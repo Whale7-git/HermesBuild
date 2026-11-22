@@ -114,6 +114,17 @@ class GatewayContractTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(later["data"][-1]["role"], "assistant")
 
+    def test_stream_interval_fault_injection_is_bounded_and_resettable(self):
+        code, result = self.decoded("POST", "/__control/stream-interval",
+                                    {"delay_ms": 1200})
+        self.assertEqual((code, result["delay_ms"]), (200, 1200))
+        code, _ = self.decoded("POST", "/__control/stream-interval",
+                               {"delay_ms": 2501})
+        self.assertEqual(code, 400)
+        code, reset = self.decoded("POST", "/__control/reset", {})
+        self.assertEqual((code, reset["reset"]), (200, True))
+        self.assertEqual(self.server.mock_state.stream_interval_ms, 30)
+
     def test_force_429_then_normal_response(self):
         code, _ = self.decoded("POST", "/__control/stub", {
             "method": "GET", "path": "/api/sessions",

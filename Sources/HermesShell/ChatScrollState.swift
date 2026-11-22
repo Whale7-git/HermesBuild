@@ -66,6 +66,34 @@ struct ChatScrollState: Equatable {
         return true
     }
 
+    /// A vertical finger pan always owns the reading position, including a
+    /// short swipe within the ordinary 40/80pt follow hysteresis. Do not let
+    /// streamed row growth pull the viewport back as the finger is released.
+    /// A later deliberate upward swipe toward the latest reply may reattach.
+    @discardableResult
+    mutating func beginManualReading() -> Bool {
+        let previous = self
+        following = false
+        return self != previous
+    }
+
+    /// Only a real gesture toward the latest content may reattach after the
+    /// user takes reading ownership. Geometry and keyboard notifications must
+    /// continue to use update/geometryReportedDistance instead.
+    @discardableResult
+    mutating func updateDuringManualDrag(distanceFromBottom distance: Double,
+                                         movingTowardLatest: Bool) -> Bool {
+        guard distance.isFinite else { return false }
+        let previous = self
+        if movingTowardLatest && distance < Self.resumeThreshold {
+            following = true
+            hasUnreadContent = false
+        } else if distance > Self.detachThreshold {
+            following = false
+        }
+        return self != previous
+    }
+
     mutating func jumpToLatest() {
         following = true
         hasUnreadContent = false
@@ -479,6 +507,11 @@ struct ChatTurnReadingState {
     mutating func target(contentBottom: Double, rowTop: Double?,
                          viewport: Double, allowGrowth: Bool = true) -> Double? {
         guard rowID != nil else { return nil }
+        // Keep the focused turn's temporary bottom reserve while the user
+        // reads, but NEVER apply a programmatic target once the gesture owns
+        // the offset. Dropping the reserve on finger release shrinks UIKit
+        // contentSize and clamps contentOffset, causing a visible jump.
+        if phase == .manualReading { return nil }
         guard contentBottom.isFinite, contentBottom >= 0,
               viewport.isFinite, viewport > 0 else {
             reset()
@@ -533,7 +566,9 @@ struct ChatTurnReadingState {
     }
 
     mutating func userBeganReading() {
-        rowID = nil
+        // Retain rowID only as a geometric reserve anchor. Automatic
+        // following is disabled by the manualReading target guard above.
+        // The reserve retires on an explicit jump/reset or a new turn.
         phase = .manualReading
     }
 

@@ -496,6 +496,10 @@ extension ChatScrollController {
         navigationTarget = nil
         navigationDetached = false
         turnReading.userBeganReading()
+        // A short pan must not hand the new streamed row back to its
+        // bottom-following owner immediately after finger release.
+        policy.beginManualReading()
+        publishDistance()
         current?.onUserScroll()
         hasInteracted = true
         markInteractionDirty()
@@ -516,7 +520,21 @@ extension ChatScrollController {
                decelerating: scrollView.isDecelerating,
                horizontalBackPan: horizontalBackPan,
                animatedJump: animatedJump, resizingViewport: resizingViewport) {
-            policy.update(distanceFromBottom: Double(distance))
+            // Scroll pan translation, not a programmatic offset correction,
+            // supplies the intent to return to latest. A downward finger
+            // swipe (reading earlier) remains detached even near the bottom.
+            let fingerTravel = scrollView.panGestureRecognizer.translation(in: scrollView).y
+            let hadReadingOwnership = !policy.following
+            policy.updateDuringManualDrag(
+                distanceFromBottom: Double(distance),
+                movingTowardLatest: fingerTravel < -12
+            )
+            if hadReadingOwnership && policy.following {
+                // The user intentionally returned to the newest reply.
+                // Retire the temporary question-top reserve, otherwise it
+                // leaves blank scrollable space after the answer finishes.
+                turnReading.reset()
+            }
         }
         publishDistance()
         checkPagination()

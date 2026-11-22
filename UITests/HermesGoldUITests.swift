@@ -121,4 +121,58 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertGreaterThan(percent(), before,
                              "Four reader swipes did not increase reading progress")
     }
+    /// Gold 4: a short manual downward pan during live SSE output must leave
+    /// the current reading anchor alone when additional reply text arrives.
+    @MainActor func test04StreamingManualReadingKeepsAnchor() async throws {
+        func control(_ path: String, body: String = "{}") async throws {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:8765" + path)!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(body.utf8)
+            let (_, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        }
+        try await control("/__control/reset")
+        let app = HermesUITestHarness.launchAndConnect()
+        HermesUITestHarness.openSession(app)
+        try await control("/__control/stream-interval", body: #"{"delay_ms":1200}"#)
+        let editor = app.textViews.matching(
+            NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        editor.tap()
+        editor.typeText("UI streamed reading anchor")
+        let send = app.buttons["发送消息"]
+        XCTAssertTrue(send.waitForExistence(timeout: 12) && send.isEnabled)
+        send.tap()
+        let user = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS[cd] %@", "UI streamed reading anchor")).firstMatch
+        XCTAssertTrue(user.waitForExistence(timeout: 12),
+                      "Sent question must be present before the manual pan")
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10))
+        let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.38))
+        let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.52))
+        start.press(forDuration: 0.25, thenDragTo: end)
+        // Let UIKit deceleration settle before measuring. A new SSE delta
+        // arrives during the next interval, while the reader is detached.
+        try await Task.sleep(nanoseconds: 650_000_000)
+        XCTAssertTrue(user.exists && user.isHittable,
+                      "Manual pan should retain the original question in view")
+        let before = user.frame.midY
+        try await Task.sleep(nanoseconds: 2_300_000_000)
+        XCTAssertTrue(user.exists && user.isHittable,
+                      "Streaming layout update should not evict the reading anchor")
+        let after = user.frame.midY
+        XCTAssertLessThan(abs(after - before), 28,
+                          "New reply text moved the visible question during manual reading")
+        // Observing the transcript must never cause the client to replay POST.
+        let (data, _) = try await URLSession.shared.data(
+            from: URL(string: "http://127.0.0.1:8765/__control/log")!)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let requests = try XCTUnwrap(root["requests"] as? [[String: Any]])
+        XCTAssertEqual(requests.filter {
+            ($0["method"] as? String) == "POST" && ($0["path"] as? String) == "/v1/runs"
+        }.count, 1, "Streaming gestures must not submit another chat request")
+    }
+
 }
