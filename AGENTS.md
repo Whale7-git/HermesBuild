@@ -6,13 +6,13 @@ and server deployment outside this repository.
 
 ## Source of truth
 
-- Work from the GitHub `main` branch.
+- Start a new concentrated product repair batch from the current GitHub `main` HEAD. The project manager owns one product integration branch; module workers branch from that integration HEAD and open PRs targeting it. Only the manager creates the final release PR targeting `main`.
 - Create one short-lived branch per change. Use `feat/`, `fix/`, `chore/`, or
   `docs/` prefixes.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
-- Personal project: **ordinary and high-risk iOS product fixes both require no human review or approval**. A version-bumped product PR auto-merges only after all three exact-HEAD source/scope, Swift offline and IPA checks pass. High-risk changes additionally require targeted deterministic safety regression and code-level agent self-review. Simulator UI regression remains independent; a real-phone test is not a routine prerequisite. Use `hold` or `no-auto-release` only for a concrete unresolved correctness/security failure or an explicit user pause; risk classification or Draft alone is not a hold. CI/workflow/privileged scripts require a separate checked PR and an agent-initiated explicit merge (not a product auto-release); no human reviewer is required.
+- Personal project: **ordinary and high-risk iOS product fixes both require no human review or approval**. A version-bumped product PR auto-merges only after the batch acceptance matrix is verified against the full open-Issue set, all three exact-HEAD source/scope, Swift offline and IPA checks pass. High-risk changes additionally require targeted deterministic safety regression and code-level agent self-review. Simulator UI regression remains independent; a real-phone test is not a routine prerequisite. Use `hold` or `no-auto-release` only for a concrete unresolved correctness/security failure or an explicit user pause; risk classification or Draft alone is not a hold. CI/workflow/privileged scripts require a separate checked PR and an agent-initiated explicit merge (not a product auto-release); no human reviewer is required.
 - Rebase or merge the latest `main` before requesting merge. Resolve conflicts
   on the feature branch.
 - Do not wait for another GitHub identity, human review or manual approval for any iOS product fix, including Run/Session/POST/queue/STOP changes. Three exact-head CI checks are the routine gate; targeted deterministic regression and code self-review are mandatory for high-risk fixes.
@@ -75,14 +75,15 @@ separate.
 - Only mark a fix delivered after the exact IPA appears in a successful Release.
   Never claim a real-phone acceptance based only on XCTest or an IPA compilation.
 
-## Autonomous hourly Issue-to-Release loop
+## Autonomous full-Issue batch-to-Release loop
 
-1. Read the live `main` HEAD, open Issues/PRs, current Release and Actions; select one actionable Issue and check that another agent does not already own its fix.
-2. If a candidate fix exists, verify the actual code, tests, PR and (if claimed delivered) published Release. Update the Issue; close only after full acceptance and Release evidence.
-3. Otherwise, investigate and **write the fix and regression test**, then open/update a short-lived, linked PR. A read-only audit or broad risk label cannot substitute for implementation.
-4. For both ordinary and high-risk product fixes, pass the exact-head three-job CI. For high-risk fixes, complete focused safety regression and self-review first. **No human-review branch exists.**
-5. On success, let the trusted workflow auto-merge the eligible product PR and promote its immutable candidate IPA. On failure or a concrete unverified safety invariant, keep the PR/Issue open, inspect evidence and repair; never bypass the gate.
-6. Verify the Release and issue-sync, record evidence on the Issue, close only fully solved Issues and continue with the remaining queue next cycle. Maintain a single product release in flight per agent.
+1. The single project manager reads the live `main` HEAD, **every** open Issue and PR, Release, Actions and simulator results. Build a complete acceptance matrix for the batch; delegate disjoint modules to workers and map aggregate audit Issues to their children. Do not select only one Issue per cycle.
+2. The project manager owns **one** product integration branch. Workers create independent branches and PRs targeting that integration branch, not `main`; they may not bump versions, create product Release PRs, or publish IPA/Bark. Review worker changes, preserve safety invariants, and integrate compatible fixes into the same batch.
+3. Each Issue must have a concrete conclusion with code and test evidence: fixed and verified, already fixed in an earlier Release with proof, test false positive with proof, or externally blocked with a specific contract/failure and safe client fallback. Partial fixes and unexamined Issues do not satisfy batch acceptance.
+4. A batch can span multiple scheduled runs. **Never release a subset merely because its three CI jobs passed.** Continue the same integration branch until all executable fixes have been implemented and all remaining external blockers are documented.
+5. Only the project manager updates the release identity and the machine-readable batch acceptance matrix, opens the one versioned product PR against `main`, and runs exact-head source/scope, offline Swift, IPA and applicable simulator checks. High-risk fixes additionally require focused safety regression and self-review; no human review is needed. A trusted release gate must reject absent, stale or incomplete batch acceptance evidence.
+6. Following a verified Release and identical IPA promotion, reconcile each Issue against its full acceptance criteria; close only proven fixes. Aggregate audit Issues close only after all children are resolved. Do not split the remaining queue into default partial releases.
+7. Changes to `AGENTS.md`, CI/workflow or privileged scripts require a separate maintenance PR based on `main`, tested and explicitly merged by the project manager; they are not product release changes.
 
 ## Pull requests
 

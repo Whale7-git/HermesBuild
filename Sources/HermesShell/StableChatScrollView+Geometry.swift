@@ -155,7 +155,12 @@ extension ChatScrollController {
     /// 不再为每次提交构造一份 2000 项的 [String: Frame] 字典。
     private func resolvedOffset(anchors: [ChatViewportLayout.Anchor], previous: Double,
                                 following: Bool) -> Double {
-        let maximum = max(0, (frames.last?.bottom ?? 0) - Double(scrollView.bounds.height))
+        // A focused turn can reserve space below the last measured row to keep
+        // the user's question stable. Do not clamp a manual reading offset to
+        // row-only height after streamed reply growth or the offset snaps.
+        let maximum = ChatViewportLayout.maximumOffset(
+            contentHeight: Double(scrollView.contentSize.height),
+            viewport: Double(scrollView.bounds.height))
         if following { return maximum }
         for anchor in anchors {
             if let frame = frame(for: anchor.id) {

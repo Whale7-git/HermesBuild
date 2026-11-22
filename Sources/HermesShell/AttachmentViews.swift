@@ -126,11 +126,26 @@ private struct AttachmentPickerFile: Transferable {
     }
 
     var isEditing: Bool { editingID != nil }
-    var canSend: Bool { !isImporting && !isEditing && batch.canSend }
-    func payload(for sessionID: String) throws -> [UploadedAttachment] {
+    /// Queued local files are sendable: preflight uploads them BEFORE any chat
+    /// POST. Do not require a server reference just to enable the send button.
+    var canSend: Bool { !isImporting && !isEditing }
+    func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
         guard !isImporting, !isEditing else { throw AttachmentError.invalidMetadata }
-        return try batch.payload(for:sessionID)
+        do {
+            let payloads = try await coordinator.prepareForSend(sessionID: sessionID)
+            try Task.checkCancellation()
+            guard !isImporting, !isEditing, batch.sessionID == sessionID else {
+                throw AttachmentError.invalidMetadata
+            }
+            errorMessage = nil
+            return payloads
+        } catch {
+            if error is CancellationError { coordinator.cancelUploads() }
+            else { errorMessage = "附件尚未提交：\(error.localizedDescription)。草稿和已完成的附件引用已保留。" }
+            throw error
+        }
     }
+    func cancelUploads() { coordinator.cancelUploads() }
 
     private func persist(_ batch: AttachmentBatch) {
         let value = batch.persistedValue
@@ -167,9 +182,15 @@ private struct AttachmentPickerFile: Transferable {
             try coordinator.restorePersisted(value)
             batch = coordinator.batch
             persist(batch)
-            for item in batch.items where item.canResumeUpload {
-                retry(item.id)
+            if batch.restoreSizeMismatches > 0 {
+                errorMessage = "已有附件的服务器大小与原始文件不同，已保留已上传引用；请核对附件内容。"
+            } else if batch.items.contains(where: { if case .ready = $0.state { return true }; return false }) {
+                // No confirmed DELETE contract exists on the deployed gateway.
+                // Never silently imply that an unsubmitted remote file was deleted.
+                errorMessage = "部分附件已上传但未确认发送；当前网关无法验证远端删除，丢弃草稿可能保留服务器副本。"
             }
+            // No implicit network request on foreground/cold restore. Upload
+            // resumes only from the user's next explicit send action.
         } catch {
             errorMessage = "草稿附件无法恢复：\(error.localizedDescription)"
             onPersistenceResult(.failed(.corruptFile))
@@ -318,7 +339,18 @@ private struct AttachmentPickerFile: Transferable {
     func retry(_ id: UUID) {
         do { try coordinator.retry(id) } catch { errorMessage = error.localizedDescription }
     }
-    func remove(_ id: UUID) { coordinator.remove(id) }
+    func remove(_ id: UUID) {
+        if let draft = batch.items.first(where: { $0.id == id }) {
+            switch draft.state {
+            case .ready:
+                errorMessage = "已移除本地附件，但服务器删除接口尚未验证，远端文件可能保留。"
+            case .uploading:
+                errorMessage = "正在取消上传；服务器若已接收文件，当前无法验证远端删除。"
+            case .queued, .failed: break
+            }
+        }
+        coordinator.remove(id)
+    }
 
     func beginEditing(_ id: UUID) async -> AttachmentEditSelection? {
         guard !isEditing, !isImporting,
@@ -610,8 +642,8 @@ private struct AttachmentChip: View {
     private var status: some View {
         switch draft.state {
         case .queued:
-            // 编辑保存后字节已替换、正在重新上传：与首次等待区分，避免看起来没生效。
-            Text(draft.reuploading ? "正在重新上传编辑版…" : "等待上传").font(.caption)
+            // Unsent local bytes never start a gateway request until Send.
+            Text(draft.reuploading ? "编辑版将在发送时上传" : "发送时上传").font(.caption)
         case .uploading(let fraction):
             // 有确定比例就画进度条 + 百分比；`fraction` 为 0 且还没收到首个
             // 回调时仍显示不确定态，避免「0%」看起来像卡住。
@@ -628,17 +660,17 @@ private struct AttachmentChip: View {
             }
             .accessibilityLabel("正在上传 \(draft.name)，已完成 \(Int(fraction * 100))%")
         case .ready:
-            Label("已上传", systemImage: "checkmark.circle")
+            Label("已上传 · 待发送", systemImage: "checkmark.circle")
                 .font(.caption).foregroundStyle(.secondary)
         case .failed(let message):
             // 编辑版重新上传失败要和首次上传失败区分：否则用户不知道重试的是编辑版。
             Text(draft.reuploading ? "编辑版上传失败：\(message)" : message)
                 .font(.caption).foregroundStyle(.red).lineLimit(3)
                 .frame(maxWidth: 200, alignment: .leading)
-            Button("重试", action: retry)
+            Button("下次发送时重试", action: retry)
                 .frame(minHeight: 44)
                 .disabled(isLocked)
-                .accessibilityLabel("重试上传 \(draft.name)")
+                .accessibilityLabel("下次发送时重试上传 \(draft.name)")
         }
     }
 }

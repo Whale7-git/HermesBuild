@@ -285,4 +285,22 @@ Layout.applyHeightDeltas(to: &finalOnly, sortedChanges: [(1_999, 43)])
 expect(finalOnly[1_998] == beforeFinal && finalOnly.last?.height == 123,
        "last-row streaming growth leaves all earlier geometry unchanged")
 
+// Gold 4 (#85): manual reading may be inside a temporary question-top
+// reserve that extends beyond the last measured transcript row. The UIKit
+// scroll content is 1000pt even though the rows have not filled 700pt.
+// Clamping to the 400pt row-only bottom would force the offset to zero.
+let briefStream = Layout.frames(for: [
+    .init(id: "user", height: 120), .init(id: "reply", height: 280)
+])
+expect(briefStream.last?.bottom == 400, "fixture has a short initial stream")
+let readingReserveMaximum = Layout.maximumOffset(contentHeight: 1_000, viewport: 700)
+expect(readingReserveMaximum == 300,
+       "focused turn reserve preserves a 300pt manual offset above empty tail")
+expect(Layout.maximumOffset(contentHeight: 1_000, viewport: 700) == readingReserveMaximum,
+       "a streamed height update below the reserve does not evict manual reading")
+expect(Layout.maximumOffset(contentHeight: 0, viewport: 700) == 0,
+       "no reserve cannot create an imaginary scroll range")
+expect(Layout.maximumOffset(contentHeight: .nan, viewport: 700) == 0,
+       "invalid geometry cannot move a reading anchor")
+
 print("SCROLL_GEOMETRY_PASS \(checks) assertions (pure geometry; device UX untested)")
