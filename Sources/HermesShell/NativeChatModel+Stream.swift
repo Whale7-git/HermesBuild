@@ -645,7 +645,7 @@ extension NativeChatModel {
                         guard generation == self.revision, !Task.isCancelled, !self.suspended,
                               self.activeTurnRecovery == receipt else { return }
                         guard finalHistory.sessionID == self.sessionID,
-                              finalHistory.activeStreamID == nil, !finalHistory.readOnly else {
+                              finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                             self.uncertain = true
                             self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
                             return
