@@ -171,6 +171,22 @@ final class GatewayRunStore {
         persistenceFailed = !persist(values)
     }
 
+    /// An explicit successful server deletion removes the active record and
+    /// any prior unresolved tombstone for exactly that conversation.
+    func removeSession(_ sessionID: String) {
+        guard isValid else { noteRetired(); return }
+        var remaining = current()
+        remaining.removeValue(forKey: sessionID)
+        values = remaining
+        let activeSaved = persist(remaining)
+        var pending = defaults?.dictionary(forKey: unresolvedKey) as? [String: String] ?? unresolved
+        pending.removeValue(forKey: sessionID)
+        if let defaults { defaults.set(pending, forKey: unresolvedKey) }
+        unresolved = pending
+        let tombstoneSaved = (defaults?.dictionary(forKey: unresolvedKey) as? [String: String] ?? [:]) == pending
+        persistenceFailed = !(activeSaved && tombstoneSaved)
+    }
+
     /// 只写一行状态，不带任何会话/run 标识。
     private static func diagnose(_ message: String) {
         _ = try? FileHandle.standardError.write(contentsOf: Data(("[HermesNative][gateway-run] " + message + "\n").utf8))

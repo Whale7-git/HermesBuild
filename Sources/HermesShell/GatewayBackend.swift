@@ -281,9 +281,9 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     func deleteSession(sessionID: String) async throws {
         _ = try await perform(try requests.deleteSession(sessionID: sessionID))
         if let runID = runStore.runID(for: sessionID) {
-            runStore.finish(runID: runID)
             clearFailedRunProbes(runID: runID)
         }
+        runStore.removeSession(sessionID)
     }
 
     /// 网关 fork：`create_session` + `get_messages(source)` + `replace_messages(fork, …)`，

@@ -292,6 +292,23 @@ actor ConcurrencyProbe {
               && missingStore.unresolvedRunID(for: "s") == nil,
               "exact terminal status can safely retire the unresolved tombstone")
 
+        // Explicit deletion must clear a persisted unresolved tombstone too.
+        let deletionScope = "instance|build224-delete"
+        let deleting = backend(scope: deletionScope)
+        _ = try await deleting.startNativeTurn(sessionID: "s", text: "fixture")
+        transport.statusCode = 404
+        for _ in 0..<3 {
+            _ = try await deleting.history(sessionID: "s", before: nil)
+        }
+        let deletionStore = GatewayRunStore(scope: deletionScope, defaults: defaults)
+        check(deletionStore.unresolvedRunID(for: "s") == run,
+              "delete test starts with a durable unresolved record")
+        transport.statusCode = 200
+        try await deleting.deleteSession(sessionID: "s")
+        check(deletionStore.unresolvedRunID(for: "s") == nil
+              && deletionStore.runID(for: "s") == nil,
+              "server-confirmed session delete purges its unresolved tombstone")
+
         let unauthScope = "instance|build166-auth"
         let unauth = backend(scope: unauthScope)
         _ = try await unauth.startNativeTurn(sessionID: "s", text: "fixture")
