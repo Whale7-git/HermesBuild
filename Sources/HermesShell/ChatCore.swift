@@ -202,6 +202,11 @@ struct ChatTool: Identifiable, Equatable, Sendable {
     var done: Bool
     var isError: Bool
     var afterMessageID: String? = nil
+    /// Set ONLY for a display-only disk snapshot whose result was too large to
+    /// cache. A real empty Gateway result keeps this nil. No fetch API is
+    /// inferred from the existence of this marker.
+    var uncachedResultBytes: Int? = nil
+    var uncachedArgsBytes: Int? = nil
 }
 
 struct ChatStreamingTailSnapshot: Equatable {

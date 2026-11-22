@@ -135,8 +135,60 @@ import Foundation
         let byteBounded = await byteStore.load()
         let byteStats = await ChatHistoryStore.statistics(rootDirectory: byteRoot)
         precondition(byteBounded?.messages.count == 2 && byteBounded?.messages.first?.sourceIndex == 18)
-        precondition(byteBounded?.tools.isEmpty == true && byteStats.bytes <= Int64(bytePolicy.maxEntryBytes))
-        print("HISTORY_PASS pre-encode byte budget bounds long-message and tool allocations")
+        precondition(byteBounded?.tools.map(\.id) == ["huge-tool"]
+                     && byteBounded?.tools.first?.result.isEmpty == true
+                     && byteBounded?.tools.first?.uncachedResultBytes == 20_000
+                     && byteStats.bytes <= Int64(bytePolicy.maxEntryBytes),
+                     "oversized result must retain tool identity and explicit missing bytes")
+        print("HISTORY_PASS pre-encode byte budget retains tool identity without the giant payload")
+
+        // A-07: multiple results over 4 MiB must not silently vanish on restart.
+        let bigRoot = try root()
+        defer { try? manager.removeItem(at: bigRoot) }
+        let bigStore = ChatHistoryStore(instanceID: namespace, sessionID: "large-tools",
+            accountScope: "large-account", rootDirectory: bigRoot)
+        var huge = ChatHistoryRecord(snapshot: try snapshot(session: "large-tools"))
+        huge.tools = (0..<3).map { index in
+            ChatTool(id: "big-\(index)", name: "read_file", args: "path-\(index)",
+                     result: String(repeating: "z", count: 5 * 1024 * 1024),
+                     done: true, isError: false, afterMessageID: huge.messages[0].id)
+        }
+        bigStore.schedule(huge)
+        await bigStore.flush()
+        let bigCold = await bigStore.load()
+        let bigStats = await ChatHistoryStore.statistics(rootDirectory: bigRoot)
+        precondition(bigCold?.tools.map(\.id) == ["big-0", "big-1", "big-2"]
+                     && bigCold?.tools.allSatisfy({ $0.result.isEmpty
+                         && $0.uncachedResultBytes == 5 * 1024 * 1024 }) == true
+                     && bigCold?.uncachedToolCount == 0
+                     && bigStats.bytes <= 4 * 1024 * 1024,
+                     "three 5MiB tool results must restore identities and missing-payload state under budget")
+        let otherAccount = ChatHistoryStore(instanceID: namespace, sessionID: "large-tools",
+            accountScope: "other-account", rootDirectory: bigRoot)
+        let isolatedLarge = await otherAccount.load()
+        precondition(isolatedLarge == nil,
+                     "omission metadata must not escape instance/session/account scope")
+        await bigStore.remove()
+        let missingAfterRemoval = await bigStore.load()
+        precondition(missingAfterRemoval == nil,
+                     "cleared cache cannot retain references to missing results")
+        print("HISTORY_PASS >4MiB results, cold boot, isolation and deletion")
+
+        // If even an identity placeholder cannot fit, preserve a scoped count
+        // rather than making offline history appear authoritative and complete.
+        var markerPolicy = ChatHistoryStore.Policy()
+        markerPolicy.maxEntryBytes = 1_500
+        let marker = ChatHistoryStore(instanceID: namespace, sessionID: "marker",
+            accountScope: "marker", rootDirectory: bigRoot, policy: markerPolicy)
+        var markerRecord = ChatHistoryRecord(snapshot: try snapshot(session: "marker"))
+        markerRecord.tools = [ChatTool(id: "not-cacheable", name: "search", args: "",
+            result: String(repeating: "k", count: 5000), done: true, isError: false)]
+        marker.schedule(markerRecord)
+        await marker.flush()
+        let markerCold = await marker.load()
+        precondition(markerCold?.tools.isEmpty == true && markerCold?.uncachedToolCount == 1,
+                     "identity overflow must remain observable as a missing count")
+        print("HISTORY_PASS identity-overflow is disclosed instead of silently discarded")
 
         let corruptRoot = try root()
         defer { try? manager.removeItem(at: corruptRoot) }

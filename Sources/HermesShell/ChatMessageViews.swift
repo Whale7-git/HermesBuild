@@ -822,6 +822,8 @@ struct ChatToolDetail: View {
     let copied: (String) -> Void
     @Binding var expanded: Bool
     @State private var showFullResult = false
+    @State private var resultPage = 0
+    private let resultPageSize = 16_000
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -838,6 +840,11 @@ struct ChatToolDetail: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Spacer(minLength: 6)
+                    if tool.uncachedResultBytes != nil || tool.uncachedArgsBytes != nil {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("本地未完整缓存")
+                    }
                     if allowsRunning && !tool.done && !tool.isError {
                         ProgressView().controlSize(.mini)
                     }
@@ -854,6 +861,11 @@ struct ChatToolDetail: View {
             .accessibilityLabel("\(tool.name)，\(tool.isError ? "执行失败" : (tool.done ? "已完成" : (allowsRunning ? "执行中" : "状态待核对")))。\(expanded ? "收起" : "展开")详情")
 
             if expanded {
+                if let omitted = tool.uncachedArgsBytes {
+                    Text("工具参数未完整缓存（原始约 \(omitted) 字节）。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 if !tool.args.isEmpty {
                     sectionLabel("参数")
                     Text(String(tool.args.prefix(4000)))
@@ -862,6 +874,11 @@ struct ChatToolDetail: View {
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .lineLimit(8)
+                }
+                if let omitted = tool.uncachedResultBytes {
+                    Text("本地没有完整缓存这项工具结果（原始约 \(omitted) 字节）。请联网刷新历史；服务端能否重取尚未核实。")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
                 }
                 if !tool.result.isEmpty {
                     HStack {
@@ -882,12 +899,15 @@ struct ChatToolDetail: View {
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .lineLimit(20)
-                    Button("查看完整结果") { showFullResult = true }
+                    Button("分页查看完整结果") {
+                        resultPage = 0
+                        showFullResult = true
+                    }
                         .font(.caption)
                         .buttonStyle(.plain)
                         .foregroundStyle(AppTheme.accent)
                         .frame(minHeight: 44, alignment: .leading)
-                } else if tool.done {
+                } else if tool.done && tool.uncachedResultBytes == nil {
                     Text("执行结束；此接口未返回结果正文。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -897,7 +917,11 @@ struct ChatToolDetail: View {
         .padding(.vertical, 2)
         .sheet(isPresented: $showFullResult) {
             NavigationStack {
-                ReadOnlyResultView(text: tool.result)
+                // A multi-megabyte result must not be rendered in one
+                // SwiftUI Text layout. Only the current page is instantiated.
+                let pageCount = max(1, (tool.result.count + resultPageSize - 1) / resultPageSize)
+                ReadOnlyResultView(text: String(tool.result.dropFirst(resultPage * resultPageSize)
+                    .prefix(resultPageSize)))
                     .navigationTitle(tool.name)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -907,6 +931,21 @@ struct ChatToolDetail: View {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("完成") { showFullResult = false }
                         }
+                    }
+                    .safeAreaInset(edge: .bottom) {
+                        HStack {
+                            Button("上一页") { resultPage = max(0, resultPage - 1) }
+                                .disabled(resultPage == 0)
+                            Spacer()
+                            Text("\(resultPage + 1) / \(pageCount)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("下一页") { resultPage = min(pageCount - 1, resultPage + 1) }
+                                .disabled(resultPage >= pageCount - 1)
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 8)
                     }
             }
         }

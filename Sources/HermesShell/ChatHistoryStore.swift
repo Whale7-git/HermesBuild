@@ -10,6 +10,8 @@ struct ChatHistoryRecord {
     var model: String?
     var usage: ChatUsage?
     var savedAt: Date
+    /// Count of tools which could not fit even as identity-only cache entries.
+    var uncachedToolCount: Int = 0
 
     init(snapshot: ChatSnapshot, savedAt: Date = Date()) {
         sessionID = snapshot.sessionID
@@ -137,13 +139,23 @@ final class ChatHistoryStore: Sendable {
         let done: Bool
         let isError: Bool
         let afterMessageID: String?
-        init(_ value: ChatTool) {
-            id = value.id; name = value.name; args = value.args; result = value.result
+        /// Optional keys decode build228's legacy cache envelopes unchanged.
+        let omittedResultBytes: Int?
+        let omittedArgsBytes: Int?
+        init(_ value: ChatTool, omitResult: Bool = false, omitArgs: Bool = false) {
+            id = value.id; name = value.name
+            args = omitArgs ? "" : value.args
+            result = omitResult ? "" : value.result
             done = value.done; isError = value.isError; afterMessageID = value.afterMessageID
+            omittedResultBytes = value.uncachedResultBytes
+                ?? (omitResult && !value.result.isEmpty ? value.result.utf8.count : nil)
+            omittedArgsBytes = value.uncachedArgsBytes
+                ?? (omitArgs && !value.args.isEmpty ? value.args.utf8.count : nil)
         }
         var value: ChatTool {
             ChatTool(id: id, name: name, args: args, result: result, done: done,
-                     isError: isError, afterMessageID: afterMessageID)
+                     isError: isError, afterMessageID: afterMessageID,
+                     uncachedResultBytes: omittedResultBytes, uncachedArgsBytes: omittedArgsBytes)
         }
     }
 
@@ -177,12 +189,15 @@ final class ChatHistoryStore: Sendable {
         var messages: [Message]
         var tools: [Tool]
         var olderOffset: Int
+        /// Optional key for backwards-compatible reading of earlier envelopes.
+        var omittedToolCount: Int?
         let model: String?
         let usage: Usage?
         var value: ChatHistoryRecord {
             // Build without passing an active-stream snapshot into the model.
             ChatHistoryRecord(sessionID: scope.sessionID, messages: messages.map(\.value), tools: tools.map(\.value),
-                              olderOffset: olderOffset, model: model, usage: usage?.value, savedAt: savedAt)
+                              olderOffset: olderOffset, model: model, usage: usage?.value, savedAt: savedAt,
+                              uncachedToolCount: omittedToolCount ?? 0)
         }
     }
 
@@ -497,19 +512,40 @@ final class ChatHistoryStore: Sendable {
             return .failed(.sizeBudget)
         }
         let visible = Set(messages.map(\.id))
-        let candidates = Array(item.record.tools.filter {
+        let eligible = item.record.tools.filter {
             !$0.id.hasPrefix("stream-tool:") && ($0.afterMessageID == nil || visible.contains($0.afterMessageID!))
-        }.suffix(max(0, item.policy.maxTools)))
+        }
+        let candidates = Array(eligible.suffix(max(0, item.policy.maxTools)))
         var tools: [Tool] = []
         var remaining = budget - messageBytes
+        var omittedToolCount = max(0, eligible.count - candidates.count)
+        // Preserve latest tool identity and completion state, even when the
+        // full result is multi-megabyte. Missing payload != empty Gateway result.
         for tool in candidates.reversed() {
-            let cost = tool.id.utf8.count + tool.name.utf8.count + tool.args.utf8.count + tool.result.utf8.count + 512
-            if cost <= remaining { tools.append(Tool(tool)); remaining -= cost }
+            let identity = tool.id.utf8.count + tool.name.utf8.count
+                + (tool.afterMessageID?.utf8.count ?? 0) + 512
+            let argsBytes = tool.args.utf8.count
+            let resultBytes = tool.result.utf8.count
+            let fullCost = identity + argsBytes + resultBytes
+            if fullCost <= remaining {
+                tools.append(Tool(tool))
+                remaining -= fullCost
+            } else if identity <= remaining {
+                // Oversized *arguments* do not justify dropping a small result.
+                let keepResult = resultBytes <= remaining - identity
+                let keepArgs = argsBytes <= remaining - identity - (keepResult ? resultBytes : 0)
+                tools.append(Tool(tool, omitResult: !keepResult, omitArgs: !keepArgs))
+                remaining -= identity + (keepResult ? resultBytes : 0)
+                    + (keepArgs ? argsBytes : 0)
+            } else {
+                omittedToolCount += 1
+            }
         }
         tools.reverse()
         var envelope = Envelope(version: 1, scope: item.scope, savedAt: item.record.savedAt,
                                 messages: messages, tools: tools,
                                 olderOffset: max(item.record.olderOffset, messages.first?.sourceIndex ?? 0),
+                                omittedToolCount: omittedToolCount > 0 ? omittedToolCount : nil,
                                 model: item.record.model, usage: item.record.usage.map(Usage.init))
         let encoder = JSONEncoder()
         // F-55a：`try?` 会把「序列化失败」变成「什么都没发生」，用户看到的是
@@ -519,6 +555,31 @@ final class ChatHistoryStore: Sendable {
             try? manager.removeItem(at: url)
             clean(root: item.root, policy: item.policy)
             return .failed(.serialization)
+        }
+        // Escaping JSON characters can exceed the conservative UTF-8 estimate.
+        // Shed tool *payloads* before removing confirmed messages. Preserve
+        // identity and a truthful omitted-byte marker on every re-encode.
+        while encoded.count > item.policy.maxEntryBytes && !envelope.tools.isEmpty {
+            let idx = envelope.tools.indices.max {
+                let a = envelope.tools[$0], b = envelope.tools[$1]
+                return a.result.utf8.count + a.args.utf8.count
+                    < b.result.utf8.count + b.args.utf8.count
+            }!
+            let candidate = envelope.tools[idx]
+            if !candidate.result.isEmpty {
+                envelope.tools[idx] = Tool(candidate.value, omitResult: true)
+            } else if !candidate.args.isEmpty {
+                envelope.tools[idx] = Tool(candidate.value, omitArgs: true)
+            } else {
+                envelope.tools.remove(at: idx)
+                envelope.omittedToolCount = (envelope.omittedToolCount ?? 0) + 1
+            }
+            guard let next = encode(envelope, using: encoder) else {
+                try? manager.removeItem(at: url)
+                clean(root: item.root, policy: item.policy)
+                return .failed(.serialization)
+            }
+            encoded = next
         }
         // Keep complete messages. If a single newest message cannot fit, remove
         // the old cache rather than silently truncating its content.
@@ -664,9 +725,10 @@ final class ChatHistoryStore: Sendable {
 }
 
 private extension ChatHistoryRecord {
-    init(sessionID: String, messages: [ChatMessage], tools: [ChatTool], olderOffset: Int, model: String?, usage: ChatUsage?, savedAt: Date) {
+    init(sessionID: String, messages: [ChatMessage], tools: [ChatTool], olderOffset: Int, model: String?, usage: ChatUsage?, savedAt: Date, uncachedToolCount: Int = 0) {
         self.sessionID = sessionID
         self.messages = messages; self.tools = tools; self.olderOffset = olderOffset
         self.model = model; self.usage = usage; self.savedAt = savedAt
+        self.uncachedToolCount = uncachedToolCount
     }
 }
