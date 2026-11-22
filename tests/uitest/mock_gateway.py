@@ -81,6 +81,7 @@ class GatewayState:
             self.requests = []
             self.unknown = []
             self.finalization_lag_ms = 0
+            self.stream_interval_ms = 30
 
     def remember(self, method, path, query, headers):
         # Never include credential values or user message contents in logs.
@@ -309,7 +310,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     payload = json.dumps(event, ensure_ascii=False)
                     self.wfile.write(f"id: {seq}\ndata: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
-                    time.sleep(0.03)
+                    with self.state.lock:
+                        interval_ms = self.state.stream_interval_ms
+                    time.sleep(interval_ms / 1000.0)
                 with self.state.lock:
                     lag_ms = self.state.finalization_lag_ms
                 if lag_ms:
@@ -385,6 +388,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.finalization_lag_ms = delay
             return self.json_response(200, {"delay_ms": delay})
+        if method == "POST" and path == "/__control/stream-interval":
+            payload = self.body_json()
+            interval = payload.get("delay_ms")
+            if type(interval) is not int or not 0 <= interval <= 2500:
+                return self.json_response(400, {"error": {"message": "invalid stream interval"}})
+            with self.state.lock:
+                self.state.stream_interval_ms = interval
+            return self.json_response(200, {"delay_ms": interval})
         if method == "POST" and path == "/__control/add-selection-text":
             # Place a short real assistant Markdown paragraph at the end of
             # history, so the native selection surface is actually visible.
