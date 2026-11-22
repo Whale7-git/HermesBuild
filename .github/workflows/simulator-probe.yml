@@ -177,8 +177,10 @@ jobs:
           import json, os, pathlib, re
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "xcodebuild-ui.log"
           text = log.read_text(errors="replace") if log.exists() else ""
-          failed = sorted(set(re.findall(
-              r"Test Case '[^']*?([A-Za-z_][A-Za-z_0-9]*\.test[A-Za-z_0-9]+)' failed", text)))
+          failed = sorted(set(
+              suite + "." + test for suite, test in re.findall(
+                  r"Test Case '-\[[^ ]+\.([A-Za-z_][A-Za-z_0-9]*) (test[A-Za-z_0-9]+)\]' failed",
+                  text)))
           lines = []
           for line in text.splitlines():
               if ("error:" in line and "UITests" in line and "XCTAssert" in line):
