@@ -1,15 +1,15 @@
-# 网关 SSE 历史抓包样例（2026-11-11）
+# Gateway SSE 历史抓包样例（2026-11-11）
 
-> **历史抓包记录，非当前 Gateway API 保证。** 端点、事件名、终态语义须依据当前服务端能力、客户端代码和真实请求验证；本文不能用于认定未抓到的事件已被实现。
+> **证据性质：单次历史抓包，不是当前 API 契约。** 本文只记录当时观察到的响应字节和字段。不能据此保证当前服务器、其他版本或所有运行路径都使用相同端点、事件、字段或终态语义。当前行为必须结合服务端版本、客户端源码和实时请求重新验证。
 
-抓包时间：2026-11-11
-端点：`GET /v1/runs/{run_id}/events`
-鉴权：`Authorization: Bearer <API_SERVER_KEY>`
+抓包时间：2026-11-11  
+端点：`GET /v1/runs/{run_id}/events`  
+鉴权：`Authorization: Bearer <API_SERVER_KEY>`  
 Accept：`text/event-stream`
 
-## 实测字节流
+## 原始样本
 
-```
+```text
 : open
 
 id: 0
@@ -21,18 +21,16 @@ data: {"event": "run.completed", "run_id": "run_...", "timestamp": 1794333820.88
 : stream closed
 ```
 
-## 契约结论
+## 该样本中观察到的现象
 
-1. **不发 `event:` 行**。事件名在 `data` JSON 的 `"event"` 字段里。客户端 `frame.event` 恒为 `"message"`，必须优先读 data JSON 的 `event`。
-2. **`id:` 逐帧唯一且递增**（0, 1, …），与 data 内 `seq` 一致。按 `frame.id` 去重是安全的（R-13 关闭）。
-3. `: open` / `: stream closed` 是 SSE 注释行，解析器应忽略。
-4. `run.completed` 带 `completed`/`partial`/`interrupted` 布尔、`output` 文本、`usage` 计数。
-   - `completed: false` = 预算/步数耗尽（本版应映射 work_limit）。
-   - `partial: true` 或 `interrupted: true` = 半截/中断（本版按 cancel 收尾）。
-5. 终态事件名（待补抓）：`run.failed` / `run.cancelled` / `replay.truncated` 尚未抓包，按 `GatewayEventMap` 现有映射处理，需在实现中 fail-safe。
+1. 样本没有 SSE `event:` 行；事件名放在 data JSON 的 `event` 字段中。
+2. 样本中的 SSE `id` 为 0、1，且与 JSON `seq` 相同。只有这两帧，不能推导所有服务端实现都保证二者一致。
+3. `: open` 和 `: stream closed` 是该样本中的 SSE 注释行。
+4. 样本的 `run.completed` 含 `completed`、`partial`、`interrupted`、`output` 和 `usage` 字段；本样本只展示 `completed: true`，不证明其他组合的服务端语义。
+5. 当时未抓到 `run.failed`、`run.cancelled` 或 `replay.truncated` 样本。未抓到不代表服务端不存在这些事件。
 
-## 对修复的影响
+## 使用边界
 
-- P0-14/15 保持按 `frame.id` 去重，**不**改按 seq。
-- P0-13：`completed` 必须严格 Bool；缺省/畸形视为「状态未知」，不当作正常完成。
-- 新增回归 fixture 应直接使用上述真实字节流（含无 `event:` 行、带 `id:`），不要手工构造 `SSEFrame(event:)`。
+- 这份记录可用于理解历史抓包、定位协议差异；不能替代当前服务端 API 文档或实时契约测试。
+- 新增/修改事件映射时，以当前真实请求和服务端实现为依据，并增加对应 fixture 与确定性测试。
+- 不要将本文中的历史 Issue 编号、旧版本修复要求或推测的终态映射当成现行实现规范。
