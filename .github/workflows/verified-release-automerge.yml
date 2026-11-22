@@ -60,7 +60,7 @@ jobs:
               (path.startsWith('tests/') && !path.startsWith('tests/releaseautomation/') &&
                !path.startsWith('tests/sourcegate/') && !path.startsWith('tests/baseline-') &&
                !path.includes('/.github/') && (path.endsWith('.swift') || path.endsWith('.sh') ||
-               /^tests\\/release-scope-build\\d+\\.json$/.test(path)));
+               (path.startsWith('tests/release-scope-build') && path.endsWith('.json'))));
             if (!files.length || files.some(file => !allowed(file.filename)))
               return skip('privileged or maintenance-only PR');
             if (!files.some(file => file.filename === 'release.json'))
@@ -73,8 +73,10 @@ jobs:
               return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
             };
             const next = await readRelease(sha), old = await readRelease(pr.base.sha);
-            const valid = item => /^\\d+\\.\\d+\\.\\d+$/.test(item.version) &&
-              /^[1-9]\\d*$/.test(String(item.build));
+            const valid = item => typeof item.version === 'string' &&
+              item.version.split('.').length === 3 &&
+              item.version.split('.').every(p => /^[0-9]+$/.test(p)) &&
+              /^[1-9][0-9]*$/.test(String(item.build));
             if (!valid(next) || !valid(old) || Number(next.build) <= Number(old.build))
               return skip('not an increasing valid release identity');
             if (next.version.split('.').map(Number).some((n,i) =>
