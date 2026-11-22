@@ -24,7 +24,7 @@ Build a state-transition and ownership table for every proposed correction: trig
 
 ## High-risk fixes are not human-review gates
 
-When a suspected correctness defect is actionable, implement the smallest safe fix and targeted deterministic regression in a linked product PR. Verify Run/Session identity, original POST non-replay, queue pause ownership, STOP acknowledgments, terminal-state distinction and persistent pending sends as relevant. Perform code-level agent self-review and run independent diagnostics, but never use a failed test or unverified invariant as an automatic release gate. No high-risk classification requires human review or approval. Keep affected Issues open and continue repairing; actual IPA compilation and Artifact identity remain required for publication.
+When a suspected correctness defect is actionable, implement the smallest safe fix and targeted deterministic regression in a linked product PR. Verify Run/Session identity, original POST non-replay, queue pause ownership, STOP acknowledgments, terminal-state distinction and persistent pending sends as relevant. Perform code-level agent self-review, then use the existing exact-head three-job CI and trusted auto-merge/promotion. No high-risk classification requires human review or approval. Hold only on a demonstrated failed/unverified critical invariant, failed checks or an explicit user pause; continue working on the same PR rather than treating an audit report as completion.
 
 ## Targeted regressions
 

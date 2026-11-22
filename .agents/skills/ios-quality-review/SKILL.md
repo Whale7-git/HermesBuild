@@ -24,22 +24,22 @@ Use for "audit the app", "improve consistency", "review UX", "find regressions",
 
 ## Required output
 
-In audit mode, deliver a prioritized evidence-backed issue register. In fix mode, the project manager must scan **all** open Issues, assign module-specific work to independent workers, integrate all executable fixes in one product branch, and record the batch acceptance matrix before the single versioned PR and Release; this matrix is advisory and cannot block the binary. Workers implement tested changes in PRs targeting that integration branch; do not substitute an issue register for executable work.
+In audit mode, deliver a prioritized evidence-backed issue register. In fix mode, the project manager must scan **all** open Issues, assign module-specific work to independent workers, integrate all executable fixes in one product branch, and verify the full batch acceptance matrix before the single versioned PR and Release. Workers implement tested changes in PRs targeting that integration branch; do not substitute an issue register for executable work.
 
 P0 = possible message loss, duplicate send, cross-session writes, data exposure or irreversible state failure. P1 = frequently broken interaction or proven major performance regression. P2 = isolated polish/inconsistency without a correctness impact. Do not infer P0 from visual style alone.
 
 ## Risk and autonomous delivery policy
 
-The autonomous project manager follows **read all Issues/PRs/Release → maintain a complete Issue acceptance matrix → delegate module workers → integrate all executable fixes in one branch → run focused tests in independent nonblocking diagnostics → publish one compiled candidate IPA → reconcile and close only fully solved Issues**. An incomplete batch continues across runs without an interim product release.
+The autonomous project manager follows **read all Issues/PRs/Release → maintain a complete Issue acceptance matrix → delegate module workers → integrate all executable fixes in one branch → run focused tests and exact-head CI → publish one verified candidate IPA → reconcile and close only fully solved Issues**. An incomplete batch continues across runs without an interim product release.
 
-Ordinary and high-risk iOS fixes use the **same no-human-review automatic delivery path**. High risk (Run/Session identity, uncertain POST, stop semantics, queue ownership or persistent state) requires additional deterministic safety regressions and code-level self-review **during** review and nonblocking diagnostics; it does **not** require manual approval, a reviewer, or a blanket hold. If a concrete safety invariant remains unverified or any diagnostic fails, keep the Issue open and continue fixing; release automation does not use those findings as a build gate. Verify exact Release IPA delivery before closing a fully fixed Issue.
+Ordinary and high-risk iOS fixes use the **same no-human-review automatic delivery path**. High risk (Run/Session identity, uncertain POST, stop semantics, queue ownership or persistent state) requires additional deterministic safety regressions and code-level self-review **before** the green CI and trusted auto-merge; it does **not** require manual approval, a reviewer, or a blanket hold. If a concrete safety invariant remains unverified/failed, or CI fails, keep the PR and Issue open, document the evidence and continue fixing instead of forcing release. Verify exact Release IPA delivery before closing a fully fixed Issue.
 
 Privileged CI/workflow maintenance changes belong in a separate checked PR and agent-initiated explicit merge; no iOS product Release for maintenance-only work. Never silently widen the product autogate to privileged paths.
 
 ## Change constraints
 
 - Never push to `main`; use a change-specific branch and PR.
-- A read-only audit does not authorize a release. An explicit fix request or scheduled worker authorizes a narrow code fix in the batch branch, not a version increment or independent release. Only the manager may version and submit the batch to the candidate-only auto-release path; four parallel Swift shards run independently. Do not confuse test failures with an IPA compilation failure.
+- A read-only audit does not authorize a release. An explicit fix request or scheduled worker authorizes a narrow code fix in the batch branch, not a version increment or independent release. Only the manager may version and submit the final fully accepted batch to the existing three-job CI/auto-release path. No new build workflow. Only block real safety violations or failing checks.
 - Preserve Bundle ID, Keychain identities, session paging, scroll ownership, stopped/uncertain send semantics and public release process.
 - Avoid importing real chat text, access tokens, private logs or credentials into issues/fixtures.
 - Reuse the existing `tests/check_navigation_contract.py`, `tests/check_swiftui_modifiers.py`, offline suites and built-in diagnostic recorder rather than creating duplicate checks.
