@@ -170,7 +170,8 @@ import FoundationNetworking
     byteHarness.finishNext()
     await waitFor("byte budget frees after first upload", { byteHarness.sessions.count == 2 })
     byteHarness.finishNext()
-    check(try await byteSend.value.count == 2, "both large uploads eventually complete")
+    let largePayload = try await byteSend.value
+    check(largePayload.count == 2, "both large uploads eventually complete")
 
     // A failure must stop further uploads, leave original bytes intact, and
     // keep already-ready references when the user explicitly retries.
