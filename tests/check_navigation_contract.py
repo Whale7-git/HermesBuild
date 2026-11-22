@@ -327,7 +327,7 @@ def violations(contents: dict[str, str]) -> list[str]:
             failures.append(f"Running Send/Stop geometry policy missing: {token}")
     for token in ("ChatComposerActionPolicy.reservesSendSlot(",
                   ".accessibilityHidden(true)", ".allowsHitTesting(false)",
-                  "if !readOnly && running {",
+                  "if running { sendModePicker }",
                   ".lineLimit(quoteExpanded ? 8 : 2)",
                   "AppTheme.radiusComposer"):
         if token not in composer:
