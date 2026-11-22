@@ -1261,22 +1261,38 @@ import Foundation
         ]
         let unknownSnapshot = try ChatSnapshot(
             data: JSONSerialization.data(withJSONObject: unknownObject), runStatusUnknown: true)
-        model.applySnapshot(unknownSnapshot)
+        try model.applySnapshot(unknownSnapshot)
         precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
                      "unknown Run status preserves known approval and clarification cards")
 
         // Older Gateways omit the field; absence is not evidence that a known
         // approval/clarification has been resolved.
-        model.applySnapshot(try snapshot(nil))
+        try model.applySnapshot(try snapshot(nil))
         precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
                      "missing Gateway capability preserves known pending cards")
 
-        model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+        try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
             frames: [], hasIncompleteControl: false)))
         precondition(model.pendingApprovals.isEmpty && model.pendingClarifies.isEmpty,
                      "an authoritative empty pending_controls list removes stale cards")
 
-        model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
+        let preserved = GatewayPendingControlSnapshot(
+            frames: [SSEFrame(event: "clarify", data:
+                #"{\"request_id\":\"partial-new\",\"execution_generation\":8,\"question\":\"Still waiting\"}"#,
+                id: nil)],
+            hasIncompleteControl: true)
+        // A new valid prompt in an incomplete status snapshot must not silently
+        // revoke a previously known prompt.
+        try model.applySnapshot(try snapshot(service.pendingControlSnapshot))
+        precondition(model.pendingApprovals.count == 1 && model.pendingClarifies.count == 1,
+                     "complete control projection re-establishes canonical cards")
+        try model.applySnapshot(try snapshot(preserved))
+        precondition(model.pendingApprovals.count == 1
+                     && model.pendingClarifies.count == 2
+                     && model.uncertain && model.queueRecoveryPaused,
+                     "partial projection preserves existing prompts and locks sending")
+
+        try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
             frames: [], hasIncompleteControl: true)))
         precondition(model.uncertain && model.queueRecoveryPaused
                      && model.notice?.contains("快照数据不完整") == true,
