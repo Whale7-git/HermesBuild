@@ -21,6 +21,7 @@ actor ConcurrencyProbe {
     var status = "running"
     var statusSessionID = "s"
     var statusCode = 200
+    var pendingControls: [[String: Any]]?
     var failure: Error?
     var requests: [URLRequest] = []
     var frames: [SSEFrame] = []
@@ -42,6 +43,7 @@ actor ConcurrencyProbe {
             body = ["run_id": "run-fixture", "status": "queued"]
         } else if url.path == "/v1/runs/run-fixture" {
             body = ["run_id": "run-fixture", "session_id": statusSessionID, "status": status]
+            if let pendingControls { body["pending_controls"] = pendingControls }
             code = statusCode
         } else if url.path.hasSuffix("/stop") {
             code = statusCode
@@ -465,6 +467,36 @@ actor ConcurrencyProbe {
             activeRunID: "r", requestedSessionID: "s", pendingControls: pendingControls)
         check(snapshotWithControls.gatewayPendingControls?.frames.count == 2,
               "Gateway history snapshot carries the authoritative pending-control projection")
+
+        let controlScope = "instance|control-snapshot"
+        let controlStore = GatewayRunStore(scope: controlScope, defaults: defaults)
+        controlStore.remember(runID: "run-fixture", sessionID: "s")
+        transport.status = "waiting_for_clarification"
+        transport.pendingControls = [
+            ["kind": "clarify", "prompt_id": "live-clarify", "execution_generation": 9,
+             "question": "Choose a deployment", "choices": ["A", "B"], "multi_select": false]
+        ]
+        let controlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(controlHistory.activeStreamID == "run-fixture"
+              && controlHistory.gatewayPendingControls?.frames.count == 1,
+              "active clarification status and pending controls survive the real history path")
+        let activeClarify = controlHistory.gatewayPendingControls?.frames.first.flatMap {
+            ChatPendingClarify.make(from: $0, runID: controlHistory.activeStreamID)
+        }
+        check(activeClarify?.requestID == "live-clarify"
+              && activeClarify?.executionGeneration == 9,
+              "Gateway history uses the exact Run identity for restored clarification")
+        transport.pendingControls = []
+        let emptyControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(emptyControlHistory.gatewayPendingControls?.frames.isEmpty == true
+              && emptyControlHistory.gatewayPendingControls?.hasIncompleteControl == false,
+              "live Gateway empty control set clears stale approval/clarification cards")
+        transport.pendingControls = nil
+        let unsupportedControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(unsupportedControlHistory.gatewayPendingControls == nil,
+              "older Gateway without pending_controls does not fabricate an empty set")
+        transport.pendingControls = nil
+        transport.status = "running"
         GatewayRunStore.removeAll(instanceID: "instance", accountScope: "account", defaults: defaults)
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == nil, "account retirement cleans recovery records")
         let retired = GatewayRunStore(scope: "instance|account", defaults: defaults)
