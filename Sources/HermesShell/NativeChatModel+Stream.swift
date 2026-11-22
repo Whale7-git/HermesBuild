@@ -303,6 +303,12 @@ extension NativeChatModel {
             uncertain = true
             pauseQueueForRecovery()
             notice = "后台状态暂时无法确认；已保留当前回复与待处理请求，不会自动重发。"
+            // History lookup failure cannot erase the accepted receipt. Probe
+            // the exact Run independently, including after a run-status 404;
+            // otherwise the status remains unknown forever on this screen.
+            if let receipt = activeTurnRecovery, !submitting {
+                probeAcceptedRun(receipt)
+            }
             return
         }
         latestRecoverySnapshot = snap
@@ -600,12 +606,14 @@ extension NativeChatModel {
     /// accepted run; only an explicit terminal result can settle it without a
     /// matching reply in history.
     func probeAcceptedRun(_ receipt: ActiveTurnRecovery) {
-        guard activeRunProbeRunID != receipt.runID else { return }
+        // Suppress only an *in-flight* duplicate. A completed unknown probe
+        // must not prevent a later foreground/refresh retry of the same Run.
+        guard activeRunProbeRunID != receipt.runID || activeRunProbeTask == nil else { return }
         // applySnapshot runs while `load` still owns the loading/syncing phase.
         // The probe task starts only after the current MainActor job yields, and
         // a later load cancels it, so the in-progress snapshot is the correct
         // place to schedule the one bounded receipt check.
-        guard !suspended, !submitting else { return }
+        guard !suspended, !submitting, !stopping, !authenticationRequired else { return }
         activeRunProbeTask?.cancel()
         activeRunProbeRunID = receipt.runID
         let generation = revision
@@ -614,6 +622,7 @@ extension NativeChatModel {
             defer {
                 if self.activeRunProbeRunID == receipt.runID {
                     self.activeRunProbeTask = nil
+                    self.activeRunProbeRunID = nil
                 }
             }
             do {
@@ -663,9 +672,17 @@ extension NativeChatModel {
                         self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
                     }
                 case .unresolved:
+                    // Bounded exact-Run 404 proof retires the local live
+                    // indicator, not the accepted POST receipt. Discard any
+                    // retired SSE callback without touching a newer stream.
+                    guard self.streamID == nil || self.streamID == receipt.runID else { return }
                     self.uncertain = true
                     self.pauseQueueForRecovery()
+                    self.revision &+= 1
+                    self.streamTask?.cancel()
+                    self.streamTask = nil
                     self.streamID = nil
+                    self.transition(to: .idle)
                     self.notice = "服务端连续未找到原 Run；本地运行标记已收敛，消息仍待核对。"
                 case .unknown:
                     self.uncertain = true
