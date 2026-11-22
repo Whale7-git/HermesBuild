@@ -13,7 +13,9 @@ final class HermesComposerStabilityUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
         editor.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 8))
-        XCTAssertTrue(editor.hasKeyboardFocus)
+        let focused = app.textViews.matching(
+            NSPredicate(format: "hasKeyboardFocus == 1")).firstMatch
+        XCTAssertTrue(focused.exists, "Native editor did not own keyboard focus")
         let initial = editor.frame
         XCTAssertGreaterThan(initial.height, 20)
 
@@ -33,7 +35,7 @@ final class HermesComposerStabilityUITests: XCTestCase {
         let settled = editor.frame
         XCTAssertLessThanOrEqual(abs(settled.height - expanded.height), 2.0,
                                  "Composer height changed without any text edit")
-        XCTAssertTrue(editor.hasKeyboardFocus,
+        XCTAssertTrue(focused.exists,
                       "Layout update unexpectedly dismissed the keyboard")
     }
 }
