@@ -51,6 +51,9 @@ extension ChatScrollController {
         // Re-read the actual offset after resizing: comparing against the
         // pre-resize value can incorrectly skip restoring a manual anchor.
         let offsetAfterResize = Double(scrollView.contentOffset.y)
+        publishScrollTrace(reason: "commit.beforeOffsetAssignment", resolvedTarget: offset,
+                           anchorID: anchors.first?.id, beforeOffset: beforeCommitOffset,
+                           offsetAfterResize: offsetAfterResize)
         if ChatOffsetCommitPolicy.shouldAssign(
             current: offsetAfterResize, target: offset, interacting: inMotion) {
             ChatPerformanceRecorder.shared.recordScrollAdjustment(
@@ -59,6 +62,9 @@ extension ChatScrollController {
                 following: policy.following && navigationTarget == nil, moving: inMotion)
             scrollView.contentOffset = CGPoint(x: 0, y: offset)
         }
+        publishScrollTrace(reason: "commit.afterOffsetAssignment", resolvedTarget: offset,
+                           anchorID: anchors.first?.id, beforeOffset: beforeCommitOffset,
+                           offsetAfterResize: offsetAfterResize)
         // 首次非空 frames 提交即首屏完成，且只上报一次。若首屏发生在开始采样
         // 之前（样本为 nil），同样置位，避免把后续流式更新误当首屏。
         if !hasReportedFirstPaint, !frames.isEmpty {
