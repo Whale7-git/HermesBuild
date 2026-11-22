@@ -13,9 +13,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
-  # Lightweight scope check: documentation, skills and CI-only PRs never
-  # consume an iOS/macOS candidate build.
   preflight:
+    # Documentation, skills and CI-only PRs never compile an iOS IPA.
     name: Determine whether IPA compilation is required
     runs-on: ubuntu-24.04
     outputs:
