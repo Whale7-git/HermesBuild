@@ -139,24 +139,25 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("if: ${{ always() }}", text)
 
-    def test_simulator_shards_use_independent_runners_and_aggregate_status(self):
+    def test_simulator_is_manual_only_and_does_not_set_release_status(self):
         workflow = (ROOT / ".github/workflows/simulator-probe.yml").read_text()
+        self.assertEqual(triggers(workflow), {"workflow_dispatch"})
+        self.assertNotIn("  pull_request:", workflow)
+        self.assertNotIn("  schedule:", workflow)
+        self.assertNotIn("statuses: write", workflow)
+        self.assertNotIn("simulator-result:", workflow)
+        self.assertNotIn("Record exact-commit simulator gold result", workflow)
         self.assertIn("shard: [chat, experience]", workflow)
         self.assertIn("fail-fast: false", workflow)
-        self.assertIn("name: simulator-${{ matrix.shard }}", workflow)
         self.assertIn("HermesLongTaskRecoveryUITests", workflow)
         self.assertIn("TEST_SHARD: ${{ matrix.shard }}", workflow)
-        self.assertIn("name: Aggregate isolated UI shards", workflow)
-        self.assertIn("needs: simulator", workflow)
-        self.assertIn("context: 'hermes/simulator-all'", workflow)
-        self.assertIn("if (!passed) core.setFailed", workflow)
         self.assertIn("hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}", workflow)
 
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"push", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["plan", "promote", "notify", "issue-sync", "ui-discovery"])
+        self.assertEqual(jobs(text), ["plan", "promote", "notify", "issue-sync"])
         self.assertNotIn("tests/run_container.sh", text)
         self.assertNotIn("tests/verify_source.py", text)
         self.assertIn("actions/artifacts/${ARTIFACT_ID}/zip", text)
@@ -189,8 +190,8 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("tests/model/AutomaticReconciliationTests.swift", runner)
         promote = (ROOT / ".github/workflows/hermesshell-single-promote.yml").read_text()
         self.assertIn("expected_sha:", promote)
-        self.assertIn("name: Dispatch post-release simulator discovery", promote)
-        self.assertIn('gh workflow run simulator-probe.yml --repo "$GITHUB_REPOSITORY" --ref main -f suite=all', promote)
+        self.assertNotIn("ui-discovery:", promote)
+        self.assertNotIn("workflow run simulator-probe.yml", promote)
         plan = (ROOT / "scripts/release-plan.py").read_text()
         self.assertIn("before != parent", plan)
 
