@@ -530,7 +530,7 @@ extension NativeChatModel {
                     self.automaticReconciliationTicket = nil
                 }
             }
-            for delay in self.automaticReconciliationDelaysNanoseconds {
+            for (attempt, delay) in self.automaticReconciliationDelaysNanoseconds.enumerated() {
                 do { try await Task.sleep(nanoseconds: delay) } catch { return }
                 guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.authenticationRequired, !self.stopping,
@@ -560,8 +560,7 @@ extension NativeChatModel {
                 // A deep history crawl is expensive; try it only twice in
                 // this recovery window, after the status probe and latest GET.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
-                   delay == self.automaticReconciliationDelaysNanoseconds[1] ||
-                   delay == self.automaticReconciliationDelaysNanoseconds.last {
+                   (attempt == 1 || attempt == self.automaticReconciliationDelaysNanoseconds.count - 1) {
                     _ = await self.reconcileLongAcceptedRun()
                 }
                 if self.running || (!self.uncertain && self.pendingSend == nil &&
