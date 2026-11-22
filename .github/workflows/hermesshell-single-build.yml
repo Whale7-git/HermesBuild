@@ -13,6 +13,40 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
+  # Lightweight scope check: documentation, skills and CI-only PRs never
+  # consume an iOS/macOS candidate build.
+  preflight:
+    name: Determine whether IPA compilation is required
+    runs-on: ubuntu-24.04
+    outputs:
+      required: ${{ steps.scope.outputs.required }}
+    steps:
+      - name: Classify release-bearing PR
+        id: scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === 'workflow_dispatch') {
+              core.setOutput('required', 'true');
+              return;
+            }
+            const pr = context.payload.pull_request;
+            if (!pr || pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setOutput('required', 'false');
+              return;
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100
+            });
+            const required = files.some(file => file.filename === 'release.json');
+            core.setOutput('required', String(required));
+            core.info(required
+              ? 'release.json changed: candidate IPA compilation permitted'
+              : 'No release.json change: skip IPA compilation for maintenance PR');
+
   source:
     name: Source and release plan
     runs-on: ubuntu-24.04
@@ -45,10 +79,12 @@ jobs:
 
   candidate:
     name: Compile and upload one candidate IPA
-    # The whole run must succeed before promotion can select this artifact.
+    # Maintenance-only PRs do not compile. Release PRs still build exactly once.
+    needs: preflight
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-          github.event.pull_request.head.repo.full_name == github.repository }}
+      ${{ needs.preflight.outputs.required == 'true' &&
+          (github.event_name == 'workflow_dispatch' ||
+           github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:
