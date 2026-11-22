@@ -1278,7 +1278,7 @@ import Foundation
 
         let preserved = GatewayPendingControlSnapshot(
             frames: [SSEFrame(event: "clarify", data:
-                #"{\"request_id\":\"partial-new\",\"execution_generation\":8,\"question\":\"Still waiting\"}"#,
+                #"{"request_id":"partial-new","execution_generation":8,"question":"Still waiting"}"#,
                 id: nil)],
             hasIncompleteControl: true)
         // A new valid prompt in an incomplete status snapshot must not silently
