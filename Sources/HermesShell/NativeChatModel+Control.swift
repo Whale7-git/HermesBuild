@@ -62,6 +62,59 @@ extension NativeChatModel {
         if pendingClarifies.isEmpty { clarifying = false }
     }
 
+    /// Replace only the controls for the exact active Run. This is used when
+    /// a Gateway status snapshot explicitly supplies its current pending set.
+    /// Missing capability is represented by nil and never clears known cards.
+    func restorePendingControls(_ snapshot: GatewayPendingControlSnapshot, runID: String) {
+        let oldApprovals = pendingApprovals.filter { $0.runID == runID }
+        let oldClarifies = pendingClarifies.filter { $0.runID == runID }
+        pendingApprovals.removeAll { $0.runID == runID }
+        pendingClarifies.removeAll { $0.runID == runID }
+
+        var incomplete = snapshot.hasIncompleteControl
+        for frame in snapshot.frames {
+            switch frame.event {
+            case "approval":
+                guard let pending = ChatPendingApproval.make(from: frame, runID: runID),
+                      pending.runID == runID,
+                      let requestID = pending.requestID, !requestID.isEmpty else {
+                    incomplete = true
+                    continue
+                }
+                pendingApprovals.append(pending)
+            case "clarify":
+                guard let pending = ChatPendingClarify.make(from: frame, runID: runID),
+                      pending.runID == runID, !pending.requestID.isEmpty else {
+                    incomplete = true
+                    continue
+                }
+                pendingClarifies.append(pending)
+            default:
+                incomplete = true
+            }
+        }
+
+        let approvalIDs = Set(pendingApprovals.filter { $0.runID == runID }.map(\.id))
+        let clarifyIDs = Set(pendingClarifies.filter { $0.runID == runID }.map(\.id))
+        for request in oldApprovals where !approvalIDs.contains(request.id) {
+            onApprovalResolved?(sessionID, request.requestID ?? request.id)
+        }
+        for request in oldClarifies where !clarifyIDs.contains(request.id) {
+            onClarifyResolved?(sessionID, request.requestID)
+        }
+        if pendingApprovals.isEmpty { approving = false }
+        if pendingClarifies.isEmpty { clarifying = false }
+
+        if incomplete {
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "后台仍有待处理审批或澄清，但快照数据不完整；为安全起见保持发送锁定。"
+        } else if !uncertain && pendingSend == nil {
+            // Clears only the recovery-owned pause. A user pause remains intact.
+            resumeQueueAfterRecovery()
+        }
+    }
+
     func removePendingClarify(requestID: String) {
         guard let pending = pendingClarifies.first(where: { $0.requestID == requestID }) else { return }
         removePendingClarify(id: pending.id)
