@@ -495,6 +495,12 @@ actor ConcurrencyProbe {
         let unsupportedControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
         check(unsupportedControlHistory.gatewayPendingControls.map { $0.frames.count } == nil,
               "older Gateway without pending_controls does not fabricate an empty set")
+        transport.status = "waiting_for_approval"
+        let missingApprovalSnapshot = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
+        check(missingApprovalSnapshot.activeStreamID == "run-fixture"
+              && missingApprovalSnapshot.gatewayPendingControls?.hasIncompleteControl == true
+              && missingApprovalSnapshot.gatewayPendingControls?.frames.isEmpty == true,
+              "waiting_for_approval without complete control data is marked incomplete, not fabricated")
         transport.pendingControls = nil
         transport.status = "running"
         GatewayRunStore.removeAll(instanceID: "instance", accountScope: "account", defaults: defaults)
