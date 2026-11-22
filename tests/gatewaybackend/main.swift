@@ -463,7 +463,7 @@ actor ConcurrencyProbe {
               && malformedControls?.hasIncompleteControl == true,
               "incomplete approval data fails closed instead of inventing a card")
         let snapshotWithControls = try GatewayDecode.snapshot(
-            Data(#"{\"session_id\":\"s\",\"data\":[]}"#.utf8), offset: 0,
+            Data(#"{"session_id":"s","data":[]}"#.utf8), offset: 0,
             activeRunID: "r", requestedSessionID: "s", pendingControls: pendingControls)
         check(snapshotWithControls.gatewayPendingControls?.frames.count == 2,
               "Gateway history snapshot carries the authoritative pending-control projection")
