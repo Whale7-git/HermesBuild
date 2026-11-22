@@ -270,6 +270,9 @@ struct PersistedAttachmentBatch: Codable, Equatable, Sendable {
 struct AttachmentBatch: Sendable {
     private(set) var sessionID: String
     private(set) var items: [AttachmentDraft] = []
+    /// Diagnostic only: a server may transform the file size after upload.
+    /// A valid ready reference is not an upload-resume token or hash proof.
+    private(set) var restoreSizeMismatches = 0
     let maxCount: Int
     let maxTotalBytes: Int
     init(sessionID: String, maxCount: Int = 8, maxTotalBytes: Int = 40 * 1024 * 1024) {
@@ -353,7 +356,11 @@ struct AttachmentBatch: Sendable {
         items[index] = AttachmentDraft(id: id, name: name, mime: mime, data: data)
         items[index].reuploading = true
     }
-    mutating func reset(sessionID: String) { self.sessionID = sessionID; items.removeAll() }
+    mutating func reset(sessionID: String) {
+        self.sessionID = sessionID
+        items.removeAll()
+        restoreSizeMismatches = 0
+    }
 
     /// P1：恢复一批**已在服务端**的附件（用于编辑队列项时回填）。
     ///
@@ -410,25 +417,40 @@ struct AttachmentBatch: Sendable {
         }
         var restored: [AttachmentDraft] = []
         var totalBytes = 0
+        var sizeMismatches = 0
         for persisted in value.items {
             guard !persisted.name.isEmpty, !persisted.mime.isEmpty,
                   persisted.byteCount >= 0,
                   persisted.byteCount <= AttachmentMultipart.defaultMaxBytes,
-                  persisted.data.count <= persisted.byteCount,
-                  persisted.byteCount <= maxTotalBytes - totalBytes else {
+                  persisted.data.count <= persisted.byteCount else {
                 throw AttachmentError.tooLarge
             }
-            totalBytes += persisted.byteCount
-            var item = AttachmentDraft(
-                id: persisted.id, name: persisted.name, mime: persisted.mime,
-                data: persisted.data, declaredByteCount: persisted.byteCount)
-            item.reuploading = persisted.reuploading
+            // A completed upload may have a transformed size. Do not discard
+            // its already-issued server reference and silently upload again.
+            // Account for the larger side of the discrepancy in the quota.
+            let accountedBytes: Int
             switch persisted.state {
             case .ready(let uploaded):
                 guard uploaded.name == persisted.name, uploaded.mime == persisted.mime,
-                      uploaded.size == persisted.byteCount else {
+                      uploaded.size >= 0,
+                      uploaded.size <= AttachmentMultipart.defaultMaxBytes else {
                     throw AttachmentError.invalidMetadata
                 }
+                accountedBytes = max(persisted.byteCount, uploaded.size)
+                if uploaded.size != persisted.byteCount { sizeMismatches += 1 }
+            case .pending:
+                accountedBytes = persisted.byteCount
+            }
+            guard accountedBytes <= maxTotalBytes - totalBytes else {
+                throw AttachmentError.tooLarge
+            }
+            totalBytes += accountedBytes
+            var item = AttachmentDraft(
+                id: persisted.id, name: persisted.name, mime: persisted.mime,
+                data: persisted.data, declaredByteCount: accountedBytes)
+            item.reuploading = persisted.reuploading
+            switch persisted.state {
+            case .ready(let uploaded):
                 item.state = .ready(uploaded)
                 if item.releasesBytesAfterUpload { item.data = Data() }
             case .pending:
@@ -438,6 +460,7 @@ struct AttachmentBatch: Sendable {
             restored.append(item)
         }
         items = restored
+        restoreSizeMismatches = sizeMismatches
     }
 
     func payload(for sessionID: String) throws -> [UploadedAttachment] {
