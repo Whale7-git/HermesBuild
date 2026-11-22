@@ -1,5 +1,3 @@
-<!-- hermes-auto-release -->
-
 ## Problem
 
 Describe the user-visible issue and how to reproduce it.
@@ -43,12 +41,12 @@ compatibility risks. Explain how to roll back.
 
 ## Automatic release policy
 
-Versioned iOS PRs with the marker above, only approved product/test files, and
+Versioned iOS PRs with only approved product/test files, and
 both exact-head CI workflows fully green will automatically leave Draft, merge to
 main, and explicitly start promotion of the already verified candidate IPA.
 No extra compilation or interactive ChatGPT session is needed.
 
-To keep a PR pending, remove the marker or add one of these labels:
+To keep a PR pending, add one of these labels:
 `hold`, `manual-review`, `no-auto-release`. CI/automation edits, non-release
 changes, and failed tests never auto-merge. Physical-device testing remains
 separate and is not claimed by green CI.
