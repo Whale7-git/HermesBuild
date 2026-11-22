@@ -689,10 +689,17 @@ expect(turnReading.phase == .settled,
 expect(turnReading.target(contentBottom: 1400, rowTop: 140, viewport: 400) == 450,
        "late Markdown measurement cannot move a completed answer")
 turnReading.userBeganReading()
-expect(turnReading.phase == .manualReading && turnReading.rowID == nil,
-       "user drag cancels automated focus")
+expect(turnReading.phase == .manualReading && turnReading.rowID == "m-user-1",
+       "user drag cancels automated focus but retains a geometric reserve anchor")
 expect(turnReading.target(contentBottom: 1500, rowTop: 140, viewport: 400) == nil,
        "post-drag server updates cannot steal focus")
+expect(turnReading.contentHeight(contentBottom: 1500, viewport: 400) >= 850,
+       "manual reading retains the virtual bottom reserve instead of snapping UIKit offset")
+turnReading.replyCompleted()
+expect(turnReading.phase == .manualReading && turnReading.rowID == "m-user-1",
+       "finishing a stream cannot revoke manual reading or suddenly shrink the reserve")
+expect(turnReading.target(contentBottom: 1560, rowTop: 140, viewport: 400) == nil,
+       "late final Markdown measurement cannot return to automatic follow")
 turnReading.focus(rowID: "m-user-2", rowTop: 1650, contentBottom: 1740, viewport: 700)
 expect(turnReading.phase == .focusingTurn,
        "next new user question begins a new reading phase")
