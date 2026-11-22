@@ -893,6 +893,7 @@ enum AttachmentFileImport {
     }
     /// Draft selection is local only. No gateway file is created until send.
     @discardableResult func add(name: String, mime: String, data: Data) throws -> UUID {
+        guard !data.isEmpty else { throw AttachmentError.invalidMetadata }
         let id = try batch.append(name:name, mime:mime, data:data)
         onChange?(batch)
         return id
@@ -970,6 +971,10 @@ enum AttachmentFileImport {
                 } catch {
                     if !(error is CancellationError || Task.isCancelled) {
                         self?.batch.fail(id, attempt: attempt, message: error.localizedDescription)
+                        // A failed preflight cannot submit a chat POST. Stop
+                        // the remaining transports instead of uploading more
+                        // unowned files after that failure.
+                        self?.cancelUploads()
                     }
                 }
                 // A cancelled/removed request cannot reclaim a slot or
