@@ -178,11 +178,11 @@ jobs:
           log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "xcodebuild-ui.log"
           text = log.read_text(errors="replace") if log.exists() else ""
           failed = sorted(set(re.findall(
-              r"Test Case '[^']*?([A-Za-z_][A-Za-z_0-9]*\\.test[A-Za-z_0-9]+)' failed", text)))
+              r"Test Case '[^']*?([A-Za-z_][A-Za-z_0-9]*\.test[A-Za-z_0-9]+)' failed", text)))
           lines = []
           for line in text.splitlines():
               if ("error:" in line and "UITests" in line and "XCTAssert" in line):
-                  line = re.sub(r"(?i)(bearer\\s+|token[=:]\\s*)\\S+", r"\\1[redacted]", line)
+                  line = re.sub(r"(?i)(bearer\s+|token[=:]\s*)\S+", r"\1[redacted]", line)
                   lines.append(line[-350:])
           outcome = os.environ["TEST_OUTCOME"]
           report = {"schema": 1, "shard": os.environ["TEST_SHARD"],
