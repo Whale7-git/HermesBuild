@@ -22,6 +22,10 @@ Build a state-transition and ownership table for every proposed correction: trig
 - Preserve draft and pending-send state through app suspension, account switch, view teardown and storage failure.
 - Server-labelled internal events are not equivalent to ordinary user messages; do not classify user text by a pasted envelope alone.
 
+## High-risk fixes are not human-review gates
+
+When a suspected correctness defect is actionable, implement the smallest safe fix and targeted deterministic regression in a linked product PR. Verify Run/Session identity, original POST non-replay, queue pause ownership, STOP acknowledgments, terminal-state distinction and persistent pending sends as relevant. Perform code-level agent self-review, then use the existing exact-head three-job CI and trusted auto-merge/promotion. No high-risk classification requires human review or approval. Hold only on a demonstrated failed/unverified critical invariant, failed checks or an explicit user pause; continue working on the same PR rather than treating an audit report as completion.
+
 ## Targeted regressions
 
 Start with `tests/model/PhaseTransitionTests.swift`, `tests/model/SendSafetyTests.swift`, `tests/model/PendingRecoveryTests.swift`, `tests/model/ActivityRecoveryTests.swift`, `tests/model/SendModeTests.swift`, `tests/scroll/` and matching gateway tests. Add focused tests for out-of-order responses, noncooperative cancellation, network uncertainty, terminal misclassification, instance switching and long history with many tool rows only if existing coverage is insufficient.

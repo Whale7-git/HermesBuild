@@ -28,6 +28,14 @@ In audit mode, deliver a prioritized evidence-backed issue register. In fix mode
 
 P0 = possible message loss, duplicate send, cross-session writes, data exposure or irreversible state failure. P1 = frequently broken interaction or proven major performance regression. P2 = isolated polish/inconsistency without a correctness impact. Do not infer P0 from visual style alone.
 
+## Risk and autonomous delivery policy
+
+The hourly agent follows **read Issues/PR/Release → choose one actionable Issue → verify an existing fix or implement a missing fix → linked PR → exact-head three CI jobs → auto-merge and publish → confirm Release and update/close Issue → continue next cycle**. Do not deliver only inspection notes when work is requested.
+
+Ordinary and high-risk iOS fixes use the **same no-human-review automatic delivery path**. High risk (Run/Session identity, uncertain POST, stop semantics, queue ownership or persistent state) requires additional deterministic safety regressions and code-level self-review **before** the green CI and trusted auto-merge; it does **not** require manual approval, a reviewer, or a blanket hold. If a concrete safety invariant remains unverified/failed, or CI fails, keep the PR and Issue open, document the evidence and continue fixing instead of forcing release. Verify exact Release IPA delivery before closing a fully fixed Issue.
+
+Privileged CI/workflow maintenance changes belong in a separate checked PR and agent-initiated explicit merge; no iOS product Release for maintenance-only work. Never silently widen the product autogate to privileged paths.
+
 ## Change constraints
 
 - Never push to `main`; use a change-specific branch and PR.
