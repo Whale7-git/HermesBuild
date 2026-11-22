@@ -293,22 +293,22 @@ private func gatewayEventMappingTests() throws {
     expect(err.first?.event == "apperror", "error maps to apperror")
     expect(payload(err[0])["message"] as? String == "boom", "apperror carries message")
 
-    // P0：终态收尾的白名单在 `GatewayBackend.streamNativeTurn` 里按**原始事件名**匹配，
-    // 与 `map` 的产出无关（map 失败也要清 run）。所以这里锁两件事：
-    //   1) 这两个名字必须真的映射成 apperror（否则用户看不到失败原因）；
-    //   2) `rawEventName` 必须原样吐出白名单里的字面量，且冲突帧返回空串
-    //      —— 空串不匹配白名单，伪造帧无法单独驱动收尾。
+    // The raw terminal whitelist is independent of mapping. Only "error"
+    // terminates here: replay.truncated is a cursor gap, not a completed Run.
+    // Preserve that distinction so an approval waiting on the same Run does
+    // not disappear just because the event replay window expired.
     let truncated = GatewayEventMap.map(frame("replay.truncated",
         #"{"event":"replay.truncated","run_id":"run_1"}"#, id: "11"))
-    expect(truncated.count == 1 && truncated[0].event == "apperror",
-           "replay.truncated maps to apperror")
-    expect(truncated.first?.id == "11", "replay.truncated keeps the SSE id")
+    expect(truncated.count == 1 && truncated[0].event == "replay_truncated",
+           "replay.truncated remains nonterminal")
+    expect(truncated.first?.id == nil,
+           "replay.truncated cannot overwrite the accepted SSE cursor")
     expect((payload(truncated[0])["message"] as? String)?.isEmpty == false,
            "replay.truncated explains that the replay window expired")
 
     expect(GatewayEventMap.rawEventName(of: frame("replay.truncated",
         #"{"event":"replay.truncated"}"#)) == "replay.truncated",
-           "raw name for replay.truncated matches the terminal whitelist literal")
+           "raw name preserves replay.truncated for nonterminal recovery handling")
     expect(GatewayEventMap.rawEventName(of: frame("error",
         #"{"event":"error","message":"boom"}"#)) == "error",
            "raw name for error matches the terminal whitelist literal")
