@@ -424,6 +424,9 @@ extension NativeChatModel {
                 probeAcceptedRun(receipt)
             }
         }
+        if let controls = snap.gatewayPendingControls, let activeRunID = snap.activeStreamID {
+            restorePendingControls(controls, runID: activeRunID)
+        }
         authenticationReported = false
         // 收到权威快照即证明登录有效、且已脱离「只显示磁盘历史」的缓存态。
         // 相位落到与 `active_stream_id` 一致的终态：有活跃流就是流式（尚未收到帧），
