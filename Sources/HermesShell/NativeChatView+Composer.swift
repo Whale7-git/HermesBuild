@@ -32,11 +32,15 @@ extension NativeChatView {
                 // Lock the composer across this preflight to avoid a second
                 // tap or overwriting newly typed text during an await.
                 guard !preparingAttachmentSend else { return }
+                let ticket = UUID()
+                attachmentSendTicket = ticket
                 preparingAttachmentSend = true
                 attachmentSendTask = Task {
                     defer {
-                        preparingAttachmentSend = false
-                        attachmentSendTask = nil
+                        if attachmentSendTicket == ticket {
+                            preparingAttachmentSend = false
+                            attachmentSendTask = nil
+                        }
                     }
                     let payloads: [ChatAttachmentPayload]
                     do {
@@ -52,6 +56,13 @@ extension NativeChatView {
                     } catch {
                         if visible { showToast(error.localizedDescription) }
                         return
+                    }
+                    // The preflight is complete. Detach the chat POST from
+                    // cancellation on view disappearance: a submitted POST is
+                    // owned by the model's uncertain-delivery reconciliation.
+                    if attachmentSendTicket == ticket {
+                        attachmentSendTask = nil
+                        preparingAttachmentSend = false
                     }
                     syncedDraft = text
                     model.draft = text
@@ -80,8 +91,10 @@ extension NativeChatView {
                     isLocked: model.submitting || model.reconciling || !model.canSend || preparingAttachmentSend,
                     showsItems: false, launchPicker: attachmentPickerTrigger)
             ),
-            readOnlyMessage: model.cachedHistoryDate != nil
-                ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil,
+            readOnlyMessage: preparingAttachmentSend
+                ? "正在上传附件，尚未提交消息…"
+                : (model.cachedHistoryDate != nil
+                    ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil),
             // Silent verified cache warmup; the editor still stays read-only
             // until the server GET establishes authority. Keep all problems
             // visible as actionable, persistent UI states.
