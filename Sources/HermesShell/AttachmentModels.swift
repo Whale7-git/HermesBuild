@@ -855,6 +855,11 @@ enum AttachmentFileImport {
     private(set) var batch: AttachmentBatch
     var onChange: (@MainActor (AttachmentBatch) -> Void)?
     private let upload: Upload
+    /// Only two multipart bodies may be built/sent concurrently. Eight large
+    /// drafts already consume the composer byte budget; eight parallel uploads
+    /// could double it in transport buffers and overwhelm a weak network.
+    private let maxConcurrentUploads = 2
+    private var waiting: [UUID] = []
     private var tasks: [UUID: (attempt: UUID, task: Task<Void, Never>)] = [:]
     init(sessionID: String, upload: @escaping Upload) {
         self.batch = AttachmentBatch(sessionID:sessionID)
@@ -869,47 +874,68 @@ enum AttachmentFileImport {
         return id
     }
     func retry(_ id: UUID) throws {
-        let attempt = try batch.begin(id)
-        guard let draft = batch.items.first(where:{$0.id == id}) else { return }
-        let sessionID = batch.sessionID
-        onChange?(batch)
-        let task = Task { [weak self, upload] in
-            do {
-                // 进度回调落在 MainActor 上（batch 是 MainActor 状态），
-                // 上传器那边是任意线程，所以显式跳回主线程。
-                let attachment = try await upload(sessionID, draft) { [weak self] fraction in
-                    self?.batch.progress(id, attempt: attempt, fraction: fraction)
-                    if let self { self.onChange?(self.batch) }
-                }
-                try Task.checkCancellation()
-                self?.batch.complete(id, attempt:attempt, attachment:attachment)
-            } catch {
-                // 取消不是失败：用户移除附件、换会话、离开页面都会走到这里。
-                // 交给 batch.fail 会把「操作已取消」渲染成红色失败态（F-69）。
-                // 非取消的真实错误仍然要 fail，用户需要看到失败与重试入口。
-                if !(error is CancellationError || Task.isCancelled) {
-                    self?.batch.fail(id, attempt:attempt, message:error.localizedDescription)
-                }
-            }
-            if self?.tasks[id]?.attempt == attempt { self?.tasks.removeValue(forKey:id) }
-            if let self { self.onChange?(self.batch) }
+        guard let draft = batch.items.first(where: { $0.id == id }) else {
+            throw AttachmentError.invalidMetadata
         }
-        tasks[id] = (attempt, task)
+        switch draft.state {
+        case .queued, .failed: break
+        default: throw AttachmentError.invalidMetadata
+        }
+        guard tasks[id] == nil, !waiting.contains(id) else { return }
+        waiting.append(id)
+        onChange?(batch)
+        startQueuedIfPossible()
+    }
+    private func startQueuedIfPossible() {
+        while tasks.count < maxConcurrentUploads, !waiting.isEmpty {
+            let id = waiting.removeFirst()
+            guard let draft = batch.items.first(where: { $0.id == id }) else { continue }
+            let attempt: UUID
+            do { attempt = try batch.begin(id) } catch { continue }
+            let sessionID = batch.sessionID
+            onChange?(batch)
+            let task = Task { [weak self, upload] in
+                do {
+                    let attachment = try await upload(sessionID, draft) { [weak self] fraction in
+                        self?.batch.progress(id, attempt: attempt, fraction: fraction)
+                        if let self { self.onChange?(self.batch) }
+                    }
+                    try Task.checkCancellation()
+                    self?.batch.complete(id, attempt: attempt, attachment: attachment)
+                } catch {
+                    if !(error is CancellationError || Task.isCancelled) {
+                        self?.batch.fail(id, attempt: attempt, message: error.localizedDescription)
+                    }
+                }
+                // A cancelled/removed request cannot reclaim a slot or
+                // mutate the batch of a subsequent session.
+                if let self, self.tasks[id]?.attempt == attempt {
+                    self.tasks.removeValue(forKey: id)
+                    self.startQueuedIfPossible()
+                }
+                if let self { self.onChange?(self.batch) }
+            }
+            tasks[id] = (attempt, task)
+        }
     }
     func replace(_ id: UUID, name: String, mime: String, data: Data) throws {
         try batch.replace(id, name: name, mime: mime, data: data)
+        waiting.removeAll { $0 == id }
         tasks.removeValue(forKey: id)?.task.cancel()
         try retry(id)
     }
     func remove(_ id: UUID) {
-        tasks.removeValue(forKey:id)?.task.cancel()
+        waiting.removeAll { $0 == id }
+        tasks.removeValue(forKey: id)?.task.cancel()
         batch.remove(id)
+        startQueuedIfPossible()
         onChange?(batch)
     }
     func reset(sessionID: String) {
         for value in tasks.values { value.task.cancel() }
         tasks.removeAll()
-        batch.reset(sessionID:sessionID)
+        waiting.removeAll()
+        batch.reset(sessionID: sessionID)
         onChange?(batch)
     }
     /// P1：恢复一批已在服务端的附件引用（编辑队列项时调用）。
