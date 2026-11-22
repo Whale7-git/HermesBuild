@@ -418,6 +418,8 @@ def violations(contents: dict[str, str]) -> list[str]:
     if "suppressVerticalScroll: browserSessionOpen" not in root or (
         "&& (sessionBackDrag.claimed || settlingPage == .chat)" not in root):
         failures.append("RootView: browser page return scroll gate missing")
+    if "actualTranslation: Double(value.translation.width)" not in root:
+        failures.append("RootView: sidebar release must supply real finger travel")
     if "在浏览器打开" in chrome or "Link(destination: webURL)" in chrome:
         failures.append("Chrome: external browser action was reintroduced")
     if "self.webURL =" in chat or "let webURL: URL" in chat:
