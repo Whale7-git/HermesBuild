@@ -208,9 +208,9 @@ def main() -> int:
     selected = json.loads(args.selection.read_text(encoding="utf-8"))
     require(os.environ.get("GITHUB_REPOSITORY") == "Whale7-git/HermesBuild",
             "promotion requires Whale7-git/HermesBuild")
-    require(os.environ.get("GITHUB_EVENT_NAME") == "push"
+    require(os.environ.get("GITHUB_EVENT_NAME") in ("push", "workflow_dispatch")
             and os.environ.get("GITHUB_REF") == "refs/heads/main",
-            "promotion requires a main push")
+            "promotion requires a main push or verified main workflow dispatch")
     require(os.environ.get("GITHUB_SHA") == selected["main_sha"],
             "workflow SHA differs from selected main commit")
     root_tree = subprocess.check_output(
