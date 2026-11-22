@@ -9,6 +9,7 @@ enum SessionTaskSignal: String, Codable, CaseIterable, Sendable {
     case waitingForClarify
     case stopping
     case needsVerification
+    case sendNotFound
     case recoveryIssue
 }
 
@@ -116,7 +117,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
     var id: String { sessionID }
     var needsAttention: Bool {
         signals.contains(.waitingForApproval) || signals.contains(.waitingForClarify)
-            || signals.contains(.needsVerification)
+            || signals.contains(.needsVerification) || signals.contains(.sendNotFound)
             || signals.contains(.recoveryIssue)
     }
     var isRunning: Bool {
@@ -127,7 +128,8 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "等待你确认" }
         if signals.contains(.waitingForClarify) { return "等待你补充信息" }
         if signals.contains(.recoveryIssue) { return "后台恢复需处理" }
-        if signals.contains(.needsVerification) { return "发送结果待核对" }
+        if signals.contains(.sendNotFound) { return "消息未送达" }
+        if signals.contains(.needsVerification) { return "后台状态核对中" }
         if signals.contains(.stopping) { return "正在停止" }
         return "正在处理"
     }
@@ -136,7 +138,8 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "回复停在审批步骤" }
         if signals.contains(.waitingForClarify) { return "Hermes 正在等待你的回答" }
         if signals.contains(.recoveryIssue) { return "检查恢复记录后继续" }
-        if signals.contains(.needsVerification) { return "确认前不会自动重发" }
+        if signals.contains(.sendNotFound) { return "已核对服务端历史；可返回会话决定是否重试，不会自动重发" }
+        if signals.contains(.needsVerification) { return "App 会在前台自动核对；状态不明时不会重复发送" }
         if signals.contains(.stopping) { return "等待服务端确认" }
         return "后台仍在运行"
     }
@@ -145,9 +148,50 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "hand.raised.fill" }
         if signals.contains(.waitingForClarify) { return "text.bubble.fill" }
         if signals.contains(.recoveryIssue) { return "exclamationmark.triangle.fill" }
-        if signals.contains(.needsVerification) { return "paperplane.badge.clock" }
+        if signals.contains(.sendNotFound) { return "paperplane.circle" }
+        if signals.contains(.needsVerification) { return "arrow.triangle.2.circlepath.circle" }
         if signals.contains(.stopping) { return "stop.circle.fill" }
         return "waveform"
+    }
+}
+
+enum SessionTaskBackgroundDecision: Equatable {
+    case active
+    case resolved
+    case sendNotFound
+    case needsVerification
+    case recoveryIssue
+}
+
+/// Pure decision policy for the foreground reconciler. Unknown and unresolved
+/// status can never clear a send/run receipt or manufacture a terminal result.
+enum SessionTaskBackgroundPolicy {
+    static func decide(runState: ActiveRunState,
+                       storageReadable: Bool,
+                       hasPendingSend: Bool,
+                       pendingResult: PendingReconcileResult?,
+                       hasAcceptedRun: Bool,
+                       acceptedRunMatchesActive: Bool,
+                       acceptedRunCompleted: Bool) -> SessionTaskBackgroundDecision {
+        guard storageReadable else { return .recoveryIssue }
+        switch runState {
+        case .unknown, .unresolved:
+            return .needsVerification
+        case .active:
+            if hasPendingSend && !acceptedRunMatchesActive { return .needsVerification }
+            if hasAcceptedRun && !acceptedRunMatchesActive { return .needsVerification }
+            return .active
+        case .absent:
+            if hasPendingSend {
+                switch pendingResult {
+                case .delivered: break
+                case .absent: return .sendNotFound
+                case .failed, .none: return .needsVerification
+                }
+            }
+            if hasAcceptedRun && !acceptedRunCompleted { return .needsVerification }
+            return .resolved
+        }
     }
 }
 

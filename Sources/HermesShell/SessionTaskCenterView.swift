@@ -97,59 +97,68 @@ struct SessionTaskCenterView: View {
         }
     }
 
-    /// 一行任务。
-    ///
-    /// 整行不再是 `Button`：SwiftUI 里 `Button` 嵌套 `Button` 会让内层点击失效。
-    /// 改为行主体 `onTapGesture`，「标记已处理」保持独立可点。
+    /// Acknowledgeable rows keep the destructive/acknowledgement control separate.
+    /// Every other row is one native Button, including its trailing chevron, so
+    /// the whole card has a single reliable hit target.
     @ViewBuilder
     private func row(_ summary: SessionTaskSummary, acknowledgeable: Bool) -> some View {
         if let session = sessionsByID[summary.sessionID] {
-            HStack(alignment: .top, spacing: 12) {
+            if acknowledgeable {
                 HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: summary.icon)
-                        .foregroundStyle(summary.needsAttention ? AppTheme.warning : AppTheme.accent)
-                        .frame(width: 36, height: 36)
-                        .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(session.displayTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                        Text(summary.detail)
-                            .font(.caption)
-                            .foregroundStyle(summary.needsAttention ? AppTheme.warning : Color.secondary)
-                        if let date = session.updatedDate {
-                            Text(ChatPresentation.shortAge(date))
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                }
-                .frame(minHeight: 64)
-                .contentShape(Rectangle())
-                // The presenting owner performs the single dismissal and
-                // the post-dismissal navigation. Do not dismiss twice here.
-                .onTapGesture { onSelect(session) }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(session.displayTitle)，\(summary.title)，\(summary.detail)")
-                .accessibilityHint("打开对应会话")
-                .accessibilityAddTraits(.isButton)
-
-                if acknowledgeable {
+                    rowContent(summary, session: session)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onSelect(session) }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(session.displayTitle)，\(summary.title)，\(summary.detail)")
+                        .accessibilityHint("打开对应会话")
+                        .accessibilityAddTraits(.isButton)
                     acknowledgeButton(sessionID: summary.sessionID,
                                       signal: .recoveryIssue,
                                       title: session.displayTitle)
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 5)
-                        .accessibilityHidden(true)
                 }
+            } else {
+                Button { onSelect(session) } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        rowContent(summary, session: session)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 5)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(session.displayTitle)，\(summary.title)，\(summary.detail)")
+                .accessibilityHint("打开对应会话")
             }
         }
+    }
+
+    private func rowContent(_ summary: SessionTaskSummary, session: SessionSummary) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: summary.icon)
+                .foregroundStyle(summary.needsAttention ? AppTheme.warning : AppTheme.accent)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.softFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(session.displayTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(summary.detail)
+                    .font(.caption)
+                    .foregroundStyle(summary.needsAttention ? AppTheme.warning : Color.secondary)
+                if let date = session.updatedDate {
+                    Text(ChatPresentation.shortAge(date))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+        }
+        .frame(minHeight: 64)
     }
 
     /// 「标记已处理」。只在恢复问题上出现——审批和待核对必须等服务端事实。

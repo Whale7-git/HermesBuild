@@ -243,9 +243,12 @@ struct NativeChatView: View {
         // 否则用户会以为任务卡死。
         if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
         if model.stopping { signals.insert(.stopping) }
+        if model.hasPendingSend && model.pendingAbsent {
+            signals.insert(.sendNotFound)
+        }
         if model.uncertain || model.activeRecoveryUnreadable
             || (model.activeTurnRecovery != nil && !model.running)
-            || (model.hasPendingSend && !model.submitting) {
+            || (model.hasPendingSend && !model.pendingAbsent && !model.submitting) {
             signals.insert(.needsVerification)
         }
         if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil
