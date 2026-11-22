@@ -782,6 +782,20 @@ extension NativeChatModel {
                             self.trimLoadedMessages()
                         }
                         self.lastEventID = self.buffer.lastEventID
+                        if frame.event == "replay_truncated" {
+                            // The gateway's replay window expired while the
+                            // accepted Run may still be live (possibly waiting
+                            // for user approval). Never settle it as a failure,
+                            // discard actionable cards, or send queued turns.
+                            // A stale Last-Event-ID would trigger the same gap
+                            // on the next reconnect; start the next read-only
+                            // recovery from the newest authoritative state.
+                            self.lastEventID = nil
+                            self.buffer.lastEventID = nil
+                            self.uncertain = true
+                            self.pauseQueueForRecovery()
+                            self.notice = "续传记录已过期，已保留消息和待处理卡片；后台状态待核对，发送保持锁定。"
+                        }
                         if frame.event == "approval" {
                             // run 挂在服务端等这一票。能认出请求就出卡片；
                             // 认不出（老版本后端只给一句话）退回文字提示，别出空卡片。

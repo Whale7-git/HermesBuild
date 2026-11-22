@@ -838,6 +838,13 @@ struct ChatTranscript {
                                       isError: payload["is_error"] as? Bool ?? false,
                                       afterMessageID: anchor))
             }
+        case "replay_truncated":
+            // A lost SSE replay window is a recovery hint, not a Run failure.
+            // Preserve any already-rendered assistant text and pending approval
+            // notice until scoped GET proves the actual terminal state.
+            if notice == nil {
+                notice = "回复续传窗口已过期，后台状态需重新核对。"
+            }
         case "approval", "clarify":
             let payload = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any] ?? [:]
             approvalRequestID = frame.event == "approval" ? payload["request_id"] as? String : nil

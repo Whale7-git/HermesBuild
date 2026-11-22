@@ -92,7 +92,11 @@ enum GatewayEventMap {
             return emit("approval_resolved", payload, id: frame.id)
 
         case "replay.truncated":
-            return emit("apperror", ["message": "回复续传窗口已过期，请刷新核对完整历史"], id: frame.id)
+            // A replay-window gap says nothing about the Run's terminal state.
+            // In particular, it can still be waiting for an approval. Never
+            // translate it to a terminal apperror or advance the SSE cursor.
+            return emit("replay_truncated",
+                        ["message": "回复续传窗口已过期，需要只读核对后台状态"], id: nil)
 
         case "approval.request":
             // 用户要看着这条描述做决定，描述按 description → command → tool 依次兜底。

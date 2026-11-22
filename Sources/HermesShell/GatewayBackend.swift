@@ -662,7 +662,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // 若把 finish 嵌在循环里，坏帧会让 run 永远悬挂（下次启动锁发送）。
         let terminalRawNames: Set<String> = [
             "run.completed", "run.cancelled", "run.interrupted", "run.failed",
-            "replay.truncated", "error"
+            "error"
         ]
         try await transport.events(for: request) { frame in
             let rawName = GatewayEventMap.rawEventName(of: frame)
