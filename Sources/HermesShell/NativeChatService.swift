@@ -16,6 +16,7 @@ enum RunTerminalStatus: String, Equatable, Sendable {
 enum ActiveRunProbe: Equatable, Sendable {
     case alive
     case terminal(RunTerminalStatus)
+    case unresolved
     case unknown
 }
 

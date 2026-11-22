@@ -39,6 +39,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// converts repeated 404/unknown/5xx/malformed/network failures to a
     /// user-visible verification error while retaining the durable run ID.
     private var failedRunProbes: [String: Int] = [:]
+    private var notFoundProbes: [String: Int] = [:]
     private var nextRunProbeAt: [String: TimeInterval] = [:]
     private static let maxFailedRunProbes = 5
 
@@ -311,14 +312,18 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // Run-status lookup is a recovery hint, not a prerequisite for reading
         // history. A transient /v1/runs failure must not prevent the user from
         // loading the canonical transcript that can prove completion.
-        let active = try await activeRunForHistory(sessionID: sessionID)
+        let evidence = try await activeRunForHistory(sessionID: sessionID)
+        let active: String?
+        if case .active(let runID) = evidence { active = runID } else { active = nil }
         let window = try await historyReader.read(sessionID: sessionID, before: before,
                                                    requests: requests, load: perform)
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
-                                          activeRunID: active, requestedSessionID: sessionID)
+                                          activeRunID: active, requestedSessionID: sessionID,
+                                          runStatusUnknown: evidence == .unknown)
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if runStore.unresolvedRunID(for: sessionID) == runID { return .unresolved }
         let now = Date().timeIntervalSince1970
         if let retryAt = nextRunProbeAt[runID], now < retryAt {
             return .unknown
@@ -327,8 +332,12 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404 {
+                    return recordRunNotFound(runID: runID, sessionID: sessionID)
+                        ? .unresolved : .unknown
+                }
             }
             return recordProbeFailure(runID: runID)
         } catch {
@@ -377,8 +386,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error // Credential errors must not be hidden as "running".
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404, recordRunNotFound(runID: runID, sessionID: sessionID) {
+                    return nil // Local running indicator retired; receipt remains unresolved.
+                }
             }
             return try unresolvedRun(runID: runID)
         } catch {
@@ -413,54 +425,72 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// Return no active ID so completed history can reconcile, while the durable
     /// run-store entry remains available for a later bounded probe. Authentication
     /// and cancellation still abort.
-    private func activeRunForHistory(sessionID: String) async throws -> String? {
-        guard let runID = runStore.runID(for: sessionID) else { return nil }
+    private func activeRunForHistory(sessionID: String) async throws -> ActiveRunEvidence {
+        guard let runID = runStore.runID(for: sessionID) else {
+            return runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown
+        }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
-            return nil
+            return .unknown
         }
         let data: Data
         do {
             data = try await perform(requests.runStatus(runID: runID))
         } catch let error as APIError {
-            if case .http(let code, _) = error, code == 401 || code == 403 {
-                throw error
+            if case .http(let code, _) = error {
+                if code == 401 || code == 403 { throw error }
+                if code == 404 {
+                    _ = recordRunNotFound(runID: runID, sessionID: sessionID)
+                    return .unknown
+                }
             }
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         } catch let error as CancellationError {
             throw error
         } catch {
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               root["run_id"] as? String == runID,
               root["session_id"] as? String == sessionID,
               let status = root["status"] as? String else {
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
         guard runStore.runID(for: sessionID) == runID else {
-            return nil
+            return .unknown
         }
         switch status {
         case "queued", "running", "waiting_for_approval", "stopping":
             clearFailedRunProbes(runID: runID)
-            return runID
+            return .active(runID)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
             runStore.finish(runID: runID)
-            return nil
+            return .absent
         default:
             _ = recordProbeFailure(runID: runID)
-            return nil
+            return .unknown
         }
     }
 
     private func clearFailedRunProbes(runID: String) {
+        notFoundProbes.removeValue(forKey: runID)
         failedRunProbes.removeValue(forKey: runID)
         nextRunProbeAt.removeValue(forKey: runID)
+    }
+
+    /// Only real 404 responses contribute to the bounded not-found window.
+    /// A transport error/5xx has no authority to retire a Run.
+    private func recordRunNotFound(runID: String, sessionID: String) -> Bool {
+        let attempts = min(3, (notFoundProbes[runID] ?? 0) + 1)
+        notFoundProbes[runID] = attempts
+        guard attempts >= 3,
+              runStore.markUnresolved(runID: runID, sessionID: sessionID) else { return false }
+        clearFailedRunProbes(runID: runID)
+        return true
     }
 
     private func recordProbeFailure(runID: String) -> ActiveRunProbe {

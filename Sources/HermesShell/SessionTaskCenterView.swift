@@ -146,6 +146,9 @@ struct SessionTaskCenterView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .padding(.top, 5)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onSelect(session) }
                         .accessibilityHidden(true)
                 }
             }
