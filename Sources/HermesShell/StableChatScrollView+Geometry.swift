@@ -47,10 +47,14 @@ extension ChatScrollController {
         // feed SwiftUI's following state back into another geometry commit.
         // During a live drag/deceleration/interactive keyboard pan, UIScrollView
         // is authoritative; the pending layout is reconciled when motion ends.
+        // UIKit can clamp contentOffset synchronously when contentSize changes.
+        // Re-read the actual offset after resizing: comparing against the
+        // pre-resize value can incorrectly skip restoring a manual anchor.
+        let offsetAfterResize = Double(scrollView.contentOffset.y)
         if ChatOffsetCommitPolicy.shouldAssign(
-            current: beforeCommitOffset, target: offset, interacting: inMotion) {
+            current: offsetAfterResize, target: offset, interacting: inMotion) {
             ChatPerformanceRecorder.shared.recordScrollAdjustment(
-                reason: "commit", from: beforeCommitOffset, to: offset,
+                reason: "commit", from: offsetAfterResize, to: offset,
                 viewport: Double(scrollView.bounds.height),
                 following: policy.following && navigationTarget == nil, moving: inMotion)
             scrollView.contentOffset = CGPoint(x: 0, y: offset)
