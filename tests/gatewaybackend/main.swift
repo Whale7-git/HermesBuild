@@ -492,7 +492,11 @@ actor ConcurrencyProbe {
         check(emptyControlHistory.gatewayPendingControls?.frames.isEmpty == true
               && emptyControlHistory.gatewayPendingControls?.hasIncompleteControl == false,
               "live Gateway empty control set clears stale approval/clarification cards")
+        // Running without pending_controls is an older/unsupported Gateway.
+        // A waiting_for_clarification state without that field is different:
+        // it must be marked incomplete to preserve the send lock.
         transport.pendingControls = nil
+        transport.status = "running"
         let unsupportedControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
         check(unsupportedControlHistory.gatewayPendingControls.map { $0.frames.count } == nil,
               "older Gateway without pending_controls does not fabricate an empty set")
