@@ -604,7 +604,14 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // 404/409 and transport failures. None of those responses proves a
         // terminal Run, so the durable Run identity must remain untouched.
         defer { clearFailedRunProbes(runID: streamID) }
-        _ = try await perform(try requests.stopRun(runID: streamID))
+        do {
+            _ = try await perform(try requests.stopRun(runID: streamID))
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 404 || code == 409 {
+                throw ChatStopHTTPError.rejected(code)
+            }
+            throw error
+        }
         // A 2xx is an acknowledgement, not a terminal state. Keep the record
         // until GET status and final history confirm the exact Run has ended.
     }
