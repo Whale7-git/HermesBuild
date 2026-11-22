@@ -332,6 +332,15 @@ def violations(contents: dict[str, str]) -> list[str]:
                   "AppTheme.radiusComposer"):
         if token not in composer:
             failures.append(f"Chat composer polish/IME stability missing: {token}")
+    # build219: mode switching must not insert a second composer row.
+    # A source-level contract protects the fixed action rail; the simulator
+    # verifies the measured editor and first-responder behaviour.
+    if "if !readOnly && running {" in composer:
+        failures.append("Running-mode selector cannot add a variable-height composer row")
+    if composer.count("if running { sendModePicker }") != 1:
+        failures.append("Running-mode selector must occupy exactly one existing action slot")
+    if "onMetricsChange: receiveMetrics" in composer:
+        failures.append("Unused UIKit line metrics must not invalidate the composer state")
     for token in ("minimumUTF16Length = 1000", "!isStreaming && showsCopy"):
         if token not in shortcutPolicy:
             failures.append(f"Inline reading shortcut must stay bounded: {token}")
