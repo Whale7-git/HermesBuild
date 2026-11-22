@@ -162,6 +162,46 @@ jobs:
               --only-failures || true
           fi
 
+      # Compact and bounded test evidence is consumed by a trusted main-only
+      # workflow_run triager. Never give PR-controlled scripts an Issues token.
+      - name: Prepare structured simulator evidence
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.ui_gestures.outcome }}
+          TEST_SHARD: ${{ matrix.shard }}
+          TEST_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TEST_RUN: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "xcodebuild-ui.log"
+          text = log.read_text(errors="replace") if log.exists() else ""
+          failed = sorted(set(re.findall(
+              r"Test Case '[^']*?([A-Za-z_][A-Za-z_0-9]*\\.test[A-Za-z_0-9]+)' failed", text)))
+          lines = []
+          for line in text.splitlines():
+              if ("error:" in line and "UITests" in line and "XCTAssert" in line):
+                  line = re.sub(r"(?i)(bearer\\s+|token[=:]\\s*)\\S+", r"\\1[redacted]", line)
+                  lines.append(line[-350:])
+          outcome = os.environ["TEST_OUTCOME"]
+          report = {"schema": 1, "shard": os.environ["TEST_SHARD"],
+                    "run_id": os.environ["TEST_RUN"], "sha": os.environ["TEST_SHA"],
+                    "outcome": outcome, "failed_tests": failed[:30],
+                    "assertions": lines[-15:]}
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "simulator-report.json"
+          out.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+          PY
+
+      - name: Upload compact simulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-ui-triage-${{ github.run_id }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/simulator-report.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Record exact-commit simulator gold result
         if: always()
         shell: bash
