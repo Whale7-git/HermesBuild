@@ -340,6 +340,18 @@ actor ConcurrencyProbe {
         check(ignoredFrames.isEmpty, "a malformed non-terminal frame produces no app frame")
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == run,
               "a malformed non-terminal frame must not retire a live run")
+        // T-07: a replay-gap is NOT proof that a waiting approval has finished.
+        transport.frames = [SSEFrame(event: "replay.truncated",
+            data: #"{"event":"replay.truncated","run_id":"run-fixture"}"#, id: "10")]
+        var replayGapEvents: [String] = []
+        try await restarted.streamNativeTurn(streamID: run, lastEventID: "9") { frame in
+            replayGapEvents.append(frame.event)
+            return true
+        }
+        check(replayGapEvents == ["replay_truncated"],
+              "replay gap is delivered as nonterminal recovery notice")
+        check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == run,
+              "replay gap must not retire an accepted Run or its approval")
         // 该记录留到后面的 removeAll 一起清；成功 stop 只是「已受理」，按设计不清记录。
         transport.manySessions = true
         let all = try await restarted.sessions()

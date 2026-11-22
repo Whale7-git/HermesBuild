@@ -1399,6 +1399,36 @@ func expectUnified(_ condition: @autoclosure () -> Bool, _ message: String) {
         try await gatewayCredentialTests()
         try await gatewayKeyScopeRaceTests()
         try await instanceEditingTests()
+        // #89: a delayed cross-session GET cannot retire a newer accepted Run
+        // or a pending POST written while the read was in flight.
+        let originalReceipt = Data("run-1".utf8)
+        let replacementReceipt = Data("run-2".utf8)
+        precondition(SessionRecoveryCoordinator.mayRetireStoredReceipt(
+            expected: originalReceipt, current: originalReceipt, pendingIsEmpty: true),
+            "unchanged receipt may retire after authoritative terminal proof")
+        precondition(!SessionRecoveryCoordinator.mayRetireStoredReceipt(
+            expected: originalReceipt, current: replacementReceipt, pendingIsEmpty: true),
+            "stale GET cannot erase a newer accepted Run")
+        precondition(!SessionRecoveryCoordinator.mayRetireStoredReceipt(
+            expected: originalReceipt, current: originalReceipt, pendingIsEmpty: false),
+            "stale GET cannot erase accepted receipt while a new POST is pending")
+        precondition(!SessionRecoveryCoordinator.mayRetireStoredReceipt(
+            expected: originalReceipt, current: nil, pendingIsEmpty: true),
+            "already-cleared receipt cannot be retired again")
+        // A slow GET cannot retire a receipt after the exclusive foreground
+        // verification window even when history otherwise matches.
+        let recoveryCutoff = Date(timeIntervalSince1970: 1_700_000_030)
+        precondition(SessionRecoveryCoordinator.withinVerificationWindow(
+            now: recoveryCutoff.addingTimeInterval(-0.001), deadline: recoveryCutoff),
+            "in-window terminal proof may be considered")
+        precondition(!SessionRecoveryCoordinator.withinVerificationWindow(
+            now: recoveryCutoff, deadline: recoveryCutoff),
+            "deadline is exclusive; a timed-out GET must not commit")
+        precondition(!SessionRecoveryCoordinator.withinVerificationWindow(
+            now: recoveryCutoff.addingTimeInterval(45), deadline: recoveryCutoff),
+            "very late GET cannot retire a receipt or clear task attention")
+        print("RECOVERY_WINDOW_PASS before, at and after deadline")
+        print("RECOVERY_RECEIPT_RACE_PASS same-run, replacement, pending and cleared")
         print("APPSTATE_PASS stale list/create isolation, session actions, account isolation, authentication retirement and awaited coalesced refresh")
     }
 }

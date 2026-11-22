@@ -21,6 +21,19 @@ final class SessionRecoveryCoordinator {
             snapshot.activeRunEvidence == .absent
     }
 
+    /// A foreground GET may finish after a new send/Run receipt is saved. Only
+    /// retire the exact original receipt while no new pending POST exists.
+    static func mayRetireStoredReceipt(expected: Data, current: Data?,
+                                       pendingIsEmpty: Bool) -> Bool {
+        pendingIsEmpty && current == expected
+    }
+
+    /// Expired foreground probes must not mutate receipts or task-center state.
+    /// A slow but successful GET is still stale after the bounded window.
+    static func withinVerificationWindow(now: Date, deadline: Date) -> Bool {
+        now < deadline
+    }
+
     func schedule(api: HermesBackend,
                   instanceID: String, accountScope: String,
                   observations: [String: SessionTaskObservation],
@@ -46,7 +59,7 @@ final class SessionRecoveryCoordinator {
             // Serial work prevents burst polling on foreground transitions.
             for (sessionID, observation) in candidates {
                 guard !Task.isCancelled, self.ticket == owner,
-                      Date() < deadline else { return }
+                      Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
                 let key = instanceID + "|" + accountScope + "|" + sessionID
                 self.attempted[key] = Date()
                 let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
@@ -64,10 +77,12 @@ final class SessionRecoveryCoordinator {
                 do {
                     let run = try await api.probeActiveRun(sessionID: sessionID,
                                                             runID: receipt.runID)
-                    guard !Task.isCancelled, self.ticket == owner else { return }
+                    guard !Task.isCancelled, self.ticket == owner,
+                          Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
                     guard case .terminal(.completed) = run else { continue }
                     let latest = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
+                          Self.withinVerificationWindow(now: Date(), deadline: deadline),
                           Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID),
                           let boundary = receipt.historyEnd else { continue }
                     var pages = [latest]
@@ -91,10 +106,21 @@ final class SessionRecoveryCoordinator {
                     // be confused with the accepted turn being verified.
                     let head = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
+                          Self.withinVerificationWindow(now: Date(), deadline: deadline),
                           Self.canRetireAcceptedReceipt(from: head, sessionID: sessionID),
                           head.rawMessageEndIndex == latest.rawMessageEndIndex,
                           head.messages.last?.id == latest.messages.last?.id else { continue }
-                    // Write durable receipt retirement before notifying AppState.
+                    // The GETs above may have awaited while another task
+                    // accepted a newer Run or persisted a pending original POST.
+                    // No await may occur between this recheck and the retirement
+                    // write: MainActor serialization prevents a lost update.
+                    let latestPending = store.loadPending()
+                    let latestReceipt = store.loadActiveRun()
+                    guard Self.withinVerificationWindow(now: Date(), deadline: deadline),
+                          latestPending.result.succeeded, latestReceipt.result.succeeded,
+                          Self.mayRetireStoredReceipt(
+                              expected: data, current: latestReceipt.value,
+                              pendingIsEmpty: latestPending.value == nil) else { continue }
                     guard store.saveActiveRun(nil).succeeded else { continue }
                     onVerified(sessionID, observation.version(for: .needsVerification))
                 } catch is CancellationError {

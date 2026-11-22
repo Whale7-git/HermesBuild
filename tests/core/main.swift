@@ -394,6 +394,12 @@ test("transcript_notices") {
     expect(t.notice?.contains("需要审批") == true, "approval requires explicit attention")
     expect(t.notice?.contains("Allow test command") == true, "approval description retained")
     expect(!t.terminal && t.failure == nil, "approval pauses, not completion or error")
+    let questionBeforeGap = t.notice
+    try t.apply(frame("replay_truncated", #"{"message":"window expired"}"#))
+    expect(!t.terminal && t.failure == nil,
+           "a replay gap never terminates an approval-waiting Run")
+    expect(t.notice == questionBeforeGap,
+           "an SSE replay gap must preserve an already actionable approval notice")
     try t.apply(frame("approval_resolved", #"{"request_id":"other"}"#, "other-answer"))
     expect(t.notice?.contains("需要审批") == true, "unrelated approval acknowledgement preserves the current notice")
     try t.apply(frame("approval_resolved", #"{"request_id":"synthetic"}"#, "answer"))

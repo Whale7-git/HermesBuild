@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "base_sha": "f1778a43c759975cf730c7df1f4e768c104ee72a",
+  "version": "2.53.3",
+  "build": 227,
+  "issues": [
+    {
+      "number": 85,
+      "disposition": "fixed",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/pull/109",
+      "acceptance": "客户端阅读锚点现在用真实 UIScrollView.contentSize 而非最后行底部；Gold4 的真实 QA Run 45043307169 未完成时，不得从 HOLD 解锁。"
+    },
+    {
+      "number": 86,
+      "disposition": "fixed",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/pull/115",
+      "acceptance": "同 RunID 终态证明和最终历史保留；C 旧 Gold2 通过，须再次检查最终集成 QA Run 45043307169。"
+    },
+    {
+      "number": 88,
+      "disposition": "fixed",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/actions/runs/45039314972",
+      "acceptance": "原体验分片 5/5 PASS（含 Chat Audit），最新集成另加 strict test01 timeout retry；最终 QA 仍须重新核查。"
+    },
+    {
+      "number": 89,
+      "disposition": "fixed",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/pull/112",
+      "acceptance": "前台跨会话只读修复已 build224 发布；新增在最后 await GET 后检查 exact stored Run receipt、pending POST，再安全清理，回归 tests/appstate/main.swift。"
+    },
+    {
+      "number": 90,
+      "disposition": "already_released",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/releases/tag/release-2.53.1-build225",
+      "acceptance": "已发布 active/absent/unknown 三态，500/404 不被视为可信终态；本批次 replay-gap 新安全回归还需过最终 CI。"
+    },
+    {
+      "number": 91,
+      "disposition": "external_blocked",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/issues/91",
+      "acceptance": "客户端已经避免重复 POST、有界 404 unresolved、本地锁定；未知执行的真正 ACK 取决于网关 canonical authority 能力和同 Run 的 admission_id、execution_generation。尚未实测当前用户网关能力，不可自动进行有副作用确认。",
+      "blocker_contract": "Hermes canonical GET /v1/runs/{id} status=unknown + exact admission_id/execution_generation; POST /v1/runs/{id}/resolve-unknown releases server FIFO; old/legacy Gateway may not advertise features.run_unknown_resolution. Must verify deployed server/capabilities and explicit user acknowledgement."
+    },
+    {
+      "number": 92,
+      "disposition": "already_released",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/releases/tag/release-2.53.0-build224",
+      "acceptance": "已发布跨连续分页 pending-send 只读核对与 145+ 工具事件；须以最终 Swift 离线回归复验，不得假设真机验收。"
+    },
+    {
+      "number": 93,
+      "disposition": "external_blocked",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/issues/93",
+      "acceptance": "客户端已完成懒上传、最大 2 实际并发、24MiB 在途上限、取消/切会话/失败与守卫 POST 的 T09/T10；缺服务端按持有人删除和断点续传契约。",
+      "blocker_contract": "Gateway must expose authenticated owner-scoped DELETE /v1/files/{id} and resumable upload offsets/identifiers. No currently verified user-deployed DELETE or resume contract. Unsafe to invent endpoint/pretend server bytes deleted; keep Issue open."
+    },
+    {
+      "number": 94,
+      "disposition": "external_blocked",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/issues/94",
+      "acceptance": "#94 审计汇总按 A01-A09 追踪；已修非终态 replay.truncated 误清理 accepted Run/T07；等待 #91/#93 的网关契约及 A05 冷返回 pending_controls 身份/交互协议闭环；不能因部分修复关闭总 Issue。",
+      "blocker_contract": "Requires gateway GET /v1/runs/{id} authoritative pending_controls prompt_id/execution_generation and optional resolve-unknown/owner-safe file deletion; deployed-version support and server contract not yet demonstrated. Non-contract client audit follow-ups must remain open."
+    },
+    {
+      "number": 103,
+      "disposition": "test_false_positive",
+      "evidence": "https://github.com/Whale7-git/HermesBuild/actions/runs/45040253313",
+      "acceptance": "旧模拟器实测 test01SessionListAudit 报 XCTest accessibilityAudit Code=-56（审计服务未完成）、非具体 AX 漏报；新增仅针对该错误的 fresh-app 一次严格重试，真实 AX 问题仍失败；最新 Run 45043307169 须验收。"
+    }
+  ]
+}

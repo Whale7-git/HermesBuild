@@ -311,6 +311,18 @@ extension NativeChatModel {
             }
             return
         }
+        // Manual/foreground history refresh must respect the same accepted
+        // Run receipt as terminal SSE finalization. A stale GET is not allowed
+        // to erase a visibly streamed answer after a recovery retry timeout.
+        let streamedAssistantPresent = buffer.messages.contains {
+            $0.role == "assistant" && $0.id.hasPrefix("streaming:")
+        }
+        if buffer.terminal && buffer.failure == nil && streamedAssistantPresent &&
+           !ChatFinalHistoryGate.canReplace(
+               snap, sessionID: sessionID, receipt: activeTurnRecovery,
+               streamedAssistantPresent: true, expectedRunID: streamID) {
+            throw ChatCoreError.server("最终历史尚未确认本轮回复，流式内容已保留")
+        }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
@@ -782,6 +794,20 @@ extension NativeChatModel {
                             self.trimLoadedMessages()
                         }
                         self.lastEventID = self.buffer.lastEventID
+                        if frame.event == "replay_truncated" {
+                            // The gateway's replay window expired while the
+                            // accepted Run may still be live (possibly waiting
+                            // for user approval). Never settle it as a failure,
+                            // discard actionable cards, or send queued turns.
+                            // A stale Last-Event-ID would trigger the same gap
+                            // on the next reconnect; start the next read-only
+                            // recovery from the newest authoritative state.
+                            self.lastEventID = nil
+                            self.buffer.lastEventID = nil
+                            self.uncertain = true
+                            self.pauseQueueForRecovery()
+                            self.notice = "续传记录已过期，已保留消息和待处理卡片；后台状态待核对，发送保持锁定。"
+                        }
                         if frame.event == "approval" {
                             // run 挂在服务端等这一票。能认出请求就出卡片；
                             // 认不出（老版本后端只给一句话）退回文字提示，别出空卡片。
@@ -890,7 +916,8 @@ extension NativeChatModel {
                                   !Task.isCancelled else { return }
                             if ChatFinalHistoryGate.canReplace(
                                 snap, sessionID: sessionID, receipt: receipt,
-                                streamedAssistantPresent: streamedAssistantPresent) { break }
+                                streamedAssistantPresent: streamedAssistantPresent,
+                                expectedRunID: active) { break }
                             if attempt == 2 {
                                 uncertain = true
                                 pauseQueueForRecovery()

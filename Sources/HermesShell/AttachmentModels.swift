@@ -6,13 +6,14 @@ import FoundationNetworking
 enum AttachmentError: LocalizedError, Equatable {
     /// `tooMany` 与 `tooLarge` 必须分开：数量满额时说「超过大小限制」会让用户
     /// 反复压缩图片而问题依旧，因为他们需要的是删掉一个附件。
-    case invalidMetadata, invalidMultipart, tooMany, tooLarge, unsafeURL, unsupportedPreview, http(Int)
+    case invalidMetadata, invalidMultipart, tooMany, tooLarge, unsafeURL, unsupportedPreview, uploadFailed, http(Int)
     var errorDescription: String? {
         switch self {
         case .invalidMetadata: return "附件信息无效"
         case .invalidMultipart: return "附件名称、类型或上传边界无效"
         case .tooMany: return "附件数量已达上限，请先移除一个再添加"
         case .tooLarge: return "附件超过大小限制（包含上传封装）"
+        case .uploadFailed: return "附件上传失败，原始草稿已保留；检查网络后重试发送"
         case .unsafeURL: return "已阻止非当前实例的附件请求"
         case .unsupportedPreview: return "此文件类型不支持安全图片预览"
         case .http(let code): return code == 401 ? "登录已失效，请重新登录" : "附件请求失败（HTTP \(code)）"
@@ -32,6 +33,7 @@ enum AttachmentImageFailurePresentation {
             case .unsafeURL: return "附件来源或路径未通过安全校验"
             case .unsupportedPreview: return "服务器未返回受支持的图片格式"
             case .tooLarge: return "图片超过预览大小限制"
+            case .uploadFailed: return "附件上传失败"
             case .invalidMetadata, .invalidMultipart, .tooMany:
                 return "附件元数据不完整"
             }
@@ -268,6 +270,9 @@ struct PersistedAttachmentBatch: Codable, Equatable, Sendable {
 struct AttachmentBatch: Sendable {
     private(set) var sessionID: String
     private(set) var items: [AttachmentDraft] = []
+    /// Diagnostic only: a server may transform the file size after upload.
+    /// A valid ready reference is not an upload-resume token or hash proof.
+    private(set) var restoreSizeMismatches = 0
     let maxCount: Int
     let maxTotalBytes: Int
     init(sessionID: String, maxCount: Int = 8, maxTotalBytes: Int = 40 * 1024 * 1024) {
@@ -322,6 +327,24 @@ struct AttachmentBatch: Sendable {
         items[index].state = .failed(message)
     }
     mutating func remove(_ id: UUID) { items.removeAll { $0.id == id } }
+    /// Re-arm a failed upload without issuing a network request before send.
+    mutating func requeue(_ id: UUID) throws {
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              case .failed = items[index].state,
+              !items[index].data.isEmpty else { throw AttachmentError.invalidMetadata }
+        items[index].attempt = nil
+        items[index].state = .queued
+    }
+    /// Cancellation does not imply the transport has stopped. Invalidate its
+    /// attempt but retain the local bytes for explicit retry on the next send.
+    mutating func suspendUploading() {
+        for index in items.indices {
+            if case .uploading = items[index].state {
+                items[index].attempt = nil
+                items[index].state = .queued
+            }
+        }
+    }
     /// Replace atomically: a failed edit must leave the original ready payload
     /// intact, and an old upload attempt must never complete the edited chip.
     mutating func replace(_ id: UUID, name: String, mime: String, data: Data) throws {
@@ -333,7 +356,11 @@ struct AttachmentBatch: Sendable {
         items[index] = AttachmentDraft(id: id, name: name, mime: mime, data: data)
         items[index].reuploading = true
     }
-    mutating func reset(sessionID: String) { self.sessionID = sessionID; items.removeAll() }
+    mutating func reset(sessionID: String) {
+        self.sessionID = sessionID
+        items.removeAll()
+        restoreSizeMismatches = 0
+    }
 
     /// P1：恢复一批**已在服务端**的附件（用于编辑队列项时回填）。
     ///
@@ -390,34 +417,56 @@ struct AttachmentBatch: Sendable {
         }
         var restored: [AttachmentDraft] = []
         var totalBytes = 0
+        var sizeMismatches = 0
         for persisted in value.items {
             guard !persisted.name.isEmpty, !persisted.mime.isEmpty,
                   persisted.byteCount >= 0,
                   persisted.byteCount <= AttachmentMultipart.defaultMaxBytes,
-                  persisted.data.count <= persisted.byteCount,
-                  persisted.byteCount <= maxTotalBytes - totalBytes else {
+                  persisted.data.count <= persisted.byteCount else {
                 throw AttachmentError.tooLarge
             }
-            totalBytes += persisted.byteCount
-            var item = AttachmentDraft(
-                id: persisted.id, name: persisted.name, mime: persisted.mime,
-                data: persisted.data, declaredByteCount: persisted.byteCount)
-            item.reuploading = persisted.reuploading
+            // A completed upload may have a transformed size. Do not discard
+            // its already-issued server reference and silently upload again.
+            // Account for the larger side of the discrepancy in the quota.
+            let accountedBytes: Int
             switch persisted.state {
             case .ready(let uploaded):
                 guard uploaded.name == persisted.name, uploaded.mime == persisted.mime,
-                      uploaded.size == persisted.byteCount else {
+                      uploaded.size >= 0,
+                      uploaded.size <= AttachmentMultipart.defaultMaxBytes else {
                     throw AttachmentError.invalidMetadata
                 }
+                accountedBytes = max(persisted.byteCount, uploaded.size)
+                if uploaded.size != persisted.byteCount { sizeMismatches += 1 }
+            case .pending:
+                accountedBytes = persisted.byteCount
+            }
+            guard accountedBytes <= maxTotalBytes - totalBytes else {
+                throw AttachmentError.tooLarge
+            }
+            totalBytes += accountedBytes
+            var item = AttachmentDraft(
+                id: persisted.id, name: persisted.name, mime: persisted.mime,
+                data: persisted.data, declaredByteCount: accountedBytes)
+            item.reuploading = persisted.reuploading
+            switch persisted.state {
+            case .ready(let uploaded):
                 item.state = .ready(uploaded)
                 if item.releasesBytesAfterUpload { item.data = Data() }
             case .pending:
-                guard !persisted.data.isEmpty else { throw AttachmentError.invalidMetadata }
+                // No server offset/hash contract exists: a shorter local prefix
+                // is NOT a resumable body and must never be uploaded as a
+                // complete file under the original attachment metadata.
+                guard !persisted.data.isEmpty,
+                      persisted.data.count == persisted.byteCount else {
+                    throw AttachmentError.invalidMetadata
+                }
                 item.state = .queued
             }
             restored.append(item)
         }
         items = restored
+        restoreSizeMismatches = sizeMismatches
     }
 
     func payload(for sessionID: String) throws -> [UploadedAttachment] {
@@ -859,8 +908,11 @@ enum AttachmentFileImport {
     /// drafts already consume the composer byte budget; eight parallel uploads
     /// could double it in transport buffers and overwhelm a weak network.
     private let maxConcurrentUploads = 2
+    /// Bytes retained by requests that have not completed transport teardown.
+    /// A large upload may occupy the full byte budget by itself.
+    private let maxInFlightBytes = 24 * 1024 * 1024
     private var waiting: [UUID] = []
-    private var tasks: [UUID: (attempt: UUID, task: Task<Void, Never>)] = [:]
+    private var tasks: [UUID: (attempt: UUID, byteCount: Int, task: Task<Void, Never>)] = [:]
     init(sessionID: String, upload: @escaping Upload) {
         self.batch = AttachmentBatch(sessionID:sessionID)
         self.upload = upload
@@ -868,28 +920,71 @@ enum AttachmentFileImport {
     deinit {
         for value in tasks.values { value.task.cancel() }
     }
+    /// Draft selection is local only. No gateway file is created until send.
     @discardableResult func add(name: String, mime: String, data: Data) throws -> UUID {
+        guard !data.isEmpty else { throw AttachmentError.invalidMetadata }
         let id = try batch.append(name:name, mime:mime, data:data)
-        try retry(id)
+        onChange?(batch)
         return id
     }
+    /// UI retry just re-arms the draft. It must not eagerly upload a file that
+    /// the user may delete or abandon before sending.
     func retry(_ id: UUID) throws {
         guard let draft = batch.items.first(where: { $0.id == id }) else {
             throw AttachmentError.invalidMetadata
         }
-        switch draft.state {
-        case .queued, .failed: break
-        default: throw AttachmentError.invalidMetadata
-        }
-        guard tasks[id] == nil, !waiting.contains(id) else { return }
-        waiting.append(id)
+        if case .failed = draft.state { try batch.requeue(id) }
+        else if case .queued = draft.state { return }
+        else { throw AttachmentError.invalidMetadata }
         onChange?(batch)
+    }
+    /// The only entry point for upload transport. A failed or cancelled attempt
+    /// never submits a chat POST; ready file references survive an upload retry.
+    func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
+        guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
+        for draft in batch.items {
+            if case .failed = draft.state { try batch.requeue(draft.id) }
+            if draft.canResumeUpload && !waiting.contains(draft.id) && tasks[draft.id] == nil {
+                waiting.append(draft.id)
+            }
+        }
         startQueuedIfPossible()
+        let deadline = Date().addingTimeInterval(135)
+        while true {
+            try Task.checkCancellation()
+            guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
+            if batch.canSend { return try batch.payload(for: sessionID) }
+            if batch.items.contains(where: { if case .failed = $0.state { return true }; return false }) {
+                throw AttachmentError.uploadFailed
+            }
+            if Date() > deadline {
+                cancelUploads()
+                throw URLError(.timedOut)
+            }
+            try await Task.sleep(nanoseconds: 80_000_000)
+        }
+    }
+    /// Leave durable bytes queued after navigation/cancellation; late callbacks
+    /// cannot make old attempts ready or overwrite another conversation.
+    func cancelUploads() {
+        for task in tasks.values { task.task.cancel() }
+        waiting.removeAll()
+        batch.suspendUploading()
+        onChange?(batch)
     }
     private func startQueuedIfPossible() {
         while tasks.count < maxConcurrentUploads, !waiting.isEmpty {
-            let id = waiting.removeFirst()
-            guard let draft = batch.items.first(where: { $0.id == id }) else { continue }
+            let id = waiting[0]
+            // A replacement can share an ID with a still-in-flight cancelled
+            // transport. Never overwrite its task record or its memory charge.
+            guard tasks[id] == nil else { break }
+            guard let draft = batch.items.first(where: { $0.id == id }) else {
+                waiting.removeFirst()
+                continue
+            }
+            let occupied = tasks.values.reduce(0) { $0 + $1.byteCount }
+            guard draft.byteCount <= maxInFlightBytes - occupied else { break }
+            waiting.removeFirst()
             let attempt: UUID
             do { attempt = try batch.begin(id) } catch { continue }
             let sessionID = batch.sessionID
@@ -905,6 +1000,10 @@ enum AttachmentFileImport {
                 } catch {
                     if !(error is CancellationError || Task.isCancelled) {
                         self?.batch.fail(id, attempt: attempt, message: error.localizedDescription)
+                        // A failed preflight cannot submit a chat POST. Stop
+                        // the remaining transports instead of uploading more
+                        // unowned files after that failure.
+                        self?.cancelUploads()
                     }
                 }
                 // A cancelled/removed request cannot reclaim a slot or
@@ -915,25 +1014,33 @@ enum AttachmentFileImport {
                 }
                 if let self { self.onChange?(self.batch) }
             }
-            tasks[id] = (attempt, task)
+            tasks[id] = (attempt, draft.byteCount, task)
         }
     }
     func replace(_ id: UUID, name: String, mime: String, data: Data) throws {
         try batch.replace(id, name: name, mime: mime, data: data)
         waiting.removeAll { $0 == id }
-        tasks.removeValue(forKey: id)?.task.cancel()
-        try retry(id)
+        // A cancelled URLSession may still be in flight until its completion.
+        // Keep its slot occupied and queue the replacement after it exits.
+        if let old = tasks[id] {
+            old.task.cancel()
+        }
+        // Editing a draft must not issue a new upload before send.
+        onChange?(batch)
     }
     func remove(_ id: UUID) {
         waiting.removeAll { $0 == id }
-        tasks.removeValue(forKey: id)?.task.cancel()
+        // Cancellation is asynchronous; do not free a slot before the old
+        // transport finishes, or the effective in-flight cap is bypassed.
+        tasks[id]?.task.cancel()
         batch.remove(id)
         startQueuedIfPossible()
         onChange?(batch)
     }
     func reset(sessionID: String) {
         for value in tasks.values { value.task.cancel() }
-        tasks.removeAll()
+        // Old-session requests continue to occupy slots until they exit.
+        // A new session must not exceed the shared transport budget.
         waiting.removeAll()
         batch.reset(sessionID: sessionID)
         onChange?(batch)
@@ -946,6 +1053,8 @@ enum AttachmentFileImport {
     }
     func restorePersisted(_ value: PersistedAttachmentBatch) throws {
         try batch.restorePersisted(value)
+        // Restore bytes and ready references only. Cold foreground restore may
+        // re-upload on the NEXT explicit send, never on merely opening a chat.
         onChange?(batch)
     }
 }

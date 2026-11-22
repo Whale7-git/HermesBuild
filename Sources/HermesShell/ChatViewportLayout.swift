@@ -20,6 +20,15 @@ enum ChatViewportLayout {
         let offsetInRow: Double
     }
 
+    /// UIKit's scrollable content may include a temporary turn-reading reserve
+    /// below the last measured transcript row. Clamp manual anchors to that
+    /// ACTUAL content height, not to the row-only bottom. Otherwise a new
+    /// streamed paragraph silently pulls the reader out of their viewport.
+    static func maximumOffset(contentHeight: Double, viewport: Double) -> Double {
+        guard contentHeight.isFinite, viewport.isFinite, viewport > 0 else { return 0 }
+        return max(0, contentHeight - viewport)
+    }
+
     static func frames(for rows: [Row]) -> [Frame] {
         var top = 0.0
         return rows.map { row in

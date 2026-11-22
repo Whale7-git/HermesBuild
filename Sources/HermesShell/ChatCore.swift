@@ -601,10 +601,14 @@ struct ActiveTurnRecovery: Codable, Equatable {
 enum ChatFinalHistoryGate {
     static func canReplace(_ snapshot: ChatSnapshot, sessionID: String,
                            receipt: ActiveTurnRecovery?,
-                           streamedAssistantPresent: Bool) -> Bool {
+                           streamedAssistantPresent: Bool,
+                           expectedRunID: String? = nil) -> Bool {
         guard snapshot.sessionID == sessionID, !snapshot.readOnly,
               snapshot.activeRunEvidence == .absent else { return false }
         guard streamedAssistantPresent else { return true }
+        // A different accepted turn in the same Session cannot authorize
+        // replacing this Run's still-visible SSE text with final history.
+        if let expectedRunID, receipt?.runID != expectedRunID { return false }
         return receipt?.confirmsCompletion(in: snapshot) == true
     }
 }
@@ -837,6 +841,13 @@ struct ChatTranscript {
                                       args: args, result: displayValue(payload["preview"]), done: complete,
                                       isError: payload["is_error"] as? Bool ?? false,
                                       afterMessageID: anchor))
+            }
+        case "replay_truncated":
+            // A lost SSE replay window is a recovery hint, not a Run failure.
+            // Preserve any already-rendered assistant text and pending approval
+            // notice until scoped GET proves the actual terminal state.
+            if notice == nil {
+                notice = "回复续传窗口已过期，后台状态需重新核对。"
             }
         case "approval", "clarify":
             let payload = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any] ?? [:]

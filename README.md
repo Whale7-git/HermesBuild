@@ -1,4 +1,4 @@
-# Hermes 2.53.2 / build226
+# Hermes 2.53.3 / build227
 
 HermesBuild 是原生 iOS Hermes 多实例客户端，支持流式聊天、历史、附件和会话恢复。Swift 代码的兼容 target/product 名称保留为 `HermesShell`，但本仓库与构建链均为 **HermesBuild**。
 

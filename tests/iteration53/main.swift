@@ -74,27 +74,33 @@ import Foundation
             preconditionFailure("over-budget replacement was accepted")
         } catch { check(batch.items.first?.name == "edited.jpg", "rejected replacement leaves the previous draft intact") }
 
+        // Since build227, choosing or editing an attachment is local only.
+        // The first network upload starts strictly on the user's Send action.
+        // Old eager-upload test loops waiting for a continuation at add() would
+        // deadlock the entire offline suite without exercising production code.
         var uploads: [AttachmentDraft] = []
-        var replies: [CheckedContinuation<UploadedAttachment, Error>] = []
         let coordinator = AttachmentUploadCoordinator(sessionID: "replacement") { _, draft, _ in
             uploads.append(draft)
-            return try await withCheckedThrowingContinuation { replies.append($0) }
+            return UploadedAttachment(name: draft.name, path: "/\(draft.name)",
+                                      size: draft.byteCount, mime: draft.mime,
+                                      isImage: draft.mime.hasPrefix("image/"))
         }
-        let replacementID = try coordinator.add(name: "original.png", mime: "image/png", data: Data([1]))
-        while replies.count < 1 { await Task.yield() }
-        try coordinator.replace(replacementID, name: "edited.jpg", mime: "image/jpeg", data: Data([2, 3]))
-        while replies.count < 2 { await Task.yield() }
-        replies[0].resume(returning: old)
-        for _ in 0..<30 { await Task.yield() }
-        check(!coordinator.batch.canSend, "late old upload cannot mark the edited chip ready")
-        let edited = UploadedAttachment(name: "edited.jpg", path: "/edited.jpg", size: 2, mime: "image/jpeg", isImage: true)
-        replies[1].resume(returning: edited)
-        for _ in 0..<1000 {
-            if coordinator.batch.canSend { break }
-            await Task.yield()
-        }
-        check(uploads.map(\.data) == [Data([1]), Data([2, 3])], "replacement upload receives edited bytes")
-        check(try coordinator.batch.payload(for: "replacement") == [edited], "only edited server reference enters the outgoing payload")
+        let replacementID = try coordinator.add(name: "original.png",
+                                                mime: "image/png", data: Data([1]))
+        check(uploads.isEmpty, "draft selection does not create a gateway file")
+        try coordinator.replace(replacementID, name: "edited.jpg", mime: "image/jpeg",
+                                data: Data([2, 3]))
+        check(uploads.isEmpty && !coordinator.batch.canSend,
+              "editing an unsent draft never starts a stale upload")
+        let edited = UploadedAttachment(name: "edited.jpg", path: "/edited.jpg",
+                                        size: 2, mime: "image/jpeg", isImage: true)
+        let sent = try await coordinator.prepareForSend(sessionID: "replacement")
+        check(uploads.map(\.data) == [Data([2, 3])],
+              "send uploads only the replacement bytes")
+        check(sent == [edited],
+              "send preflight returns the edited server reference, not the old one")
+        check(try coordinator.batch.payload(for: "replacement") == [edited],
+              "only edited server reference enters outgoing payload")
 
         let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ratios53-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

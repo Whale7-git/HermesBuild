@@ -47,10 +47,14 @@ extension ChatScrollController {
         // feed SwiftUI's following state back into another geometry commit.
         // During a live drag/deceleration/interactive keyboard pan, UIScrollView
         // is authoritative; the pending layout is reconciled when motion ends.
+        // UIKit can clamp contentOffset synchronously when contentSize changes.
+        // Re-read the actual offset after resizing: comparing against the
+        // pre-resize value can incorrectly skip restoring a manual anchor.
+        let offsetAfterResize = Double(scrollView.contentOffset.y)
         if ChatOffsetCommitPolicy.shouldAssign(
-            current: beforeCommitOffset, target: offset, interacting: inMotion) {
+            current: offsetAfterResize, target: offset, interacting: inMotion) {
             ChatPerformanceRecorder.shared.recordScrollAdjustment(
-                reason: "commit", from: beforeCommitOffset, to: offset,
+                reason: "commit", from: offsetAfterResize, to: offset,
                 viewport: Double(scrollView.bounds.height),
                 following: policy.following && navigationTarget == nil, moving: inMotion)
             scrollView.contentOffset = CGPoint(x: 0, y: offset)
@@ -155,7 +159,12 @@ extension ChatScrollController {
     /// 不再为每次提交构造一份 2000 项的 [String: Frame] 字典。
     private func resolvedOffset(anchors: [ChatViewportLayout.Anchor], previous: Double,
                                 following: Bool) -> Double {
-        let maximum = max(0, (frames.last?.bottom ?? 0) - Double(scrollView.bounds.height))
+        // A focused turn can reserve space below the last measured row to keep
+        // the user's question stable. Do not clamp a manual reading offset to
+        // row-only height after streamed reply growth or the offset snaps.
+        let maximum = ChatViewportLayout.maximumOffset(
+            contentHeight: Double(scrollView.contentSize.height),
+            viewport: Double(scrollView.bounds.height))
         if following { return maximum }
         for anchor in anchors {
             if let frame = frame(for: anchor.id) {
