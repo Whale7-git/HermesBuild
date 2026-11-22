@@ -1,29 +1,23 @@
-# HermesBuild GitHub workflow (current)
+# GitHub 协作速查
 
-Use `main` as the product source of truth. Develop in short-lived branches, open a PR and keep all code and behavior changes reviewable by commit. The one product candidate is compiled on macOS; no local IPA substitution.
+本文件是操作速查，不另行定义发布规则。**发生冲突时，以仓库根目录 `AGENTS.md` 为唯一权威规则来源。**
 
-## Independent workflows
+## 日常改动
 
-| Workflow | Responsibility | Blocks product Release? |
-|---|---|---|
-| `hermesshell-single-build.yml` | Compile and package the exact candidate IPA once; upload immutable Artifact | **Only if IPA cannot be built or verified** |
-| `hermes-offline-diagnostics.yml` | Four parallel Swift shards, Python/static diagnostics, full logs and visible failure status | **No** |
-| `simulator-probe.yml` | Manual-only Simulator UI diagnostics (`Actions → Run workflow`, choose suite); no PR/daily/post-release auto-trigger | **No** |
-| `verified-release-automerge.yml` | Automatically merge a valid version-bumped product PR after candidate success | No Issue, source hash, test or manual-approval gate |
-| `hermesshell-single-promote.yml` | Select exact PR candidate and publish identical bytes; best-effort Bark notification | Actual Artifact identity/integrity required |
+1. 从最新 `main` 创建短期 `fix/`、`feat/` 或 `chore/` 分支。
+2. 在分支内完成一个边界清楚的改动，提交 PR；不要直接推送 `main`。
+3. 产品修复关联 GitHub Issue。只有完整满足验收条件时才使用 `Fixes #N`；部分完成或受外部依赖阻断时只引用 `#N`。
+4. CI 诊断结果如实记录。失败需要跟踪和修复，但诊断结果本身不是 IPA 发布门禁。
+5. 真机行为与模拟器/离线测试分别记录，不得把编译成功写成真机验收通过。
 
-A product PR does not need a complete Issue matrix or green diagnostics to ship. When tests fail, report failure, continue the corresponding repair and do not claim the Issue fixed. No source baseline, release-scope hash manifest, triple-green workflow, or hold-label rule is used.
+## 维护改动
 
-The protected boundary remains: PRs changing `.github/workflows/`, privileged scripts or governance files are **maintenance PRs** and require an explicit trusted agent merge. Automatically merged product PRs cannot change scripts that hold write permissions.
+GitHub Actions 工作流、具有写权限的脚本、令牌权限和仓库治理规则属于维护范围，应使用独立维护 PR，并由可信智能体明确检查合并。不要把特权工作流修改混入自动合并的普通产品 PR。
 
-## Artifact provenance
+## 构件与发布证据
 
-The candidate Artifact includes the unsigned IPA, `candidate-manifest.json`, `validation.json`, `build-info.json` and `SHA256SUMS.txt`. Promotion compares expected commit/tree, archive digest and published bytes. It never rebuilds the IPA. Publishing wrong bytes or an existing tag is an error, not a cosmetic diagnostic.
+产品 PR 应能追溯到精确 commit/tree、候选构建 Run 和 IPA Artifact。正式发布应复用该候选文件，并核对版本、源码身份和文件摘要；不得用另一次编译的文件替换候选。
 
-Run `bash tests/run_container.sh` for a local full suite; CI shards are independent jobs on Ubuntu. Debug test failures using shard-prefixed START/FAIL timestamps. Use `release.json` and GitHub Releases for version truth.
+## 问题跟踪
 
-## Issues
-
-GitHub Issues are the active backlog. The project manager tracks the entire open set and delegates disjoint repairs. Use `Fixes #N` only when an issue genuinely meets its full acceptance criteria; plain `#N` for partial or externally blocked items. Simulator failures and real-device findings are distinct forms of evidence.
-
-Third-party licenses, Gateway protocol contracts and source security invariants remain in force; historical build-specific plans are visible in Git history, not in the active documentation.
+GitHub Issues 是当前问题清单。历史版本计划仅保留在 Git 历史，不作为当前任务来源。Issue 只有在修复真正交付后才关闭；发布成功不等于所有 Issue 已解决。
