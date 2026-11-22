@@ -1,32 +1,53 @@
-## Scope and observable behavior
+## Problem
 
-Describe the change, affected files, associated Issues and user-facing result.
+Describe the user-visible issue and how to reproduce it.
 
-## Checks performed (informational, never release gates)
+## Change
 
-- [ ] Relevant Swift/Python unit tests run; list PASS/FAIL/NOT RUN
-- [ ] Simulator or device checked when relevant; list evidence explicitly
-- [ ] Release candidate IPA compiled if version-bumped; link the actual Artifact
+Describe the resulting behavior and the narrow scope of this pull request.
 
-Test failures do **not** automatically block an IPA Release. Record failures and create/follow up with Issues; never claim unverified work passed.
+## Verification
 
-## Candidate evidence (product Release PR only)
+- [ ] Source checks
+- [ ] Relevant offline tests
+- [ ] Release build or IPA inspection when applicable
+- [ ] Physical-device checks are listed separately and marked as pending when not run
 
-- Commit / tree SHA:
-- Candidate workflow Run:
-- IPA candidate Artifact:
-- Released tag and IPA URL:
+Commands and evidence:
 
-For maintenance PRs, mark IPA and Release as N/A.
+- PR head SHA:
+- PR tree SHA:
+- Producer run ID and attempt:
+- Candidate Artifact ID, name, and digest:
+- Promotion run:
+- Release URL:
 
-## Security and data integrity
+Non-release maintenance PRs may mark the candidate, promotion, and Release
+fields as N/A. Release PRs must fill them after the matching run completes.
 
-- [ ] No credentials, private user content, signing keys, or generated IPA in Git
-- [ ] No cross-session writes or automatic replay of uncertain original POST
-- [ ] Privileged workflow/tool edits are in a separate maintenance PR
+## Risk and rollback
 
-## Current automation
+Call out layout, scrolling, streaming, attachment, selection, storage, or
+compatibility risks. Explain how to roll back.
 
-`hermesshell-single-build.yml` only compiles and validates one candidate IPA. `hermes-offline-diagnostics.yml` independently runs four Swift shards and static checks, with failures visible but **nonblocking**. Versioned product PRs may merge and publish once the actual candidate is compiled; `hermesshell-single-promote.yml` reuses exactly the same tree and file bytes. No source hash inventory, Issue matrix, three-green-job rule, hold-label requirement or human review is applied.
+## Checklist
 
-Use `Fixes #N` only for fully delivered fixes; plain `#N` for partial work.
+- [ ] No credentials, cookies, keys, or local build artifacts are included.
+- [ ] Unrelated files and refactors are excluded.
+- [ ] The change preserves bundle ID, paging, scroll-following, tool-call
+  collapsing, expansion state, and session-list navigation.
+- [ ] The description distinguishes offline tests, Release compilation, IPA
+  inspection, and real-device acceptance.
+
+## Automatic release policy
+
+Versioned iOS PRs with only approved product/test files, and
+the exact-head candidate workflow's three mandatory jobs fully green will automatically leave Draft, merge to
+main, and explicitly start promotion of the already verified candidate IPA.
+No extra compilation or interactive ChatGPT session is needed.
+
+To keep a PR pending, add one of these labels:
+`hold` or `no-auto-release` for concrete safety failures or an explicit pause. CI/automation edits, non-release
+changes, and failed tests never auto-merge. Physical-device testing remains separate and is not a routine release gate.
+Use `Fixes #N` for fully resolved issues, plain `#N` for partial fixes.
+Post-Release Issue sync records release evidence and closes only explicit fixes.

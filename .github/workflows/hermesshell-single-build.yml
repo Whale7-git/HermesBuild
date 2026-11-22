@@ -13,6 +13,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
+  source:
+    name: Source and release plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 tests/verify_source.py
+      - run: python3 tests/check_navigation_contract.py
+      - run: |
+          python3 tests/check_swiftui_modifiers.py
+          python3 tests/test_swiftui_modifiers.py
+          python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
+
+  offline:
+    name: Swift offline regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          swift --version
+          bash tests/run_container.sh
+        env:
+          HERMES_TEST_JOBS: "4"
+
   candidate:
     name: Compile and upload one candidate IPA
     # The whole run must succeed before promotion can select this artifact.

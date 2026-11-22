@@ -15,7 +15,7 @@ NOW = watchdog.timestamp(STAMP) + 200
 
 
 def example(status="queued", attempt=1, pr_state="open", sha=SHA,
-            event="pull_request"):
+            source="success", offline="success", event="pull_request"):
     run = {
         "id": 77, "event": event, "run_attempt": attempt,
         "path": watchdog.WORKFLOW, "head_sha": SHA, "created_at": STAMP,
@@ -26,6 +26,10 @@ def example(status="queued", attempt=1, pr_state="open", sha=SHA,
     jobs = [
         {"name": watchdog.CANDIDATE, "status": status, "created_at": STAMP,
          "started_at": None if status == "queued" else STAMP},
+        {"name": "Source and release plan",
+         "status": "completed" if source else "in_progress", "conclusion": source},
+        {"name": "Swift offline regression",
+         "status": "completed" if offline else "in_progress", "conclusion": offline},
     ]
     pr = {
         "state": pr_state,
@@ -107,16 +111,13 @@ class QueueWatchdogTests(unittest.TestCase):
                 self.assertIn("PR", result)
                 self.assertFalse(client.operations)
 
-    def test_diagnostics_jobs_do_not_gate_candidate_queue(self):
-        # No source/Swift jobs remain in the candidate workflow.
-        result, client = execute()
-        self.assertTrue(result.startswith("alert:"))
-        self.assertEqual(client.operations, ["cancel", "rerun", "cancel", "rerun"])
-
-    def test_unexpected_extra_candidate_job_is_not_retried(self):
-        run, jobs, pr = example()
-        jobs.append({"name": "unexpected", "status": "completed", "conclusion": "failure"})
-        self.assertFalse(watchdog.candidate_waiting(jobs, NOW))
+    def test_failed_or_running_checks_never_cancel(self):
+        for params in ({"source": "failure"}, {"offline": "failure"},
+                       {"source": None}, {"offline": None}):
+            with self.subTest(params=params):
+                result, client = execute(**params)
+                self.assertTrue(result.startswith("skip:"))
+                self.assertFalse(client.operations)
 
     def test_threshold_180_seconds(self):
         jobs = example()[1]
