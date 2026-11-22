@@ -380,7 +380,10 @@ final class ChatScrollController: UIViewController, UIScrollViewDelegate, UIGest
         guard !applying else { return }
         let size = view.bounds.size
         guard size.width > 0, size.height > 0 else { return }
-        if size != lastSize {
+        if ChatViewportSizePolicy.changed(
+            previousWidth: Double(lastSize.width), previousHeight: Double(lastSize.height),
+            width: Double(size.width), height: Double(size.height),
+            scale: Double(view.traitCollection.displayScale)) {
             // Capture against the OLD viewport before resizing for the keyboard
             // or orientation. SwiftUI already reserves header/composer space.
             let anchors = captureAnchors()

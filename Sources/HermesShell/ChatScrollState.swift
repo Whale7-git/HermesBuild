@@ -564,3 +564,20 @@ enum ChatDraftHeightPolicy {
         return Double(max(1, lines)) * lineHeight
     }
 }
+
+ 
+/// Quantize layout proposals to physical pixels before deciding whether an
+/// actual viewport resize happened. A fractional SwiftUI proposal may vary
+/// within one display pixel during a keyboard transition or composer relayout;
+/// treating every subpixel difference as a resize repeatedly recommits anchors.
+enum ChatViewportSizePolicy {
+    static func changed(previousWidth: Double, previousHeight: Double,
+                        width: Double, height: Double, scale: Double) -> Bool {
+        guard previousWidth > 0, previousHeight > 0 else { return true }
+        guard [previousWidth, previousHeight, width, height, scale].allSatisfy(\.isFinite),
+              scale > 0 else { return true }
+        func pixels(_ value: Double) -> Int { Int((value * scale).rounded()) }
+        return pixels(previousWidth) != pixels(width) ||
+               pixels(previousHeight) != pixels(height)
+    }
+}

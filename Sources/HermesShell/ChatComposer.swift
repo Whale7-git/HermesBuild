@@ -76,7 +76,6 @@ struct ChatComposer: View {
     @State private var caretOffset = 0
     @State private var commandInsertion: ChatDraftCommandInsertion?
     @State private var pendingCommand: String?
-    @State private var draftMetrics = ChatDraftMetrics(visibleLines: 1, isScrollable: false)
     @AppStorage("chatReturnSends") private var returnSends = true
     /// A-04：动画必须响应「减弱动态效果」。
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -155,14 +154,6 @@ struct ChatComposer: View {
     }
     private var showsAttachments: Bool { hasAttachmentItems }
     private var editingEnabled: Bool { !loading && !readOnly }
-
-    /// 只在超过 4 行（接近 6 行封顶）时出现，避免一行输入就被提示打扰。
-    private var draftHint: String? {
-        guard !readOnly, draftMetrics.visibleLines > 4 else { return nil }
-        return draftMetrics.isScrollable
-            ? "已显示 \(draftMetrics.visibleLines) 行 · 可滚动"
-            : "已显示 \(draftMetrics.visibleLines) 行"
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -454,7 +445,6 @@ struct ChatComposer: View {
                                 returnSends: returnSends, canSubmit: sendEnabled,
                                 onSubmit: submit,
                                 onComposition: { composing = $0 },
-                                onMetricsChange: receiveMetrics,
                                 onSelectionChange: { offset in
                                     if caretOffset != offset {
                                         DispatchQueue.main.async { caretOffset = offset }
@@ -488,6 +478,10 @@ struct ChatComposer: View {
                         }
                     }
                     .frame(width: 44, height: 44)
+                    // Keep the running-mode selector inside the existing 44pt
+                    // action rail. Adding/removing an entire row at run start
+                    // used to shift the editor and resize the transcript.
+                    if running { sendModePicker }
                     Spacer(minLength: 0)
                     Button(action: onChooseModel) {
                         HStack(spacing: 4) {
@@ -545,16 +539,6 @@ struct ChatComposer: View {
                 .padding(.leading, 5)
                 .padding(.trailing, 7)
                 .padding(.bottom, 2)
-            }
-            // The mode row belongs to the running turn, not the first
-            // keystroke: it must not add/remove 44pt while the user types.
-            if !readOnly && running {
-                HStack {
-                    sendModePicker
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 9)
-                .padding(.bottom, 5)
             }
         }
         .background(AppTheme.surface,
@@ -641,14 +625,11 @@ struct ChatComposer: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: sendMode.icon).font(.caption2.weight(.semibold))
-                Text(sendMode.label).font(.caption.weight(.semibold))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            Image(systemName: sendMode.icon)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("运行中发送方式，当前\(sendMode.label)")
         .accessibilityHint(sendMode.hint)
@@ -677,14 +658,6 @@ struct ChatComposer: View {
         .disabled(!enabled)
         .accessibilityLabel(label)
         .accessibilityHint(hint)
-    }
-
-    private func receiveMetrics(_ metrics: ChatDraftMetrics) {
-        guard metrics != draftMetrics else { return }
-        // 回调来自 UIKit 布局过程，跳出本轮 SwiftUI 更新再落状态。
-        DispatchQueue.main.async {
-            if draftMetrics != metrics { draftMetrics = metrics }
-        }
     }
 
     private func submit() {
