@@ -23,11 +23,39 @@ final class HermesAccessibilityUITests: XCTestCase {
     }
 
     func test01SessionListAudit() throws {
-        let app = HermesUITestHarness.launchAndConnect()
-        app.buttons["打开会话侧栏"].tap()
-        try app.performAccessibilityAudit(for: [
+        let auditedTypes: XCUIAccessibilityAuditType = [
             .hitRegion, .elementDetection, .sufficientElementDescription
-        ])
+        ]
+        func openSettledDrawer() -> XCUIApplication {
+            let app = HermesUITestHarness.launchAndConnect()
+            let open = app.buttons["打开会话侧栏"]
+            XCTAssertTrue(open.waitForExistence(timeout: 12) && open.isHittable,
+                          "Cannot start session list audit without a real drawer button")
+            open.tap()
+            let close = app.buttons["关闭会话列表"]
+            let settled = XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "exists == true AND hittable == true"),
+                object: close)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 8), .completed,
+                           "Cannot audit a drawer that never finished opening")
+            return app
+        }
+
+        let app = openSettledDrawer()
+        do {
+            try app.performAccessibilityAudit(for: auditedTypes)
+        } catch {
+            let failure = error as NSError
+            // XCTest's AX audit service sometimes fails before producing any
+            // findings (Code -56, "Audit failed to complete in time"). That is
+            // not an accessibility defect and is not proof of compliance.
+            // Allow ONE fresh-app retry; every real audit finding still fails.
+            guard failure.domain == "com.apple.xcode.xctest.accessibilityAudit",
+                  failure.code == -56 else { throw error }
+            app.terminate()
+            let retry = openSettledDrawer()
+            try retry.performAccessibilityAudit(for: auditedTypes)
+        }
     }
 
     func test03ChatAudit() throws {
