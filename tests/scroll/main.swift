@@ -33,6 +33,32 @@ expect(!ownership.owns(pageB), "account switch invalidates pending pagination co
 
 var state = ChatScrollState()
 expect(state.following, "starts following the tail")
+// A short manual swipe while text streams must never be recaptured by a
+// keyboard/geometry callback or the next streamed paragraph.
+var shortDrag = ChatScrollState()
+expect(shortDrag.beginManualReading(), "manual pan detaches even inside follow hysteresis")
+expect(!shortDrag.following, "short upward reading gesture owns visible history")
+expect(!shortDrag.updateDuringManualDrag(distanceFromBottom: 14,
+                                         movingTowardLatest: false),
+       "a short downward finger gesture near bottom stays detached")
+expect(!shortDrag.following, "release cannot jump back to growing stream tail")
+expect(!shortDrag.updateDuringManualDrag(distanceFromBottom: 20,
+                                         movingTowardLatest: false),
+       "repeated geometry while reading does not reattach")
+expect(shortDrag.receivedAssistantUpdate() && shortDrag.hasUnreadContent,
+       "streamed output while reading appears as unread, not a scroll jump")
+expect(shortDrag.updateDuringManualDrag(distanceFromBottom: 18,
+                                        movingTowardLatest: true),
+       "a deliberate finger swipe toward latest reattaches")
+expect(shortDrag.following && !shortDrag.hasUnreadContent,
+       "intentional return to bottom clears unread state")
+shortDrag.beginManualReading()
+expect(!shortDrag.updateDuringManualDrag(distanceFromBottom: 90,
+                                         movingTowardLatest: true),
+       "moving toward latest outside the near-bottom range stays detached")
+expect(!shortDrag.following, "distant manual reading is never seized")
+shortDrag.jumpToLatest()
+expect(shortDrag.following, "explicit jump-to-latest always reattaches")
 var unreadVisualState = ChatScrollState()
 unreadVisualState.update(distanceFromBottom: 180)
 expect(!unreadVisualState.following && !unreadVisualState.hasUnreadContent,
