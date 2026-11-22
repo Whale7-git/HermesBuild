@@ -47,7 +47,7 @@ import Foundation
     }
     func stopNativeTurn(streamID: String) async throws {
         stopCalls += 1
-        if let stopErrorCode { throw APIError.http(stopErrorCode, "fixture STOP response") }
+        if let stopErrorCode { throw ChatStopHTTPError.rejected(stopErrorCode) }
         if stopTimeout { throw URLError(.timedOut) }
         if stopAcknowledgementOnly { return }
         active = nil
