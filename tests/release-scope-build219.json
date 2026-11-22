@@ -700,7 +700,7 @@
     "Sources/HermesShell/ZoomableImagePage.swift": "429879e30d0a63c9abe9613b300f6939b7a98be48d627a286984f805ab6cecaa",
     "UITests/HermesAccessibilityUITests.swift": "da1d92955db6aef829a3f606c6433e993ae6f8164d85b6f415a215abb8e3e1a0",
     "UITests/HermesChatSelectionGestureUITests.swift": "c5940bdd4e7c03a51b6d0e363419a1abbeb1fc2d0b1927de750a64bece940501",
-    "UITests/HermesComposerStabilityUITests.swift": "000000000000000000000000000000002227858d8744e5434ec9adde25941133",
+    "UITests/HermesComposerStabilityUITests.swift": "e59539d2a756b1243ee79ef50e976e0f4dbe2e8ed1c92e87f91c392d5d6cf25f",
     "UITests/HermesGoldUITests.swift": "2390b619be0425e5eb8242e711ab471d560d563ad0c8f2ee17f3f3f6f5f7135e",
     "UITests/HermesRealChatDynamicTypeUITests.swift": "d150816770bd65eb730cb15dc98c7564d119f48433219d95ef4f9d718070b765",
     "UITests/HermesSentImagePreviewUITests.swift": "6e73bd98f3456d791ab53b6f657150186714970c1756df80f20eccbe928ff602",
