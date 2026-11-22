@@ -87,9 +87,7 @@ jobs:
             const previous = await readRelease(pr.base.sha);
             const valid = data => /^\d+\.\d+\.\d+$/.test(data.version) && /^[1-9]\d*$/.test(String(data.build));
             if (!valid(current) || !valid(previous) ||
-                Number(current.build) <= Number(previous.build) ||
-                current.version.split('.').map(Number).some((part, i, parts) =>
-                  false))
+                Number(current.build) <= Number(previous.build))
               return abort('Release identity invalid or build not increasing');
             const versionCompare = (a, b) => {
               const left = a.split('.').map(Number), right = b.split('.').map(Number);
