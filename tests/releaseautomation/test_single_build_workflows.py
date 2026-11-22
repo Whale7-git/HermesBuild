@@ -103,7 +103,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
         self.assertEqual(triggers(text), {"push", "workflow_dispatch"})
-        self.assertEqual(jobs(text), ["plan", "promote", "notify"])
+        self.assertEqual(jobs(text), ["plan", "promote", "notify", "ui-discovery"])
         self.assertNotIn("tests/run_container.sh", text)
         self.assertNotIn("tests/verify_source.py", text)
         self.assertIn("actions/artifacts/${ARTIFACT_ID}/zip", text)
@@ -116,6 +116,8 @@ class SingleBuildWorkflowTests(unittest.TestCase):
     def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
         self.assertEqual(triggers(workflow), {"workflow_run", "pull_request_target"})
+        self.assertNotIn("      - Hermes iOS Simulator UI regression", workflow)
+        self.assertIn("const workflows = ['HermesBuild single-build candidate']", workflow)
         self.assertIn("types: [unlabeled, ready_for_review, reopened]", workflow)
         self.assertIn("github.event.pull_request.head.sha", workflow)
         self.assertIn("core.setFailed('Release blocked: '", workflow)
@@ -133,6 +135,8 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("github-build-ipa", workflow)
         promote = (ROOT / ".github/workflows/hermesshell-single-promote.yml").read_text()
         self.assertIn("expected_sha:", promote)
+        self.assertIn("name: Dispatch post-release simulator discovery", promote)
+        self.assertIn("gh workflow run simulator-probe.yml --ref main -f suite=all", promote)
         self.assertIn("previous_sha:", promote)
         plan = (ROOT / "scripts/release-plan.py").read_text()
         self.assertIn("before != parent", plan)
