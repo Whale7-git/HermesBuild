@@ -436,8 +436,9 @@ actor ConcurrencyProbe {
             (try? JSONSerialization.jsonObject(with: Data($0.data.utf8))) as? [String: Any]
         }
         check(approvalBody?["request_id"] as? String == "approval-1"
+              && approvalBody?["execution_generation"] as? Int == 4
               && approvalBody?["choices"] as? [String] == ["once", "deny"],
-              "approval snapshot maps prompt_id and excludes persistent grant choices")
+              "approval snapshot maps prompt_id, generation and excludes persistent grants")
         let clarifyFrame = pendingControls?.frames.first(where: { $0.event == "clarify" })
         let restoredClarify = clarifyFrame.flatMap {
             ChatPendingClarify.make(from: $0, runID: "run-x")
@@ -830,14 +831,16 @@ actor ConcurrencyProbe {
         check(sentBody?["choice"] == nil,
               "clarify never sends approval's `choice` field")
 
-        // ⑥ 审批的合同不能被改动（clarify 加进来时最容易顺手改坏这里）
-        let approvalRequest = try requests.approveRun(runID: "run-x", choice: "once", requestID: "p-9")
+        // ⑥ Canonical approvals require the same exact generation fence as clarify.
+        let approvalRequest = try requests.approveRun(
+            runID: "run-x", choice: "once", requestID: "p-9", executionGeneration: 7)
         let approvalBody = (try? JSONSerialization.jsonObject(with: approvalRequest.httpBody ?? Data())) as? [String: Any]
         check(approvalRequest.url?.path == "/v1/runs/run-x/approval",
-              "approval still POSTs to /v1/runs/{id}/approval")
+              "approval POSTs to /v1/runs/{id}/approval")
         let approvalBodyKeys = Set((approvalBody ?? [:]).keys.map { String($0) })
-        check(approvalBodyKeys == Set(["choice", "request_id"]),
-              "approval body stays {choice, request_id} — no execution_generation, no answer")
+        check(approvalBodyKeys == Set(["choice", "request_id", "execution_generation"])
+              && approvalBody?["execution_generation"] as? Int == 7,
+              "approval body is exactly {choice, request_id, execution_generation}")
 
         // F-XX（P0）：同会话并发读取必须真正串行。
         //
