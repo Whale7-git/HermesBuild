@@ -32,8 +32,23 @@ class BatchGateContractTests(unittest.TestCase):
         self.assertIn("every** open Issue", guide)
         self.assertIn("full batch acceptance matrix", skill)
 
-    def test_manifest_is_not_committed_in_maintenance_pr(self):
-        self.assertFalse((ROOT / "tests/release-batch-acceptance.json").exists())
+    def test_optional_release_batch_manifest_is_well_formed(self):
+        # This maintenance branch has no manifest. Final product releases
+        # deliberately add it: rejecting its existence would make every
+        # subsequent release CI fail.
+        path = ROOT / "tests/release-batch-acceptance.json"
+        if not path.exists():
+            return
+        import json
+        matrix = json.loads(path.read_text())
+        release = json.loads((ROOT / "release.json").read_text())
+        self.assertEqual(matrix["schema"], 1)
+        self.assertEqual(matrix["version"], release["version"])
+        self.assertEqual(int(matrix["build"]), int(release["build"]))
+        self.assertTrue(matrix["base_sha"])
+        self.assertTrue(matrix["issues"])
+        numbers = [item["number"] for item in matrix["issues"]]
+        self.assertEqual(len(numbers), len(set(numbers)))
 
 
 if __name__ == "__main__":

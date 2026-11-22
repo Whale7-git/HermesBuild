@@ -859,7 +859,7 @@
     "tests/release-scope-build225.json": "f42fdc0c5c1f86aaeb99511fb62a5db7ae662397d53a2459d867c53d8a564262",
     "tests/releaseautomation/test_candidate_diagnostics.py": "1fd29c929e5543276b7aac79ad27a0463223719ed9085583726fd3c69d967242",
     "tests/releaseautomation/test_candidate_manifest.py": "492425abfcdadb9a8ce0bb85b7596fcd20d6e3716f75e76cc3e40378e268abe6",
-    "tests/releaseautomation/test_full_batch_gate_contract.py": "1676369e8b4cb08265c529610071bd7d549f37d4f23f4cca53b5f891c67dfeff",
+    "tests/releaseautomation/test_full_batch_gate_contract.py": "1bc314bc3938a9f17c2d4d57227c0972771ead61433338ed3c02d9a728c4744d",
     "tests/releaseautomation/test_publish_candidate.py": "0d8a37591f3e0ccabdbad8f5775499743ce7b09f1ac156b1787bf4b29bfffab7",
     "tests/releaseautomation/test_queued_candidate_watchdog.py": "a2674f4a7f1213c3e97dff42ae5def0081d4d7daa8e5e03c3b698caca0f34a96",
     "tests/releaseautomation/test_release_plan.py": "e3724cdbb7a0aec13756c9547894954fbf5c609b63caf221a4572e6c4f23f048",
