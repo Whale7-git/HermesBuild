@@ -176,7 +176,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(user.waitForExistence(timeout: 12),
                       "Sent question must be present before the manual pan")
         XCTAssertTrue(user.isHittable,
-                      "Question was already outside viewport before manual pan: frame=\\(user.frame)")
+                      "Question was already outside viewport before manual pan: frame=\(user.frame)")
         let transcript = app.scrollViews.firstMatch
         XCTAssertTrue(transcript.waitForExistence(timeout: 10))
         let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.42, dy: 0.38))
@@ -186,9 +186,10 @@ final class HermesGoldUITests: XCTestCase {
         // arrives during the next interval, while the reader is detached.
         try await Task.sleep(nanoseconds: 650_000_000)
         if !user.exists || !user.isHittable {
-            print("HERMES_MANUAL_ANCHOR postPan frame=\\(user.frame)"
-                  + " transcript=\\(transcript.frame)"
-                  + " acceptedPOSTs=\\(try await acceptedRunPOSTCount())")
+            let postCount = try await acceptedRunPOSTCount()
+            print("HERMES_MANUAL_ANCHOR postPan frame=\(user.frame)"
+                  + " transcript=\(transcript.frame)"
+                  + " acceptedPOSTs=\(postCount)")
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "manual-pan-question-not-visible"
             screenshot.lifetime = .keepAlways
