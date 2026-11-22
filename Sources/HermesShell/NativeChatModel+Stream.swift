@@ -366,9 +366,20 @@ extension NativeChatModel {
                 // Clear only the restored original; preserve a newer draft.
                 if draft == pending.composerText { draft = "" }
             case .absent, .failed:
-                pendingAbsent = pending.resolution(in: snap) == .absent
+                let provenAbsent = pending.resolution(in: snap) == .absent
+                if provenAbsent && pending.hiddenFromTranscript == true {
+                    // An explicitly dismissed placeholder can be retired only
+                    // after authoritative proof of absence.
+                    pendingSend = nil
+                    pendingAbsent = false
+                    uncertain = false
+                    notice = nil
+                    break
+                }
+                pendingAbsent = provenAbsent
                 uncertain = !pendingAbsent
-                if !buffer.messages.contains(where: { $0.id == pending.id }) {
+                if pending.hiddenFromTranscript != true
+                    && !buffer.messages.contains(where: { $0.id == pending.id }) {
                     buffer.messages.append(ChatMessage(id: pending.id, role: "user", content: pending.text,
                         timestamp: pending.createdAt,
                         attachmentPaths: pending.attachments.map(\.path), delivery: .unconfirmed))
@@ -424,6 +435,7 @@ extension NativeChatModel {
               error == nil,
               let latest = latestRecoverySnapshot,
               latest.sessionID == sessionID, !latest.readOnly,
+              latest.activeRunEvidence == .absent,
               !submitting, !loading, !syncing, !running, !reconciling,
               !suspended else { return false }
         guard let boundary = receipt.historyEnd else {
@@ -458,7 +470,8 @@ extension NativeChatModel {
                       !Task.isCancelled, !suspended else { return false }
                 guard older.sessionID == sessionID, !older.readOnly,
                       older.rawMessageEndIndex == cursor,
-                      older.olderOffset < cursor else {
+                      older.olderOffset < cursor,
+                      older.activeRunEvidence == .absent else {
                     notice = "历史分页发生变化或不连续；未解除发送锁定，请稍后核对。"
                     return false
                 }
@@ -493,7 +506,7 @@ extension NativeChatModel {
             let current = try await api.history(sessionID: sessionID, before: nil)
             guard generation == revision, activeTurnRecovery == receipt,
                   !Task.isCancelled, !suspended else { return false }
-            guard current.sessionID == sessionID, current.activeStreamID == nil,
+            guard current.sessionID == sessionID, current.activeRunEvidence == .absent,
                   !current.readOnly,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
                   current.messages.last?.id == latest.messages.last?.id else {

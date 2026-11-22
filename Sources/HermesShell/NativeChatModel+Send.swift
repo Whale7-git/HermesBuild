@@ -737,7 +737,7 @@ extension NativeChatModel {
         guard let historyEnd = pending.historyEnd,
               let latest = latestRecoverySnapshot,
               latest.sessionID == sessionID, !latest.readOnly,
-              latest.activeStreamID == nil,
+              latest.activeRunEvidence == .absent,
               latest.olderOffset > historyEnd else { return .failed }
         let generation = revision
         var pages = [latest]
@@ -750,7 +750,7 @@ extension NativeChatModel {
                 guard generation == revision, pendingSend?.id == pending.id,
                       !Task.isCancelled, !suspended,
                       older.sessionID == sessionID, !older.readOnly,
-                      older.activeStreamID == nil,
+                      older.activeRunEvidence == .absent,
                       older.rawMessageEndIndex == cursor,
                       older.olderOffset < cursor else { return .failed }
                 pages.append(older)
@@ -770,7 +770,7 @@ extension NativeChatModel {
             guard generation == revision, pendingSend?.id == pending.id,
                   !Task.isCancelled, !suspended,
                   current.sessionID == sessionID, !current.readOnly,
-                  current.activeStreamID == nil,
+                  current.activeRunEvidence == .absent,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
                   current.messages.last?.id == latest.messages.last?.id else { return .failed }
         } catch {
@@ -824,7 +824,13 @@ extension NativeChatModel {
         let stillUncertain = !pendingAbsent
         uncertain = stillUncertain
         pendingAbsent = false
-        pendingSend = nil
+        if stillUncertain {
+            var retained = pending
+            retained.hiddenFromTranscript = true
+            pendingSend = retained
+        } else {
+            pendingSend = nil
+        }
         // 原文回填只填空输入框，不覆盖等待期间的新输入；附件占位不是用户文本。
         if restoreDraft,
            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

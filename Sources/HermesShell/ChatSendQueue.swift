@@ -125,7 +125,7 @@ enum DeliveryReconciliationPolicy {
         for index in pages.indices {
             let page = pages[index]
             guard page.sessionID == newest.sessionID,
-                  !page.readOnly, page.activeStreamID == nil else { return .failed }
+                  !page.readOnly, page.activeRunEvidence == .absent else { return .failed }
             if index > 0 {
                 let later = pages[index - 1]
                 guard page.rawMessageEndIndex == later.olderOffset,

@@ -404,6 +404,9 @@ final class NativeChatModel: ObservableObject {
         /// 这条消息是用户输入的，还是系统为「只有附件」补的占位。
         /// 重发必须沿用同一次判定的结果，不能看最终文字重新推断。
         let origin: ChatSendOrigin
+        /// Dismissing the provisional bubble cannot destroy POST evidence.
+        /// Optional preserves decoding of durable records created by old builds.
+        var hiddenFromTranscript: Bool? = nil
 
         func resolution(in snapshot: ChatSnapshot) -> PendingReconcileResult {
             DeliveryReconciliationPolicy.resolve(
