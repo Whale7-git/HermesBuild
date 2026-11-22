@@ -128,4 +128,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run simulator-probe.yml --ref main -f suite=all
+          gh workflow run simulator-probe.yml --repo "$GITHUB_REPOSITORY" --ref main -f suite=all

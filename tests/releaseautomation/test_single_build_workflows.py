@@ -136,7 +136,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         promote = (ROOT / ".github/workflows/hermesshell-single-promote.yml").read_text()
         self.assertIn("expected_sha:", promote)
         self.assertIn("name: Dispatch post-release simulator discovery", promote)
-        self.assertIn("gh workflow run simulator-probe.yml --ref main -f suite=all", promote)
+        self.assertIn('gh workflow run simulator-probe.yml --repo "$GITHUB_REPOSITORY" --ref main -f suite=all', promote)
         self.assertIn("previous_sha:", promote)
         plan = (ROOT / "scripts/release-plan.py").read_text()
         self.assertIn("before != parent", plan)
