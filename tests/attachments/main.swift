@@ -248,6 +248,25 @@ do {
     check(restoredReady.canSend && restoredReady.items[0].data.isEmpty
           && (try? restoredReady.payload(for: "persisted")) == [readyAttachment],
           "completed server reference restores without local bytes")
+    // A remote transform may change the declared size after upload. Keep a
+    // valid server reference and charge the larger size to the quota; do not
+    // guess a resumable offset or re-upload the file from zero.
+    let transformed = UploadedAttachment(
+        name: "report.pdf", path: "/state/attachments/persisted/report.pdf",
+        size: bytes.count + 5, mime: "application/pdf", isImage: false)
+    let transformedItem = PersistedAttachmentDraft(
+        id: readyID, name: "report.pdf", mime: "application/pdf",
+        byteCount: bytes.count, data: Data(), state: .ready(transformed),
+        reuploading: false)
+    var transformedRestore = AttachmentBatch(sessionID: "persisted")
+    try transformedRestore.restorePersisted(PersistedAttachmentBatch(
+        version: PersistedAttachmentBatch.currentVersion,
+        sessionID: "persisted", items: [transformedItem]))
+    check(transformedRestore.restoreSizeMismatches == 1
+          && transformedRestore.items[0].byteCount == transformed.size
+          && (try? transformedRestore.payload(for: "persisted")) == [transformed],
+          "transformed server size is diagnosed, quota-charged and reused without re-upload")
+
 
     let wrongScope = PersistedAttachmentBatch(
         version: readySource.persistedValue.version, sessionID: "other",
