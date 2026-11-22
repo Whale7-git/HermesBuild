@@ -96,6 +96,10 @@ var transcriptPublications = 0
                          unknownStatus, sessionID: "test",
                          receipt: receipt, streamedAssistantPresent: true),
                      "unknown run status must not replace streamed reply")
+        precondition(!ChatFinalHistoryGate.canReplace(
+            unknownStatus, sessionID: "test", receipt: receipt,
+            streamedAssistantPresent: false),
+            "unknown status cannot authorize history replacement even without a streamed reply")
         precondition(!ChatFinalHistoryGate.canReplace(stale, sessionID: "test",
             receipt: receipt, streamedAssistantPresent: true))
         precondition(!ChatFinalHistoryGate.canReplace(alive, sessionID: "test",

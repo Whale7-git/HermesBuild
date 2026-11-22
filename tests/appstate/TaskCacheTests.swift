@@ -20,7 +20,42 @@ extension AppStateTests {
         print("TASK_CACHE_PATH_PASS \(label)")
     }
 
+    @MainActor static func sessionRecoveryEvidenceTests() throws {
+        func snapshot(active: String? = nil, unknown: Bool = false,
+                      readOnly: Bool = false) throws -> ChatSnapshot {
+            var session: [String: Any] = [
+                "session_id": "proof-session",
+                "messages": [["role": "user", "content": "accepted"]],
+                "read_only": readOnly
+            ]
+            if let active { session["active_stream_id"] = active }
+            return try ChatSnapshot(
+                data: JSONSerialization.data(withJSONObject: session),
+                runStatusUnknown: unknown)
+        }
+        let absent = try snapshot()
+        let unknown = try snapshot(unknown: true)
+        let running = try snapshot(active: "run-original")
+        let restricted = try snapshot(readOnly: true)
+        precondition(SessionRecoveryCoordinator.canRetireAcceptedReceipt(
+            from: absent, sessionID: "proof-session"), "verified absent allows read-only reconciliation")
+        precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(
+            from: unknown, sessionID: "proof-session"),
+            "failed status lookup must not retire a durable accepted Run")
+        precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(
+            from: running, sessionID: "proof-session"),
+            "a running Run must preserve its durable receipt")
+        precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(
+            from: restricted, sessionID: "proof-session"),
+            "read-only history cannot retire a durable accepted Run")
+        precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(
+            from: absent, sessionID: "other-session"),
+            "cross-session history cannot retire a durable accepted Run")
+        print("TASK_RECOVERY_EVIDENCE_PASS active, absent, unknown, read-only and wrong-session")
+    }
+
     @MainActor static func taskCacheTests() async throws {
+        try sessionRecoveryEvidenceTests()
         let a = HermesInstance(name: "Cache A", baseURL: "https://task-cache-a.test")
         let b = HermesInstance(name: "Cache B", baseURL: "https://task-cache-b.test")
         try InstanceStore.save([a, b], credentials: credentials)
