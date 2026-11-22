@@ -9,6 +9,8 @@ import Foundation
     var failHistory = false
     var failHistoryAfterStop = false
     var stopAcknowledgementOnly = false
+    var stopErrorCode: Int?
+    var stopTimeout = false
     var stopCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
@@ -42,6 +44,8 @@ import Foundation
     }
     func stopNativeTurn(streamID: String) async throws {
         stopCalls += 1
+        if let stopErrorCode { throw APIError.http(stopErrorCode, "fixture STOP response") }
+        if stopTimeout { throw URLError(.timedOut) }
         if stopAcknowledgementOnly { return }
         active = nil
         if failHistoryAfterStop { failHistory = true; return }
@@ -242,6 +246,47 @@ import Foundation
         try await ModelTests.eventually { !model.stopping }
         precondition(model.canSend && service.startCalls == 1 && service.stopCalls == 1,
                      "bounded GET-only polling resolves terminal without repeating either POST")
+        model.disconnect()
+    }
+
+    // A 404/409 is a rejected STOP request, not a successful cancellation.
+    // The exact Run remains active and the client verifies it with GET only.
+    for code in [404, 409] {
+        let service = SendSafetyService()
+        service.stopErrorCode = code
+        let model = NativeChatModel(sessionID: "stop-rejected-\(code)", api: service)
+        model.stopStatusPollDelaysNanoseconds = [5_000_000_000]
+        await model.load()
+        model.draft = "work"; _ = await model.send()
+        await model.stop()
+        precondition(model.stopping && model.uncertain && !model.canSend
+                     && !model.stopAcknowledged && model.stopRejectedStatusCode == code,
+                     "HTTP \(code) must remain a rejected, locked STOP outcome")
+        precondition(service.active == "run-1" && service.startCalls == 1
+                     && service.stopCalls == 1,
+                     "rejected STOP preserves the live Run and never repeats either POST")
+        precondition(model.notice?.contains("HTTP \(code)") == true,
+                     "rejected STOP status is shown distinctly from an accepted STOP")
+        model.disconnect()
+    }
+
+    // A timeout is different from an HTTP rejection: the STOP result is unknown.
+    do {
+        let service = SendSafetyService()
+        service.stopTimeout = true
+        let model = NativeChatModel(sessionID: "stop-timeout-unknown", api: service)
+        model.stopStatusPollDelaysNanoseconds = [5_000_000_000]
+        await model.load()
+        model.draft = "work"; _ = await model.send()
+        await model.stop()
+        precondition(model.stopping && model.uncertain && !model.canSend
+                     && !model.stopAcknowledged && model.stopRejectedStatusCode == nil,
+                     "STOP timeout remains unknown and locked")
+        precondition(service.active == "run-1" && service.startCalls == 1
+                     && service.stopCalls == 1,
+                     "STOP timeout is reconciled by GET without repeating POST")
+        precondition(model.notice?.contains("结果未知") == true,
+                     "STOP timeout is not presented as an HTTP rejection or success")
         model.disconnect()
     }
 
