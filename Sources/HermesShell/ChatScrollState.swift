@@ -230,19 +230,22 @@ struct RootDrawerGestureOwnership: Equatable {
     private(set) var claimed = false
 
     mutating func changed(open: Bool, startX: Double, horizontal: Double,
-                          vertical: Double, width: Double) {
+                          vertical: Double, width: Double, textSelecting: Bool = false) {
+        // Text selection owns this gesture even if the drawer had already
+        // claimed an earlier movement sample. Never navigate on its release.
+        if textSelecting { claimed = false; return }
         guard !claimed else { return }
         claimed = ChatDrawerInteraction.shouldTrack(
             startX: startX, translationX: horizontal, translationY: vertical,
             open: open, width: width, allowFullCard: true)
     }
 
-    /// A cancelled, vertical, or browser-owned gesture has no destination.
+    /// A cancelled, vertical, or text-selection-owned gesture has no destination.
     /// The caller changes the drawer only when a claimed gesture has ended.
     mutating func ended(open: Bool, width: Double,
-                        predictedTranslation: Double) -> Bool? {
+                        predictedTranslation: Double, textSelecting: Bool = false) -> Bool? {
         defer { claimed = false }
-        guard claimed else { return nil }
+        guard claimed, !textSelecting else { return nil }
         return ChatDrawerInteraction.finishOpen(
             width: width, wasOpen: open, predictedTranslation: predictedTranslation)
     }

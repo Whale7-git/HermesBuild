@@ -14,13 +14,44 @@ from pathlib import Path
 import re
 import threading
 import time
+import zlib
+import struct
 from urllib.parse import parse_qs, urlsplit
 
 HERE = Path(__file__).resolve().parent
 PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
-    "AAAAC0lEQVR42mP8/x8AAwMCAO+/ZkcAAAAASUVORK5CYII="
+    # Valid 32x24 RGBA PNG, CRC-verified. The previous 1x1 fixture carried
+    # an invalid IDAT CRC and failed iOS ImageIO despite the correct 200/MIME.
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAYAAACbU/80"
+    "AAAAL0lEQVR4nO3OQQEAMAjEsGPq5nHW8DJk8EkNNHVf/yx2NucAAAAAAAAAAAAAAEkyUhgC7m/qr4UAAAAASUVORK5CYII="
 )
+def validate_fixture_png(data: bytes):
+    """Fail at mock startup, not 10 minutes into simulator image gestures."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("mock PNG signature invalid")
+    offset = 8
+    seen_idat = False
+    seen_iend = False
+    while offset + 12 <= len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        end = offset + 12 + length
+        if end > len(data):
+            raise ValueError("mock PNG chunk truncated")
+        payload = data[offset + 4:offset + 8 + length]
+        expected = struct.unpack(">I", data[offset + 8 + length:end])[0]
+        if zlib.crc32(payload) != expected:
+            raise ValueError("mock PNG chunk CRC invalid")
+        seen_idat |= payload[:4] == b"IDAT"
+        seen_iend |= payload[:4] == b"IEND"
+        offset = end
+        if seen_iend:
+            break
+    if not (seen_idat and seen_iend and offset == len(data)):
+        raise ValueError("mock PNG missing essential chunks")
+
+
+validate_fixture_png(PNG)
+
 SESSION_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)$")
 MESSAGES_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)/messages$")
 RUN_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)$")
@@ -314,6 +345,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             })
 
         if method == "GET" and path == "/v1/files/by-path":
+            # The image UI regression must prove it includes a Gateway Bearer,
+            # not accidentally pass because the fixture accepts anonymous GET.
+            if not self.headers.get("Authorization", "").startswith("Bearer "):
+                return self.json_response(401, {"error": {"message": "missing bearer"}})
             requested = query.get("path", [""])[0]
             if requested != "/ui-test/ui-image.png":
                 return self.json_response(404, {"error": {"message": "fixture image unavailable"}})
@@ -350,6 +385,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
             with self.state.lock:
                 self.state.finalization_lag_ms = delay
             return self.json_response(200, {"delay_ms": delay})
+        if method == "POST" and path == "/__control/add-selection-text":
+            # Place a short real assistant Markdown paragraph at the end of
+            # history, so the native selection surface is actually visible.
+            with self.state.lock:
+                self.state.message_count += 1
+                self.state.rows("ui-session-1").append({
+                    "id": self.state.message_count,
+                    "session_id": "ui-session-1",
+                    "role": "assistant",
+                    "content": "UI 手势冲突测试文本。长按选中这段文字并向右拖动选区时，侧栏应保持关闭。",
+                    "timestamp": 1795150003,
+                })
+            return self.json_response(200, {"selection_text_added": True})
+        if method == "POST" and path == "/__control/add-image":
+            # Dedicated UI fixture: inject one authenticated uploaded-image
+            # reference into existing history, never user files or credentials.
+            with self.state.lock:
+                self.state.message_count += 1
+                self.state.rows("ui-session-1").append({
+                    "id": self.state.message_count,
+                    "session_id": "ui-session-1",
+                    "role": "user",
+                    "content": "UI 验收图片",
+                    "timestamp": 1795150003,
+                    "attachments": [{
+                        "name": "ui-image.png",
+                        "path": "/ui-test/ui-image.png",
+                        "mime": "image/png",
+                        "size": len(PNG),
+                        "is_image": True,
+                    }],
+                })
+            return self.json_response(200, {"image_added": True})
         if method == "POST" and path == "/__control/stub":
             payload = self.body_json()
             target_method = str(payload.get("method", "GET")).upper()

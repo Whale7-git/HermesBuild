@@ -28,7 +28,7 @@ extension NativeChatView {
                         item: item,
                         actionsEnabled: model.canSend && !app.sessionActionBusy,
                         capabilities: app.api.capabilities,
-                        baseURL: app.api.webConsoleBaseURL,
+                        baseURL: app.api.attachmentBaseURL,
                         sessionID: sessionID,
                         attachmentAuthorization: app.api.attachmentPreviewAuthorization,
                         placeholderScope: displayScope,

@@ -147,7 +147,12 @@ class GatewayContractTests(unittest.TestCase):
             })
         with urllib.request.urlopen(req, timeout=5) as response:
             self.assertEqual(json.loads(response.read())["mime"], "image/png")
-        status, data, hdr = self.request("GET", "/v1/files/by-path?path=%2Fui-test%2Fui-image.png")
+        file_route = "/v1/files/by-path?path=%2Fui-test%2Fui-image.png"
+        unauthenticated_status, _, _ = self.request("GET", file_route)
+        self.assertEqual(unauthenticated_status, 401)
+        status, data, hdr = self.request(
+            "GET", file_route,
+            headers={"Authorization": "Bearer disposable-fixture"})
         self.assertEqual(status, 200)
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertEqual(hdr["Content-Type"], "image/png")
@@ -155,6 +160,9 @@ class GatewayContractTests(unittest.TestCase):
         upload = next(r for r in logs["requests"] if r["path"] == "/v1/files")
         self.assertTrue(upload["authorization_present"])
         self.assertEqual(upload["authorization_scheme"], "Bearer")
+        downloads = [r for r in logs["requests"] if r["path"] == "/v1/files/by-path"]
+        self.assertEqual([r["authorization_scheme"] for r in downloads],
+                         [None, "Bearer"])
         self.assertNotIn("disposable-fixture", json.dumps(logs))
 
     def test_scripted_disconnect(self):

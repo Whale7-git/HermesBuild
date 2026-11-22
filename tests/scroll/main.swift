@@ -389,12 +389,25 @@ expect(!ChatDrawerGestureState().claimed,
 // Unlike the visual translation, the event owner is ordinary @State and is
 // not consulted through @GestureState.claimed at onEnded.
 var rootOwner = RootDrawerGestureOwnership()
+rootOwner.changed(open: false, startX: 175, horizontal: 95, vertical: 4,
+                  width: 330, textSelecting: true)
+expect(!rootOwner.claimed && rootOwner.ended(
+    open: false, width: 330, predictedTranslation: 260,
+    textSelecting: true) == nil,
+    "dragging a native text selection never opens the drawer")
 rootOwner.changed(open: false, startX: 175, horizontal: 95, vertical: 4, width: 330)
-expect(rootOwner.claimed, "host event claims a horizontal drawer opening")
+expect(rootOwner.claimed, "full-card opening from the center must remain available")
+rootOwner.changed(open: false, startX: 175, horizontal: -25, vertical: 15,
+                  width: 330, textSelecting: true)
+expect(!rootOwner.claimed && rootOwner.ended(
+    open: false, width: 330, predictedTranslation: 260) == nil,
+    "text selection revokes a previously claimed full-card return gesture")
+rootOwner.changed(open: false, startX: 175, horizontal: 95, vertical: 4, width: 330)
+expect(rootOwner.claimed, "a fresh ordinary center swipe reclaims drawer navigation")
 rootOwner.changed(open: false, startX: 175, horizontal: -25, vertical: 15, width: 330)
-expect(rootOwner.claimed, "reversal cannot revoke a claimed root gesture")
+expect(rootOwner.claimed, "direction reversal retains non-selection gesture ownership")
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 260) == true,
-       "onEnded succeeds even when transient gesture state has reset")
+       "onEnded succeeds for non-selection full-card opening")
 expect(!rootOwner.claimed, "ending a gesture releases the stable owner")
 
 rootOwner.changed(open: true, startX: 385, horizontal: -110, vertical: 3, width: 330)
@@ -411,15 +424,15 @@ rootOwner.changed(open: true, startX: 80, horizontal: -130, vertical: 2, width: 
 expect(!rootOwner.claimed && rootOwner.ended(
        open: true, width: 330, predictedTranslation: -290) == nil,
        "instance rail gesture cannot close the sidebar")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 rootOwner.cancelled()
 expect(!rootOwner.claimed && rootOwner.ended(
        open: false, width: 330, predictedTranslation: 270) == nil,
        "scene change or browser handoff cancels pending root navigation")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 60) == false,
        "short opening swipe springs back instead of navigating")
-rootOwner.changed(open: false, startX: 190, horizontal: 90, vertical: 2, width: 330)
+rootOwner.changed(open: false, startX: 8, horizontal: 90, vertical: 2, width: 330)
 expect(rootOwner.ended(open: false, width: 330, predictedTranslation: 270) == true,
        "new gesture succeeds after an interrupted and a cancelled gesture")
 expect(!rootOwner.claimed, "no owner leaks into the next interaction")

@@ -23,6 +23,19 @@ import FoundationNetworking
     task.cancel()
     do { _ = try await task.value; fatalError("FAIL cancelled preview succeeded") }
     catch { check(true, "cancelled preview does not deliver image") }
+    // A failed user-owned image must reveal the failure category, never a
+    // URL, token, opaque filesystem path, or raw server response body.
+    check(AttachmentImageFailurePresentation.reason(for: AttachmentError.http(401)).contains("无权"),
+          "401 preview reports an authentication problem")
+    check(AttachmentImageFailurePresentation.reason(for: AttachmentError.http(404)).contains("找不到"),
+          "404 preview distinguishes a missing remote file")
+    check(AttachmentImageFailurePresentation.reason(for: AttachmentError.unsupportedPreview).contains("图片格式"),
+          "invalid MIME reports a preview-format failure")
+    check(AttachmentImageFailurePresentation.reason(for: URLError(.timedOut)).contains("超时"),
+          "preview timeout is distinguishable from HTTP and decode errors")
+    let testMessage = AttachmentImageFailurePresentation.reason(for: AttachmentError.http(502))
+    check(testMessage.contains("502") && !testMessage.contains("https://"),
+          "HTTP failures include only the safe status code")
     let guardDelegate = AttachmentRedirectGuard()
     let session = URLSession(configuration:.ephemeral)
     defer { session.invalidateAndCancel() }
