@@ -1,83 +1,29 @@
-# GitHub collaboration
+# HermesBuild GitHub workflow (current)
 
-Work from the latest `main` on a short-lived feature branch and submit a
-same-repository pull request. Preserve the iOS client scope, existing instance
-identities, Keychain isolation, and chat behavior. Do not commit generated
-outputs or local machine configuration.
+Use `main` as the product source of truth. Develop in short-lived branches, open a PR and keep all code and behavior changes reviewable by commit. The one product candidate is compiled on macOS; no local IPA substitution.
 
-The release path has two workflows:
+## Independent workflows
 
-- `.github/workflows/hermesshell-single-build.yml` runs source checks, the
-  full Swift offline suite, and the single `macos-26` candidate build in
-  parallel. The build validates the IPA and uploads it for 14 days. An upload
-  from an unsuccessful run is not eligible for promotion.
-- `.github/workflows/hermesshell-single-promote.yml` runs after a
-  merge to `main`, checks whether the version changed, and selects the exact
-  candidate from the successful PR run. It verifies the candidate and publishes
-  the same bytes without compiling again or rerunning the PR checks.
+| Workflow | Responsibility | Blocks product Release? |
+|---|---|---|
+| `hermesshell-single-build.yml` | Compile and package the exact candidate IPA once; upload immutable Artifact | **Only if IPA cannot be built or verified** |
+| `hermes-offline-diagnostics.yml` | Four parallel Swift shards, Python/static diagnostics, full logs and visible failure status | **No** |
+| `simulator-probe.yml` | Simulator UI checks and discovered issues | **No** |
+| `verified-release-automerge.yml` | Automatically merge a valid version-bumped product PR after candidate success | No Issue, source hash, test or manual-approval gate |
+| `hermesshell-single-promote.yml` | Select exact PR candidate and publish identical bytes; best-effort Bark notification | Actual Artifact identity/integrity required |
 
-The mandatory candidate workflow (source/scope, Swift offline, and IPA compilation) must pass on the exact head and tree that will be merged. Simulator UI checks are independent and non-blocking for ordinary product releases. The
-resulting `main` tree must match the candidate manifest. The candidate Artifact
-contains the IPA, `build-info.json`, `validation.json`,
-`candidate-manifest.json`, and `SHA256SUMS.txt`. A Release publishes the first
-four files; `SHA256SUMS.txt` remains inside the candidate Artifact for its own
-verification.
+A product PR does not need a complete Issue matrix or green diagnostics to ship. When tests fail, report failure, continue the corresponding repair and do not claim the Issue fixed. No source baseline, release-scope hash manifest, triple-green workflow, or hold-label rule is used.
 
-A separate `hermes-candidate-diagnostics-<run>-<attempt>` Artifact is uploaded
-on success and failure, with a 7-day retention. Its explicit whitelist contains
-the captured toolchain, redacted setup and build logs, `build-report.json`, and
-candidate identity files when present. It is never promoted. Diagnostic upload is
-best-effort so a temporary logging failure cannot invalidate a verified
-candidate.
+The protected boundary remains: PRs changing `.github/workflows/`, privileged scripts or governance files are **maintenance PRs** and require an explicit trusted agent merge. Automatically merged product PRs cannot change scripts that hold write permissions.
 
-`workflow_dispatch` on the candidate workflow builds and retains a candidate
-Artifact, but never publishes. Only a version-bearing merge to `main` can start
-promotion. A maintenance merge checks the version and plans no release.
+## Artifact provenance
 
-Published tags and assets are immutable. A missing, expired, mismatched, or
-invalid candidate consumes the merged build; increment the build and repeat the
-PR flow instead of substituting a local package. `BARK_URL` is an optional
-repository Secret used by a separate best-effort notification job. Package
-validation and device acceptance remain separate from source tests.
+The candidate Artifact includes the unsigned IPA, `candidate-manifest.json`, `validation.json`, `build-info.json` and `SHA256SUMS.txt`. Promotion compares expected commit/tree, archive digest and published bytes. It never rebuilds the IPA. Publishing wrong bytes or an existing tag is an error, not a cosmetic diagnostic.
 
-Do not print machine identities, proxy URLs, tokens, cookies, passwords, or
-notification keys in public logs. Update the current release scope only after
-reviewing the complete source change; preserve frozen baseline manifests,
-historical release-scope manifests, and third-party notices.
+Run `bash tests/run_container.sh` for a local full suite; CI shards are independent jobs on Ubuntu. Debug test failures using shard-prefixed START/FAIL timestamps. Use `release.json` and GitHub Releases for version truth.
 
-The only current build and publication workflows are
-`hermesshell-single-build.yml` and `hermesshell-single-promote.yml`. Historical
-manifests may mention removed external build and publication entry points as
-evidence; they are not instructions and must not be reintroduced.
+## Issues
 
-## Hourly autonomous Issue loop
+GitHub Issues are the active backlog. The project manager tracks the entire open set and delegates disjoint repairs. Use `Fixes #N` only when an issue genuinely meets its full acceptance criteria; plain `#N` for partial or externally blocked items. Simulator failures and real-device findings are distinct forms of evidence.
 
-The scheduled GPT agent reads the latest Issues, PRs, Release and `main`, claims one actionable Issue, verifies any existing fix or implements and tests a missing fix, and creates/continues its linked PR. **Both ordinary and high-risk product fixes ship automatically after the exact-head three CI jobs pass; high-risk fixes also require targeted safety regression and agent self-review, never human review.** After promotion, verify the actual Release IPA, update Issue evidence and close only fully delivered fixes; then pick the next Issue on a later cycle. A read-only status report is not a substitute for a requested fix. Safety failures keep the PR/Issue open for continued automated repair, not an unreviewed release.
-
-## Issues, fast releases, and simulator discovery
-
-- Start every user-requested feature/fix by searching GitHub Issues, creating or
-  updating one when there is concrete scope, and linking its PR. Publishing the
-  Release (not merely merging a PR) completes delivery.
-- The trusted auto-merge gate requires only the successful exact-head candidate
-  workflow and its three jobs; it still checks release identity, source scope,
-  privileged paths, manual hold labels and immutable candidate provenance.
-  Privileged CI/workflow/script changes use a separate checked PR and an agent-initiated explicit merge, not an app Release; **no human approval is required**. Both ordinary and high-risk iOS product fixes use the same no-human-review automatic merge and promotion path, with extra targeted safety regressions and agent self-review for high-risk fixes.
-- On promotion success, the workflow explicitly dispatches the main-branch
-  simulator suite. The simulator also runs on relevant PRs and on its schedule.
-  No simulator result can automatically invalidate a published immutable asset.
-- The trusted `.github/workflows/simulator-issue-triage.yml` watches completed
-  failed simulator runs, reads only small JSON test evidence, deduplicates
-  fingerprints and upserts GitHub Issues. Distinguish XCTest assertion failures
-  from infrastructure failures; a red run alone is not a confirmed App bug.
-- Simulator Issue evidence includes failed test identity, exact source commit
-  and Actions URL, with bounded and redacted assertion summaries. Re-run
-  evidence may update existing Issues, but no Issue auto-closes on a single
-  passing run; require fix PR and release evidence.
-- Changes affecting POST replay, session/account separation, persistent state or STOP
-  need focused deterministic pre-release tests and agent code self-review, **not human review or approval**.
-  Use `hold` only for a concrete unverified safety invariant, failed CI check or an explicit user pause; the risk label itself is not a hold.
-- Following a successful Release, referenced GitHub Issues receive release evidence:
-  `Fixes #N` is closed once delivered, plain `#N` remains open for follow-up.
-
-The existing Release and Bark links remain the delivery source of truth.
+Third-party licenses, Gateway protocol contracts and source security invariants remain in force; historical build-specific plans are visible in Git history, not in the active documentation.
