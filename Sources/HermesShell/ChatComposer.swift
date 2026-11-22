@@ -488,6 +488,10 @@ struct ChatComposer: View {
                         }
                     }
                     .frame(width: 44, height: 44)
+                    // Keep the running-mode selector inside the existing 44pt
+                    // action rail. Adding/removing an entire row at run start
+                    // used to shift the editor and resize the transcript.
+                    if running { sendModePicker }
                     Spacer(minLength: 0)
                     Button(action: onChooseModel) {
                         HStack(spacing: 4) {
@@ -545,16 +549,6 @@ struct ChatComposer: View {
                 .padding(.leading, 5)
                 .padding(.trailing, 7)
                 .padding(.bottom, 2)
-            }
-            // The mode row belongs to the running turn, not the first
-            // keystroke: it must not add/remove 44pt while the user types.
-            if !readOnly && running {
-                HStack {
-                    sendModePicker
-                    Spacer(minLength: 0)
-                }
-                .padding(.leading, 9)
-                .padding(.bottom, 5)
             }
         }
         .background(AppTheme.surface,
@@ -641,14 +635,11 @@ struct ChatComposer: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: sendMode.icon).font(.caption2.weight(.semibold))
-                Text(sendMode.label).font(.caption.weight(.semibold))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
+            Image(systemName: sendMode.icon)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel("运行中发送方式，当前\(sendMode.label)")
         .accessibilityHint(sendMode.hint)
