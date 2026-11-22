@@ -86,6 +86,19 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("if: ${{ always() }}", text)
 
+    def test_simulator_shards_use_independent_runners_and_aggregate_status(self):
+        workflow = (ROOT / ".github/workflows/simulator-probe.yml").read_text()
+        self.assertIn("shard: [chat, experience]", workflow)
+        self.assertIn("fail-fast: false", workflow)
+        self.assertIn("name: simulator-${{ matrix.shard }}", workflow)
+        self.assertIn("HermesLongTaskRecoveryUITests", workflow)
+        self.assertIn("TEST_SHARD: ${{ matrix.shard }}", workflow)
+        self.assertIn("name: Aggregate isolated UI shards", workflow)
+        self.assertIn("needs: simulator", workflow)
+        self.assertIn("context: 'hermes/simulator-all'", workflow)
+        self.assertIn("if (!passed) core.setFailed", workflow)
+        self.assertIn("hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}", workflow)
+
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
         text = path.read_text()
