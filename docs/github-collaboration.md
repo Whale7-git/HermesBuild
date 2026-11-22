@@ -50,6 +50,10 @@ The only current build and publication workflows are
 manifests may mention removed external build and publication entry points as
 evidence; they are not instructions and must not be reintroduced.
 
+## Hourly autonomous Issue loop
+
+The scheduled GPT agent reads the latest Issues, PRs, Release and `main`, claims one actionable Issue, verifies any existing fix or implements and tests a missing fix, and creates/continues its linked PR. **Both ordinary and high-risk product fixes ship automatically after the exact-head three CI jobs pass; high-risk fixes also require targeted safety regression and agent self-review, never human review.** After promotion, verify the actual Release IPA, update Issue evidence and close only fully delivered fixes; then pick the next Issue on a later cycle. A read-only status report is not a substitute for a requested fix. Safety failures keep the PR/Issue open for continued automated repair, not an unreviewed release.
+
 ## Issues, fast releases, and simulator discovery
 
 - Start every user-requested feature/fix by searching GitHub Issues, creating or
@@ -58,8 +62,7 @@ evidence; they are not instructions and must not be reintroduced.
 - The trusted auto-merge gate requires only the successful exact-head candidate
   workflow and its three jobs; it still checks release identity, source scope,
   privileged paths, manual hold labels and immutable candidate provenance.
-  Privileged CI/workflow/script changes use a checked PR and explicit merge;
-  ordinary personal-app fixes have no additional human approval gate.
+  Privileged CI/workflow/script changes use a separate checked PR and an agent-initiated explicit merge, not an app Release; **no human approval is required**. Both ordinary and high-risk iOS product fixes use the same no-human-review automatic merge and promotion path, with extra targeted safety regressions and agent self-review for high-risk fixes.
 - On promotion success, the workflow explicitly dispatches the main-branch
   simulator suite. The simulator also runs on relevant PRs and on its schedule.
   No simulator result can automatically invalidate a published immutable asset.
@@ -72,8 +75,8 @@ evidence; they are not instructions and must not be reintroduced.
   evidence may update existing Issues, but no Issue auto-closes on a single
   passing run; require fix PR and release evidence.
 - Changes affecting POST replay, session/account separation, persistent state or STOP
-  need focused pre-release tests and code review, not automatic human holds.
-  Use `hold` for a concrete unverified safety invariant or failed CI check.
+  need focused deterministic pre-release tests and agent code self-review, **not human review or approval**.
+  Use `hold` only for a concrete unverified safety invariant, failed CI check or an explicit user pause; the risk label itself is not a hold.
 - Following a successful Release, referenced GitHub Issues receive release evidence:
   `Fixes #N` is closed once delivered, plain `#N` remains open for follow-up.
 
