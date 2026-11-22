@@ -12,7 +12,7 @@ and server deployment outside this repository.
 - Use a separate Git worktree for each concurrent agent. Never share a mutable
   checkout between agents.
 - Submit changes through a pull request. Do not push directly to `main`.
-- Version-bumped product PRs with `<!-- hermes-auto-release -->` in the body are eligible for trusted default-branch auto-merge only after both exact-head CI workflows succeed. To block, remove the marker or add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for opted-in release PRs. Maintenance, infrastructure, CI, and script changes always require manual merge.
+- Version-bumped product PRs are eligible for trusted default-branch auto-merge only after both exact-head CI workflows succeed. To block, add `hold`, `manual-review`, or `no-auto-release`. Draft alone is not a hold for a fully verified release PR. Maintenance, infrastructure, CI, and script changes always require manual merge.
 - Rebase or merge the latest `main` before requesting review. Resolve conflicts
   on the feature branch.
 - Shared GitHub identities cannot approve their own pull requests. In that
