@@ -305,8 +305,8 @@ extension NativeChatModel {
             self.error = error.localizedDescription
             uncertain = true
             pauseQueueForRecovery()
-            if let apiError = error as? APIError,
-               case .http(let code, _) = apiError, code == 404 || code == 409 {
+            if let stopError = error as? ChatStopHTTPError,
+               case .rejected(let code) = stopError {
                 stopRejectedStatusCode = code
                 notice = "停止请求被服务端拒绝（HTTP \(code)）；正在核对原 Run，发送保持锁定。"
             } else {
