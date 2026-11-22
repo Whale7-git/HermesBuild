@@ -102,7 +102,15 @@ class SingleBuildWorkflowTests(unittest.TestCase):
 
     def test_verified_automerge_is_gated_and_dispatches_without_rebuild(self):
         workflow = (ROOT / ".github/workflows/verified-release-automerge.yml").read_text()
-        self.assertEqual(triggers(workflow), {"workflow_run"})
+        self.assertEqual(triggers(workflow), {"workflow_run", "pull_request_target"})
+        self.assertIn("types: [unlabeled, ready_for_review, reopened]", workflow)
+        self.assertIn("github.event.pull_request.head.sha", workflow)
+        self.assertIn("core.setFailed('Release blocked: '", workflow)
+        self.assertIn("path.startsWith('tests/model/') && path.endsWith('.swift')", workflow)
+        self.assertNotIn("path.startsWith('tests/run_container.sh')", workflow)
+        runner = (ROOT / "tests/run_container.sh").read_text()
+        self.assertIn("tests/model/*.swift", runner)
+        self.assertNotIn("tests/model/AutomaticReconciliationTests.swift", runner)
         for required in ("github.event.workflow_run.conclusion == 'success'",
                          "head_sha: sha", "no-auto-release",
                          "latest.conclusion !== 'success'", "expected_sha",
