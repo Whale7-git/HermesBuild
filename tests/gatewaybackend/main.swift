@@ -417,6 +417,54 @@ actor ConcurrencyProbe {
         check(already.isEmpty, "already-streamed commentary is not duplicated")
         let snapshot = try GatewayDecode.snapshot(Data(#"{"session_id":"s","active_run_id":"r","data":[]}"#.utf8), offset: 0)
         check(snapshot.activeStreamID == "r", "explicit active run survives decoding")
+        let pendingControls = GatewayDecode.pendingControlSnapshot(from: [
+            "pending_controls": [
+                ["kind": "approval", "prompt_id": "approval-1", "execution_generation": 4,
+                 "description": "Run a shell command", "command": "make test",
+                 "choices": ["once", "deny", "always"]],
+                ["kind": "clarify", "prompt_id": "clarify-1", "execution_generation": 7,
+                 "question": "Choose a target", "choices": ["A", "B"], "multi_select": false]
+            ]
+        ])
+        check(pendingControls?.frames.count == 2
+              && pendingControls?.hasIncompleteControl == false,
+              "current Gateway pending_controls projection decodes both control kinds")
+        let approvalFrame = pendingControls?.frames.first(where: { $0.event == "approval" })
+        let approvalBody = approvalFrame.flatMap {
+            (try? JSONSerialization.jsonObject(with: Data($0.data.utf8))) as? [String: Any]
+        }
+        check(approvalBody?["request_id"] as? String == "approval-1"
+              && approvalBody?["choices"] as? [String] == ["once", "deny"],
+              "approval snapshot maps prompt_id and excludes persistent grant choices")
+        let clarifyFrame = pendingControls?.frames.first(where: { $0.event == "clarify" })
+        let restoredClarify = clarifyFrame.flatMap {
+            ChatPendingClarify.make(from: $0, runID: "run-x")
+        }
+        check(restoredClarify?.requestID == "clarify-1"
+              && restoredClarify?.executionGeneration == 7
+              && restoredClarify?.question == "Choose a target"
+              && restoredClarify?.choices == ["A", "B"],
+              "clarification snapshot preserves prompt identity, generation and choices")
+        let emptyControls = GatewayDecode.pendingControlSnapshot(from: ["pending_controls": []])
+        check(emptyControls?.frames.isEmpty == true
+              && emptyControls?.hasIncompleteControl == false,
+              "an explicit empty pending_controls list is authoritative")
+        check(GatewayDecode.pendingControlSnapshot(from: [:]) == nil,
+              "missing pending_controls means the Gateway capability is unavailable")
+        let malformedControls = GatewayDecode.pendingControlSnapshot(from: [
+            "pending_controls": [
+                ["kind": "approval", "prompt_id": "bad-approval", "execution_generation": 4,
+                 "description": "Run command", "choices": ["always"]]
+            ]
+        ])
+        check(malformedControls?.frames.isEmpty == true
+              && malformedControls?.hasIncompleteControl == true,
+              "incomplete approval data fails closed instead of inventing a card")
+        let snapshotWithControls = try GatewayDecode.snapshot(
+            Data(#"{\"session_id\":\"s\",\"data\":[]}"#.utf8), offset: 0,
+            activeRunID: "r", requestedSessionID: "s", pendingControls: pendingControls)
+        check(snapshotWithControls.gatewayPendingControls?.frames.count == 2,
+              "Gateway history snapshot carries the authoritative pending-control projection")
         GatewayRunStore.removeAll(instanceID: "instance", accountScope: "account", defaults: defaults)
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == nil, "account retirement cleans recovery records")
         let retired = GatewayRunStore(scope: "instance|account", defaults: defaults)
