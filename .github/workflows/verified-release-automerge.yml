@@ -82,7 +82,7 @@ jobs:
                (path.endsWith('.swift') || path.endsWith('.sh') ||
                 /^tests\/release-scope-build\d+\.json$/.test(path)));
             if (!files.length || files.some(file => !allowed(file.filename)))
-              return blocked('PR touches non-product or privileged files; manual merge required');
+              return abort('Privileged or non-product PR: intentional manual merge, not a failed release');
             if (!files.some(file => file.filename === 'release.json'))
               return abort('Not a new release PR');
             const readRelease = async ref => {
