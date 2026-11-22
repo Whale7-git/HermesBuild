@@ -17,7 +17,7 @@ import urllib.request
 
 MAX_FILES = 12
 MAX_BYTES = 16384
-TEST_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\\.test[A-Za-z_0-9]{1,120}$")
+TEST_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\.test[A-Za-z_0-9]{1,120}$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -41,10 +41,10 @@ def api(method: str, path: str, data: dict | None = None) -> dict:
 def safe_assertion(text: str) -> str:
     # Public issues must not quote arbitrary mock-gateway request bodies.
     text = text.rsplit("error:", 1)[-1].strip()
-    text = re.sub(r"https?://\\S+", "[url]", text)
-    text = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\\s*[:= ]\\s*\\S+",
+    text = re.sub(r"https?://\S+", "[url]", text)
+    text = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\s*[:= ]\s*\S+",
                   "[redacted]", text)
-    text = re.sub(r"[^\\x20-\\x7e]", " ", text)
+    text = re.sub(r"[^\x20-\x7e]", " ", text)
     return text[:220]
 
 
@@ -98,9 +98,9 @@ def upsert(repo: str, key: str, title: str, detail: str, run_id: str) -> None:
             api("POST", f"/repos/{repo}/issues/{number}/comments", {"body": detail})
         print(f"Updated issue #{number}: {title}")
     else:
-        body = (f"<!-- {marker} -->\\n"
-                "Detected by independent Hermes simulator regression.\\n\\n"
-                + detail + "\\n\\n"
+        body = (f"<!-- {marker} -->\n"
+                "Detected by independent Hermes simulator regression.\n\n"
+                + detail + "\n\n"
                 "A failing test is evidence requiring triage, not proof of a production defect. "
                 "Confirm the behavior and record the fix PR before closing.")
         issue = api("POST", f"/repos/{repo}/issues",
@@ -124,17 +124,17 @@ def main() -> None:
                 continue
             seen.add(key)
             assertion = "; ".join(report["assertions"][:3]) or "See XCTest artifact"
-            detail = (f"- Failed test: \`{testcase}\`\\n"
-                      f"- Shard: \`{report['shard']}\`\\n"
-                      f"- Tested commit: \`{sha}\`\\n"
-                      f"- CI run: {run_url}\\n"
+            detail = (f"- Failed test: `{testcase}`\n"
+                      f"- Shard: `{report['shard']}`\n"
+                      f"- Tested commit: `{sha}`\n"
+                      f"- CI run: {run_url}\n"
                       f"- Failure evidence: {assertion}")
             upsert(repo, key, f"[simulator] {testcase}", detail, run_id)
     if not seen:
         # Keep infrastructure/test-harness failures distinct from app bugs.
         key = hashlib.sha256(b"simulator:unclassified-infrastructure").hexdigest()[:20]
-        detail = (f"- Test/run status: failure without a validated failed XCTest case\\n"
-                  f"- Tested commit: \`{sha}\`\\n- CI run: {run_url}\\n"
+        detail = (f"- Test/run status: failure without a validated failed XCTest case\n"
+                  f"- Tested commit: `{sha}`\n- CI run: {run_url}\n"
                   "- Check runner, mock Gateway, simulator boot, artifacts and test harness.")
         upsert(repo, key, "[simulator-ci] Unclassified simulator run failure",
                detail, run_id)
