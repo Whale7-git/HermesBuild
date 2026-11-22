@@ -17,6 +17,7 @@ import Foundation
     var holdSteer = false
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
+    var approvalCalls: [(String, Int, String)] = []
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
     var pendingControlSnapshot: GatewayPendingControlSnapshot?
@@ -69,8 +70,10 @@ import Foundation
         if holdSteer { return try await withCheckedThrowingContinuation { pendingSteer = $0 } }
         return nil
     }
-    func approveNativeTurn(runID: String, choice: String, requestID: String?) async throws -> String? {
-        try await withCheckedThrowingContinuation { pendingApproval = $0 }
+    func approveNativeTurn(runID: String, choice: String, requestID: String,
+                           executionGeneration: Int) async throws -> String? {
+        approvalCalls.append((requestID, executionGeneration, choice))
+        return try await withCheckedThrowingContinuation { pendingApproval = $0 }
     }
     func clarifyNativeTurn(runID: String, answer: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
@@ -87,8 +90,14 @@ import Foundation
         }
     }
     func approval(_ id: String) {
-        frames.append(SSEFrame(event: "approval", data:
-            "{\"request_id\":\"\(id)\",\"message\":\"Review command\",\"choices\":[\"once\",\"deny\"]}", id: id))
+        let payload: [String: Any] = [
+            "request_id": id, "execution_generation": 7,
+            "message": "Review command", "choices": ["once", "deny"]
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload)).map {
+            String(decoding: $0, as: UTF8.self)
+        } ?? "{}"
+        frames.append(SSEFrame(event: "approval", data: data, id: id))
     }
 
     func clarify(_ id: String, generation: Int, choices: [String] = []) {
@@ -933,6 +942,11 @@ import Foundation
         try await ModelTests.eventually { model.pendingApproval?.requestID == "old" }
         let response = Task { await model.respondToApproval("once") }
         try await ModelTests.eventually { service.pendingApproval != nil }
+        precondition(service.approvalCalls.count == 1
+                     && service.approvalCalls[0].0 == "old"
+                     && service.approvalCalls[0].1 == 7
+                     && service.approvalCalls[0].2 == "once",
+                     "approval POST carries the chosen prompt identity and generation")
         service.approval("new")
         try await ModelTests.eventually { model.pendingApproval?.requestID == "new" }
         service.pendingApproval!.resume(returning: nil); service.pendingApproval = nil
@@ -971,9 +985,10 @@ import Foundation
         precondition(!model.canRespondToApproval(requestID: "missing", choice: "once"),
                      "a missing request ID must never fall back to another approval")
         let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
+                                      executionGeneration: 3,
                                       detail: "", command: nil, choices: ["once"])
         let current = ChatPendingApproval(id: "current", runID: "current-run",
-                                          requestID: "current", detail: "",
+                                          requestID: "current", executionGeneration: 4, detail: "",
                                           command: nil, choices: ["once"])
         model.pendingApprovals = [old, current]
         model.removePendingApprovals(for: "current-run")
@@ -1212,7 +1227,7 @@ import Foundation
         service.pendingControlSnapshot = GatewayPendingControlSnapshot(
             frames: [
                 SSEFrame(event: "approval", data:
-                    #"{"request_id":"approval-1","message":"Run command","choices":["once","deny"]}"#,
+                    #"{"request_id":"approval-1","execution_generation":7,"message":"Run command","choices":["once","deny"]}"#,
                     id: nil),
                 SSEFrame(event: "clarify", data:
                     #"{"request_id":"clarify-1","execution_generation":7,"question":"Choose a target","choices":["A","B"],"multi_select":false}"#,
