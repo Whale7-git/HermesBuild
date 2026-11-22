@@ -1,0 +1,78 @@
+import Foundation
+
+/// The app, not the user, owns bounded GET-only status reconciliation.
+/// Test the actual NativeChatModel task against a deterministic fake gateway.
+extension ModelTests {
+    @MainActor static func automaticReconciliationTests() async throws {
+        let service = ActivityRecoveryService()
+        let model = NativeChatModel(sessionID: "activity", api: service)
+        model.automaticReconciliationDelaysNanoseconds = [
+            1_000_000, 2_000_000, 4_000_000
+        ]
+
+        // Failure during the initial history GET is not permission to POST.
+        service.failHistory = true
+        await model.load()
+        precondition(model.uncertain && !model.canSend)
+        let firstCalls = service.historyCalls
+        service.failHistory = false
+        model.scheduleAutomaticReconciliation()
+        let recovery = model.automaticReconciliationTask
+        precondition(recovery != nil, "visible uncertain chat schedules its own GET")
+        await recovery?.value
+        precondition(service.historyCalls > firstCalls,
+                     "automatic reconciliation must actually read history")
+        precondition(!model.uncertain && model.canSend && service.postCalls == 0,
+                     "canonical GET clears transient error without submitting a POST")
+        precondition(model.automaticReconciliationTask == nil,
+                     "completed reconciliation releases its single-flight owner")
+        model.disconnect()
+
+        // A persistent outage must stop after the explicit budget and never
+        // unlock or replay. Leaving the page cancels a pending retry.
+        let outage = ActivityRecoveryService()
+        outage.failHistory = true
+        let locked = NativeChatModel(sessionID: "activity", api: outage)
+        locked.automaticReconciliationDelaysNanoseconds = [
+            1_000_000, 2_000_000, 4_000_000
+        ]
+        await locked.load()
+        locked.scheduleAutomaticReconciliation()
+        await locked.automaticReconciliationTask?.value
+        precondition(outage.historyCalls == 4 && outage.postCalls == 0,
+                     "one failed initial GET plus three bounded automatic retries")
+        precondition(locked.uncertain && !locked.canSend,
+                     "retry exhaustion must preserve the send safety lock")
+        locked.disconnect()
+
+        let cancelService = ActivityRecoveryService()
+        cancelService.failHistory = true
+        let cancelled = NativeChatModel(sessionID: "activity", api: cancelService)
+        cancelled.automaticReconciliationDelaysNanoseconds = [2_000_000_000]
+        await cancelled.load()
+        cancelled.scheduleAutomaticReconciliation()
+        let initialCalls = cancelService.historyCalls
+        cancelled.disconnect()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        precondition(cancelService.historyCalls == initialCalls &&
+                     cancelled.automaticReconciliationTask == nil,
+                     "leaving chat cancels retries without cross-session GETs")
+
+        // A known missing POST is a user-choice boundary. The app must not
+        // re-submit it merely because a timer or foreground refresh fired.
+        let absent = ActivityRecoveryService()
+        let noResend = NativeChatModel(sessionID: "activity", api: absent)
+        await noResend.load()
+        noResend.draft = "please answer"
+        // The service does not accept this POST; establish only the
+        // read-only guard condition without claiming service execution.
+        noResend.pendingAbsent = true
+        noResend.uncertain = true
+        noResend.scheduleAutomaticReconciliation()
+        precondition(noResend.automaticReconciliationTask != nil ||
+                     absent.postCalls == 0,
+                     "status handling never manufactures a new POST")
+        noResend.disconnect()
+        print("MODEL_PASS automatic read-only recovery, bounded outage and cancellation")
+    }
+}
