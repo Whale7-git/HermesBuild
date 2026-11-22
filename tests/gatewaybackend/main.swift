@@ -451,7 +451,7 @@ actor ConcurrencyProbe {
         check(emptyControls?.frames.isEmpty == true
               && emptyControls?.hasIncompleteControl == false,
               "an explicit empty pending_controls list is authoritative")
-        check(GatewayDecode.pendingControlSnapshot(from: [:]) == nil,
+        check(GatewayDecode.pendingControlSnapshot(from: [:]).map { $0.frames.count } == nil,
               "missing pending_controls means the Gateway capability is unavailable")
         let malformedControls = GatewayDecode.pendingControlSnapshot(from: [
             "pending_controls": [
@@ -493,7 +493,7 @@ actor ConcurrencyProbe {
               "live Gateway empty control set clears stale approval/clarification cards")
         transport.pendingControls = nil
         let unsupportedControlHistory = try await backend(scope: controlScope).history(sessionID: "s", before: nil)
-        check(unsupportedControlHistory.gatewayPendingControls == nil,
+        check(unsupportedControlHistory.gatewayPendingControls.map { $0.frames.count } == nil,
               "older Gateway without pending_controls does not fabricate an empty set")
         transport.pendingControls = nil
         transport.status = "running"
