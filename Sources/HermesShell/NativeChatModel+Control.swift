@@ -332,7 +332,7 @@ extension NativeChatModel {
                       self.streamID == active, self.stopping, !self.suspended else { return }
             }
             if generation == self.revision, self.streamID == active, self.stopping {
-                self.notice = "后台终态仍待确认，已停止自动核对；可手动核对，不会重复发送消息。"
+                self.notice = "停止状态暂未得到服务端确认；不会再次发送停止或聊天请求。返回会话时将自动继续核对。"
             }
         }
     }

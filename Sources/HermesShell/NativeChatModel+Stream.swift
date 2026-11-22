@@ -508,6 +508,73 @@ extension NativeChatModel {
         return !uncertain
     }
 
+    /// Follow up an inconclusive run/send automatically while the chat is
+    /// visible. GET-only, bounded and serial. A run/queue safety lock is never
+    /// cleared merely because these attempts exhaust their budget.
+    func scheduleAutomaticReconciliation() {
+        guard automaticReconciliationTask == nil, !suspended, !authenticationRequired,
+              !stopping, !running, !submitting, !loading, !syncing, !reconciling,
+              uncertain || pendingSend != nil || activeTurnRecovery != nil else { return }
+        // An authoritative absence allows an explicit user decision to resend;
+        // the automatic worker must not re-send or nag by rechecking that proof.
+        if pendingSend != nil && pendingAbsent && activeTurnRecovery == nil { return }
+        let runID = activeTurnRecovery?.runID
+        let pendingID = pendingSend?.id
+        let ticket = UUID()
+        automaticReconciliationTicket = ticket
+        automaticReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.automaticReconciliationTicket == ticket {
+                    self.automaticReconciliationTask = nil
+                    self.automaticReconciliationTicket = nil
+                }
+            }
+            for (attempt, delay) in self.automaticReconciliationDelaysNanoseconds.enumerated() {
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      !self.suspended, !self.authenticationRequired, !self.stopping,
+                      !self.running, !self.submitting,
+                      !self.loading, !self.syncing, !self.reconciling,
+                      self.activeTurnRecovery?.runID == runID,
+                      self.pendingSend?.id == pendingID else { return }
+                if let pendingID, self.pendingAbsent,
+                   self.pendingSend?.id == pendingID, runID == nil { return }
+
+                // A lost POST remains a durable PendingSend. Reconcile it by
+                // history only; never invoke send(), resendPending() or flush.
+                if self.pendingSend != nil {
+                    _ = await self.reconcilePending()
+                } else {
+                    await self.refresh(silent: true, preserveLoadedOlder: true)
+                }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      !self.suspended, !self.authenticationRequired, !self.stopping,
+                      (self.activeTurnRecovery?.runID == runID ||
+                       (runID != nil && self.activeTurnRecovery == nil)),
+                      (self.pendingSend?.id == pendingID ||
+                       (pendingID != nil && self.pendingSend == nil)) else { return }
+                if let probe = self.activeRunProbeTask { await probe.value }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      !self.suspended, !self.stopping, !self.authenticationRequired else { return }
+                // A deep history crawl is expensive; try it only twice in
+                // this recovery window, after the status probe and latest GET.
+                if self.activeTurnRecovery != nil && !self.running && self.error == nil,
+                   (attempt == 1 || attempt == self.automaticReconciliationDelaysNanoseconds.count - 1) {
+                    _ = await self.reconcileLongAcceptedRun()
+                }
+                if self.running || (!self.uncertain && self.pendingSend == nil &&
+                                   self.activeTurnRecovery == nil) { return }
+                if self.pendingAbsent && self.activeTurnRecovery == nil { return }
+            }
+            if self.automaticReconciliationTicket == ticket,
+               !self.suspended, !self.authenticationRequired,
+               (self.uncertain || self.activeTurnRecovery != nil || self.pendingSend != nil) {
+                self.notice = "连接状态暂时无法确认，已完成自动核对；不会重复发送。网络恢复或重新进入会话时将再检查。"
+            }
+        }
+    }
+
     /// A missing active_stream_id is not terminal evidence. Query the exact
     /// accepted run; only an explicit terminal result can settle it without a
     /// matching reply in history.
@@ -1050,6 +1117,9 @@ extension NativeChatModel {
     }
 
     func disconnect() {
+        automaticReconciliationTask?.cancel()
+        automaticReconciliationTask = nil
+        automaticReconciliationTicket = nil
         suspended = true
         flush()
         if let historyStore { Task { await historyStore.flush() } }

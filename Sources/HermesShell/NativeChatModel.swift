@@ -286,6 +286,14 @@ final class NativeChatModel: ObservableObject {
     /// disconnect or a newer load, and only `.alive` can attach the run.
     var activeRunProbeTask: Task<Void,Never>?
     var activeRunProbeRunID: String?
+    /// A single bounded, read-only recovery owner for uncertain sends/runs.
+    /// It never submits a chat POST or resumes a user-paused queue.
+    var automaticReconciliationTask: Task<Void, Never>?
+    var automaticReconciliationTicket: UUID?
+    var automaticReconciliationDelaysNanoseconds: [UInt64] = [
+        2_000_000_000, 5_000_000_000, 10_000_000_000,
+        20_000_000_000, 40_000_000_000, 60_000_000_000
+    ]
     /// A bounded read-only follow-up after STOP acknowledgement. Never sends a
     /// second STOP or replays a chat POST.
     var stopStatusPollTask: Task<Void, Never>?
@@ -295,7 +303,8 @@ final class NativeChatModel: ObservableObject {
     /// terminal may release the STOP-owned send lock.
     var stopAcknowledged = false
     var stopStatusPollDelaysNanoseconds: [UInt64] = [
-        1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000
+        1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000,
+        15_000_000_000, 30_000_000_000, 60_000_000_000, 60_000_000_000
     ]
     var buffer = ChatTranscript()
     var publishTask:Task<Void,Never>?
