@@ -224,7 +224,6 @@ class SingleBuildWorkflowTests(unittest.TestCase):
                 "README.md",
                 "AGENTS.md",
                 "docs/github-collaboration.md",
-                "docs/backlog.md",
             )
         )
         for forbidden in (
@@ -244,6 +243,22 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertIn("nonblocking", guidance.lower())
         self.assertIn("historical", guidance.lower())
         self.assertNotIn("tests/gen_release_scope.py", guidance)
+
+    def test_obsolete_historical_documents_removed(self):
+        for relative in (
+            "docs/perf-baseline-build131.json",
+            "docs/gateway-backend-spec.md",
+            "docs/backlog.md",
+        ):
+            with self.subTest(relative=relative):
+                self.assertFalse((ROOT / relative).exists())
+        for required in (
+            "docs/sse-contract.md",
+            "tests/manual-master.md",
+            "ci/toolchain-baseline.json",
+        ):
+            with self.subTest(required=required):
+                self.assertTrue((ROOT / required).is_file())
 
     def test_workflow_referenced_scripts_exist(self):
         workflow = (ROOT / ".github/workflows/hermesshell-single-build.yml").read_text()
