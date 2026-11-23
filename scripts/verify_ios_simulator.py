@@ -139,6 +139,25 @@ def classify_case(exit_code: int, diagnostics: list[str],
     return "FAIL", stage or "product.assertion"
 
 
+def classify_timeout_case(diagnostics: list[str],
+                          testcase: str) -> tuple[str, str]:
+    """Preserve completed XCTest failure even if xcodebuild later hangs.
+
+    A completed, selected Test Case failed line is stronger evidence than
+    the subprocess timeout that happened during result-bundle finalization.
+    Without that exact completion marker, a timeout stays infrastructure
+    uncertainty rather than an invented app assertion.
+    """
+    suite, method = testcase.split(".", 1)
+    selected_failure = (
+        f"Test Case '-[HermesUITests.{suite} {method}]' failed"
+    )
+    if any(selected_failure in line for line in diagnostics):
+        status, stage = classify_case(1, diagnostics, testcase)
+        return status, stage or "product.assertion"
+    return "INFRA_ERROR", "infra.xctest_timeout"
+
+
 def write_json(path: Path, content: dict) -> None:
     path.write_text(json.dumps(content, ensure_ascii=False, indent=2),
                     encoding="utf-8")
@@ -229,15 +248,20 @@ def main() -> int:
                      "--path", str(bundle), "--output-path", str(output / "attachments"),
                      "--only-failures"], timeout=45)
         except subprocess.TimeoutExpired:
-            # A hard XCTest timeout is runner/infrastructure evidence, not a
-            # product assertion failure and never a PASS. Preserve diagnostics
-            # for the always() report/upload while runner time remains.
-            entry["status"] = "INFRA_ERROR"
-            entry["failure_stage"] = "infra.xctest_timeout"
-            entry["diagnostics"] = diagnostic_lines(output / "xcodebuild-ui.log")[-3:]
+            # Run #45227799195 captured the exact failed XCTest (75.6s)
+            # before xcodebuild stalled finalizing results (300s). Do not
+            # erase authoritative XCTest failure_stage with a later timeout.
+            diagnostics = diagnostic_lines(output / "xcodebuild-ui.log")
+            entry["status"], entry["failure_stage"] = classify_timeout_case(
+                diagnostics, testcase)
+            entry["xcodebuild_timed_out"] = True
+            entry["diagnostics"] = diagnostics[-3:]
             entry["diagnostics"].append(
-                "XCTest exceeded bounded settings timeout; test did not complete")
-            print(f"SIMULATOR_TIMEOUT {testcase}: INFRA_ERROR", flush=True)
+                "xcodebuild exceeded bounded timeout after "
+                + ("selected XCTest failure" if entry["status"] != "INFRA_ERROR"
+                   else "no completed selected XCTest failure"))
+            print(f"SIMULATOR_TIMEOUT {testcase}: {entry['status']} "
+                  f"stage={entry['failure_stage']}", flush=True)
         except Exception as error:
             # Simulator management and Python execution faults must not be
             # misclassified as user-facing App defects.

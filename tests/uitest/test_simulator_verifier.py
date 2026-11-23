@@ -64,9 +64,24 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertLess(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 720)
         source = PATH.read_text(encoding="utf-8")
         self.assertIn("except subprocess.TimeoutExpired:", source)
-        self.assertIn('entry["failure_stage"] = "infra.xctest_timeout"', source)
+        self.assertIn("classify_timeout_case(", source)
         self.assertIn("SIMULATOR_TIMEOUT", source)
-        self.assertIn("entry[\"diagnostics\"] = diagnostic_lines", source)
+        self.assertIn("entry[\"xcodebuild_timed_out\"] = True", source)
+        # A completed XCTest failure must survive a later xcodebuild hang.
+        # A pure timeout must NOT be manufactured into a product failure.
+        selected = MODULE.SETTINGS
+        lines = [
+            "test.swift:24: error: SETUP_BLOCKED stage=setup.system_password_prompt",
+            ("Test Case '-[HermesUITests.HermesSettingsNavigationUITests "
+             "testPushedSettingsPageCanDismissWithoutNativeBack]' failed (75.632 seconds)."),
+        ]
+        self.assertEqual(MODULE.classify_timeout_case(lines, selected),
+                         ("BLOCKED", "setup.system_password_prompt"))
+        self.assertEqual(MODULE.classify_timeout_case([], selected),
+                         ("INFRA_ERROR", "infra.xctest_timeout"))
+        self.assertEqual(MODULE.classify_timeout_case(
+            ["Test Case '-[HermesUITests.OtherSuite wrongMethod]' failed"], selected),
+            ("INFRA_ERROR", "infra.xctest_timeout"))
 
     def test_zero_exit_without_requested_test_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
@@ -201,6 +216,16 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn('XCUIApplication(bundleIdentifier: "com.apple.Passwords")',
                       harness)
         self.assertIn('host.buttons["Not Now"]', harness)
+        # Prevent regression of the inverted predicate that returned false
+        # when the OS "Not Now" button was actually hittable, then attempted
+        # to tap a non-hittable button (a source of invalid activation points).
+        prompt_check = harness.split(
+            "static func declineOptionalPasswordSavePrompt(", 1)[1].split(
+            "static func launchAndConnect(", 1)[0]
+        self.assertIn("if !notNow.isHittable {", prompt_check)
+        self.assertNotIn("if notNow.isHittable {", prompt_check)
+        self.assertLess(prompt_check.index("if !notNow.isHittable {"),
+                        prompt_check.index("notNow.tap()"))
         self.assertIn("stage=setup.system_password_declined", harness)
         self.assertIn('stage: "setup.system_password_prompt"', harness)
         self.assertIn("guard declineOptionalPasswordSavePrompt(app)", harness)
