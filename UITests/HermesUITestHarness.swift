@@ -46,7 +46,7 @@ enum HermesUITestHarness {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             for (hostName, host) in hosts {
-                let notNow = host.buttons["Not Now"].firstMatch
+                let notNow = host.buttons["Not Now"]
                 guard notNow.exists else { continue }
                 print("HERMES_BOOTSTRAP stage=setup.system_password_prompt_seen"
                       + " host=\(hostName)")
