@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.request
 
+BOOTSTRAP = "HermesBootstrapUITests.testGatewaySetupPersistsAcrossRelaunch"
 GOLD = [
     "HermesGoldUITests.test01ConnectionAndSessionList",
     "HermesGoldUITests.test02SendStreamAndComplete",
@@ -35,9 +36,11 @@ INTERACTION = [
     "HermesSentImagePreviewUITests.testUploadedHistoryImageLoadsAndOpens",
 ]
 SUITES = {
-    "gold2": [GOLD[1]], "gold4": [GOLD[3]], "gold": GOLD,
+    "bootstrap": [BOOTSTRAP],
+    "gold1": [GOLD[0]], "gold2": [GOLD[1]], "gold4": [GOLD[3]],
+    "gold": [BOOTSTRAP] + GOLD,
     "recovery": RECOVERY, "interaction": INTERACTION,
-    "all": GOLD + RECOVERY + INTERACTION,
+    "all": [BOOTSTRAP] + GOLD + RECOVERY + INTERACTION,
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CASE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.test[A-Za-z0-9_]+$")
@@ -95,6 +98,27 @@ def diagnostic_lines(log: Path) -> list[str]:
     return result[-5:]
 
 
+def classify_case(exit_code: int, diagnostics: list[str],
+                  testcase: str) -> tuple[str, str | None]:
+    """Distinguish a blocked common setup from an actual product assertion."""
+    raw = "\n".join(diagnostics)
+    match = re.search(r"stage=([a-zA-Z0-9_.:-]+)", raw)
+    stage = match.group(1) if match else None
+    if exit_code == 0:
+        return "PASS", None
+    # XCTFail prints a failing Test Case line even when the assertion line
+    # does not mention XCTest by name.
+    assertion = any(("Test Case" in line and " failed" in line) or
+                    "XCTAssert" in line or " error: " in line
+                    for line in diagnostics)
+    if not assertion:
+        return "INFRA_ERROR", stage or "infra.xcodebuild"
+    if "SETUP_BLOCKED" in raw:
+        return ("FAIL" if testcase == BOOTSTRAP else "BLOCKED",
+                stage or "setup.unknown")
+    return "FAIL", stage or "product.assertion"
+
+
 def write_json(path: Path, content: dict) -> None:
     path.write_text(json.dumps(content, ensure_ascii=False, indent=2),
                     encoding="utf-8")
@@ -121,6 +145,7 @@ def main() -> int:
     }
     write_json(args.output / "simulator-report.json", report)
     failed = False
+    blocked_by = None
     for index, testcase in enumerate(cases_for_suite(args.suite), start=1):
         assert SAFE_CASE.fullmatch(testcase)
         name = f"{index:02d}-{testcase.replace('.', '-')}"
@@ -128,6 +153,17 @@ def main() -> int:
         output.mkdir()
         entry = {"test": testcase, "status": "INFRA_ERROR", "evidence": name}
         report["cases"].append(entry)
+        if blocked_by:
+            # Never spend another simulator run on a downstream Gold when a
+            # prerequisite failed. This is an unexecuted BLOCKED case, not a
+            # second product FAIL and not an inferred PASS.
+            entry.update(status="BLOCKED", failure_stage="prerequisite." + blocked_by,
+                         diagnostics=["Blocked: prerequisite " + blocked_by + " not PASS"],
+                         duration_seconds=0)
+            print(f"SIMULATOR_CASE {testcase}: BLOCKED by {blocked_by}", flush=True)
+            write_json(args.output / "simulator-report.json", report)
+            failed = True
+            continue
         write_json(args.output / "simulator-report.json", report)
         started = time.monotonic()
         try:
@@ -147,10 +183,9 @@ def main() -> int:
             ]
             rc = run(cmd, log=log, timeout=720)
             lines = diagnostic_lines(log)
-            saw_test_failure = any("Test Case" in line and "failed" in line or
-                                   "XCTAssert" in line for line in lines)
-            entry["status"] = "PASS" if rc == 0 else (
-                "FAIL" if saw_test_failure else "INFRA_ERROR")
+            entry["status"], stage = classify_case(rc, lines, testcase)
+            if stage:
+                entry["failure_stage"] = stage
             entry["exit_code"] = rc
             entry["diagnostics"] = lines
             for diagnostic in lines:
@@ -165,9 +200,11 @@ def main() -> int:
                 run(["xcrun", "xcresulttool", "export", "attachments",
                      "--path", str(bundle), "--output-path", str(output / "attachments"),
                      "--only-failures"], timeout=45)
-        except (RuntimeError, OSError, subprocess.TimeoutExpired, Exception) as error:
-            # Preserve infra failures separately from product assertions.
+        except Exception as error:
+            # Simulator management and Python execution faults must not be
+            # misclassified as user-facing App defects.
             entry["status"] = "INFRA_ERROR"
+            entry["failure_stage"] = "infra.simulator_or_test_runner"
             entry["diagnostics"] = [type(error).__name__ + ": " + str(error)[:200]]
         finally:
             entry["duration_seconds"] = round(time.monotonic() - started, 1)
@@ -182,6 +219,10 @@ def main() -> int:
             print(f"SIMULATOR_CASE {testcase}: {entry['status']}", flush=True)
             if entry["status"] != "PASS":
                 failed = True
+                if testcase == BOOTSTRAP:
+                    blocked_by = "bootstrap"
+                elif testcase == GOLD[0] and args.suite in {"gold", "all"}:
+                    blocked_by = "gold1"
     report["outcome"] = "FAIL" if failed else "PASS"
     write_json(args.output / "simulator-report.json", report)
     print(f"SIMULATOR_VERIFICATION_{report['outcome']} source={args.source_sha} "
