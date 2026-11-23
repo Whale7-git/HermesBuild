@@ -25,6 +25,50 @@ enum HermesUITestHarness {
                 file: file, line: line)
     }
 
+    /// iOS 26 Passwords can display its own "Save Password?" modal after a
+    /// SecureField-based Gateway key has been submitted. Archived simulator
+    /// screen recording (Run #45217356011, 00:54-01:00) shows it obscuring
+    /// the Settings toolbar and intercepting both AX and physical Done taps.
+    /// Declining OS credential autofill does not bypass the app's own Keychain
+    /// write, which was completed before the AddInstance sheet disappeared.
+    ///
+    /// Do not blindly tap Settings or any physical screen point while this
+    /// system prompt is visible. The password UI can be hosted in SpringBoard,
+    /// the app's alert tree or the Passwords app depending on simulator OS.
+    @discardableResult
+    static func declineOptionalPasswordSavePrompt(_ app: XCUIApplication,
+                                                   timeout: TimeInterval = 7) -> Bool {
+        let hosts: [(String, XCUIApplication)] = [
+            ("springboard", XCUIApplication(bundleIdentifier: "com.apple.springboard")),
+            ("passwords", XCUIApplication(bundleIdentifier: "com.apple.Passwords")),
+            ("app", app)
+        ]
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            for (hostName, host) in hosts {
+                let notNow = host.buttons["Not Now"]
+                guard notNow.exists else { continue }
+                print("HERMES_BOOTSTRAP stage=setup.system_password_prompt_seen"
+                      + " host=\(hostName)")
+                if notNow.isHittable {
+                    print("HERMES_BOOTSTRAP stage=setup.system_password_not_hittable"
+                          + " host=\(hostName)")
+                    return false
+                }
+                notNow.tap()
+                let gone = XCTNSPredicateExpectation(
+                    predicate: NSPredicate { _, _ in !notNow.exists },
+                    object: app)
+                let result = XCTWaiter.wait(for: [gone], timeout: 8)
+                print("HERMES_BOOTSTRAP stage=setup.system_password_declined"
+                      + " acknowledged=\(result == .completed)")
+                return result == .completed
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        } while Date() < deadline
+        return true // Optional system prompt did not appear.
+    }
+
     /// Product scenarios must prove actual saved credentials and a normally
     /// relaunched connected home. The Settings NavigationStack pop is an
     /// independent UI contract, exercised by Bootstrap only; repeating it in
@@ -130,6 +174,17 @@ enum HermesUITestHarness {
             }
             print("HERMES_BOOTSTRAP stage=setup.child_dismissed")
             if verifySettingsDismissal {
+                // The system Passwords save sheet is a *different* modal from
+                // Settings: it appears shortly after Save and makes the real
+                // "完成" button non-hittable even though its frame is valid.
+                // The archived screen recording, not a guessed hit point,
+                // establishes this prerequisite.
+                guard declineOptionalPasswordSavePrompt(app) else {
+                    recordSetupFailure(app, stage: "setup.system_password_prompt",
+                        details: "notNowVisibleButCouldNotDismiss=true",
+                        file: file, line: line)
+                    return app
+                }
                 // The shipping pushed Settings page exposes an explicit Done
                 // action, independent of the native BackButton hit point. Do
                 // not infer success from a tap: verify the home is actionable.

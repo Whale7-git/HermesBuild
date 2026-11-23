@@ -10,6 +10,17 @@ final class HermesSettingsNavigationUITests: XCTestCase {
     }
 
     @MainActor func testPushedSettingsPageCanDismissWithoutNativeBack() {
+        // XCUITest can expose the iOS Passwords save prompt as an
+        // interruption instead of as part of SpringBoard's element tree.
+        // Only decline the OS autofill request; the app's Keychain save has
+        // already completed through AddInstance before this prompt appears.
+        addUIInterruptionMonitor(withDescription: "iOS Save Password") { alert in
+            let notNow = alert.buttons["Not Now"]
+            guard notNow.exists else { return false }
+            notNow.tap()
+            print("HERMES_BOOTSTRAP stage=setup.system_password_interruption_declined")
+            return true
+        }
         let app = HermesUITestHarness.launchAndConnect(
             verifySettingsDismissal: true)
         guard HermesUITestHarness.setupSucceeded else { return }
