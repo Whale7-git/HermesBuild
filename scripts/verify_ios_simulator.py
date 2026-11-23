@@ -86,7 +86,12 @@ def diagnostic_lines(log: Path) -> list[str]:
             line = re.sub(r"(?i)(bearer|api[_-]?key|token|password)\s*[:= ]\s*\S+",
                           "[redacted]", line)
             line = re.sub(r"https?://\S+", "[url]", line)
-            result.append(line[-350:])
+            # Keep the assertion identity and failed stage, not merely the
+            # final 350 bytes of an extended UIKit scroll trace.
+            line = line.strip()
+            if len(line) > 1000:
+                line = line[:720] + " ... [truncated] ... " + line[-180:]
+            result.append(line)
     return result[-5:]
 
 
@@ -148,6 +153,8 @@ def main() -> int:
                 "FAIL" if saw_test_failure else "INFRA_ERROR")
             entry["exit_code"] = rc
             entry["diagnostics"] = lines
+            for diagnostic in lines:
+                print(f"SIMULATOR_DIAGNOSTIC {testcase}: {diagnostic}", flush=True)
             if bundle.is_dir():
                 for label, command in (
                     ("xcresult-summary.json", ["get", "test-results", "summary"]),
