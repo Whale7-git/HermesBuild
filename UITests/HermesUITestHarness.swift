@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 /// Talks to the real Hermes setup screens and the isolated loopback Gateway.
@@ -7,6 +8,12 @@ enum HermesUITestHarness {
     static let sessionTitle = "UI 验收会话"
     static private(set) var setupSucceeded = false
     static private(set) var settingsDirectDismissUsed = false
+    /// Scenario 2 needs to distinguish "the OS prompt never appeared" (pass)
+    /// from "it appeared and stayed on screen" (fail). Run #45232747405
+    /// shows the prompt is real but optional, so its absence is not a defect.
+    static private(set) var systemPasswordPromptObserved = false
+    static private(set) var systemPasswordPromptDeclined = false
+    static private(set) var passwordProbeReached = false
 
     /// Preserve a screenshot at the first failed setup transition. The
     /// message contains only booleans and known page names; never dump
@@ -37,39 +44,172 @@ enum HermesUITestHarness {
     /// the app's alert tree or the Passwords app depending on simulator OS.
     @discardableResult
     static func declineOptionalPasswordSavePrompt(_ app: XCUIApplication,
-                                                   timeout: TimeInterval = 7) -> Bool {
+                                                   timeout: TimeInterval = 12) -> Bool {
         let hosts: [(String, XCUIApplication)] = [
             ("springboard", XCUIApplication(bundleIdentifier: "com.apple.springboard")),
             ("passwords", XCUIApplication(bundleIdentifier: "com.apple.Passwords")),
             ("app", app)
         ]
         let deadline = Date().addingTimeInterval(timeout)
+        var sawPrompt = false
+        var tapAttempts = 0
         repeat {
             for (hostName, host) in hosts {
                 let notNow = host.buttons["Not Now"]
                 guard notNow.exists else { continue }
+                sawPrompt = true
+                systemPasswordPromptObserved = true
                 print("HERMES_BOOTSTRAP stage=setup.system_password_prompt_seen"
                       + " host=\(hostName)")
-                // Only tap when the real OS "Not Now" control is actionable.
-                // The original condition was inverted, rejecting hittable
-                // buttons while trying to tap non-hittable ones.
-                if !notNow.isHittable {
+                // Only tap a genuinely actionable OS control. Earlier code
+                // treated the first transitional frame as fatal and reported
+                // BLOCKED for a prompt that becomes hittable a moment later
+                // (archived Run #45227799195). Keep polling until the
+                // deadline instead of abandoning the journey on one frame.
+                guard notNow.isHittable else {
                     print("HERMES_BOOTSTRAP stage=setup.system_password_not_hittable"
                           + " host=\(hostName)")
-                    return false
+                    continue
                 }
+                guard tapAttempts < 2 else { continue }
+                tapAttempts += 1
                 notNow.tap()
                 let gone = XCTNSPredicateExpectation(
                     predicate: NSPredicate { _, _ in !notNow.exists },
                     object: app)
                 let result = XCTWaiter.wait(for: [gone], timeout: 8)
+                systemPasswordPromptDeclined = (result == .completed)
                 print("HERMES_BOOTSTRAP stage=setup.system_password_declined"
                       + " acknowledged=\(result == .completed)")
-                return result == .completed
+                if result == .completed { return true }
             }
             Thread.sleep(forTimeInterval: 0.3)
         } while Date() < deadline
-        return true // Optional system prompt did not appear.
+        // No prompt at all: optional path, nothing to decline. A prompt that
+        // is still on screen is a real failure because it keeps covering the
+        // Settings toolbar; never report that as silently handled.
+        return !sawPrompt
+    }
+
+    /// Called by the XCTest UI-interruption monitor, which sees the Passwords
+    /// alert as an interruption rather than as part of the app's element tree.
+    static func noteSystemPasswordPromptDeclinedViaMonitor() {
+        systemPasswordPromptObserved = true
+        systemPasswordPromptDeclined = true
+        print("HERMES_BOOTSTRAP stage=setup.system_password_interruption_declined")
+    }
+
+    /// Verifies the persisted credential actually reaches the isolated
+    /// Gateway. A visible home alone cannot prove session connectivity, and
+    /// the fixture ledger is the only neutral authority for it.
+    static func authenticatedSessionGetObserved(timeout: TimeInterval = 20) -> Bool {
+        guard let url = URL(string: gateway + "/__control/log") else { return false }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let semaphore = DispatchSemaphore(value: 0)
+            var observed = false
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 5
+            URLSession.shared.dataTask(with: request) { data, _, _ in
+                if let data,
+                   let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let requests = body["requests"] as? [[String: Any]] {
+                    observed = requests.contains { item in
+                        (item["method"] as? String) == "GET"
+                        && (item["path"] as? String) == "/api/sessions"
+                        && (item["authorization_present"] as? Bool) == true
+                        && (item["authorization_scheme"] as? String) == "Bearer"
+                    }
+                }
+                semaphore.signal()
+            }.resume()
+            semaphore.wait()
+            if observed { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return false
+    }
+
+    /// Shared modal-outcome probe. It never touches a home control while a
+    /// Settings navigation bar is still mounted: Run #45213964498 crashed
+    /// exactly that way (invalid activation point on the covered drawer).
+    static func waitSettingsSheetDismissed(_ app: XCUIApplication,
+                                           probe: XCUIElement,
+                                           timeout: TimeInterval) -> Bool {
+        let connectionPage = app.navigationBars["连接与账号"]
+        let settingsRoot = app.navigationBars["设置"]
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                if connectionPage.exists || settingsRoot.exists { return false }
+                return probe.exists && probe.isHittable
+            }, object: app)
+        return XCTWaiter.wait(for: [ready], timeout: timeout) == .completed
+    }
+
+    /// Scenario 1: the Settings sheet must be dismissible from a pushed page
+    /// without creating any instance. Keeping the API-key SecureField out of
+    /// this journey is what makes the Passwords prompt impossible here, so a
+    /// failure can only belong to the sheet binding or the toolbar action.
+    static func launchForSettingsNavigationOnly(
+            file: StaticString = #filePath,
+            line: UInt = #line) -> XCUIApplication {
+        setupSucceeded = false
+        settingsDirectDismissUsed = false
+        passwordProbeReached = false
+        systemPasswordPromptObserved = false
+        systemPasswordPromptDeclined = false
+        let app = XCUIApplication(bundleIdentifier: "com.whale7.hermes")
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20),
+                      "SETUP_BLOCKED stage=nav.launch; Hermes did not launch",
+                      file: file, line: line)
+        print("HERMES_BOOTSTRAP stage=nav.launch")
+
+        let entry = app.buttons["配置连接"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 25),
+                      "SETUP_BLOCKED stage=nav.entry; first-launch setup entry missing",
+                      file: file, line: line)
+        entry.tap()
+        print("HERMES_BOOTSTRAP stage=nav.settings_sheet_open")
+
+        let linkCell = app.cells.containing(.staticText, identifier: "连接与账号").firstMatch
+        let linkText = app.staticTexts["连接与账号"]
+        let link = linkCell.waitForExistence(timeout: 10) ? linkCell : linkText
+        XCTAssertTrue(link.waitForExistence(timeout: 10),
+                      "SETUP_BLOCKED stage=nav.connection_entry; row missing",
+                      file: file, line: line)
+        let connectionPage = app.navigationBars["连接与账号"]
+        // A Form row can accept a tap during the sheet animation without
+        // pushing its destination; verify the page, never the tap.
+        for _ in 0..<3 {
+            if connectionPage.exists { break }
+            let target = (linkCell.exists && linkCell.isHittable) ? linkCell : linkText
+            if target.exists && target.isHittable { target.tap() }
+            if connectionPage.waitForExistence(timeout: 4) { break }
+        }
+        XCTAssertTrue(connectionPage.waitForExistence(timeout: 10),
+                      "SETUP_BLOCKED stage=nav.connection_page; push did not happen",
+                      file: file, line: line)
+        print("HERMES_BOOTSTRAP stage=nav.connection_page")
+
+        let done = connectionPage.buttons["HermesSettingsDismiss"]
+        XCTAssertTrue(done.waitForExistence(timeout: 8),
+                      "SETUP_BLOCKED stage=nav.dismiss_action; shipped Done missing",
+                      file: file, line: line)
+        XCTAssertTrue(done.isHittable,
+                      "SETUP_BLOCKED stage=nav.dismiss_action; Done not actionable")
+        done.tap()
+        print("HERMES_BOOTSTRAP stage=nav.done_tapped")
+
+        // The setup entry belongs to the home screen underneath the sheet, so
+        // it becoming actionable again is the sheet-dismissed evidence.
+        XCTAssertTrue(waitSettingsSheetDismissed(app, probe: entry, timeout: 15),
+                      "SETUP_BLOCKED stage=nav.sheet_dismiss; Settings sheet still presented",
+                      file: file, line: line)
+        settingsDirectDismissUsed = true
+        setupSucceeded = true
+        print("HERMES_BOOTSTRAP stage=nav.sheet_dismissed")
+        return app
     }
 
     /// Product scenarios must prove actual saved credentials and a normally
@@ -79,9 +219,13 @@ enum HermesUITestHarness {
     static func launchAndConnect(file: StaticString = #filePath,
                                  line: UInt = #line,
                                  extraLaunchArguments: [String] = [],
-                                 verifySettingsDismissal: Bool = false) -> XCUIApplication {
+                                 verifySettingsDismissal: Bool = false,
+                                 passwordProbeOnly: Bool = false) -> XCUIApplication {
         setupSucceeded = false
         settingsDirectDismissUsed = false
+        passwordProbeReached = false
+        systemPasswordPromptObserved = false
+        systemPasswordPromptDeclined = false
         let app = XCUIApplication(bundleIdentifier: "com.whale7.hermes")
         app.launchArguments = extraLaunchArguments
         app.launch()
@@ -186,6 +330,14 @@ enum HermesUITestHarness {
                     recordSetupFailure(app, stage: "setup.system_password_prompt",
                         details: "notNowVisibleButCouldNotDismiss=true",
                         file: file, line: line)
+                    return app
+                }
+                if passwordProbeOnly {
+                    // Scenario 2 stops here on purpose: it owns the OS
+                    // save-password contract only. The sheet binding is
+                    // scenario 1's job and the cold relaunch is scenario 3's.
+                    passwordProbeReached = true
+                    print("HERMES_BOOTSTRAP stage=setup.password_probe_reached")
                     return app
                 }
                 // The shipping pushed Settings page exposes an explicit Done
