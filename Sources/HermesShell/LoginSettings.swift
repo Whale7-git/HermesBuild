@@ -572,7 +572,7 @@ struct SettingsView: View {
             // intermittently invalid in simulator XCTest).
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button("完成") { app.showSettings = false }
                         .fontWeight(.medium)
                         .accessibilityIdentifier("HermesSettingsDismiss")
                 }
@@ -637,7 +637,7 @@ struct SettingsView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button("完成") { app.showSettings = false }
                         .fontWeight(.medium)
                         .accessibilityIdentifier("HermesSettingsDismiss")
                 }
