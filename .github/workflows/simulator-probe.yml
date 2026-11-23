@@ -195,10 +195,10 @@ jobs:
               print(f"- Harness SHA: {v.get('harness_sha', 'unverified')}")
               print(f"- Suite: {v.get('suite', 'unverified')}")
               print(f"- Outcome: {v.get('outcome', 'INFRA_ERROR')}")
-              print("| Test | Outcome |")
-              print("| --- | --- |")
+              print("| Test | Outcome | Stage |")
+              print("| --- | --- | --- |")
               for case in v.get("cases", []):
-                  print(f"| {case['test']} | {case['status']} |")
+                  print(f"| {case['test']} | {case['status']} | {case.get('failure_stage', '-') } |")
               print("\nResults never act as an IPA/Release gate.")
           PY
 
