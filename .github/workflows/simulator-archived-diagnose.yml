@@ -1,0 +1,120 @@
+name: Hermes simulator archived XCTest diagnosis
+
+# A trusted read-only artifact inspection. Only write collaborators can request
+# a bounded, sanitized report for a simulator run; no downloaded code executes.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  diagnose:
+    if: ${{ !github.event.issue.pull_request && startsWith(github.event.comment.body, '/ios-diagnose ') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Authorize comment and exact simulator run
+        id: validate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner, repo = context.repo.repo;
+            const author = context.payload.comment?.user?.login;
+            const raw = context.payload.comment?.body?.trim() || '';
+            const match = /^\/ios-diagnose\s+([0-9]{9,15})$/.exec(raw);
+            if (!match || !author) return core.setFailed('Usage: /ios-diagnose 45090819604');
+            const {data: permission} = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner, repo, username: author
+            });
+            if (!['admin','maintain','write'].includes(permission.permission)) {
+              core.notice('No permission to request simulator diagnosis'); return;
+            }
+            const id = Number(match[1]);
+            const {data: workflow} = await github.rest.actions.getWorkflowRun({
+              owner, repo, run_id: id
+            });
+            if (workflow.repository?.full_name !== context.repo.owner + '/' + context.repo.repo ||
+                workflow.event !== 'workflow_dispatch' ||
+                !workflow.path.endsWith('simulator-probe.yml') ||
+                workflow.status !== 'completed') {
+              return core.setFailed('Not a completed trusted Hermes simulator run');
+            }
+            core.setOutput('run_id', String(id));
+            core.setOutput('sha', workflow.head_sha);
+            core.setOutput('issue_number', String(context.issue.number));
+
+      - name: Download only bounded test verdict
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.validate.outputs.run_id }}
+          name: hermes-ui-triage-${{ steps.validate.outputs.run_id }}-verification
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/verdict
+
+      - name: Diagnose cases and post redacted proof to the requesting Issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.validate.outputs.run_id }}
+          RUN_HEAD_SHA: ${{ steps.validate.outputs.sha }}
+          ISSUE_NUMBER: ${{ steps.validate.outputs.issue_number }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, urllib.request
+          run = os.environ["RUN_ID"]
+          p = pathlib.Path(os.environ["RUNNER_TEMP"]) / "verdict" / "simulator-report.json"
+          if not p.is_file() or p.stat().st_size > 65536:
+              raise SystemExit("Missing or oversized simulator verdict")
+          report = json.loads(p.read_text(encoding="utf-8"))
+          if (report.get("schema") != 2 or str(report.get("run_id")) != run or
+              report.get("harness_sha") != os.environ["RUN_HEAD_SHA"] or
+              not re.fullmatch(r"[0-9a-f]{40}", report.get("source_sha", ""))):
+              raise SystemExit("Malformed/mismatched simulator verdict; refuse comment")
+          cases = report.get("cases", [])
+          if not isinstance(cases, list) or len(cases) > 25:
+              raise SystemExit("Unbounded/malformed cases")
+          lines = [
+              "<!-- simulator-diagnosis:%s -->" % run,
+              "## iOS Simulator 原始 XCTest 结果 · Run #%s" % run,
+              "- 产品源码 SHA: `%s`" % report["source_sha"],
+              "- 验证代码 SHA: `%s`" % report["harness_sha"],
+              "- 结果报告: https://github.com/%s/actions/runs/%s" %
+                 (os.environ["GITHUB_REPOSITORY"], run),
+          ]
+          for case in cases:
+              name = str(case.get("test", ""))
+              verdict = str(case.get("status", ""))
+              if not re.fullmatch(r"Hermes[A-Za-z0-9_]+\.test[A-Za-z0-9_]{1,120}", name):
+                  continue
+              if verdict not in {"PASS", "FAIL", "INFRA_ERROR", "BLOCKED"}:
+                  continue
+              lines.append("\n**%s** — %s" % (name, verdict))
+              for raw in case.get("diagnostics", [])[:6]:
+                  if not isinstance(raw, str): continue
+                  item = re.sub(r"https?://\S+", "[URL]", raw)
+                  item = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\s*[:= ]\s*\S+",
+                                "[REDACTED]", item)
+                  item = re.sub(r"[^\x20-\x7e]", " ", item)
+                  lines.append("- `%s`" % item[-320:])
+              lines.append("- 可下载原始 xcresult 对照细节，不应将 FAIL 直接等同 App 代码错误")
+          body = "\n".join(lines)
+          if len(body) > 14000:
+              body = body[:14000]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          issue = os.environ["ISSUE_NUMBER"]
+          data = json.dumps({"body": body}).encode()
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/issues/{issue}/comments",
+              data=data, method="POST",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Accept": "application/vnd.github+json",
+                       "Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=25) as response:
+              print("Diagnostic Issue comment accepted:", response.status)
+          print(body)
+          PY
