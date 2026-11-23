@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 MAX_FILES = 12
-MAX_BYTES = 16384
+MAX_BYTES = 65536
 TEST_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*\.test[A-Za-z_0-9]{1,120}$")
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
