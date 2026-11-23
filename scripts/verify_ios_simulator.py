@@ -48,6 +48,10 @@ SUITES = {
     "recovery": RECOVERY, "interaction": INTERACTION,
     "all": GOLD + RECOVERY + INTERACTION,
 }
+# Settings includes an OS Passwords prompt on some iOS 26 simulators.
+# Bound this single XCTest below the runner's observed 15-minute cancellation
+# window so timeout evidence can still be uploaded as INFRA_ERROR.
+SETTINGS_XCTEST_TIMEOUT_SECONDS = 300
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SAFE_CASE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.test[A-Za-z0-9_]+$")
 
@@ -197,7 +201,11 @@ def main() -> int:
                 "CODE_SIGNING_ALLOWED=YES", "CODE_SIGN_IDENTITY=-",
                 "CODE_SIGNING_REQUIRED=YES",
             ]
-            rc = run(cmd, log=log, timeout=720)
+            print(f"SIMULATOR_CASE_START {testcase} "
+                  f"timeout={SETTINGS_XCTEST_TIMEOUT_SECONDS if testcase == SETTINGS else 720}s",
+                  flush=True)
+            rc = run(cmd, log=log, timeout=(
+                SETTINGS_XCTEST_TIMEOUT_SECONDS if testcase == SETTINGS else 720))
             lines = diagnostic_lines(log)
             entry["status"], stage = classify_case(rc, lines, testcase)
             if rc == 0 and not observed_selected_pass(log, testcase):
@@ -220,6 +228,16 @@ def main() -> int:
                 run(["xcrun", "xcresulttool", "export", "attachments",
                      "--path", str(bundle), "--output-path", str(output / "attachments"),
                      "--only-failures"], timeout=45)
+        except subprocess.TimeoutExpired:
+            # A hard XCTest timeout is runner/infrastructure evidence, not a
+            # product assertion failure and never a PASS. Preserve diagnostics
+            # for the always() report/upload while runner time remains.
+            entry["status"] = "INFRA_ERROR"
+            entry["failure_stage"] = "infra.xctest_timeout"
+            entry["diagnostics"] = diagnostic_lines(output / "xcodebuild-ui.log")[-3:]
+            entry["diagnostics"].append(
+                "XCTest exceeded bounded settings timeout; test did not complete")
+            print(f"SIMULATOR_TIMEOUT {testcase}: INFRA_ERROR", flush=True)
         except Exception as error:
             # Simulator management and Python execution faults must not be
             # misclassified as user-facing App defects.
