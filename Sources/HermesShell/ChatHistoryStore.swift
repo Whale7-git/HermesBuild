@@ -685,6 +685,14 @@ final class ChatHistoryStore: Sendable {
         #else
         try? excluded.setResourceValues(resources)
         #endif
+        // The committed JSON envelope is the authoritative manifest. Retire
+        // stale result versions only after it has been written and protected.
+        let referenced = Set(envelope.tools.compactMap(\.resultFileID))
+        for sidecar in resultFiles(for: url, in: item.root) {
+            let identifier = sidecar.deletingPathExtension().lastPathComponent
+                .split(separator: ".").last.map(String.init) ?? ""
+            if !referenced.contains(identifier) { try? manager.removeItem(at: sidecar) }
+        }
         clean(root: item.root, policy: item.policy)
         return .ok
     }
