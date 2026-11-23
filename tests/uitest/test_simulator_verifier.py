@@ -163,6 +163,28 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn("settingsDirectDismissUsed", regression)
         self.assertIn("verifySettingsDismissal: true", regression)
 
+    def test_settings_declines_real_ios_password_autofill_interruption(self):
+        root = Path(__file__).resolve().parents[2]
+        harness = (root / "UITests" / "HermesUITestHarness.swift").read_text()
+        settings = (root / "UITests" /
+                    "HermesSettingsNavigationUITests.swift").read_text()
+        # Archived run #45217356011 contains a 60s simulator screen recording.
+        # After saving AddInstance, the OS displays Passwords "Save Password?"
+        # with actual "Not Now"/"Save" choices, obscuring Settings Done.
+        self.assertIn("declineOptionalPasswordSavePrompt", harness)
+        self.assertIn('XCUIApplication(bundleIdentifier: "com.apple.springboard")',
+                      harness)
+        self.assertIn('XCUIApplication(bundleIdentifier: "com.apple.Passwords")',
+                      harness)
+        self.assertIn('host.buttons["Not Now"]', harness)
+        self.assertIn("stage=setup.system_password_declined", harness)
+        self.assertIn('stage: "setup.system_password_prompt"', harness)
+        self.assertIn("guard declineOptionalPasswordSavePrompt(app)", harness)
+        self.assertIn("addUIInterruptionMonitor", settings)
+        self.assertIn('alert.buttons["Not Now"]', settings)
+        self.assertNotIn('alert.buttons["Save"]', settings)
+        self.assertNotIn('host.buttons["Save"]', harness)
+
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "ui.log"
