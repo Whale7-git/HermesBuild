@@ -6,6 +6,7 @@ enum HermesUITestHarness {
     static let gateway = "http://127.0.0.1:8765"
     static let sessionTitle = "UI 验收会话"
     static private(set) var setupSucceeded = false
+    static private(set) var settingsDirectDismissUsed = false
 
     /// Preserve a screenshot at the first failed setup transition. The
     /// message contains only booleans and known page names; never dump
@@ -33,6 +34,7 @@ enum HermesUITestHarness {
                                  extraLaunchArguments: [String] = [],
                                  verifySettingsDismissal: Bool = false) -> XCUIApplication {
         setupSucceeded = false
+        settingsDirectDismissUsed = false
         let app = XCUIApplication(bundleIdentifier: "com.whale7.hermes")
         app.launchArguments = extraLaunchArguments
         app.launch()
@@ -128,8 +130,27 @@ enum HermesUITestHarness {
             }
             print("HERMES_BOOTSTRAP stage=setup.child_dismissed")
             if verifySettingsDismissal {
-                // The home can occasionally be revealed directly by a changed
-                // presentation flow. In that case never perform an extra back tap.
+                // The shipping pushed Settings page exposes an explicit Done
+                // action, independent of the native BackButton hit point. Do
+                // not infer success from a tap: verify the home is actionable.
+                let directDone = connectionPage.buttons["HermesSettingsDismiss"]
+                if !(home.exists && home.isHittable)
+                    && connectionPage.waitForExistence(timeout: 6)
+                    && directDone.waitForExistence(timeout: 5)
+                    && directDone.isHittable {
+                    directDone.tap()
+                    guard home.waitForExistence(timeout: 12) && home.isHittable else {
+                        recordSetupFailure(app, stage: "setup.direct_settings_dismiss",
+                            details: "actionVisible=true homeInteractive=false",
+                            file: file, line: line)
+                        return app
+                    }
+                    settingsDirectDismissUsed = true
+                    print("HERMES_BOOTSTRAP stage=setup.direct_settings_dismissed")
+                }
+                // Older product builds have no direct action: retain the
+                // independent native Back/Settings-root contract as fallback.
+                // A direct dismissal must not be followed by a spurious Back.
                 if !(home.exists && home.isHittable) {
                     if connectionPage.waitForExistence(timeout: 8) {
                         print("HERMES_BOOTSTRAP stage=setup.connection_page")

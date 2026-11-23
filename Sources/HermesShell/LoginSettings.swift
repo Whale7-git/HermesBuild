@@ -566,6 +566,17 @@ struct SettingsView: View {
         Form { content() }
             .scrollContentBackground(.hidden).background(AppTheme.canvas)
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            // The sheet is still presented when this page is pushed. Keep an
+            // explicit dismissal action available without relying on the
+            // native BackButton's accessibility hit point (which has been
+            // intermittently invalid in simulator XCTest).
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                        .fontWeight(.medium)
+                        .accessibilityIdentifier("HermesSettingsDismiss")
+                }
+            }
     }
 
     var body: some View {
@@ -626,7 +637,9 @@ struct SettingsView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }.fontWeight(.medium)
+                    Button("完成") { dismiss() }
+                        .fontWeight(.medium)
+                        .accessibilityIdentifier("HermesSettingsDismiss")
                 }
             }
             .sheet(item: $activeSheet) { sheet in
