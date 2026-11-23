@@ -60,8 +60,29 @@ def load_reports(root: Path, run_id: str, sha: str) -> list[dict]:
             item = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError):
             continue
-        if (not isinstance(item, dict) or item.get("schema") != 1 or
-                str(item.get("run_id")) != run_id or item.get("sha") != sha or
+        if not isinstance(item, dict) or str(item.get("run_id")) != run_id:
+            continue
+        if item.get("schema") == 2:
+            if item.get("harness_sha") != sha or not SHA_PATTERN.fullmatch(
+                str(item.get("source_sha", ""))):
+                continue
+            cases = item.get("cases")
+            if not isinstance(cases, list) or len(cases) > 25:
+                continue
+            valid = []
+            for case in cases:
+                if (isinstance(case, dict) and
+                        TEST_PATTERN.fullmatch(str(case.get("test", ""))) and
+                        case.get("status") in {"PASS", "FAIL", "BLOCKED", "INFRA_ERROR"}):
+                    valid.append({"test": case["test"], "status": case["status"],
+                                  "diagnostics": [safe_assertion(str(x))
+                                      for x in case.get("diagnostics", [])[:3]
+                                      if isinstance(x, str)] if isinstance(
+                                          case.get("diagnostics", []), list) else []})
+            item["cases"] = valid
+            result.append(item)
+            continue
+        if (item.get("schema") != 1 or item.get("sha") != sha or
                 item.get("shard") not in {"chat", "experience"}):
             continue
         tests = item.get("failed_tests")
@@ -108,6 +129,50 @@ def upsert(repo: str, key: str, title: str, detail: str, run_id: str) -> None:
         print(f"Created issue #{issue['number']}: {title}")
 
 
+
+def append_exact_issue(repo: str, number: int, detail: str, run_id: str) -> None:
+    # A post-release PASS is evidence, not permission to auto-close an Issue.
+    history = api("GET", f"/repos/{repo}/issues/{number}/comments?per_page=100")
+    marker = f"<!-- simulator-verification:{run_id}:{number} -->"
+    if any(marker in (row.get("body") or "") for row in history):
+        return
+    api("POST", f"/repos/{repo}/issues/{number}/comments",
+        {"body": marker + "\n" + detail})
+
+
+def triage_versioned(repo: str, report: dict, run_id: str, run_url: str) -> None:
+    source = report["source_sha"]
+    harness = report["harness_sha"]
+    issue_for = {
+        "HermesGoldUITests.test02SendStreamAndComplete": 86,
+        "HermesGoldUITests.test04StreamingManualReadingKeepsAnchor": 85,
+    }
+    cases = report["cases"]
+    if not cases:
+        if report.get("outcome") == "INFRA_ERROR":
+            key = hashlib.sha256(b"simulator:unclassified-infrastructure").hexdigest()[:20]
+            detail = (f"- Status: INFRA_ERROR before XCTest\n- Product SHA: \x60{source}\x60"
+                      f"\n- Harness SHA: \x60{harness}\x60\n- CI run: {run_url}"
+                      "\n- Fixture/build/simulator environment must be investigated; not a product PASS.")
+            upsert(repo, key, "[simulator-ci] Unclassified simulator run failure",
+                   detail, run_id)
+        return
+    for case in cases:
+        test = case["test"]
+        status = case["status"]
+        diagnosis = "; ".join(case["diagnostics"]) or "See xcresult artifact"
+        detail = (f"- Test: \x60{test}\x60\n- Verdict: **{status}**"
+                  f"\n- Product SHA: \x60{source}\x60"
+                  f"\n- Trusted harness SHA: \x60{harness}\x60"
+                  f"\n- CI run: {run_url}\n- Diagnostics: {diagnosis}"
+                  "\n- A PASS proves this simulator case only; it does not "
+                  "prove live Gateway/device completion or close this Issue.")
+        if test in issue_for:
+            append_exact_issue(repo, issue_for[test], detail, run_id)
+        elif status != "PASS":
+            key = hashlib.sha256(("test:" + test).encode()).hexdigest()[:20]
+            upsert(repo, key, f"[simulator] {test}", detail, run_id)
+
 def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     run_id = os.environ["SIMULATOR_RUN_ID"]
@@ -117,6 +182,11 @@ def main() -> None:
     reports = load_reports(Path(os.environ["SIMULATOR_REPORT_DIR"]), run_id, sha)
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
     seen = set()
+    versioned = [report for report in reports if report.get("schema") == 2]
+    if versioned:
+        for report in versioned:
+            triage_versioned(repo, report, run_id, run_url)
+        return
     for report in reports:
         for testcase in report["failed_tests"]:
             key = hashlib.sha256(("test:" + testcase).encode()).hexdigest()[:20]
