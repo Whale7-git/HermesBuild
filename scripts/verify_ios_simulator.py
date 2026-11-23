@@ -98,6 +98,16 @@ def diagnostic_lines(log: Path) -> list[str]:
     return result[-5:]
 
 
+def observed_selected_pass(log: Path, testcase: str) -> bool:
+    """xcodebuild exit 0 without the requested XCTest is NOT a test PASS."""
+    if not log.is_file():
+        return False
+    suite, method = testcase.split(".", 1)
+    needle = f"Test Case '-[HermesUITests.{suite} {method}]' passed"
+    return any(needle in line for line in
+               log.read_text(encoding="utf-8", errors="replace").splitlines())
+
+
 def classify_case(exit_code: int, diagnostics: list[str],
                   testcase: str) -> tuple[str, str | None]:
     """Distinguish a blocked common setup from an actual product assertion."""
@@ -184,6 +194,10 @@ def main() -> int:
             rc = run(cmd, log=log, timeout=720)
             lines = diagnostic_lines(log)
             entry["status"], stage = classify_case(rc, lines, testcase)
+            if rc == 0 and not observed_selected_pass(log, testcase):
+                entry["status"] = "INFRA_ERROR"
+                stage = "infra.no_test_executed"
+                lines.append("Requested XCTest did not report a passed Test Case")
             if stage:
                 entry["failure_stage"] = stage
             entry["exit_code"] = rc
