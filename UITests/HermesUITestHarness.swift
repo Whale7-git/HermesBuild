@@ -136,12 +136,15 @@ enum HermesUITestHarness {
                 let directDone = connectionPage.buttons["HermesSettingsDismiss"]
                 if !(home.exists && home.isHittable)
                     && connectionPage.waitForExistence(timeout: 6)
-                    && directDone.waitForExistence(timeout: 5)
-                    && directDone.isHittable {
+                    && directDone.waitForExistence(timeout: 5) {
                     let buttonFrame = directDone.frame
                     let navFrame = connectionPage.frame
                     let windowFrame = app.windows.firstMatch.frame
-                    directDone.tap()
+                    if directDone.isHittable {
+                        directDone.tap()
+                    } else {
+                        print("HERMES_BOOTSTRAP stage=setup.done_ax_not_hittable")
+                    }
                     // Archived real XCTest #45203535332 demonstrates the
                     // native AX button can claim isHittable=true while
                     // XCTest synthesizes an INVALID hit point (-1,-1).
