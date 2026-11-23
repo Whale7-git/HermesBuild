@@ -104,6 +104,9 @@ jobs:
               if verdict not in {"PASS", "FAIL", "INFRA_ERROR", "BLOCKED"}:
                   continue
               lines.append("\n**%s** — %s" % (name, verdict))
+              stage = str(case.get("failure_stage", ""))
+              if re.fullmatch(r"[a-zA-Z0-9_.:-]{1,80}", stage):
+                  lines.append("- Failure stage: `%s`" % stage)
               for raw in case.get("diagnostics", [])[:6]:
                   if not isinstance(raw, str): continue
                   item = re.sub(r"https?://\S+", "[URL]", raw)
@@ -125,6 +128,7 @@ jobs:
                   for raw in log.read_text(errors="replace").splitlines():
                       if (": error:" in raw or
                           "HERMES_MANUAL_ANCHOR" in raw or
+                          "HERMES_BOOTSTRAP stage=" in raw or
                           "Test Case '-[HermesUITests.HermesGoldUITests" in raw and "failed" in raw):
                           raw = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\s*[:= ]\s*\S+",
                                        "[REDACTED]", raw)
