@@ -141,6 +141,15 @@ class SimulatorPlanTests(unittest.TestCase):
                       harness)
         self.assertIn("settingsDirectDismissUsed = true", harness)
         self.assertIn('stage: "setup.direct_settings_dismiss"', harness)
+        # XCTest may report an isHittable toolbar Button whose synthesized
+        # activation point is (-1,-1), as in archived Run #45203535332.
+        # Coordinate fallback targets the actual Done frame, not a hidden
+        # model mutation or the native Back-button route.
+        self.assertIn("stage=setup.done_hitpoint_fallback", harness)
+        self.assertIn("windowFrame.contains(buttonCenter)", harness)
+        self.assertIn("app.coordinate(withNormalizedOffset: CGVector(", harness)
+        self.assertIn("guard homeIsActionable(8) else", harness)
+        self.assertIn("settingsDirectDismissUsed = true", harness)
         self.assertIn("settingsDirectDismissUsed", regression)
         self.assertIn("verifySettingsDismissal: true", regression)
 
