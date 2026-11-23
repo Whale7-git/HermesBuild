@@ -141,9 +141,13 @@ def main() -> int:
                 "CODE_SIGNING_REQUIRED=YES",
             ]
             rc = run(cmd, log=log, timeout=720)
-            entry["status"] = "PASS" if rc == 0 else "FAIL"
+            lines = diagnostic_lines(log)
+            saw_test_failure = any("Test Case" in line and "failed" in line or
+                                   "XCTAssert" in line for line in lines)
+            entry["status"] = "PASS" if rc == 0 else (
+                "FAIL" if saw_test_failure else "INFRA_ERROR")
             entry["exit_code"] = rc
-            entry["diagnostics"] = diagnostic_lines(log)
+            entry["diagnostics"] = lines
             if bundle.is_dir():
                 for label, command in (
                     ("xcresult-summary.json", ["get", "test-results", "summary"]),
