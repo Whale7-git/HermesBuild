@@ -163,6 +163,21 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn("settingsDirectDismissUsed", regression)
         self.assertIn("verifySettingsDismissal: true", regression)
 
+    def test_gateway_api_key_is_not_treated_as_password_autofill(self):
+        root = Path(__file__).resolve().parents[2]
+        add_instance = (root / "Sources" / "HermesShell" /
+                        "AddInstanceView.swift").read_text()
+        marker = 'SecureField(editingID == nil ? "API_SERVER_KEY"'
+        self.assertIn(marker, add_instance)
+        gateway_field = add_instance.split(marker, 1)[1].split(
+            '// No WebUI fallback', 1)[0]
+        self.assertIn(".textContentType(nil)", gateway_field)
+        self.assertNotIn(".textContentType(.password)", gateway_field)
+        login_settings = (root / "Sources" / "HermesShell" /
+                          "LoginSettings.swift").read_text()
+        self.assertIn(".textContentType(isGateway ? nil : .password)",
+                      login_settings)
+
     def test_settings_declines_real_ios_password_autofill_interruption(self):
         root = Path(__file__).resolve().parents[2]
         harness = (root / "UITests" / "HermesUITestHarness.swift").read_text()
