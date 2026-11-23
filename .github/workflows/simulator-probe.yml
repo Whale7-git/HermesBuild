@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "gold2, gold4, gold, recovery, interaction, or all"
+        description: "bootstrap first; gold1 next; then selected product regressions"
         required: true
-        default: gold
+        default: bootstrap
         type: choice
-        options: [gold2, gold4, gold, recovery, interaction, all]
+        options: [bootstrap, gold1, gold2, gold4, gold, recovery, interaction, all]
       source_sha:
         description: "Exact released/ancestor product commit; empty = dispatch HEAD"
         required: false
