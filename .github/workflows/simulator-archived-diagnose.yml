@@ -126,13 +126,13 @@ jobs:
                       if (": error:" in raw or
                           "HERMES_MANUAL_ANCHOR" in raw or
                           "Test Case '-[HermesUITests.HermesGoldUITests" in raw and "failed" in raw):
-                          raw = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\\s*[:= ]\\s*\\S+",
+                          raw = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\s*[:= ]\s*\S+",
                                        "[REDACTED]", raw)
-                          raw = re.sub(r"https?://\\S+", "[URL]", raw)
+                          raw = re.sub(r"https?://\S+", "[URL]", raw)
                           matched.append(raw[-1800:])
                   if matched:
-                      lines.append("\\n**Archived exact XCTest details (" + log.parent.name + ")**")
-                      lines.extend("- \`" + item.replace("\`", "'") + "\`" for item in matched[-8:])
+                      lines.append("\n**Archived exact XCTest details (" + log.parent.name + ")**")
+                      lines.extend("- \`" + item.replace("`", "'") + "`" for item in matched[-8:])
           body = "\n".join(lines)
           if len(body) > 14000:
               body = body[:14000]
