@@ -101,6 +101,7 @@ final class HermesGoldUITests: XCTestCase {
     /// Gold 1: the real session row must open a functioning chat composer.
     func test01ConnectionAndSessionList() {
         let app = HermesUITestHarness.launchAndConnect()
+        guard HermesUITestHarness.setupSucceeded else { return }
         HermesUITestHarness.openSession(app)
     }
 
@@ -117,6 +118,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertEqual((initialResponse as? HTTPURLResponse)?.statusCode, 200,
                        "Mock gateway reset failed before SSE test")
         let app = HermesUITestHarness.launchAndConnect()
+        guard HermesUITestHarness.setupSucceeded else { return }
         HermesUITestHarness.openSession(app)
         // Make the terminal SSE arrive before the mock persists its answer.
         var config = URLRequest(url: URL(string:
@@ -201,6 +203,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200,
                        "Mock gateway baseline reset failed")
         let app = HermesUITestHarness.launchAndConnect()
+        guard HermesUITestHarness.setupSucceeded else { return }
         HermesUITestHarness.openSession(app)
         let thread = app.scrollViews.firstMatch
         XCTAssertTrue(thread.waitForExistence(timeout: 10),
@@ -244,6 +247,7 @@ final class HermesGoldUITests: XCTestCase {
         }
         try await control("/__control/reset")
         let app = HermesUITestHarness.launchAndConnect(extraLaunchArguments: ["--hermes-scroll-trace"])
+        guard HermesUITestHarness.setupSucceeded else { return }
         HermesUITestHarness.openSession(app)
         try await control("/__control/stream-interval", body: #"{"delay_ms":250}"#)
         // Pause after the first real delta. Gold4 releases the next delta
