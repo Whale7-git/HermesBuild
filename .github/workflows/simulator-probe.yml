@@ -1,81 +1,127 @@
 name: Hermes iOS Simulator UI regression
 
-# Manual-only iOS UI debugging. No PR, daily schedule or post-release dispatch.
-# Separate from candidate IPA building and all release gates.
+# No PR, schedule or Release gate. Code and XCTest harness are trusted main.
 on:
   workflow_dispatch:
     inputs:
       suite:
-        description: "gold, audit, or all"
-        required: false
-        default: all
+        description: "gold2, gold4, gold, recovery, interaction, or all"
+        required: true
+        default: gold
         type: choice
-        options: [gold, audit, all]
+        options: [gold2, gold4, gold, recovery, interaction, all]
+      source_sha:
+        description: "Exact released/ancestor product commit; empty = dispatch HEAD"
+        required: false
+        type: string
+
 permissions:
   contents: read
 
 concurrency:
-  group: hermes-ui-simulator-${{ github.ref }}
+  group: hermes-ui-simulator-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
   simulator:
-    name: simulator-${{ matrix.shard }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [chat, experience]
+    name: iOS ${{ inputs.suite }} / exact-source verification
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout trusted verification harness
+        uses: actions/checkout@v4
         with:
-          persist-credentials: false
-          # workflow_dispatch uses the explicitly selected branch/commit.
           ref: ${{ github.sha }}
+          path: harness
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Toolchain and XcodeGen
+      - name: Checkout exact product source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          path: product
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate source SHA and preserve product / harness boundaries
         shell: bash
+        env:
+          REQUESTED_SHA: ${{ inputs.source_sha || github.sha }}
+          HARNESS_SHA: ${{ github.sha }}
+          SUITE: ${{ inputs.suite }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 2
+          [[ "$(git -C product rev-parse HEAD)" == "$REQUESTED_SHA" ]] || exit 2
+          [[ "$(git -C harness rev-parse HEAD)" == "$HARNESS_SHA" ]] || exit 2
+          git -C harness merge-base --is-ancestor "$REQUESTED_SHA" "$HARNESS_SHA" || {
+            echo "Requested source is not an ancestor of trusted main"; exit 2;
+          }
+          echo "SOURCE_SHA=$REQUESTED_SHA" >> "$GITHUB_ENV"
+          echo "HARNESS_SHA=$HARNESS_SHA" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/hermes-ui-verification"
+          python3 - <<'PY'
+          import json, os, pathlib
+          result = {"schema": 2, "run_id": os.environ["GITHUB_RUN_ID"],
+                    "source_sha": os.environ["REQUESTED_SHA"],
+                    "harness_sha": os.environ["HARNESS_SHA"],
+                    "suite": os.environ["SUITE"], "outcome": "INFRA_ERROR",
+                    "cases": [], "reason": "setup or simulator compilation did not finish"}
+          p = pathlib.Path(os.environ["RUNNER_TEMP"]) / "hermes-ui-verification" / "simulator-report.json"
+          p.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+          PY
+          echo "Source SHA: $REQUESTED_SHA"
+          echo "Harness SHA: $HARNESS_SHA"
+
+      - name: Toolchain and test fixture self-check
+        shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
           (command -v xcodegen >/dev/null || brew install xcodegen)
           xcodegen --version
           xcodebuild -version
           xcrun simctl list runtimes
+          python3 -m unittest discover -s ../harness/tests/uitest -p 'test_*.py' -v
 
-      - name: Launch isolated mock Gateway
+      - name: Launch isolated loopback mock Gateway
         shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
-          python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
-          python3 tests/uitest/mock_gateway.py --port 8765 > "$RUNNER_TEMP/mock-gateway.log" 2>&1 &
+          python3 ../harness/tests/uitest/mock_gateway.py --port 8765 \
+            > "$RUNNER_TEMP/mock-gateway.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/mock.pid"
-          for attempt in $(seq 1 40); do
-            if curl --fail --silent http://127.0.0.1:8765/api/sessions >/dev/null; then break; fi
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:8765/api/sessions > /dev/null; then
+              exit 0
+            fi
             sleep 0.2
           done
-          curl --fail --silent http://127.0.0.1:8765/api/sessions | python3 -m json.tool
+          echo "Mock Gateway failed to start"
+          exit 2
 
-      - name: Select and boot available iOS iPhone
+      - name: Select iPhone Simulator and stage trusted UI tests
         shell: bash
+        working-directory: product
         run: |
           set -euo pipefail
-          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys;d=json.load(sys.stdin)["devices"];print(next(i["udid"] for r,v in sorted(d.items()) if "iOS" in r for i in v if i.get("isAvailable") and "iPhone" in i["name"]))')
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c \
+            'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for r,v in sorted(d.items()) if "iOS" in r for x in v if x.get("isAvailable") and "iPhone" in x["name"]))')
           echo "DEVICE=$DEVICE" >> "$GITHUB_ENV"
-          xcrun simctl boot "$DEVICE"
-          xcrun simctl bootstatus "$DEVICE" -b
-
-      - name: Generate UI test project with simulator-only bundle metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The production Info.plist intentionally lacks CFBundleIdentifier.
-          # Simulator installation requires it; never mutate the checked-in plist.
+          # Overlay trusted tests/fixture only. App sources and resources stay
+          # the immutable product commit; modified test files are not app code.
+          rm -rf UITests tests/uitest
+          cp -R ../harness/UITests UITests
+          cp -R ../harness/tests/uitest tests/uitest
           cp Resources/Info.plist "$RUNNER_TEMP/HermesSimulator-Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.whale7.hermes" "$RUNNER_TEMP/HermesSimulator-Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string HermesShell" "$RUNNER_TEMP/HermesSimulator-Info.plist"
-          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$RUNNER_TEMP/HermesSimulator-Info.plist"
-          # Simulator-only access group; do not modify product App entitlements.
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.whale7.hermes" \
+            "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string HermesShell" \
+            "$RUNNER_TEMP/HermesSimulator-Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" \
+            "$RUNNER_TEMP/HermesSimulator-Info.plist"
           cat > "$RUNNER_TEMP/HermesSimulator.entitlements" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -95,151 +141,88 @@ jobs:
           old = "INFOPLIST_FILE: Resources/Info.plist"
           assert original.count(old) == 1
           temp = os.environ["RUNNER_TEMP"]
-          replacement = (f"INFOPLIST_FILE: {temp}/HermesSimulator-Info.plist\n"
-                         f"        CODE_SIGN_ENTITLEMENTS: {temp}/HermesSimulator.entitlements")
-          spec.write_text(original.replace(old, replacement), encoding="utf-8")
+          new = (f"INFOPLIST_FILE: {temp}/HermesSimulator-Info.plist\n"
+                 f"        CODE_SIGN_ENTITLEMENTS: {temp}/HermesSimulator.entitlements")
+          spec.write_text(original.replace(old, new), encoding="utf-8")
           PY
           xcodegen generate --spec ios-ci-project.yml
+          echo "Exact product commit: $(git rev-parse HEAD)"
+          echo "Simulator UDID: $DEVICE"
 
-      - name: Run real iOS UI gestures
-        id: ui_gestures
+      - name: Compile simulator XCTest program once
         shell: bash
-        env:
-          REQUESTED_SUITE: ${{ github.event.inputs.suite || 'all' }}
-          TEST_SHARD: ${{ matrix.shard }}
+        working-directory: product
         run: |
           set -euo pipefail
-          case "$REQUESTED_SUITE:$TEST_SHARD" in
-            all:chat) selection="-only-testing:HermesUITests/HermesGoldUITests -only-testing:HermesUITests/HermesChatSelectionGestureUITests -only-testing:HermesUITests/HermesComposerStabilityUITests -only-testing:HermesUITests/HermesLongTaskRecoveryUITests" ;;
-            all:experience) selection="-only-testing:HermesUITests/HermesAccessibilityUITests -only-testing:HermesUITests/HermesRealChatDynamicTypeUITests -only-testing:HermesUITests/HermesSentImagePreviewUITests" ;;
-            gold:*) selection="-only-testing:HermesUITests/HermesGoldUITests" ;;
-            audit:*) selection="-only-testing:HermesUITests/HermesAccessibilityUITests" ;;
-            *) echo "Unsupported suite/shard $REQUESTED_SUITE:$TEST_SHARD" >&2; exit 2 ;;
-          esac
-          xcodebuild test \
-            -project HermesShellCI.xcodeproj \
-            -scheme HermesShell \
-            -configuration Debug \
+          xcodebuild build-for-testing \
+            -project HermesShellCI.xcodeproj -scheme HermesShell \
+            -configuration Debug -derivedDataPath "$RUNNER_TEMP/hermes-ui-derived" \
             -destination "platform=iOS Simulator,id=$DEVICE" \
             -parallel-testing-enabled NO \
-            -resultBundlePath "$RUNNER_TEMP/HermesUITests.xcresult" \
-            $selection CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES \
-            2>&1 | tee "$RUNNER_TEMP/xcodebuild-ui.log"
-          echo "### Hermes iOS UI: $REQUESTED_SUITE / $TEST_SHARD" >> "$GITHUB_STEP_SUMMARY"
-          echo "Simulator: $DEVICE" >> "$GITHUB_STEP_SUMMARY"
-          echo "xcodebuild UI suite: passed" >> "$GITHUB_STEP_SUMMARY"
+            CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES \
+            2>&1 | tee "$RUNNER_TEMP/hermes-ui-verification/build-for-testing.log"
+          XCTESTRUN=$(find "$RUNNER_TEMP/hermes-ui-derived/Build/Products" \
+            -maxdepth 1 -name '*.xctestrun' -print -quit)
+          [[ -n "$XCTESTRUN" && -f "$XCTESTRUN" ]] || { echo "No xctestrun file"; exit 2; }
+          echo "XCTESTRUN=$XCTESTRUN" >> "$GITHUB_ENV"
 
-      - name: Extract structured XCTest diagnostics
-        if: always()
+      - name: Execute isolated real-gesture XCTest cases
+        id: ui_tests
         shell: bash
-        run: |
-          if [[ -d "$RUNNER_TEMP/HermesUITests.xcresult" ]]; then
-            xcrun xcresulttool get test-results summary \
-              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
-              > "$RUNNER_TEMP/ui-test-summary.json" || true
-            xcrun xcresulttool get test-results tests \
-              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
-              > "$RUNNER_TEMP/ui-test-cases.json" || true
-            # Export actual failed-test screenshots for source-backed triage.
-            # Keep the xcresult even if this extraction command is unavailable.
-            xcrun xcresulttool export attachments \
-              --path "$RUNNER_TEMP/HermesUITests.xcresult" \
-              --output-path "$RUNNER_TEMP/ui-attachments" \
-              --only-failures || true
-          fi
-
-      # Compact and bounded test evidence is consumed by a trusted main-only
-      # workflow_run triager. Never give PR-controlled scripts an Issues token.
-      - name: Prepare structured simulator evidence
-        if: always()
-        shell: bash
+        working-directory: product
         env:
-          TEST_OUTCOME: ${{ steps.ui_gestures.outcome }}
-          TEST_SHARD: ${{ matrix.shard }}
-          TEST_SHA: ${{ github.sha }}
-          TEST_RUN: ${{ github.run_id }}
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re
-          log = pathlib.Path(os.environ["RUNNER_TEMP"]) / "xcodebuild-ui.log"
-          text = log.read_text(errors="replace") if log.exists() else ""
-          failed = sorted(set(
-              suite + "." + test for suite, test in re.findall(
-                  r"Test Case '-\[[^ ]+\.([A-Za-z_][A-Za-z_0-9]*) (test[A-Za-z_0-9]+)\]' failed",
-                  text)))
-          lines = []
-          for line in text.splitlines():
-              if ("error:" in line and "UITests" in line and "XCTAssert" in line):
-                  line = re.sub(r"(?i)(bearer\s+|token[=:]\s*)\S+", r"\1[redacted]", line)
-                  lines.append(line[-350:])
-          outcome = os.environ["TEST_OUTCOME"]
-          report = {"schema": 1, "shard": os.environ["TEST_SHARD"],
-                    "run_id": os.environ["TEST_RUN"], "sha": os.environ["TEST_SHA"],
-                    "outcome": outcome, "failed_tests": failed[:30],
-                    "assertions": lines[-15:]}
-          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "simulator-report.json"
-          out.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
-          PY
-
-      - name: Upload compact simulator evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hermes-ui-triage-${{ github.run_id }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/simulator-report.json
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Inspect actual simulator signing entitlements
-        if: always()
-        shell: bash
+          REQUESTED_SUITE: ${{ inputs.suite }}
         run: |
           set -euo pipefail
-          APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" \
-            -path '*/Build/Products/Debug-iphonesimulator/HermesShell.app' \
-            -type d -print -quit 2>/dev/null || true)
-          if [[ -n "$APP" ]]; then
-            if codesign -d --entitlements :- "$APP" \
-              > "$RUNNER_TEMP/simulator-signed-entitlements.plist" \
-              2> "$RUNNER_TEMP/simulator-sign-inspection.log"; then
-              echo "Simulator-only Keychain signing entitlements:"
-              /usr/libexec/PlistBuddy -c 'Print :application-identifier' \
-                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
-              /usr/libexec/PlistBuddy -c 'Print :keychain-access-groups' \
-                "$RUNNER_TEMP/simulator-signed-entitlements.plist" || true
-            else
-              echo "Simulator App signing/entitlement inspection failed"
-            fi
-          else
-            echo "No simulator app; build failed before producing a bundle"
-          fi
+          python3 ../harness/scripts/verify_ios_simulator.py \
+            --suite "$REQUESTED_SUITE" --device "$DEVICE" --xctestrun "$XCTESTRUN" \
+            --source-sha "$SOURCE_SHA" --harness-sha "$HARNESS_SHA" \
+            --output "$RUNNER_TEMP/hermes-ui-verification"
 
-      - name: Collect redacted Gateway requests
+      - name: Summarize same-SHA verification
         if: always()
         shell: bash
         run: |
-          curl --max-time 5 --silent http://127.0.0.1:8765/__control/log \
-            > "$RUNNER_TEMP/mock-requests.json" || true
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json,os,pathlib
+          p=pathlib.Path(os.environ["RUNNER_TEMP"])/"hermes-ui-verification"/"simulator-report.json"
+          print("## Hermes simulator validation (nonblocking)")
+          if not p.is_file():
+              print("INFRA_ERROR: report unavailable")
+          else:
+              v=json.loads(p.read_text())
+              print(f"- Product SHA: {v.get('source_sha', 'unverified')}")
+              print(f"- Harness SHA: {v.get('harness_sha', 'unverified')}")
+              print(f"- Suite: {v.get('suite', 'unverified')}")
+              print(f"- Outcome: {v.get('outcome', 'INFRA_ERROR')}")
+              print("| Test | Outcome |")
+              print("| --- | --- |")
+              for case in v.get("cases", []):
+                  print(f"| {case['test']} | {case['status']} |")
+              print("\nResults never act as an IPA/Release gate.")
+          PY
 
-      - name: Preserve UI failures and xcresult
+      - name: Upload compact verification verdict for trusted Issue triage
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}
+          name: hermes-ui-triage-${{ github.run_id }}-verification
+          path: ${{ runner.temp }}/hermes-ui-verification/simulator-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Preserve XCTest results, failure screenshots and fixture logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-ui-evidence-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/HermesUITests.xcresult
-            ${{ runner.temp }}/xcodebuild-ui.log
-            ${{ runner.temp }}/ui-test-summary.json
-            ${{ runner.temp }}/ui-test-cases.json
-            ${{ runner.temp }}/ui-attachments
+            ${{ runner.temp }}/hermes-ui-verification
             ${{ runner.temp }}/mock-gateway.log
-            ${{ runner.temp }}/mock-requests.json
-            ${{ runner.temp }}/simulator-signed-entitlements.plist
-            ${{ runner.temp }}/simulator-sign-inspection.log
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Shutdown Simulator and fixture
+      - name: Shutdown local fixture and simulator
         if: always()
         shell: bash
         run: |
@@ -247,4 +230,3 @@ jobs:
             kill "$(cat "$RUNNER_TEMP/mock.pid")" 2>/dev/null || true
           fi
           xcrun simctl shutdown all || true
-

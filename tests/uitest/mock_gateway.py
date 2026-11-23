@@ -71,10 +71,16 @@ class GatewayState:
 
     def reset(self):
         with self.lock:
+            if hasattr(self, "resume_stream"):
+                self.resume_stream.set()
             self.sessions = fixture("sessions.json")["data"]
             self.history = fixture("history.json")["sessions"]
             self.events = fixture("stream.json")["events"]
             self.run_count = 0
+            self.accepted_runs = []
+            self.delivered_event_ids = []
+            self.pause_after_seq = None
+            self.resume_stream = threading.Event()
             self.message_count = 1000
             self.runs = {}
             self.stubs = {}
@@ -119,6 +125,7 @@ class GatewayState:
                 "id": self.message_count, "role": "user",
                 "session_id": session_id, "content": text, "timestamp": 1795150001,
             })
+            self.accepted_runs.append({"run_id": run_id, "session_id": session_id})
             self.runs[run_id] = {
                 "run_id": run_id, "session_id": session_id, "status": "running",
                 "settled": False,
@@ -311,7 +318,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f"id: {seq}\ndata: {payload}\n\n".encode("utf-8"))
                     self.wfile.flush()
                     with self.state.lock:
+                        self.state.delivered_event_ids.append(str(seq))
                         interval_ms = self.state.stream_interval_ms
+                        pause = self.state.pause_after_seq == str(seq)
+                        resume = self.state.resume_stream
+                    # Hold an actual SSE boundary until the UIKit pan has
+                    # completed. The bounded wait prevents stuck CI fixtures.
+                    if pause and not resume.wait(timeout=40):
+                        return
                     time.sleep(interval_ms / 1000.0)
                 with self.state.lock:
                     lag_ms = self.state.finalization_lag_ms
@@ -376,10 +390,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return self.json_response(200, {
                     "requests": list(self.state.requests),
                     "unknown": list(self.state.unknown),
+                    "accepted_runs": list(self.state.accepted_runs),
+                    "delivered_event_ids": list(self.state.delivered_event_ids),
                 })
         if method == "POST" and path == "/__control/reset":
             self.state.reset()
             return self.json_response(200, {"reset": True})
+        if method == "POST" and path == "/__control/stream-pause":
+            payload = self.body_json()
+            if payload.get("after_seq") != "2":
+                return self.json_response(400, {"error": {"message": "invalid pause sequence"}})
+            with self.state.lock:
+                self.state.pause_after_seq = "2"
+                self.state.resume_stream.clear()
+            return self.json_response(200, {"paused_after": "2"})
+        if method == "POST" and path == "/__control/stream-resume":
+            with self.state.lock:
+                self.state.resume_stream.set()
+                self.state.pause_after_seq = None
+            return self.json_response(200, {"resumed": True})
+        if method == "POST" and path == "/__control/stream-grow":
+            payload = self.body_json()
+            lines = payload.get("lines")
+            if type(lines) is not int or not 1 <= lines <= 80:
+                return self.json_response(400, {"error": {"message": "invalid line count"}})
+            with self.state.lock:
+                for event in self.state.events:
+                    if event.get("id") == "3" and event.get("event") == "message.delta":
+                        event["delta"] += "\n" + "\n".join(
+                            f"- 流式布局增长段 {n}：用于验证屏幕锚点。" for n in range(lines))
+                        break
+                else:
+                    return self.json_response(409, {"error": {"message": "missing delta fixture"}})
+            return self.json_response(200, {"growth_lines": lines})
         if method == "POST" and path == "/__control/finalization-lag":
             payload = self.body_json()
             delay = payload.get("delay_ms")

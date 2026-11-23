@@ -1,0 +1,93 @@
+name: Hermes simulator command dispatcher
+
+# Trusted default-branch workflow. A comment is only an inert request until
+# contributor permission, exact Release/commit and main ancestry are verified.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+jobs:
+  dispatch:
+    name: Authorize /ios-verify and dispatch trusted simulator
+    if: ${{ !github.event.issue.pull_request && startsWith(github.event.comment.body, '/ios-verify ') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Parse, authorize, pin SHA, and dispatch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const author = context.payload.comment?.user?.login;
+            const issue_number = context.payload.issue?.number;
+            const raw = context.payload.comment?.body?.trim() ?? '';
+            const match = /^\/ios-verify\s+(gold2|gold4|gold|recovery|interaction|all)\s+(release-\d+\.\d+\.\d+-build\d+|[a-f0-9]{40})$/.exec(raw);
+            if (!match) return core.setFailed('Usage: /ios-verify gold4 release-2.53.6-build230');
+            if (!author || !issue_number) return core.setFailed('No authenticated commenter/Issue');
+
+            // Untrusted users cannot spend macOS minutes or dispatch workflows.
+            let role;
+            try {
+              const response = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: author
+              });
+              role = response.data.permission;
+            } catch (error) {
+              core.notice('Commenter is not an authorized repository collaborator');
+              return;
+            }
+            if (!['admin', 'maintain', 'write'].includes(role)) {
+              core.notice('Only repository write collaborators may dispatch simulator tests');
+              return;
+            }
+
+            const suite = match[1], selection = match[2];
+            const shaRe = /^[a-f0-9]{40}$/;
+            let sha;
+            if (shaRe.test(selection)) {
+              sha = selection;
+            } else {
+              const {data: release} = await github.rest.repos.getReleaseByTag({
+                owner, repo, tag: selection
+              });
+              if (release.draft || release.prerelease)
+                return core.setFailed('Only published stable Releases are accepted');
+              const {data: resolved} = await github.rest.repos.getCommit({
+                owner, repo, ref: selection
+              });
+              sha = resolved.sha;
+              // A Release tag must actually resolve to its claimed pinned
+              // target. A branch or a moved/mismatched tag is not sufficient.
+              if (!shaRe.test(release.target_commitish ?? '') ||
+                  release.target_commitish !== sha)
+                return core.setFailed('Release tag/target commit mismatch');
+            }
+            if (!shaRe.test(sha)) return core.setFailed('Invalid source SHA');
+            const {data: comparison} = await github.rest.repos.compareCommits({
+              owner, repo, base: sha, head: 'main'
+            });
+            if (!['ahead', 'identical'].includes(comparison.status))
+              return core.setFailed('Source commit must belong to main history');
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner, repo, workflow_id: 'simulator-probe.yml',
+              ref: 'main', inputs: {suite, source_sha: sha}
+            });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: [
+                'Simulator verification dispatched (no PASS/FAIL implied).',
+                '- Suite: ' + suite,
+                '- Exact product SHA: ' + sha,
+                '- Harness: trusted main at dispatch time',
+                '- Workflow: https://github.com/' + owner + '/' + repo +
+                  '/actions/workflows/simulator-probe.yml',
+                'Evidence will be attached to the simulator run and summarized here when complete.'
+              ].join('\n')
+            });
