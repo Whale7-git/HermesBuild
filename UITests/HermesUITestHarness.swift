@@ -127,39 +127,62 @@ enum HermesUITestHarness {
             if !(home.exists && home.isHittable) {
                 if connectionPage.waitForExistence(timeout: 8) {
                     print("HERMES_BOOTSTRAP stage=setup.connection_page")
-                    var returned = false
-                    // The system-provided native NavigationStack back control
-                    // is normally labelled with the previous screen's title.
-                    // Do not use firstMatch on all buttons: that can tap Add,
-                    // remove, or other unrelated actions on a changing Form.
-                    for title in ["设置", "返回", "Back"] {
-                        let back = connectionPage.buttons[title]
-                        if back.exists && back.isHittable {
-                            back.tap()
-                            returned = true
-                            break
-                        }
+                    // The Connection page has no custom navigation-bar actions.
+                    // Its first button is therefore the native NavigationStack
+                    // Back control. Scope the query to this bar instead of
+                    // guessing localized labels ("设置"/"返回"/"Back").
+                    let navBack = connectionPage.buttons.firstMatch
+                    let navBackExists = navBack.waitForExistence(timeout: 3)
+                    let navBackHittable = navBackExists && navBack.isHittable
+                    let navBackLabel = navBackExists ? navBack.label : "none"
+                    print("HERMES_BOOTSTRAP stage=setup.native_back_probe "
+                          + "buttonCount=\(connectionPage.buttons.count)"
+                          + " exists=\(navBackExists)"
+                          + " hittable=\(navBackHittable)"
+                          + " label=\(navBackLabel)")
+                    if navBackHittable {
+                        navBack.tap()
+                        print("HERMES_BOOTSTRAP stage=setup.native_back_tapped")
+                    } else {
+                        // If UIKit exposes the back item as a non-button AX
+                        // element, tap the leading hit region of the actual
+                        // navigation bar before falling back to an edge swipe.
+                        connectionPage.coordinate(withNormalizedOffset:
+                            CGVector(dx: 0.045, dy: 0.5)).tap()
+                        print("HERMES_BOOTSTRAP stage=setup.native_back_coordinate_tapped")
                     }
-                    if !returned {
-                        // Native edge-back gesture remains a legitimate user
-                        // navigation path when iOS changes the back AX label.
+                    if !settingsRoot.waitForExistence(timeout: 6) {
+                        // Native interactive-pop fallback. Start inside the
+                        // system edge-recognition zone and use a short contact
+                        // so XCTest produces a swipe rather than a long press.
                         let from = app.coordinate(withNormalizedOffset:
-                            CGVector(dx: 0.015, dy: 0.35))
+                            CGVector(dx: 0.008, dy: 0.42))
                         let to = app.coordinate(withNormalizedOffset:
-                            CGVector(dx: 0.78, dy: 0.35))
-                        from.press(forDuration: 0.12, thenDragTo: to)
+                            CGVector(dx: 0.72, dy: 0.42))
+                        from.press(forDuration: 0.01, thenDragTo: to)
+                        print("HERMES_BOOTSTRAP stage=setup.edge_back_attempted")
                     }
-                    if !settingsRoot.waitForExistence(timeout: 10) {
+                    if !settingsRoot.waitForExistence(timeout: 8) {
+                        let window = app.windows.firstMatch
                         recordSetupFailure(app, stage: "setup.return_settings_root",
                             details: "connectionPage=\(connectionPage.exists)"
+                                   + " connectionHit=\(connectionPage.isHittable)"
                                    + " settingsRoot=\(settingsRoot.exists)"
-                                   + " home=\(home.exists && home.isHittable)",
+                                   + " home=\(home.exists && home.isHittable)"
+                                   + " navBackCount=\(connectionPage.buttons.count)"
+                                   + " navBackExists=\(navBackExists)"
+                                   + " navBackHit=\(navBackHittable)"
+                                   + " navBackLabel=\(navBackLabel)"
+                                   + " navBackFrame=\(navBack.frame)"
+                                   + " navBarFrame=\(connectionPage.frame)"
+                                   + " windowFrame=\(window.frame)"
+                                   + " keyboard=\(app.keyboards.firstMatch.exists)",
                             file: file, line: line)
                         return app
                     }
-                    // Root exists is not enough: under NavigationStack the
-                    // underlying navigation bar may still be in AX while a
-                    // pushed page remains the hit-test owner.
+                    print("HERMES_BOOTSTRAP stage=setup.settings_root")
+                    // Root exists is not enough: wait for its own Done action
+                    // to become hittable before dismissing the parent sheet.
                 } else if !settingsRoot.exists {
                     recordSetupFailure(app, stage: "setup.unknown_parent",
                         details: "childGone=true connectionPage=false"
