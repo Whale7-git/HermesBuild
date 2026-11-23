@@ -5,6 +5,7 @@ import XCTest
 enum HermesUITestHarness {
     static let gateway = "http://127.0.0.1:8765"
     static let sessionTitle = "UI 验收会话"
+    static private(set) var setupSucceeded = false
 
     /// Preserve a screenshot at the first failed setup transition. The
     /// message contains only booleans and known page names; never dump
@@ -26,6 +27,7 @@ enum HermesUITestHarness {
     static func launchAndConnect(file: StaticString = #filePath,
                                  line: UInt = #line,
                                  extraLaunchArguments: [String] = []) -> XCUIApplication {
+        setupSucceeded = false
         let app = XCUIApplication(bundleIdentifier: "com.whale7.hermes")
         app.launchArguments = extraLaunchArguments
         app.launch()
@@ -155,7 +157,9 @@ enum HermesUITestHarness {
                             file: file, line: line)
                         return app
                     }
-                    print("HERMES_BOOTSTRAP stage=setup.settings_root")
+                    // Root exists is not enough: under NavigationStack the
+                    // underlying navigation bar may still be in AX while a
+                    // pushed page remains the hit-test owner.
                 } else if !settingsRoot.exists {
                     recordSetupFailure(app, stage: "setup.unknown_parent",
                         details: "childGone=true connectionPage=false"
@@ -164,17 +168,49 @@ enum HermesUITestHarness {
                         file: file, line: line)
                     return app
                 }
-                // Require the root page itself; the toolbar is not guaranteed
-                // to exist when its defining NavigationStack page is covered.
                 let done = settingsRoot.buttons["完成"]
-                guard done.waitForExistence(timeout: 8) && done.isHittable else {
+                func waitForRootToOwnHitTesting() -> Bool {
+                    let ready = XCTNSPredicateExpectation(
+                        predicate: NSPredicate { _, _ in
+                            done.exists && done.isHittable
+                                && !(connectionPage.exists && connectionPage.isHittable)
+                        }, object: app)
+                    return XCTWaiter.wait(for: [ready], timeout: 7) == .completed
+                }
+                if !waitForRootToOwnHitTesting() {
+                    // A stale root navbar can report exists=true before the
+                    // native Back transition has actually popped the page.
+                    // Only retry a real edge-back when the pushed connection
+                    // page still owns hit-testing. Never tap a hidden Done.
+                    let stillOnConnection = connectionPage.exists
+                        && connectionPage.isHittable
+                    print("HERMES_BOOTSTRAP stage=setup.root_wait "
+                          + "connectionInteractive=\(stillOnConnection)"
+                          + " doneExists=\(done.exists)"
+                          + " doneInteractive=\(done.exists && done.isHittable)")
+                    if stillOnConnection {
+                        let from = app.coordinate(withNormalizedOffset:
+                            CGVector(dx: 0.015, dy: 0.35))
+                        let to = app.coordinate(withNormalizedOffset:
+                            CGVector(dx: 0.78, dy: 0.35))
+                        from.press(forDuration: 0.12, thenDragTo: to)
+                    }
+                }
+                guard waitForRootToOwnHitTesting() else {
+                    let window = app.windows.firstMatch
                     recordSetupFailure(app, stage: "setup.dismiss_settings",
                         details: "root=\(settingsRoot.exists)"
+                               + " rootHit=\(settingsRoot.exists && settingsRoot.isHittable)"
                                + " done=\(done.exists)"
-                               + " doneHittable=\(done.exists && done.isHittable)",
+                               + " doneHit=\(done.exists && done.isHittable)"
+                               + " doneFrame=\(done.frame)"
+                               + " windowFrame=\(window.frame)"
+                               + " connectionHit=\(connectionPage.exists && connectionPage.isHittable)"
+                               + " keyboard=\(app.keyboards.firstMatch.exists)",
                         file: file, line: line)
                     return app
                 }
+                print("HERMES_BOOTSTRAP stage=setup.settings_root_interactive")
                 done.tap()
                 print("HERMES_BOOTSTRAP stage=setup.settings_dismissed")
             }
@@ -194,9 +230,11 @@ enum HermesUITestHarness {
         let sidebar = app.buttons["打开会话侧栏"]
         XCTAssertTrue(sidebar.waitForExistence(timeout: 20),
                       "SETUP_BLOCKED stage=setup.persisted_home; drawer missing after relaunch", file: file, line: line)
-        XCTAssertTrue(sidebar.isHittable,
+        let homeReady = sidebar.isHittable
+        XCTAssertTrue(homeReady,
                       "SETUP_BLOCKED stage=setup.persisted_home; drawer occluded after relaunch",
                       file: file, line: line)
+        setupSucceeded = homeReady
         return app
     }
 
