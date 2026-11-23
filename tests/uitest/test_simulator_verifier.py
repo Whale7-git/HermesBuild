@@ -119,6 +119,24 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertEqual(gold.count("guard HermesUITestHarness.setupSucceeded else { return }"), 4)
         self.assertNotIn("verifySettingsDismissal: true", gold)
 
+    def test_pushed_settings_direct_dismiss_has_explicit_ui_contract(self):
+        root = Path(__file__).resolve().parents[2]
+        settings = (root / "Sources" / "HermesShell" /
+                    "LoginSettings.swift").read_text()
+        harness = (root / "UITests" / "HermesUITestHarness.swift").read_text()
+        regression = (root / "UITests" /
+                      "HermesSettingsNavigationUITests.swift").read_text()
+        self.assertIn('.accessibilityIdentifier("HermesSettingsDismiss")',
+                      settings)
+        self.assertGreaterEqual(
+            settings.count('.accessibilityIdentifier("HermesSettingsDismiss")'), 2)
+        self.assertIn('connectionPage.buttons["HermesSettingsDismiss"]',
+                      harness)
+        self.assertIn("settingsDirectDismissUsed = true", harness)
+        self.assertIn('stage: "setup.direct_settings_dismiss"', harness)
+        self.assertIn("settingsDirectDismissUsed", regression)
+        self.assertIn("verifySettingsDismissal: true", regression)
+
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "ui.log"
