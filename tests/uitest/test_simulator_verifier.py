@@ -108,6 +108,14 @@ class SimulatorPlanTests(unittest.TestCase):
                      "UITests" / "HermesBootstrapUITests.swift").read_text()
         self.assertIn("guard HermesUITestHarness.setupSucceeded else { return }",
                       bootstrap)
+        self.assertIn("launchAndConnect(verifySettingsDismissal: true)", bootstrap)
+        self.assertIn("verifySettingsDismissal: Bool = false", source)
+        self.assertIn("if verifySettingsDismissal {", source)
+        self.assertIn("stage=setup.product_cold_restart", source)
+        gold = (Path(__file__).resolve().parents[2] /
+                "UITests" / "HermesGoldUITests.swift").read_text()
+        self.assertEqual(gold.count("guard HermesUITestHarness.setupSucceeded else { return }"), 4)
+        self.assertNotIn("verifySettingsDismissal: true", gold)
 
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
