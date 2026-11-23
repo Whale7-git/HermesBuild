@@ -73,15 +73,31 @@ enum HermesUITestHarness {
             key.typeText("ui-only-disposable-key")
             let save = app.buttons["添加"]
             XCTAssertTrue(save.exists, "Add-instance submit missing", file: file, line: line)
+            XCTAssertTrue(save.isEnabled && save.isHittable,
+                          "Gateway Save action must be tappable before submit",
+                          file: file, line: line)
             save.tap()
             let sheet = app.navigationBars["添加实例"]
-            let closed = XCTNSPredicateExpectation(
-                predicate: NSPredicate(format: "exists == false"), object: sheet)
-            let closeStatus = XCTWaiter.wait(for: [closed], timeout: 8)
+            let home = app.buttons["打开会话侧栏"]
+            // SwiftUI can keep the dismissed sheet in the accessibility tree:
+            // navigationBars.exists == true is not evidence of a failed save.
+            // Require the *connected* home to be fully interactive instead.
+            let connected = XCTNSPredicateExpectation(
+                predicate: NSPredicate { _, _ in
+                    let sheetStillInteractive = sheet.exists && sheet.isHittable
+                    return !sheetStillInteractive && home.exists && home.isHittable
+                }, object: app)
+            let closeStatus = XCTWaiter.wait(for: [connected], timeout: 20)
             if closeStatus != .completed {
-                // The Save error is a Form Section below the text fields. The
-                // keyboard can keep it outside the visible accessibility tree.
-                // Record static labels only: never dump secure fields or values.
+                // Capture the *current* onboarding/sheet state before scrolling.
+                // Do not print secrets or secure-text-field values.
+                let sheetVisible = sheet.exists && sheet.isHittable
+                let state = "sheetExists=\(sheet.exists) "
+                    + "sheetInteractive=\(sheetVisible) "
+                    + "connectedHomeExists=\(home.exists) "
+                    + "connectedHomeInteractive=\(home.exists && home.isHittable) "
+                    + "setupPrompt=\(app.buttons["配置连接"].exists) "
+                    + "keyFieldExists=\(key.exists)"
                 var labels: [String] = []
                 func captureStaticLabels() {
                     for label in app.staticTexts.allElementsBoundByIndex.map(\.label) {
@@ -91,27 +107,22 @@ enum HermesUITestHarness {
                     }
                 }
                 captureStaticLabels()
-                let form = app.collectionViews.firstMatch.exists
-                    ? app.collectionViews.firstMatch : app.scrollViews.firstMatch
-                for _ in 0..<3 {
-                    if form.exists { form.swipeUp() }
-                    else { app.swipeUp() }
-                    captureStaticLabels()
+                let screenshot = XCTAttachment(screenshot: app.screenshot())
+                screenshot.name = "gateway-save-current-screen"
+                screenshot.lifetime = .keepAlways
+                XCTContext.runActivity(named: "Gateway Save / connected-home state") {
+                    $0.add(screenshot)
                 }
-                let attachment = XCTAttachment(screenshot: app.screenshot())
-                attachment.name = "gateway-instance-save-error"
-                attachment.lifetime = .keepAlways
-                XCTContext.runActivity(named: "Gateway save failure screenshot") {
-                    $0.add(attachment)
-                }
-                let errors = labels.filter { label in
-                    ["无法", "失败", "钥匙串", "请输入", "无效", "Keychain",
-                     "error", "配置"].contains {
-                        label.localizedCaseInsensitiveContains($0)
+                if sheetVisible {
+                    let form = app.collectionViews.firstMatch.exists
+                        ? app.collectionViews.firstMatch : app.scrollViews.firstMatch
+                    for _ in 0..<2 {
+                        if form.exists { form.swipeUp() }
+                        captureStaticLabels()
                     }
                 }
-                let report = errors.isEmpty ? labels : errors
-                XCTFail("Gateway AddInstance remained open; form labels: \(Array(report.prefix(28)))",
+                XCTFail("Gateway setup did not reach connected home; \(state); "
+                        + "visible labels: \(Array(labels.prefix(24)))",
                         file: file, line: line)
                 return app
             }
