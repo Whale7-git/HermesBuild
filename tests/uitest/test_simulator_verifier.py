@@ -54,7 +54,7 @@ class SimulatorPlanTests(unittest.TestCase):
     def test_gateway_setup_dismisses_child_and_parent_sheets(self):
         source = (Path(__file__).resolve().parents[2] /
                   "UITests" / "HermesUITestHarness.swift").read_text()
-        self.assertIn('app.navigationBars["设置"].buttons["完成"]', source)
+        self.assertIn('app.navigationBars.buttons["完成"].firstMatch', source)
         self.assertIn("settingsDone.tap()", source)
         self.assertIn("addSheetDismissed", source)
         self.assertNotIn("for label in app.staticTexts.allElementsBoundByIndex", source)
