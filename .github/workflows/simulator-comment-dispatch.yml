@@ -27,7 +27,7 @@ jobs:
             const author = context.payload.comment?.user?.login;
             const issue_number = context.payload.issue?.number;
             const raw = context.payload.comment?.body?.trim() ?? '';
-            const match = /^\/ios-verify\s+(bootstrap|gold1|gold2|gold4|gold|recovery|interaction|all)\s+(release-\d+\.\d+\.\d+-build\d+|[a-f0-9]{40})$/.exec(raw);
+            const match = /^\/ios-verify\s+(bootstrap|gold1|gold2|gold3|gold4|gold|recovery|interaction|all)\s+(release-\d+\.\d+\.\d+-build\d+|[a-f0-9]{40})$/.exec(raw);
             if (!match) return core.setFailed('Usage: /ios-verify gold4 release-2.53.6-build230');
             if (!author || !issue_number) return core.setFailed('No authenticated commenter/Issue');
 
