@@ -50,6 +50,19 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_case(0, [], MODULE.BOOTSTRAP),
                          ("PASS", None))
 
+    def test_zero_exit_without_requested_test_is_not_a_pass(self):
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "xcodebuild.log"
+            testcase = MODULE.BOOTSTRAP
+            self.assertFalse(MODULE.observed_selected_pass(log, testcase))
+            log.write_text("** TEST SUCCEEDED **\n", encoding="utf-8")
+            self.assertFalse(MODULE.observed_selected_pass(log, testcase))
+            log.write_text(
+                "Test Case '-[HermesUITests.HermesBootstrapUITests "
+                "testGatewaySetupPersistsAcrossRelaunch]' passed (8.321 seconds).\n",
+                encoding="utf-8")
+            self.assertTrue(MODULE.observed_selected_pass(log, testcase))
+
     def test_unknown_suite_is_rejected(self):
         with self.assertRaises(ValueError):
             MODULE.cases_for_suite("unknown")
