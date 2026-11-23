@@ -9,7 +9,7 @@ on:
         required: true
         default: bootstrap
         type: choice
-        options: [bootstrap, gold1, gold2, gold3, gold4, gold, recovery, interaction, all]
+        options: [bootstrap, settings, gold1, gold2, gold3, gold4, gold, recovery, interaction, all]
       source_sha:
         description: "Exact released/ancestor product commit; empty = dispatch HEAD"
         required: false
