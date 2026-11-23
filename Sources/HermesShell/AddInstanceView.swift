@@ -61,6 +61,10 @@ struct AddInstanceView: View {
                 if backend == .gateway {
                     Section {
                         SecureField(editingID == nil ? "API_SERVER_KEY" : "新 API_SERVER_KEY（留空不变）", text: $apiKey)
+                            // Gateway API keys are not website passwords.
+                            // Avoid offering iOS Passwords save/autofill during
+                            // new instance setup (same policy as Gateway login).
+                            .textContentType(nil)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                      // No WebUI fallback field for newly created Gateway instances.
