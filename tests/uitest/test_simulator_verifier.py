@@ -59,6 +59,15 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn("HermesSettingsNavigationUITests",
                       MODULE.SETTINGS)
 
+    def test_settings_timeout_preserves_distinct_infra_result(self):
+        self.assertEqual(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 300)
+        self.assertLess(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 720)
+        source = PATH.read_text(encoding="utf-8")
+        self.assertIn("except subprocess.TimeoutExpired:", source)
+        self.assertIn('entry["failure_stage"] = "infra.xctest_timeout"', source)
+        self.assertIn("SIMULATOR_TIMEOUT", source)
+        self.assertIn("entry[\"diagnostics\"] = diagnostic_lines", source)
+
     def test_zero_exit_without_requested_test_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
             log = Path(root) / "xcodebuild.log"
