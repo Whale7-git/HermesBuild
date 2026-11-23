@@ -83,6 +83,8 @@ final class ChatHistoryStore: Sendable {
         var maxMessages = 1200
         var maxTools = 600
         var maxEntries = 512
+        /// Bounds each private tool-result sidecar; all files share maxTotalBytes.
+        var maxResultFileBytes = 12 * 1024 * 1024
     }
 
     struct CleanupReport: Sendable, Equatable {
@@ -142,7 +144,10 @@ final class ChatHistoryStore: Sendable {
         /// Optional keys decode build228's legacy cache envelopes unchanged.
         let omittedResultBytes: Int?
         let omittedArgsBytes: Int?
-        init(_ value: ChatTool, omitResult: Bool = false, omitArgs: Bool = false) {
+        /// Optional on legacy envelopes. A missing sidecar is not full content.
+        let resultFileID: String?
+        init(_ value: ChatTool, omitResult: Bool = false, omitArgs: Bool = false,
+             resultFileID: String? = nil) {
             id = value.id; name = value.name
             args = omitArgs ? "" : value.args
             result = omitResult ? "" : value.result
@@ -151,12 +156,20 @@ final class ChatHistoryStore: Sendable {
                 ?? (omitResult && !value.result.isEmpty ? value.result.utf8.count : nil)
             omittedArgsBytes = value.uncachedArgsBytes
                 ?? (omitArgs && !value.args.isEmpty ? value.args.utf8.count : nil)
+            self.resultFileID = resultFileID
         }
         var value: ChatTool {
             ChatTool(id: id, name: name, args: args, result: result, done: done,
                      isError: isError, afterMessageID: afterMessageID,
                      uncachedResultBytes: omittedResultBytes, uncachedArgsBytes: omittedArgsBytes)
         }
+    }
+
+    private struct ResultFile: Codable {
+        let scope: Scope
+        let toolID: String
+        let fingerprint: String
+        let result: String
     }
 
     private struct Usage: Codable {
@@ -252,7 +265,9 @@ final class ChatHistoryStore: Sendable {
                 guard self.valid else { continuation.resume(returning: nil); return }
                 let url = self.root.appendingPathComponent(self.scope.filename)
                 let result = Self.read(url: url, policy: self.policy)
-                continuation.resume(returning: result?.scope == self.scope ? result?.value : nil)
+                let restored = result?.scope == self.scope
+                    ? result.map { Self.restoreResults($0, root: self.root, policy: self.policy) } : nil
+                continuation.resume(returning: restored)
                 Self.queue.async { Self.clean(root: self.root, policy: self.policy) }
             }
         }
@@ -346,6 +361,14 @@ final class ChatHistoryStore: Sendable {
                         if manager.fileExists(atPath: url.path) { failed += 1 }
                         else { removed += 1 }
                     } catch { failed += 1 }
+                    for sidecar in resultFiles(for: url, in: directory) {
+                        attempted += 1
+                        do {
+                            try manager.removeItem(at: sidecar)
+                            if manager.fileExists(atPath: sidecar.path) { failed += 1 }
+                            else { removed += 1 }
+                        } catch { failed += 1 }
+                    }
                 }
                 continuation.resume(returning: CleanupReport(
                     attempted: attempted, removed: removed, failed: failed))
@@ -382,7 +405,7 @@ final class ChatHistoryStore: Sendable {
                 do {
                     urls = try manager.contentsOfDirectory(at: directory,
                         includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-                        .filter { $0.pathExtension == "json" }
+                        .filter { $0.pathExtension == "json" || $0.pathExtension == "tool" }
                 } catch {
                     continuation.resume(returning: CleanupReport(attempted: 0, removed: 0, failed: 1))
                     return
@@ -416,18 +439,18 @@ final class ChatHistoryStore: Sendable {
                 Self.generationLock.unlock()
                 let url = self.root.appendingPathComponent(self.scope.filename)
                 Self.pending.removeValue(forKey: url.path)?.task.cancel()
-                guard FileManager.default.fileExists(atPath: url.path) else {
-                    continuation.resume(returning: .empty)
-                    return
+                let targets = ([url] + Self.resultFiles(for: url, in: self.root))
+                    .filter { FileManager.default.fileExists(atPath: $0.path) }
+                var removed = 0, failed = 0
+                for target in targets {
+                    do {
+                        try FileManager.default.removeItem(at: target)
+                        if FileManager.default.fileExists(atPath: target.path) { failed += 1 }
+                        else { removed += 1 }
+                    } catch { failed += 1 }
                 }
-                do {
-                    try FileManager.default.removeItem(at: url)
-                    let gone = !FileManager.default.fileExists(atPath: url.path)
-                    continuation.resume(returning: CleanupReport(
-                        attempted: 1, removed: gone ? 1 : 0, failed: gone ? 0 : 1))
-                } catch {
-                    continuation.resume(returning: CleanupReport(attempted: 1, removed: 0, failed: 1))
-                }
+                continuation.resume(returning: CleanupReport(
+                    attempted: targets.count, removed: removed, failed: failed))
             }
         }
     }
@@ -438,7 +461,8 @@ final class ChatHistoryStore: Sendable {
                 let root = rootDirectory ?? defaultDirectory
                 clean(root: root, policy: Policy())
                 let entries = files(in: root)
-                continuation.resume(returning: Statistics(entries: entries.count, bytes: entries.reduce(0) { $0 + fileSize($1) }))
+                let bytes = (entries + resultFiles(in: root)).reduce(Int64(0)) { $0 + fileSize($1) }
+                continuation.resume(returning: Statistics(entries: entries.count, bytes: bytes))
             }
         }
     }
@@ -567,7 +591,8 @@ final class ChatHistoryStore: Sendable {
             }!
             let candidate = envelope.tools[idx]
             if !candidate.result.isEmpty {
-                envelope.tools[idx] = Tool(candidate.value, omitResult: true)
+                envelope.tools[idx] = Tool(candidate.value, omitResult: true,
+                                            resultFileID: candidate.resultFileID)
             } else if !candidate.args.isEmpty {
                 envelope.tools[idx] = Tool(candidate.value, omitArgs: true)
             } else {
@@ -600,6 +625,26 @@ final class ChatHistoryStore: Sendable {
             try? manager.removeItem(at: url)
             clean(root: item.root, policy: item.policy)
             return .failed(.sizeBudget)
+        }
+        // Persist authoritative multi-megabyte results independently of the
+        // 4 MiB history envelope. Never claim a missing sidecar is complete.
+        for index in envelope.tools.indices {
+            let cached = envelope.tools[index]
+            guard cached.result.isEmpty,
+                  let missing = cached.omittedResultBytes, missing >= 1024 * 1024,
+                  missing <= item.policy.maxResultFileBytes,
+                  let source = candidates.first(where: { $0.id == cached.id &&
+                      $0.result.utf8.count == missing && !$0.result.isEmpty }),
+                  let fileID = writeResult(source.result, toolID: source.id,
+                      scope: item.scope, root: item.root, policy: item.policy) else { continue }
+            var proposal = envelope
+            proposal.tools[index] = Tool(source, omitResult: true,
+                omitArgs: cached.omittedArgsBytes != nil, resultFileID: fileID)
+            if let candidateData = encode(proposal, using: encoder),
+               candidateData.count <= item.policy.maxEntryBytes {
+                envelope = proposal
+                encoded = candidateData
+            }
         }
         do {
             // Atomic replacement also prevents interrupted writes from exposing
@@ -663,6 +708,93 @@ final class ChatHistoryStore: Sendable {
         _ = try? FileHandle.standardError.write(contentsOf: Data(("[HermesNative][history-cache] " + message + "\n").utf8))
     }
 
+
+    /// Rehydrate only same-scope, same-tool authoritative bytes. If a sidecar
+    /// was purged, the existing omittedResultBytes marker remains unchanged.
+    private static func restoreResults(_ envelope: Envelope, root: URL, policy: Policy) -> ChatHistoryRecord {
+        var record = envelope.value
+        for (index, metadata) in envelope.tools.enumerated() {
+            guard metadata.result.isEmpty, let omitted = metadata.omittedResultBytes,
+                  omitted >= 1024 * 1024, omitted <= policy.maxResultFileBytes,
+                  let identifier = metadata.resultFileID,
+                  let restored = readResult(identifier: identifier, toolID: metadata.id,
+                                            scope: envelope.scope, root: root, policy: policy),
+                  restored.utf8.count == omitted else { continue }
+            record.tools[index] = ChatTool(
+                id: metadata.id, name: metadata.name, args: metadata.args,
+                result: restored, done: metadata.done, isError: metadata.isError,
+                afterMessageID: metadata.afterMessageID,
+                uncachedResultBytes: nil, uncachedArgsBytes: metadata.omittedArgsBytes)
+        }
+        return record
+    }
+
+    private static func resultURL(root: URL, scope: Scope, identifier: String) -> URL {
+        let stem = String(scope.filename.dropLast(5))
+        return root.appendingPathComponent(stem + "." + identifier + ".tool")
+    }
+
+    private static func readResult(identifier: String, toolID: String, scope: Scope,
+                                   root: URL, policy: Policy) -> String? {
+        let hex = CharacterSet(charactersIn: "0123456789abcdef")
+        guard identifier.count == 32,
+              identifier.unicodeScalars.allSatisfy({ hex.contains($0) }) else { return nil }
+        let url = resultURL(root: root, scope: scope, identifier: identifier)
+        let size = fileSize(url)
+        guard size > 0 && size <= Int64(policy.maxResultFileBytes + 16 * 1024),
+              let data = try? Data(contentsOf: url),
+              let file = try? JSONDecoder().decode(ResultFile.self, from: data),
+              file.scope == scope, file.toolID == toolID, file.fingerprint == identifier,
+              file.result.utf8.count <= policy.maxResultFileBytes,
+              digest([scope.instanceID, scope.accountScope, scope.sessionID, toolID, file.result]) == identifier
+        else { return nil }
+        return file.result
+    }
+
+    private static func writeResult(_ result: String, toolID: String, scope: Scope,
+                                    root: URL, policy: Policy) -> String? {
+        let bytes = result.utf8.count
+        guard bytes >= 1024 * 1024 && bytes <= policy.maxResultFileBytes else { return nil }
+        let identifier = digest([scope.instanceID, scope.accountScope, scope.sessionID, toolID, result])
+        let url = resultURL(root: root, scope: scope, identifier: identifier)
+        if readResult(identifier: identifier, toolID: toolID, scope: scope,
+                      root: root, policy: policy) == result { return identifier }
+        guard let data = try? JSONEncoder().encode(ResultFile(scope: scope, toolID: toolID,
+                                                              fingerprint: identifier, result: result)),
+              data.count <= policy.maxResultFileBytes + 16 * 1024 else { return nil }
+        do {
+            #if os(iOS)
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            #else
+            try data.write(to: url, options: .atomic)
+            #endif
+            var file = url
+            var attributes = URLResourceValues()
+            attributes.isExcludedFromBackup = true
+            #if os(iOS)
+            do { try file.setResourceValues(attributes) }
+            catch { try? FileManager.default.removeItem(at: url); return nil }
+            #else
+            try? file.setResourceValues(attributes)
+            #endif
+            return identifier
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
+    private static func resultFiles(in root: URL) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]))?
+            .filter { $0.pathExtension == "tool" } ?? []
+    }
+
+    private static func resultFiles(for transcript: URL, in root: URL) -> [URL] {
+        let stem = transcript.deletingPathExtension().lastPathComponent + "."
+        return resultFiles(in: root).filter { $0.lastPathComponent.hasPrefix(stem) }
+    }
+
     private static func read(url: URL, policy: Policy) -> Envelope? {
         guard fileSize(url) > 0, fileSize(url) <= policy.maxEntryBytes,
               let data = try? Data(contentsOf: url),
@@ -698,6 +830,26 @@ final class ChatHistoryStore: Sendable {
         for (url, _, size) in existing {
             if count >= policy.maxEntries || size > policy.maxTotalBytes - retained { try? FileManager.default.removeItem(at: url) }
             else { retained += size; count += 1 }
+        }
+        // Include sidecars in the same total budget; reap any files whose
+        // transcript is gone or expired. Cache eviction is never authority.
+        let liveStems = Set(files(in: root).map { $0.deletingPathExtension().lastPathComponent })
+        let sidecars = resultFiles(in: root).compactMap { url -> (URL, Date, Int64)? in
+            let stem = url.deletingPathExtension().lastPathComponent.split(separator: ".").first.map(String.init) ?? ""
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let date = attributes?[.modificationDate] as? Date ?? .distantPast
+            guard liveStems.contains(stem), size > 0,
+                  size <= Int64(policy.maxResultFileBytes + 16 * 1024),
+                  -date.timeIntervalSinceNow <= policy.maxAge else {
+                try? FileManager.default.removeItem(at: url)
+                return nil
+            }
+            return (url, date, size)
+        }.sorted { $0.1 > $1.1 }
+        for (url, _, size) in sidecars {
+            if size > policy.maxTotalBytes - retained { try? FileManager.default.removeItem(at: url) }
+            else { retained += size }
         }
     }
 
