@@ -27,9 +27,11 @@ class SimulatorPlanTests(unittest.TestCase):
     def test_bootstrap_isolated_and_gold_gated(self):
         self.assertEqual(MODULE.cases_for_suite("bootstrap"), [MODULE.BOOTSTRAP])
         self.assertEqual(MODULE.cases_for_suite("gold1"), [MODULE.GOLD[0]])
-        self.assertEqual(MODULE.cases_for_suite("gold")[0], MODULE.BOOTSTRAP)
-        self.assertEqual(len(MODULE.cases_for_suite("gold")), 5)
-        self.assertEqual(MODULE.cases_for_suite("all")[0], MODULE.BOOTSTRAP)
+        self.assertEqual(MODULE.cases_for_suite("gold3"), [MODULE.GOLD[2]])
+        self.assertEqual(MODULE.cases_for_suite("gold")[0], MODULE.GOLD[0])
+        self.assertEqual(len(MODULE.cases_for_suite("gold")), 4)
+        self.assertNotIn(MODULE.BOOTSTRAP, MODULE.cases_for_suite("gold"))
+        self.assertEqual(MODULE.cases_for_suite("all")[0], MODULE.GOLD[0])
         self.assertIn(MODULE.GOLD[3], MODULE.cases_for_suite("all"))
 
     def test_setup_failure_blocks_product_without_hiding_bootstrap_failure(self):
