@@ -21,7 +21,8 @@ jobs:
     name: Classify simulator failures and upsert Issues
     if: >-
       ${{ github.event.workflow_run.repository.full_name == github.repository &&
-          github.event.workflow_run.conclusion == 'failure' }}
+          (github.event.workflow_run.conclusion == 'failure' ||
+           github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -42,7 +43,7 @@ jobs:
           path: ${{ runner.temp }}/triage-reports
           merge-multiple: false
 
-      - name: Upsert deduplicated simulator issues
+      - name: Write verified same-SHA simulator acceptance and triage failures
         env:
           GH_TOKEN: ${{ github.token }}
           SIMULATOR_RUN_ID: ${{ github.event.workflow_run.id }}
