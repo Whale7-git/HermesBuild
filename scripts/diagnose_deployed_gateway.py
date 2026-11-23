@@ -92,7 +92,7 @@ def http_class(code, error):
     return "OK"
 
 
-def probe(base_url, api_key, run_id=None, opener=None):
+def probe(base_url, api_key, run_id=None, opener=None, timeout=10):
     base = validated_base(base_url)
     if not api_key or "\r" in api_key or "\n" in api_key:
         raise ValueError("invalid_gateway_key")
@@ -100,7 +100,7 @@ def probe(base_url, api_key, run_id=None, opener=None):
         raise ValueError("invalid_run_id")
     opener = opener or urllib.request.build_opener(NoRedirect())
     cap_code, caps, cap_err = fetch_json(
-        opener, base, api_key, "/v1/capabilities")
+        opener, base, api_key, "/v1/capabilities", timeout=timeout)
     features = caps.get("features", {}) if isinstance(caps, dict) else {}
     endpoints = caps.get("endpoints", {}) if isinstance(caps, dict) else {}
     advertised_flag = features.get("run_unknown_resolution") is True \
@@ -120,6 +120,11 @@ def probe(base_url, api_key, run_id=None, opener=None):
             "run_unknown_resolution_endpoint": endpoint_advertised,
         },
         "run": {"checked": run_id is not None},
+        "attachments": {
+            "remote_delete": "NOT_PROVEN_READ_ONLY",
+            "orphan_reclamation": "NOT_PROVEN_READ_ONLY",
+            "resumable_offset_hash": "NOT_PROVEN_READ_ONLY",
+        },
         "safety": {
             "resolve_unknown_post_sent": False,
             "file_delete_sent": False,
@@ -131,7 +136,7 @@ def probe(base_url, api_key, run_id=None, opener=None):
         return result
 
     status_code, status, error = fetch_json(
-        opener, base, api_key, "/v1/runs/" + run_id)
+        opener, base, api_key, "/v1/runs/" + run_id, timeout=timeout)
     outcome = http_class(status_code, error)
     run_state = status.get("status") if isinstance(status, dict) else None
     if not isinstance(run_state, str):
@@ -175,7 +180,8 @@ def main():
         raw = probe(
             os.environ.get("HERMES_GATEWAY_URL", ""),
             os.environ.get("HERMES_GATEWAY_API_KEY", ""),
-            os.environ.get("HERMES_RUN_ID") or None)
+            os.environ.get("HERMES_RUN_ID") or None,
+            timeout=args.timeout)
         print(json.dumps(raw, sort_keys=True, ensure_ascii=False))
         cap_ok = raw["capabilities"]["response_class"] == "OK"
         run_ok = not raw["run"]["checked"] or raw["run"]["response_class"] == "OK"
