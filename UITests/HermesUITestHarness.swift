@@ -138,10 +138,65 @@ enum HermesUITestHarness {
                     && connectionPage.waitForExistence(timeout: 6)
                     && directDone.waitForExistence(timeout: 5)
                     && directDone.isHittable {
+                    let buttonFrame = directDone.frame
+                    let navFrame = connectionPage.frame
+                    let windowFrame = app.windows.firstMatch.frame
                     directDone.tap()
-                    guard home.waitForExistence(timeout: 12) && home.isHittable else {
+                    // Archived real XCTest #45203535332 demonstrates the
+                    // native AX button can claim isHittable=true while
+                    // XCTest synthesizes an INVALID hit point (-1,-1).
+                    // A successful tap call is therefore not proof of a
+                    // delivered UI event. Check the actual modal outcome.
+                    func homeIsActionable(_ timeout: TimeInterval) -> Bool {
+                        let ready = XCTNSPredicateExpectation(
+                            predicate: NSPredicate { _, _ in
+                                home.exists && home.isHittable
+                            }, object: app)
+                        return XCTWaiter.wait(for: [ready], timeout: timeout) == .completed
+                    }
+                    if !homeIsActionable(3) {
+                        // A physical tap derived from the actual visible
+                        // button/nav-bar geometry avoids XCTest's broken AX
+                        // activation point. It still targets the shipping
+                        // Done control; no model state or navigation is faked.
+                        let buttonCenter = CGPoint(x: buttonFrame.midX,
+                                                   y: buttonFrame.midY)
+                        let validButton = !buttonFrame.isNull
+                            && !buttonFrame.isEmpty
+                            && windowFrame.contains(buttonCenter)
+                        let navCenter = CGPoint(x: navFrame.maxX - 40,
+                                                y: navFrame.midY)
+                        let validNav = !navFrame.isNull && !navFrame.isEmpty
+                            && windowFrame.contains(navCenter)
+                        let target: CGPoint? = validButton
+                            ? buttonCenter : (validNav ? navCenter : nil)
+                        print("HERMES_BOOTSTRAP stage=setup.done_hitpoint_fallback"
+                              + " buttonFrame=\(buttonFrame)"
+                              + " navFrame=\(navFrame)"
+                              + " windowFrame=\(windowFrame)"
+                              + " validButton=\(validButton)"
+                              + " validNav=\(validNav)")
+                        if let target {
+                            let appFrame = app.frame
+                            if appFrame.width > 0 && appFrame.height > 0
+                                && appFrame.contains(target) {
+                                app.coordinate(withNormalizedOffset: CGVector(
+                                    dx: (target.x - appFrame.minX) / appFrame.width,
+                                    dy: (target.y - appFrame.minY) / appFrame.height
+                                )).tap()
+                            }
+                        }
+                    }
+                    guard homeIsActionable(8) else {
                         recordSetupFailure(app, stage: "setup.direct_settings_dismiss",
-                            details: "actionVisible=true homeInteractive=false",
+                            details: "actionVisible=\(directDone.exists)"
+                                   + " actionHittable=\(directDone.isHittable)"
+                                   + " rootVisible=\(settingsRoot.exists)"
+                                   + " connectionVisible=\(connectionPage.exists)"
+                                   + " homeInteractive=\(home.exists && home.isHittable)"
+                                   + " buttonFrame=\(buttonFrame)"
+                                   + " navFrame=\(navFrame)"
+                                   + " windowFrame=\(windowFrame)",
                             file: file, line: line)
                         return app
                     }
