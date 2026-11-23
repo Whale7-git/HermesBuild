@@ -11,6 +11,9 @@ final class HermesBootstrapUITests: XCTestCase {
 
     @MainActor func testGatewaySetupPersistsAcrossRelaunch() async throws {
         let app = HermesUITestHarness.launchAndConnect()
+        // A failed common setup records a single authoritative assertion.
+        // Do not keep issuing a mock GET or print BOOTSTRAP_PASS after it.
+        guard HermesUITestHarness.setupSucceeded else { return }
         let drawer = app.buttons["打开会话侧栏"]
         XCTAssertTrue(drawer.exists && drawer.isHittable,
                       "SETUP_BLOCKED stage=bootstrap.home; cannot interact after cold launch")
