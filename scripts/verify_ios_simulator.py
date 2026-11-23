@@ -17,6 +17,7 @@ import time
 import urllib.request
 
 BOOTSTRAP = "HermesBootstrapUITests.testGatewaySetupPersistsAcrossRelaunch"
+SETTINGS = "HermesSettingsNavigationUITests.testPushedSettingsPageCanDismissWithoutNativeBack"
 GOLD = [
     "HermesGoldUITests.test01ConnectionAndSessionList",
     "HermesGoldUITests.test02SendStreamAndComplete",
@@ -37,6 +38,7 @@ INTERACTION = [
 ]
 SUITES = {
     "bootstrap": [BOOTSTRAP],
+    "settings": [SETTINGS],
     "gold1": [GOLD[0]], "gold2": [GOLD[1]], "gold3": [GOLD[2]],
     "gold4": [GOLD[3]],
     # Gold1 performs real Save, Keychain cold relaunch and the mock session GET.
