@@ -32,6 +32,25 @@ class SimulatorPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.cases_for_suite("unknown")
 
+    def test_long_gold4_trace_retains_failed_assertion_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "ui.log"
+            log.write_text(
+                "test.swift:305: error: Gold4 SSE_ANCHOR_DRIFT 338pt "
+                + "rowContent=" + "0" * 1600 + "\n",
+                encoding="utf-8")
+            lines = MODULE.diagnostic_lines(log)
+            self.assertEqual(len(lines), 1)
+            self.assertIn("Gold4 SSE_ANCHOR_DRIFT", lines[0])
+            self.assertIn("[truncated]", lines[0])
+
+    def test_gold4_asserts_stable_uikit_row_not_a11y_first_match(self):
+        source = (Path(__file__).resolve().parents[2] /
+                  "UITests" / "HermesGoldUITests.swift").read_text()
+        self.assertIn('traceFrame("userFrame", in: postStreamTrace)', source)
+        self.assertIn("Gold4 SSE_ROW_VISIBLE failed", source)
+        self.assertIn("Gold4 SSE_ANCHOR_DRIFT", source)
+
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "ui.log"
