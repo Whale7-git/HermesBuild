@@ -147,11 +147,18 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("statuses: write", workflow)
         self.assertNotIn("simulator-result:", workflow)
         self.assertNotIn("Record exact-commit simulator gold result", workflow)
-        self.assertIn("shard: [chat, experience]", workflow)
-        self.assertIn("fail-fast: false", workflow)
-        self.assertIn("HermesLongTaskRecoveryUITests", workflow)
-        self.assertIn("TEST_SHARD: ${{ matrix.shard }}", workflow)
-        self.assertIn("hermes-ui-evidence-${{ github.run_id }}-${{ matrix.shard }}", workflow)
+        self.assertNotIn("shard: [chat, experience]", workflow)
+        self.assertIn("source_sha:", workflow)
+        self.assertIn("git -C harness merge-base --is-ancestor", workflow)
+        self.assertIn("xcodebuild build-for-testing", workflow)
+        self.assertIn("verify_ios_simulator.py", workflow)
+        self.assertIn("hermes-ui-evidence-${{ github.run_id }}", workflow)
+        self.assertIn("hermes-ui-triage-${{ github.run_id }}-verification", workflow)
+        verifier = (ROOT / "scripts/verify_ios_simulator.py").read_text()
+        self.assertIn("test-without-building", verifier)
+        self.assertIn("simctl", verifier)
+        self.assertIn('"gold2":', verifier)
+        self.assertIn('"gold4":', verifier)
 
     def test_promotion_workflow_never_compiles(self):
         path = ROOT / ".github/workflows/hermesshell-single-promote.yml"
