@@ -132,17 +132,35 @@ enum HermesUITestHarness {
                     // is normally labelled with the previous screen's title.
                     // Do not use firstMatch on all buttons: that can tap Add,
                     // remove, or other unrelated actions on a changing Form.
+                    // The archived XCTest trace for Run 45119326973 shows
+                    // BackButton computed hit point {-1,-1}: exists and
+                    // isHittable alone did not mean the tap was actionable.
+                    // Avoid treating a synthetic tap as successful navigation.
+                    if app.keyboards.firstMatch.exists {
+                        let keyboardDone = app.keyboards.buttons["Done"].firstMatch
+                        if keyboardDone.exists && keyboardDone.isHittable { keyboardDone.tap() }
+                    }
                     for title in ["设置", "返回", "Back"] {
                         let back = connectionPage.buttons[title]
-                        if back.exists && back.isHittable {
+                        let frame = back.frame
+                        let window = app.windows.firstMatch.frame
+                        let validFrame = frame.width > 0 && frame.height > 0
+                            && window.intersects(frame)
+                            && frame.midX >= window.minX && frame.midX <= window.maxX
+                            && frame.midY >= window.minY && frame.midY <= window.maxY
+                        print("HERMES_BOOTSTRAP stage=setup.back_candidate title=\(title)"
+                              + " exists=\(back.exists) hit=\(back.isHittable)"
+                              + " frame=\(frame) window=\(window)"
+                              + " keyboard=\(app.keyboards.firstMatch.exists)")
+                        if back.exists && back.isHittable && validFrame {
                             back.tap()
-                            returned = true
-                            break
+                            returned = settingsRoot.waitForExistence(timeout: 3)
+                            if returned { break }
                         }
                     }
                     if !returned {
-                        // Native edge-back gesture remains a legitimate user
-                        // navigation path when iOS changes the back AX label.
+                        // Real system edge-back gesture, independent of the
+                        // invalid accessibility hit point of BackButton.
                         let from = app.coordinate(withNormalizedOffset:
                             CGVector(dx: 0.015, dy: 0.35))
                         let to = app.coordinate(withNormalizedOffset:
