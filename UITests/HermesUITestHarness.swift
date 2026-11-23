@@ -50,7 +50,10 @@ enum HermesUITestHarness {
                 guard notNow.exists else { continue }
                 print("HERMES_BOOTSTRAP stage=setup.system_password_prompt_seen"
                       + " host=\(hostName)")
-                if notNow.isHittable {
+                // Only tap when the real OS "Not Now" control is actionable.
+                // The original condition was inverted, rejecting hittable
+                // buttons while trying to tap non-hittable ones.
+                if !notNow.isHittable {
                     print("HERMES_BOOTSTRAP stage=setup.system_password_not_hittable"
                           + " host=\(hostName)")
                     return false
