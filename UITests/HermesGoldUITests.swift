@@ -26,11 +26,13 @@ final class HermesGoldUITests: XCTestCase {
     }
 
     @MainActor private func acceptedRuns() async throws -> [[String: Any]] {
-        try XCTUnwrap(try await requestLedger()["accepted_runs"] as? [[String: Any]])
+        let ledger = try await requestLedger()
+        return try XCTUnwrap(ledger["accepted_runs"] as? [[String: Any]])
     }
 
     @MainActor private func deliveredEvents() async throws -> [String] {
-        try XCTUnwrap(try await requestLedger()["delivered_event_ids"] as? [String])
+        let ledger = try await requestLedger()
+        return try XCTUnwrap(ledger["delivered_event_ids"] as? [String])
     }
 
     @MainActor private func waitForDeliveredEvent(_ eventID: String) async throws {
@@ -134,7 +136,8 @@ final class HermesGoldUITests: XCTestCase {
         editor.typeText("next unsent draft")
         XCTAssertTrue(app.buttons["发送消息"].isEnabled,
                       "Terminal Run must restore composer send availability")
-        XCTAssertEqual(try await acceptedRunPOSTCount(), 1,
+        let postCount = try await acceptedRunPOSTCount()
+        XCTAssertEqual(postCount, 1,
                        "Typing after completion must not submit another POST")
     }
 
@@ -208,8 +211,8 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 12) && send.isEnabled)
         send.tap()
         try await waitForSingleAcceptedPOST()
-        XCTAssertEqual(try await acceptedRuns().count, 1,
-                       "Gold4 needs one truly admitted Run")
+        let admission = try await acceptedRuns()
+        XCTAssertEqual(admission.count, 1, "Gold4 needs one truly admitted Run")
         try await waitForDeliveredEvent("2")
         let user = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "UI streamed reading anchor")).firstMatch
