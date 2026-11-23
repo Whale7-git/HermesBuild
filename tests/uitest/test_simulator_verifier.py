@@ -148,7 +148,17 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn("stage=setup.done_hitpoint_fallback", harness)
         self.assertIn("windowFrame.contains(buttonCenter)", harness)
         self.assertIn("app.coordinate(withNormalizedOffset: CGVector(", harness)
-        self.assertIn("guard homeIsActionable(8) else", harness)
+        # Run #45213964498 crashed querying the obscured drawer's AX
+        # hit point ("line.3.horizontal") before it could tap Settings Done.
+        # An underlying home button is never a safe hit-test target while
+        # either Settings navigation bar still owns the modal.
+        self.assertIn("guard settingsSheetGone(8) else", harness)
+        self.assertIn("!connectionPage.exists && !settingsRoot.exists", harness)
+        direct_section = harness.split(
+            'let directDone = connectionPage.buttons["HermesSettingsDismiss"]',
+            1)[1].split("settingsDirectDismissUsed = true", 1)[0]
+        self.assertNotIn("home.exists && home.isHittable", direct_section)
+        self.assertNotIn("homeInteractive=", direct_section)
         self.assertIn("settingsDirectDismissUsed = true", harness)
         self.assertIn("settingsDirectDismissUsed", regression)
         self.assertIn("verifySettingsDismissal: true", regression)

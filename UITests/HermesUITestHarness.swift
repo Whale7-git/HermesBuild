@@ -134,12 +134,17 @@ enum HermesUITestHarness {
                 // action, independent of the native BackButton hit point. Do
                 // not infer success from a tap: verify the home is actionable.
                 let directDone = connectionPage.buttons["HermesSettingsDismiss"]
-                if !(home.exists && home.isHittable)
-                    && connectionPage.waitForExistence(timeout: 6)
+                // Do not call home.isHittable while Settings is on top.
+                // XCTest attempts to scroll the covered "line.3.horizontal"
+                // drawer button, then throws "Activation point invalid".
+                if connectionPage.waitForExistence(timeout: 6)
                     && directDone.waitForExistence(timeout: 5) {
                     let buttonFrame = directDone.frame
                     let navFrame = connectionPage.frame
                     let windowFrame = app.windows.firstMatch.frame
+                    // First try the real toolbar Button. Its AX activation
+                    // point is unreliable on some simulator runtimes; the
+                    // validated physical-coordinate fallback below remains.
                     if directDone.isHittable {
                         directDone.tap()
                     } else {
@@ -150,14 +155,19 @@ enum HermesUITestHarness {
                     // XCTest synthesizes an INVALID hit point (-1,-1).
                     // A successful tap call is therefore not proof of a
                     // delivered UI event. Check the actual modal outcome.
-                    func homeIsActionable(_ timeout: TimeInterval) -> Bool {
+                    func settingsSheetGone(_ timeout: TimeInterval) -> Bool {
+                        // Only ask whether navigation bars have left the AX
+                        // hierarchy. Under a modal sheet, the underlying
+                        // drawer can exist but is not a hittable target, and
+                        // XCTest may throw instead of returning false.
                         let ready = XCTNSPredicateExpectation(
                             predicate: NSPredicate { _, _ in
-                                home.exists && home.isHittable
+                                !connectionPage.exists && !settingsRoot.exists
+                                    && home.exists
                             }, object: app)
                         return XCTWaiter.wait(for: [ready], timeout: timeout) == .completed
                     }
-                    if !homeIsActionable(3) {
+                    if !settingsSheetGone(3) {
                         // A physical tap derived from the actual visible
                         // button/nav-bar geometry avoids XCTest's broken AX
                         // activation point. It still targets the shipping
@@ -190,13 +200,12 @@ enum HermesUITestHarness {
                             }
                         }
                     }
-                    guard homeIsActionable(8) else {
+                    guard settingsSheetGone(8) else {
                         recordSetupFailure(app, stage: "setup.direct_settings_dismiss",
                             details: "actionVisible=\(directDone.exists)"
-                                   + " actionHittable=\(directDone.isHittable)"
                                    + " rootVisible=\(settingsRoot.exists)"
                                    + " connectionVisible=\(connectionPage.exists)"
-                                   + " homeInteractive=\(home.exists && home.isHittable)"
+                                   + " homeExists=\(home.exists)"
                                    + " buttonFrame=\(buttonFrame)"
                                    + " navFrame=\(navFrame)"
                                    + " windowFrame=\(windowFrame)",
@@ -209,7 +218,7 @@ enum HermesUITestHarness {
                 // Older product builds have no direct action: retain the
                 // independent native Back/Settings-root contract as fallback.
                 // A direct dismissal must not be followed by a spurious Back.
-                if !(home.exists && home.isHittable) {
+                if connectionPage.exists || settingsRoot.exists {
                     if connectionPage.waitForExistence(timeout: 8) {
                         print("HERMES_BOOTSTRAP stage=setup.connection_page")
                         // The Connection page has no custom navigation-bar actions.
@@ -321,7 +330,11 @@ enum HermesUITestHarness {
                     done.tap()
                     print("HERMES_BOOTSTRAP stage=setup.settings_dismissed")
                 }
-                guard home.waitForExistence(timeout: 15) && home.isHittable else {
+                // The modal navigation bars must be gone before querying
+                // the underlying home drawer; the cold relaunch below proves
+                // that it subsequently becomes genuinely interactive.
+                guard home.waitForExistence(timeout: 15)
+                    && !connectionPage.exists && !settingsRoot.exists else {
                     recordSetupFailure(app, stage: "setup.home_ready",
                         details: "Settings dismissal did not expose an actionable home",
                         file: file, line: line)
