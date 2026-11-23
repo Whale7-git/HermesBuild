@@ -175,11 +175,22 @@ import Foundation
         let bigCold = await bigStore.load()
         let bigStats = await ChatHistoryStore.statistics(rootDirectory: bigRoot)
         precondition(bigCold?.tools.map(\.id) == ["big-0", "big-1", "big-2"]
-                     && bigCold?.tools.allSatisfy({ $0.result.isEmpty
-                         && $0.uncachedResultBytes == 5 * 1024 * 1024 }) == true
+                     && bigCold?.tools.allSatisfy({ $0.result.utf8.count == 5 * 1024 * 1024
+                         && $0.uncachedResultBytes == nil }) == true
                      && bigCold?.uncachedToolCount == 0
-                     && bigStats.bytes <= 4 * 1024 * 1024,
-                     "three 5MiB tool results must restore identities and missing-payload state under budget")
+                     && bigStats.bytes <= 64 * 1024 * 1024,
+                     "three confirmed 5MiB tool results must fully restore from scoped sidecars")
+        let sidecars = try manager.contentsOfDirectory(at: bigRoot, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "tool" }
+        precondition(sidecars.count == 3, "each large result must have one separate bounded cache file")
+        // Missing local data is explicitly disclosed; no synthetic full result.
+        try manager.removeItem(at: sidecars[0])
+        let partial = await bigStore.load()
+        precondition(partial?.tools.count == 3
+                     && partial?.tools.filter({ $0.result.isEmpty
+                         && $0.uncachedResultBytes == 5 * 1024 * 1024 }).count == 1
+                     && partial?.tools.filter({ $0.result.utf8.count == 5 * 1024 * 1024 }).count == 2,
+                     "a purged result must not be misrepresented as complete")
         let otherAccount = ChatHistoryStore(instanceID: namespace, sessionID: "large-tools",
             accountScope: "other-account", rootDirectory: bigRoot)
         let isolatedLarge = await otherAccount.load()
@@ -187,8 +198,9 @@ import Foundation
                      "omission metadata must not escape instance/session/account scope")
         await bigStore.remove()
         let missingAfterRemoval = await bigStore.load()
-        precondition(missingAfterRemoval == nil,
-                     "cleared cache cannot retain references to missing results")
+        let filesAfterRemoval = try manager.contentsOfDirectory(at: bigRoot, includingPropertiesForKeys: nil)
+        precondition(missingAfterRemoval == nil && filesAfterRemoval.allSatisfy({ $0.pathExtension != "tool" }),
+                     "session deletion must remove both transcript and result sidecars")
         print("HISTORY_PASS >4MiB results, cold boot, isolation and deletion")
 
         // If even an identity placeholder cannot fit, preserve a scoped count
