@@ -98,6 +98,13 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn('stage: "setup.dismiss_settings"', source)
         self.assertIn("recordSetupFailure", source)
         self.assertNotIn("for label in app.staticTexts.allElementsBoundByIndex", source)
+        self.assertIn("setupSucceeded = homeReady", source)
+        self.assertIn("waitForRootToOwnHitTesting", source)
+        self.assertIn('stage=setup.root_wait', source)
+        bootstrap = (Path(__file__).resolve().parents[2] /
+                     "UITests" / "HermesBootstrapUITests.swift").read_text()
+        self.assertIn("guard HermesUITestHarness.setupSucceeded else { return }",
+                      bootstrap)
 
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
