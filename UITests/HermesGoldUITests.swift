@@ -54,6 +54,19 @@ final class HermesGoldUITests: XCTestCase {
         XCTFail("No accepted /v1/runs POST after send tap; cannot attribute missing text or scroll jump to SSE")
     }
 
+    /// A recorded HTTP attempt is not a Gateway admission. Observe the
+    /// authoritative fixture receipt before checking the rendering path.
+    @MainActor private func waitForSingleAcceptedRun() async throws -> [[String: Any]] {
+        for attempt in 0..<30 {
+            let receipts = try await acceptedRuns()
+            XCTAssertLessThanOrEqual(receipts.count, 1, "Gateway admitted duplicate runs")
+            if receipts.count == 1 { return receipts }
+            if attempt < 29 { try await Task.sleep(nanoseconds: 200_000_000) }
+        }
+        XCTFail("Run POST reached the fixture but was not accepted")
+        return []
+    }
+
     /// Gold 1: the real session row must open a functioning chat composer.
     func test01ConnectionAndSessionList() {
         let app = HermesUITestHarness.launchAndConnect()
@@ -100,7 +113,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.isEnabled)
         send.tap()
         try await waitForSingleAcceptedPOST()
-        let receipts = try await acceptedRuns()
+        let receipts = try await waitForSingleAcceptedRun()
         XCTAssertEqual(receipts.count, 1, "Attempt ledger is not proof of an accepted POST")
         XCTAssertEqual(receipts.first?["session_id"] as? String, "ui-session-1")
         XCTAssertTrue((receipts.first?["run_id"] as? String)?.hasPrefix("ui-run-") == true)
@@ -211,7 +224,7 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 12) && send.isEnabled)
         send.tap()
         try await waitForSingleAcceptedPOST()
-        let admission = try await acceptedRuns()
+        let admission = try await waitForSingleAcceptedRun()
         XCTAssertEqual(admission.count, 1, "Gold4 needs one truly admitted Run")
         try await waitForDeliveredEvent("2")
         let user = app.descendants(matching: .any).matching(
