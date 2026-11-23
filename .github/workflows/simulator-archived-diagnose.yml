@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   diagnose:
-    if: ${{ !github.event.issue.pull_request && startsWith(github.event.comment.body, '/ios-diagnose ') }}
+    if: ${{ !github.event.issue.pull_request && (startsWith(github.event.comment.body, '/ios-diagnose ') || startsWith(github.event.comment.body, '/ios-diagnose-full ')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -25,7 +25,7 @@ jobs:
             const owner = context.repo.owner, repo = context.repo.repo;
             const author = context.payload.comment?.user?.login;
             const raw = context.payload.comment?.body?.trim() || '';
-            const match = /^\/ios-diagnose\s+([0-9]{9,15})$/.exec(raw);
+            const match = /^\/(ios-diagnose|ios-diagnose-full)\s+([0-9]{9,15})$/.exec(raw);
             if (!match || !author) return core.setFailed('Usage: /ios-diagnose 45090819604');
             const {data: permission} = await github.rest.repos.getCollaboratorPermissionLevel({
               owner, repo, username: author
@@ -33,7 +33,7 @@ jobs:
             if (!['admin','maintain','write'].includes(permission.permission)) {
               core.notice('No permission to request simulator diagnosis'); return;
             }
-            const id = Number(match[1]);
+            const id = Number(match[2]);
             const {data: workflow} = await github.rest.actions.getWorkflowRun({
               owner, repo, run_id: id
             });
@@ -44,6 +44,7 @@ jobs:
               return core.setFailed('Not a completed trusted Hermes simulator run');
             }
             core.setOutput('run_id', String(id));
+            core.setOutput('full', match[1] === 'ios-diagnose-full' ? 'true' : 'false');
             core.setOutput('sha', workflow.head_sha);
             core.setOutput('issue_number', String(context.issue.number));
 
@@ -54,6 +55,15 @@ jobs:
           name: hermes-ui-triage-${{ steps.validate.outputs.run_id }}-verification
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/verdict
+
+      - name: Download archived xcresult evidence for exact assertion text
+        if: ${{ steps.validate.outputs.full == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.validate.outputs.run_id }}
+          name: hermes-ui-evidence-${{ steps.validate.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/evidence
 
       - name: Diagnose cases and post redacted proof to the requesting Issue
         shell: bash
@@ -102,6 +112,27 @@ jobs:
                   item = re.sub(r"[^\x20-\x7e]", " ", item)
                   lines.append("- `%s`" % item[-320:])
               lines.append("- 可下载原始 xcresult 对照细节，不应将 FAIL 直接等同 App 代码错误")
+          # Logs contain exact XCTest assertion prefixes; compact verdicts
+          # intentionally keep just the trailing 350 characters. Only
+          # allowlisted log files from this completed trusted run are read.
+          evidence = pathlib.Path(os.environ["RUNNER_TEMP"]) / "evidence"
+          if evidence.is_dir():
+              logfiles = sorted(evidence.rglob("xcodebuild-ui.log"))
+              for log in logfiles[:12]:
+                  if not log.is_file() or log.stat().st_size > 8_000_000:
+                      continue
+                  matched = []
+                  for raw in log.read_text(errors="replace").splitlines():
+                      if (": error:" in raw or
+                          "HERMES_MANUAL_ANCHOR" in raw or
+                          "Test Case '-[HermesUITests.HermesGoldUITests" in raw and "failed" in raw):
+                          raw = re.sub(r"(?i)(bearer|token|password|api[_-]?key)\\s*[:= ]\\s*\\S+",
+                                       "[REDACTED]", raw)
+                          raw = re.sub(r"https?://\\S+", "[URL]", raw)
+                          matched.append(raw[-1800:])
+                  if matched:
+                      lines.append("\\n**Archived exact XCTest details (" + log.parent.name + ")**")
+                      lines.extend("- \`" + item.replace("\`", "'") + "\`" for item in matched[-8:])
           body = "\n".join(lines)
           if len(body) > 14000:
               body = body[:14000]
