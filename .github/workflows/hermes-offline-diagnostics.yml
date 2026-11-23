@@ -31,6 +31,8 @@ jobs:
           python3 tests/test_swiftui_modifiers.py
       - name: Release workflow unit tests
         run: python3 -m unittest discover -s tests/releaseautomation -p 'test_*.py' -v
+      - name: Simulator harness deterministic contracts
+        run: python3 -m unittest discover -s tests/uitest -p 'test_*.py' -v
 
   offline_shards:
     name: Swift offline ${{ matrix.shard }}

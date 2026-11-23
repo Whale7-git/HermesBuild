@@ -31,6 +31,32 @@ class SimulatorIssueTriageTests(unittest.TestCase):
             self.assertFalse(triage.load_reports(Path(root), "124", "a" * 40))
             self.assertFalse(triage.load_reports(Path(root), "123", "b" * 40))
 
+    def test_blocked_downstream_does_not_create_product_issue(self):
+        report = {
+            "source_sha": "a" * 40, "harness_sha": "b" * 40,
+            "cases": [
+                {"test": "HermesBootstrapUITests.testGatewaySetupPersistsAcrossRelaunch",
+                 "status": "FAIL", "failure_stage": "setup.return_settings_root",
+                 "diagnostics": ["SETUP_BLOCKED stage=setup.return_settings_root"]},
+                {"test": "HermesGoldUITests.test01ConnectionAndSessionList",
+                 "status": "BLOCKED", "failure_stage": "prerequisite.bootstrap",
+                 "diagnostics": ["Blocked by bootstrap"]},
+                {"test": "HermesGoldUITests.test02SendStreamAndComplete",
+                 "status": "BLOCKED", "failure_stage": "prerequisite.bootstrap",
+                 "diagnostics": ["Blocked by bootstrap"]},
+            ],
+        }
+        with mock.patch.object(triage, "upsert") as upsert, \
+             mock.patch.object(triage, "append_exact_issue") as exact:
+            triage.triage_versioned("Whale7-git/HermesBuild", report,
+                                  "4321", "https://example.invalid/run")
+        self.assertEqual(upsert.call_count, 1)
+        self.assertIn("HermesBootstrapUITests",
+                      upsert.call_args.args[2])
+        self.assertEqual(exact.call_count, 1)
+        self.assertEqual(exact.call_args.args[1], 86)
+        self.assertIn("prerequisite.bootstrap", exact.call_args.args[2])
+
     def test_failed_test_fingerprint_is_stable(self):
         import hashlib
         test = "HermesGoldUITests.test04StreamingManualReadingKeepsAnchor"
