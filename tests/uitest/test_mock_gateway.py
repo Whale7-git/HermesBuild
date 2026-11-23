@@ -185,6 +185,69 @@ class GatewayContractTests(unittest.TestCase):
         status, _ = self.decoded("GET", "/api/sessions")
         self.assertEqual(status, 200)
 
+    def test_long_run_status_503_404_and_disconnect_do_not_create_new_admission(self):
+        status, accepted = self.decoded("POST", "/v1/runs", {
+            "session_id": "ui-session-1", "input": "one long task",
+        })
+        self.assertEqual(status, 200)
+        rid = accepted["run_id"]
+        for behavior in ({"status": 503}, {"status": 404},
+                         {"disconnect": True}):
+            status, _ = self.decoded("POST", "/__control/stub", {
+                "method": "GET", "path": "/v1/runs/" + rid, **behavior,
+            })
+            self.assertEqual(status, 200)
+        for expected in (503, 404):
+            status, _ = self.decoded("GET", "/v1/runs/" + rid)
+            self.assertEqual(status, expected)
+        with self.assertRaises((urllib.error.URLError, ConnectionError,
+                                OSError, RuntimeError)):
+            self.request("GET", "/v1/runs/" + rid)
+        status, after = self.decoded("GET", "/v1/runs/" + rid)
+        self.assertEqual(status, 200)
+        self.assertEqual(after["status"], "running")
+        self.assertEqual(after["session_id"], "ui-session-1")
+        _, log = self.decoded("GET", "/__control/log")
+        posts = [x for x in log["requests"]
+                 if x["method"] == "POST" and x["path"] == "/v1/runs"]
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(log["accepted_runs"],
+                         [{"run_id": rid, "session_id": "ui-session-1"}])
+        self.assertFalse(any(x["method"] == "POST" and
+                             "resolve-unknown" in x["path"]
+                             for x in log["requests"]))
+        # Fixture faults are status read faults; they cannot erase history.
+        status, history = self.decoded(
+            "GET", "/api/sessions/ui-session-1/messages?order=oldest&offset=0&limit=20")
+        self.assertEqual(status, 200)
+        self.assertEqual(history["data"][-1]["content"], "one long task")
+
+    def test_last_event_id_recovery_preserves_exact_run_and_single_terminal(self):
+        status, accepted = self.decoded("POST", "/v1/runs", {
+            "session_id": "ui-session-1", "input": "resume one run",
+        })
+        self.assertEqual(status, 200)
+        rid = accepted["run_id"]
+        status, events, headers = self.request(
+            "GET", f"/v1/runs/{rid}/events",
+            headers={"Last-Event-ID": "2"})
+        self.assertEqual(status, 200)
+        self.assertIn("text/event-stream", headers["Content-Type"])
+        self.assertNotIn(b"id: 1\\n", events)
+        self.assertNotIn(b"id: 2\\n", events)
+        self.assertIn(b"id: 3\\n", events)
+        status, final = self.decoded("GET", "/v1/runs/" + rid)
+        self.assertEqual(final["status"], "completed")
+        status, history = self.decoded(
+            "GET", "/api/sessions/ui-session-1/messages?order=oldest&offset=0&limit=20")
+        self.assertEqual(status, 200)
+        assistant_rows = [x for x in history["data"] if x["role"] == "assistant"]
+        self.assertEqual(len(assistant_rows), 2)  # initial fixture plus this Run
+        _, log = self.decoded("GET", "/__control/log")
+        self.assertEqual(len(log["accepted_runs"]), 1)
+        self.assertEqual(sum(x["method"] == "POST" and x["path"] == "/v1/runs"
+                             for x in log["requests"]), 1)
+
     def test_control_rejects_self_stub(self):
         status, _ = self.decoded("POST", "/__control/stub", {
             "path": "/__control/log", "status": 200})
