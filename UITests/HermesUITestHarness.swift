@@ -94,28 +94,28 @@ enum HermesUITestHarness {
                 // accessibility tree while the sheet animates, so iterating
                 // a stale indexed snapshot can itself throw "Element at index".
                 // Query only stable, exact diagnostic labels instead.
-                let state = "addSheetExists=\\(addSheet.exists) "
-                    + "addSheetInteractive=\\(addSheet.exists && addSheet.isHittable) "
-                    + "settingsDoneExists=\\(settingsDone.exists) "
-                    + "settingsDoneInteractive=\\(settingsDone.exists && settingsDone.isHittable) "
-                    + "setupPrompt=\\(app.buttons["配置连接"].exists) "
-                    + "keyFieldExists=\\(key.exists)"
+                let state = "addSheetExists=\(addSheet.exists) "
+                    + "addSheetInteractive=\(addSheet.exists && addSheet.isHittable) "
+                    + "settingsDoneExists=\(settingsDone.exists) "
+                    + "settingsDoneInteractive=\(settingsDone.exists && settingsDone.isHittable) "
+                    + "setupPrompt=\(app.buttons["配置连接"].exists) "
+                    + "keyFieldExists=\(key.exists)"
                 let keychainError = app.staticTexts.containing(
                     NSPredicate(format: "label CONTAINS %@", "钥匙串操作失败")).firstMatch
                 let persistenceError = app.staticTexts.containing(
                     NSPredicate(format: "label CONTAINS %@", "无法安全保存实例")).firstMatch
                 let invalidAddress = app.staticTexts.containing(
                     NSPredicate(format: "label CONTAINS %@", "请输入有效的实例地址")).firstMatch
-                let errorState = " keychainError=\\(keychainError.exists)"
-                    + " persistenceError=\\(persistenceError.exists)"
-                    + " invalidAddress=\\(invalidAddress.exists)"
+                let errorState = " keychainError=\(keychainError.exists)"
+                    + " persistenceError=\(persistenceError.exists)"
+                    + " invalidAddress=\(invalidAddress.exists)"
                 let screenshot = XCTAttachment(screenshot: app.screenshot())
                 screenshot.name = "gateway-save-child-sheet-not-dismissed"
                 screenshot.lifetime = .keepAlways
                 XCTContext.runActivity(named: "Gateway save child-sheet dismissal") {
                     $0.add(screenshot)
                 }
-                XCTFail("AddInstance child sheet did not dismiss; \\(state);\\(errorState)",
+                XCTFail("AddInstance child sheet did not dismiss; \(state);\(errorState)",
                         file: file, line: line)
                 return app
             }
