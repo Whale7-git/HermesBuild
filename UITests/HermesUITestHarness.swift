@@ -82,7 +82,7 @@ enum HermesUITestHarness {
             // Saving dismisses only this child; SettingsView itself remains
             // presented by RootView and continues to cover the connected home.
             // Wait until its own toolbar is exposed, then dismiss the parent.
-            let settingsDone = app.navigationBars["设置"].buttons["完成"]
+            let settingsDone = app.navigationBars.buttons["完成"].firstMatch
             let addSheetDismissed = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in
                     settingsDone.exists && settingsDone.isHittable
