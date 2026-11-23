@@ -10,7 +10,7 @@ final class HermesBootstrapUITests: XCTestCase {
     }
 
     @MainActor func testGatewaySetupPersistsAcrossRelaunch() async throws {
-        let app = HermesUITestHarness.launchAndConnect()
+        let app = HermesUITestHarness.launchAndConnect(verifySettingsDismissal: true)
         // A failed common setup records a single authoritative assertion.
         // Do not keep issuing a mock GET or print BOOTSTRAP_PASS after it.
         guard HermesUITestHarness.setupSucceeded else { return }
