@@ -67,6 +67,37 @@ final class HermesGoldUITests: XCTestCase {
         return []
     }
 
+    /// XCTest's .any.firstMatch can resolve to different virtualized SwiftUI
+    /// descendants after a layout commit. Never infer a UIKit viewport jump
+    /// from its isHittable/activation point or an unrelated accessibility frame.
+    private func viewportContains(_ frame: CGRect, inside viewport: CGRect) -> Bool {
+        guard !frame.isNull, !frame.isEmpty,
+              !viewport.isNull, !viewport.isEmpty else { return false }
+        let intersection = frame.intersection(viewport)
+        return !intersection.isNull && intersection.width > 2 && intersection.height > 2
+    }
+
+    /// Read actual UIKit row frames emitted by the opt-in StableChatScrollView
+    /// diagnostics, which use the stable turnAnchor row identity.
+    private func traceFrame(_ field: String, in trace: String) -> CGRect? {
+        let prefix = field + "=("
+        guard let contents = trace.components(separatedBy: prefix).dropFirst().first,
+              let raw = contents.split(separator: ")").first else { return nil }
+        let values = raw.split(separator: ",").compactMap {
+            Double($0.trimmingCharacters(in: .whitespaces))
+        }
+        guard values.count == 4, values.allSatisfy(\.isFinite) else { return nil }
+        return CGRect(x: CGFloat(values[0]), y: CGFloat(values[1]),
+                      width: CGFloat(values[2]), height: CGFloat(values[3]))
+    }
+
+    private func traceValue(_ field: String, in trace: String) -> String? {
+        let prefix = field + "="
+        return trace.split(separator: ";").first {
+            $0.hasPrefix(prefix)
+        }.map { String($0.dropFirst(prefix.count)) }
+    }
+
     /// Gold 1: the real session row must open a functioning chat composer.
     func test01ConnectionAndSessionList() {
         let app = HermesUITestHarness.launchAndConnect()
@@ -122,16 +153,19 @@ final class HermesGoldUITests: XCTestCase {
         // The transcript virtualizes long histories; a completed reply can
         // exist beyond the viewport even after the one SSE GET succeeded.
         // Still require the exact rendered reply, not just a network request.
-        if !(text.waitForExistence(timeout: 12) && text.isHittable) {
-            let transcript = app.scrollViews.firstMatch
-            XCTAssertTrue(transcript.waitForExistence(timeout: 5),
-                          "Chat transcript missing after sending")
+        let transcript = app.scrollViews.firstMatch
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10),
+                      "Chat transcript missing after sending")
+        func replyInViewport() -> Bool {
+            text.exists && viewportContains(text.frame, inside: transcript.frame)
+        }
+        if !(text.waitForExistence(timeout: 12) && replyInViewport()) {
             for _ in 0..<24 {
-                if text.exists && text.isHittable { break }
+                if replyInViewport() { break }
                 transcript.swipeUp()
             }
         }
-        if !text.isHittable {
+        if !replyInViewport() {
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "sse-reply-not-visible-after-scroll"
             screenshot.lifetime = .keepAlways
@@ -139,8 +173,9 @@ final class HermesGoldUITests: XCTestCase {
                 $0.add(screenshot)
             }
         }
-        XCTAssertTrue(text.exists && text.isHittable,
-                      "SSE reply not visible in the rendered viewport")
+        XCTAssertTrue(replyInViewport(),
+                      "Gold2 rendered SSE reply is outside the transcript viewport; "
+                      + "reply=\(text.frame), transcript=\(transcript.frame)")
         XCTAssertTrue(app.buttons["发送消息"].waitForExistence(timeout: 30),
                       "Finished Run did not restore the idle Send control")
         // An empty draft can legitimately disable Send. Type a new *unsent*
@@ -264,10 +299,17 @@ final class HermesGoldUITests: XCTestCase {
         // arrives during the next interval, while the reader is detached.
         try await Task.sleep(nanoseconds: 650_000_000)
         let postPanTrace = trace.value as? String ?? "missing"
-        if !user.exists || !user.isHittable {
+        let postPanRow = try XCTUnwrap(traceFrame("userFrame", in: postPanTrace),
+                                        "Gold4 missing actual UIKit user row geometry after pan")
+        let postPanViewport = try XCTUnwrap(traceFrame("transcriptFrame", in: postPanTrace),
+                                             "Gold4 missing actual UIKit viewport after pan")
+        let anchoredID = try XCTUnwrap(traceValue("turnAnchor", in: postPanTrace),
+                                        "Gold4 missing stable turn ID after pan")
+        if !viewportContains(postPanRow, inside: postPanViewport) {
             let postCount = try await acceptedRunPOSTCount()
-            print("HERMES_MANUAL_ANCHOR postPan frame=\(user.frame)"
-                  + " transcript=\(transcript.frame)"
+            print("HERMES_MANUAL_ANCHOR postPan row=\(postPanRow)"
+                  + " viewport=\(postPanViewport)"
+                  + " a11yFrame=\(user.frame)"
                   + " trace=\(postPanTrace)"
                   + " acceptedPOSTs=\(postCount)")
             let screenshot = XCTAttachment(screenshot: app.screenshot())
@@ -275,9 +317,10 @@ final class HermesGoldUITests: XCTestCase {
             screenshot.lifetime = .keepAlways
             XCTContext.runActivity(named: "Post-pan viewport evidence") { $0.add(screenshot) }
         }
-        XCTAssertTrue(user.exists && user.isHittable,
-                      "Manual pan should retain the original question in view: \(postPanTrace)")
-        let before = user.frame.midY
+        XCTAssertTrue(viewportContains(postPanRow, inside: postPanViewport),
+                      "Gold4 POST_PAN UIKit user row left viewport: \(postPanTrace)")
+        XCTAssertNotEqual(anchoredID, "none", "Gold4 has no anchored user turn")
+        let before = postPanRow.midY
         let initialTrace = trace.value as? String ?? ""
         func contentSize(_ value: String) -> Double? {
             guard let tail = value.components(separatedBy: "contentSize=").dropFirst().first,
@@ -302,13 +345,24 @@ final class HermesGoldUITests: XCTestCase {
         }
         XCTAssertTrue(grew,
                       "No observed UIKit layout growth after delivered SSE delta: \(postStreamTrace)")
-        XCTAssertTrue(user.exists && user.isHittable,
-                      "Streaming layout update should not evict the reading anchor: \(postStreamTrace)")
-        let after = user.frame.midY
+        let postStreamRow = try XCTUnwrap(traceFrame("userFrame", in: postStreamTrace),
+                                           "Gold4 missing UIKit user row after SSE")
+        let postStreamViewport = try XCTUnwrap(traceFrame("transcriptFrame", in: postStreamTrace),
+                                                "Gold4 missing viewport after SSE")
+        let after = postStreamRow.midY
+        let afterID = try XCTUnwrap(traceValue("turnAnchor", in: postStreamTrace),
+                                    "Gold4 lost user turn ID during SSE")
+        XCTAssertEqual(afterID, anchoredID,
+                       "Gold4 SSE changed the stable user turn row identity")
+        XCTAssertTrue(viewportContains(postStreamRow, inside: postStreamViewport),
+                      "Gold4 SSE_ROW_VISIBLE failed: userRow=\(postStreamRow), "
+                      + "viewport=\(postStreamViewport), trace=\(postStreamTrace)")
         print("HERMES_MANUAL_ANCHOR postStream before=\(before) after=\(after)"
+              + " UIKitRow=\(postStreamRow) A11yFrame=\(user.frame)"
               + " trace=\(postStreamTrace)")
         XCTAssertLessThan(abs(after - before), 28,
-                          "New reply text moved the visible question during manual reading: \(postStreamTrace)")
+                          "Gold4 SSE_ANCHOR_DRIFT \(abs(after - before))pt (limit <28pt): "
+                          + postStreamTrace)
         // Observing the transcript must never cause the client to replay POST.
         let finalPOSTCount = try await acceptedRunPOSTCount()
         XCTAssertEqual(finalPOSTCount, 1,
