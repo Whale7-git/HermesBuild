@@ -98,15 +98,11 @@ enum HermesUITestHarness {
                     + "connectedHomeInteractive=\(home.exists && home.isHittable) "
                     + "setupPrompt=\(app.buttons["配置连接"].exists) "
                     + "keyFieldExists=\(key.exists)"
-                var labels: [String] = []
-                func captureStaticLabels() {
-                    for label in app.staticTexts.allElementsBoundByIndex.map(\.label) {
-                        if !label.isEmpty && !labels.contains(label) {
-                            labels.append(label)
-                        }
-                    }
-                }
-                captureStaticLabels()
+                // Never enumerate the entire SwiftUI accessibility tree here.
+                // allElementsBoundByIndex resolves virtualized descendants by
+                // unstable snapshot indices; a stale index can throw an XCTest
+                // snapshot exception and hide the original connection failure.
+                // Read only stable, explicitly named controls below.
                 let screenshot = XCTAttachment(screenshot: app.screenshot())
                 screenshot.name = "gateway-save-current-screen"
                 screenshot.lifetime = .keepAlways
@@ -118,11 +114,10 @@ enum HermesUITestHarness {
                         ? app.collectionViews.firstMatch : app.scrollViews.firstMatch
                     for _ in 0..<2 {
                         if form.exists { form.swipeUp() }
-                        captureStaticLabels()
+                        // Scrolling is diagnostic only; do not query virtualized labels.
                     }
                 }
-                XCTFail("Gateway setup did not reach connected home; \(state); "
-                        + "visible labels: \(Array(labels.prefix(24)))",
+                XCTFail("Gateway setup did not reach connected home; \(state)",
                         file: file, line: line)
                 return app
             }
