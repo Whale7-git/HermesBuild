@@ -95,7 +95,6 @@ enum HermesUITestHarness {
                           file: file, line: line)
             save.tap()
             let addSheet = app.navigationBars["添加实例"]
-            let connectionPage = app.navigationBars["连接与账号"]
             let settingsRoot = app.navigationBars["设置"]
             let home = app.buttons["打开会话侧栏"]
 
