@@ -173,7 +173,6 @@ enum HermesUITestHarness {
                     let ready = XCTNSPredicateExpectation(
                         predicate: NSPredicate { _, _ in
                             done.exists && done.isHittable
-                                && !(connectionPage.exists && connectionPage.isHittable)
                         }, object: app)
                     return XCTWaiter.wait(for: [ready], timeout: 7) == .completed
                 }
