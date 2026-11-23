@@ -77,55 +77,56 @@ enum HermesUITestHarness {
                           "Gateway Save action must be tappable before submit",
                           file: file, line: line)
             save.tap()
-            let sheet = app.navigationBars["添加实例"]
-            let home = app.buttons["打开会话侧栏"]
-            // SwiftUI can keep the dismissed sheet in the accessibility tree:
-            // navigationBars.exists == true is not evidence of a failed save.
-            // Require the *connected* home to be fully interactive instead.
-            let connected = XCTNSPredicateExpectation(
+            let addSheet = app.navigationBars["添加实例"]
+            // AddInstanceView is a child sheet presented BY SettingsView.
+            // Saving dismisses only this child; SettingsView itself remains
+            // presented by RootView and continues to cover the connected home.
+            // Wait until its own toolbar is exposed, then dismiss the parent.
+            let settingsDone = app.navigationBars["设置"].buttons["完成"]
+            let addSheetDismissed = XCTNSPredicateExpectation(
                 predicate: NSPredicate { _, _ in
-                    let sheetStillInteractive = sheet.exists && sheet.isHittable
-                    return !sheetStillInteractive && home.exists && home.isHittable
+                    settingsDone.exists && settingsDone.isHittable
+                        && !(addSheet.exists && addSheet.isHittable)
                 }, object: app)
-            let closeStatus = XCTWaiter.wait(for: [connected], timeout: 20)
+            let closeStatus = XCTWaiter.wait(for: [addSheetDismissed], timeout: 20)
             if closeStatus != .completed {
-                // Capture the *current* onboarding/sheet state before scrolling.
-                // Do not print secrets or secure-text-field values.
-                let sheetVisible = sheet.exists && sheet.isHittable
-                let state = "sheetExists=\(sheet.exists) "
-                    + "sheetInteractive=\(sheetVisible) "
-                    + "connectedHomeExists=\(home.exists) "
-                    + "connectedHomeInteractive=\(home.exists && home.isHittable) "
+                // Avoid allElementsBoundByIndex here: SwiftUI updates the
+                // accessibility tree while the sheet animates, so iterating
+                // a stale indexed snapshot can itself throw "Element at index".
+                // Query only stable, exact diagnostic labels instead.
+                let state = "addSheetExists=\(addSheet.exists) "
+                    + "addSheetInteractive=\(addSheet.exists && addSheet.isHittable) "
+                    + "settingsDoneExists=\(settingsDone.exists) "
+                    + "settingsDoneInteractive=\(settingsDone.exists && settingsDone.isHittable) "
                     + "setupPrompt=\(app.buttons["配置连接"].exists) "
                     + "keyFieldExists=\(key.exists)"
-                var labels: [String] = []
-                func captureStaticLabels() {
-                    for label in app.staticTexts.allElementsBoundByIndex.map(\.label) {
-                        if !label.isEmpty && !labels.contains(label) {
-                            labels.append(label)
-                        }
-                    }
-                }
-                captureStaticLabels()
+                let keychainError = app.staticTexts.containing(
+                    NSPredicate(format: "label CONTAINS %@", "钥匙串操作失败")).firstMatch
+                let persistenceError = app.staticTexts.containing(
+                    NSPredicate(format: "label CONTAINS %@", "无法安全保存实例")).firstMatch
+                let invalidAddress = app.staticTexts.containing(
+                    NSPredicate(format: "label CONTAINS %@", "请输入有效的实例地址")).firstMatch
+                let errorState = " keychainError=\(keychainError.exists)"
+                    + " persistenceError=\(persistenceError.exists)"
+                    + " invalidAddress=\(invalidAddress.exists)"
                 let screenshot = XCTAttachment(screenshot: app.screenshot())
-                screenshot.name = "gateway-save-current-screen"
+                screenshot.name = "gateway-save-child-sheet-not-dismissed"
                 screenshot.lifetime = .keepAlways
-                XCTContext.runActivity(named: "Gateway Save / connected-home state") {
+                XCTContext.runActivity(named: "Gateway save child-sheet dismissal") {
                     $0.add(screenshot)
                 }
-                if sheetVisible {
-                    let form = app.collectionViews.firstMatch.exists
-                        ? app.collectionViews.firstMatch : app.scrollViews.firstMatch
-                    for _ in 0..<2 {
-                        if form.exists { form.swipeUp() }
-                        captureStaticLabels()
-                    }
-                }
-                XCTFail("Gateway setup did not reach connected home; \(state); "
-                        + "visible labels: \(Array(labels.prefix(24)))",
+                XCTFail("AddInstance child sheet did not dismiss; \(state);\(errorState)",
                         file: file, line: line)
                 return app
             }
+
+            // Now explicitly dismiss the parent Settings sheet. Only after
+            // this tap is the underlying connected home expected to be hittable.
+            settingsDone.tap()
+            let home = app.buttons["打开会话侧栏"]
+            XCTAssertTrue(home.waitForExistence(timeout: 15) && home.isHittable,
+                          "Settings parent sheet remained over the connected home after Done",
+                          file: file, line: line)
             // After the real Gateway/Keychain save has succeeded, perform
             // a cold relaunch. This verifies persisted credentials and also
             // prevents a presented Settings sheet from obscuring the home UI.
