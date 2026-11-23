@@ -74,7 +74,11 @@ def load_reports(root: Path, run_id: str, sha: str) -> list[dict]:
                 if (isinstance(case, dict) and
                         TEST_PATTERN.fullmatch(str(case.get("test", ""))) and
                         case.get("status") in {"PASS", "FAIL", "BLOCKED", "INFRA_ERROR"}):
+                    stage = str(case.get("failure_stage", ""))
+                    if not re.fullmatch(r"[a-zA-Z0-9_.:-]{1,80}", stage):
+                        stage = "unspecified"
                     valid.append({"test": case["test"], "status": case["status"],
+                                  "failure_stage": stage,
                                   "diagnostics": [safe_assertion(str(x))
                                       for x in case.get("diagnostics", [])[:3]
                                       if isinstance(x, str)] if isinstance(
@@ -161,12 +165,20 @@ def triage_versioned(repo: str, report: dict, run_id: str, run_url: str) -> None
         test = case["test"]
         status = case["status"]
         diagnosis = "; ".join(case["diagnostics"]) or "See xcresult artifact"
+        stage = case.get("failure_stage", "unspecified")
         detail = (f"- Test: \x60{test}\x60\n- Verdict: **{status}**"
+                  f"\n- Failure stage: \x60{stage}\x60"
                   f"\n- Product SHA: \x60{source}\x60"
                   f"\n- Trusted harness SHA: \x60{harness}\x60"
                   f"\n- CI run: {run_url}\n- Diagnostics: {diagnosis}"
-                  "\n- A PASS proves this simulator case only; it does not "
-                  "prove live Gateway/device completion or close this Issue.")
+                  "\n- BLOCKED is an unexecuted product case, not a product FAIL. "
+                  "PASS covers this simulator case only; neither closes an Issue.")
+        if status == "BLOCKED":
+            # Preserve same-SHA evidence on existing product Issues but never
+            # create a product defect for an unexecuted dependent Gold case.
+            if test in issue_for:
+                append_exact_issue(repo, issue_for[test], detail, run_id)
+            continue
         if test in issue_for:
             append_exact_issue(repo, issue_for[test], detail, run_id)
         elif status != "PASS":
