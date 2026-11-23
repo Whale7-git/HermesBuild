@@ -9,17 +9,38 @@ final class HermesGoldUITests: XCTestCase {
     /// Distinguish a real accepted POST from optimistic local bubbles before
     /// diagnosing SSE rendering or manual-reading scroll. This endpoint is
     /// loopback-only and never retries the original chat submission.
-    @MainActor private func acceptedRunPOSTCount() async throws -> Int {
+    @MainActor private func requestLedger() async throws -> [String: Any] {
         let (data, response) = try await URLSession.shared.data(
             from: URL(string: "http://127.0.0.1:8765/__control/log")!)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200,
                        "Mock request ledger must be readable")
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    @MainActor private func acceptedRunPOSTCount() async throws -> Int {
+        let root = try await requestLedger()
         let requests = try XCTUnwrap(root["requests"] as? [[String: Any]])
         return requests.filter {
             ($0["method"] as? String) == "POST" && ($0["path"] as? String) == "/v1/runs"
         }.count
     }
+
+    @MainActor private func acceptedRuns() async throws -> [[String: Any]] {
+        try XCTUnwrap(try await requestLedger()["accepted_runs"] as? [[String: Any]])
+    }
+
+    @MainActor private func deliveredEvents() async throws -> [String] {
+        try XCTUnwrap(try await requestLedger()["delivered_event_ids"] as? [String])
+    }
+
+    @MainActor private func waitForDeliveredEvent(_ eventID: String) async throws {
+        for _ in 0..<50 {
+            if try await deliveredEvents().contains(eventID) { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTFail("Gateway did not deliver SSE sequence \(eventID); layout assertion is invalid")
+    }
+
 
     @MainActor private func waitForSingleAcceptedPOST() async throws {
         for attempt in 0..<30 {
@@ -77,21 +98,25 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.isEnabled)
         send.tap()
         try await waitForSingleAcceptedPOST()
+        let receipts = try await acceptedRuns()
+        XCTAssertEqual(receipts.count, 1, "Attempt ledger is not proof of an accepted POST")
+        XCTAssertEqual(receipts.first?["session_id"] as? String, "ui-session-1")
+        XCTAssertTrue((receipts.first?["run_id"] as? String)?.hasPrefix("ui-run-") == true)
         let text = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "第二段回复已送达")).firstMatch
         // The transcript virtualizes long histories; a completed reply can
         // exist beyond the viewport even after the one SSE GET succeeded.
         // Still require the exact rendered reply, not just a network request.
-        if !text.waitForExistence(timeout: 12) {
+        if !(text.waitForExistence(timeout: 12) && text.isHittable) {
             let transcript = app.scrollViews.firstMatch
             XCTAssertTrue(transcript.waitForExistence(timeout: 5),
                           "Chat transcript missing after sending")
             for _ in 0..<24 {
-                if text.exists { break }
+                if text.exists && text.isHittable { break }
                 transcript.swipeUp()
             }
         }
-        if !text.exists {
+        if !text.isHittable {
             let screenshot = XCTAttachment(screenshot: app.screenshot())
             screenshot.name = "sse-reply-not-visible-after-scroll"
             screenshot.lifetime = .keepAlways
@@ -99,10 +124,18 @@ final class HermesGoldUITests: XCTestCase {
                 $0.add(screenshot)
             }
         }
-        XCTAssertTrue(text.exists,
-                      "SSE reply absent after waiting and scrolling through transcript")
+        XCTAssertTrue(text.exists && text.isHittable,
+                      "SSE reply not visible in the rendered viewport")
         XCTAssertTrue(app.buttons["发送消息"].waitForExistence(timeout: 30),
-                      "Finished Run did not restore the idle Send state")
+                      "Finished Run did not restore the idle Send control")
+        // An empty draft can legitimately disable Send. Type a new *unsent*
+        // draft to prove the terminal Run unlocked the composer without replay.
+        editor.tap()
+        editor.typeText("next unsent draft")
+        XCTAssertTrue(app.buttons["发送消息"].isEnabled,
+                      "Terminal Run must restore composer send availability")
+        XCTAssertEqual(try await acceptedRunPOSTCount(), 1,
+                       "Typing after completion must not submit another POST")
     }
 
     /// Gold 3: contentOffset must change in a real rendered long-answer reader.
@@ -161,7 +194,11 @@ final class HermesGoldUITests: XCTestCase {
         try await control("/__control/reset")
         let app = HermesUITestHarness.launchAndConnect(extraLaunchArguments: ["--hermes-scroll-trace"])
         HermesUITestHarness.openSession(app)
-        try await control("/__control/stream-interval", body: #"{"delay_ms":1200}"#)
+        try await control("/__control/stream-interval", body: #"{"delay_ms":250}"#)
+        // Pause after the first real delta. Gold4 releases the next delta
+        // only AFTER the UIKit manual pan; timing cannot accidentally finish SSE.
+        try await control("/__control/stream-grow", body: #"{"lines":40}"#)
+        try await control("/__control/stream-pause", body: #"{"after_seq":"2"}"#)
         let editor = app.textViews.matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "消息输入框")).firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 10))
@@ -171,6 +208,9 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(send.waitForExistence(timeout: 12) && send.isEnabled)
         send.tap()
         try await waitForSingleAcceptedPOST()
+        XCTAssertEqual(try await acceptedRuns().count, 1,
+                       "Gold4 needs one truly admitted Run")
+        try await waitForDeliveredEvent("2")
         let user = app.descendants(matching: .any).matching(
             NSPredicate(format: "label CONTAINS[cd] %@", "UI streamed reading anchor")).firstMatch
         XCTAssertTrue(user.waitForExistence(timeout: 12),
@@ -222,8 +262,30 @@ final class HermesGoldUITests: XCTestCase {
         XCTAssertTrue(user.exists && user.isHittable,
                       "Manual pan should retain the original question in view: \(postPanTrace)")
         let before = user.frame.midY
-        try await Task.sleep(nanoseconds: 2_300_000_000)
-        let postStreamTrace = trace.value as? String ?? "missing"
+        let initialTrace = trace.value as? String ?? ""
+        func contentSize(_ value: String) -> Double? {
+            guard let tail = value.components(separatedBy: "contentSize=").dropFirst().first,
+                  let raw = tail.split(separator: ";").first else { return nil }
+            return Double(raw)
+        }
+        let initialHeight = try XCTUnwrap(contentSize(initialTrace),
+                                          "UIKit contentSize missing before SSE resume")
+        try await control("/__control/stream-resume")
+        try await waitForDeliveredEvent("3")
+        // The mock injects 40 Markdown lines into delta 3. Require a measured
+        // contentSize increase instead of an arbitrary time delay.
+        var postStreamTrace = trace.value as? String ?? "missing"
+        var grew = false
+        for _ in 0..<50 {
+            postStreamTrace = trace.value as? String ?? "missing"
+            if let height = contentSize(postStreamTrace), height > initialHeight + 1 {
+                grew = true
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(grew,
+                      "No observed UIKit layout growth after delivered SSE delta: \(postStreamTrace)")
         XCTAssertTrue(user.exists && user.isHittable,
                       "Streaming layout update should not evict the reading anchor: \(postStreamTrace)")
         let after = user.frame.midY
