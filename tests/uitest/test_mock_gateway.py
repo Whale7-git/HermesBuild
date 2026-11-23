@@ -233,9 +233,9 @@ class GatewayContractTests(unittest.TestCase):
             headers={"Last-Event-ID": "2"})
         self.assertEqual(status, 200)
         self.assertIn("text/event-stream", headers["Content-Type"])
-        self.assertNotIn(b"id: 1\\n", events)
-        self.assertNotIn(b"id: 2\\n", events)
-        self.assertIn(b"id: 3\\n", events)
+        self.assertNotIn(b"id: 1\n", events)
+        self.assertNotIn(b"id: 2\n", events)
+        self.assertIn(b"id: 3\n", events)
         status, final = self.decoded("GET", "/v1/runs/" + rid)
         self.assertEqual(final["status"], "completed")
         status, history = self.decoded(
