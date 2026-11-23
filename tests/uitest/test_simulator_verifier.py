@@ -24,9 +24,31 @@ class SimulatorPlanTests(unittest.TestCase):
             for case in cases:
                 self.assertRegex(case, MODULE.SAFE_CASE)
 
-    def test_gold_includes_all_four_cases(self):
-        self.assertEqual(len(MODULE.cases_for_suite("gold")), 4)
+    def test_bootstrap_isolated_and_gold_gated(self):
+        self.assertEqual(MODULE.cases_for_suite("bootstrap"), [MODULE.BOOTSTRAP])
+        self.assertEqual(MODULE.cases_for_suite("gold1"), [MODULE.GOLD[0]])
+        self.assertEqual(MODULE.cases_for_suite("gold")[0], MODULE.BOOTSTRAP)
+        self.assertEqual(len(MODULE.cases_for_suite("gold")), 5)
+        self.assertEqual(MODULE.cases_for_suite("all")[0], MODULE.BOOTSTRAP)
         self.assertIn(MODULE.GOLD[3], MODULE.cases_for_suite("all"))
+
+    def test_setup_failure_blocks_product_without_hiding_bootstrap_failure(self):
+        diagnostic = ["Test Case 'HermesUITests' failed",
+                      "test.swift:32: error: SETUP_BLOCKED stage=setup.return_settings_root"]
+        self.assertEqual(MODULE.classify_case(1, diagnostic, MODULE.BOOTSTRAP),
+                         ("FAIL", "setup.return_settings_root"))
+        self.assertEqual(MODULE.classify_case(1, diagnostic, MODULE.GOLD[1]),
+                         ("BLOCKED", "setup.return_settings_root"))
+
+    def test_product_assertion_and_infra_remain_distinct(self):
+        self.assertEqual(MODULE.classify_case(1,
+                         ["Test Case 'HermesUITests' failed"], MODULE.GOLD[3]),
+                         ("FAIL", "product.assertion"))
+        self.assertEqual(MODULE.classify_case(70,
+                         ["xcodebuild failed to boot simulator"], MODULE.GOLD[3]),
+                         ("INFRA_ERROR", "infra.xcodebuild"))
+        self.assertEqual(MODULE.classify_case(0, [], MODULE.BOOTSTRAP),
+                         ("PASS", None))
 
     def test_unknown_suite_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -54,9 +76,14 @@ class SimulatorPlanTests(unittest.TestCase):
     def test_gateway_setup_dismisses_child_and_parent_sheets(self):
         source = (Path(__file__).resolve().parents[2] /
                   "UITests" / "HermesUITestHarness.swift").read_text()
-        self.assertIn('app.navigationBars.buttons["完成"].firstMatch', source)
-        self.assertIn("settingsDone.tap()", source)
-        self.assertIn("addSheetDismissed", source)
+        self.assertIn('app.navigationBars["连接与账号"]', source)
+        self.assertIn('connectionPage.buttons[title]', source)
+        self.assertIn('["设置", "返回", "Back"]', source)
+        self.assertIn('app.navigationBars["设置"]', source)
+        self.assertIn("done.tap()", source)
+        self.assertIn('stage: "setup.return_settings_root"', source)
+        self.assertIn('stage: "setup.dismiss_settings"', source)
+        self.assertIn("recordSetupFailure", source)
         self.assertNotIn("for label in app.staticTexts.allElementsBoundByIndex", source)
 
     def test_diagnostics_redact_token_and_url(self):
