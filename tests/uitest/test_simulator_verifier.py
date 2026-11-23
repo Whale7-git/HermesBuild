@@ -52,6 +52,13 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_case(0, [], MODULE.BOOTSTRAP),
                          ("PASS", None))
 
+    def test_settings_direct_dismiss_is_manual_suite_not_product_gate(self):
+        self.assertEqual(MODULE.cases_for_suite("settings"), [MODULE.SETTINGS])
+        self.assertNotIn(MODULE.SETTINGS, MODULE.cases_for_suite("gold"))
+        self.assertNotIn(MODULE.SETTINGS, MODULE.cases_for_suite("all"))
+        self.assertIn("HermesSettingsNavigationUITests",
+                      MODULE.SETTINGS)
+
     def test_zero_exit_without_requested_test_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
             log = Path(root) / "xcodebuild.log"
