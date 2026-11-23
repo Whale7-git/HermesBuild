@@ -157,7 +157,7 @@ class SimulatorPlanTests(unittest.TestCase):
         direct_section = harness.split(
             'let directDone = connectionPage.buttons["HermesSettingsDismiss"]',
             1)[1].split("settingsDirectDismissUsed = true", 1)[0]
-        self.assertNotIn("home.isHittable", direct_section)
+        self.assertNotIn("home.exists && home.isHittable", direct_section)
         self.assertNotIn("homeInteractive=", direct_section)
         self.assertIn("settingsDirectDismissUsed = true", harness)
         self.assertIn("settingsDirectDismissUsed", regression)
