@@ -201,6 +201,16 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn('XCUIApplication(bundleIdentifier: "com.apple.Passwords")',
                       harness)
         self.assertIn('host.buttons["Not Now"]', harness)
+        # Prevent regression of the inverted predicate that returned false
+        # when the OS "Not Now" button was actually hittable, then attempted
+        # to tap a non-hittable button (a source of invalid activation points).
+        prompt_check = harness.split(
+            "static func declineOptionalPasswordSavePrompt(", 1)[1].split(
+            "static func launchAndConnect(", 1)[0]
+        self.assertIn("if !notNow.isHittable {", prompt_check)
+        self.assertNotIn("if notNow.isHittable {", prompt_check)
+        self.assertLess(prompt_check.index("if !notNow.isHittable {"),
+                        prompt_check.index("notNow.tap()"))
         self.assertIn("stage=setup.system_password_declined", harness)
         self.assertIn('stage: "setup.system_password_prompt"', harness)
         self.assertIn("guard declineOptionalPasswordSavePrompt(app)", harness)
