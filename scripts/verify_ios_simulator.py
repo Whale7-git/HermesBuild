@@ -17,7 +17,27 @@ import time
 import urllib.request
 
 BOOTSTRAP = "HermesBootstrapUITests.testGatewaySetupPersistsAcrossRelaunch"
-SETTINGS = "HermesSettingsNavigationUITests.testPushedSettingsPageCanDismissWithoutNativeBack"
+# Settings is three independent scenarios, not one long journey. Run
+# #45232747405 had already printed setup.system_password_declined (t=84.4s),
+# setup.direct_settings_dismissed (t=92.4s) and
+# setup.settings_navigation_verified (t=93.7s) when the shared subprocess
+# bound killed xcodebuild mid cold-relaunch, so one ambiguous stall masked a
+# pure budget mismatch. Each scenario now reports its own verdict.
+SETTINGS_NAV = ("HermesSettingsNavigationUITests"
+                ".test01SettingsSheetDismissesWithoutCredentials")
+SETTINGS_PASSWORD = ("HermesSettingsNavigationUITests"
+                     ".test02GatewayKeySavePasswordPromptIsDeclined")
+SETTINGS = ("HermesSettingsNavigationUITests"
+            ".test03FullSetupSurvivesColdRelaunch")
+SETTINGS_RELAUNCH = SETTINGS
+SETTINGS_CASES = [SETTINGS_NAV, SETTINGS_PASSWORD, SETTINGS_RELAUNCH]
+# Downstream Settings scenarios are BLOCKED by the first failing one, not
+# reported as separate product failures (short, report-safe labels).
+BLOCKER_LABELS = {
+    BOOTSTRAP: "bootstrap",
+    SETTINGS_NAV: "settings_nav",
+    SETTINGS_PASSWORD: "settings_password",
+}
 GOLD = [
     "HermesGoldUITests.test01ConnectionAndSessionList",
     "HermesGoldUITests.test02SendStreamAndComplete",
@@ -38,7 +58,13 @@ INTERACTION = [
 ]
 SUITES = {
     "bootstrap": [BOOTSTRAP],
-    "settings": [SETTINGS],
+    # Ordered: a navigation failure BLOCKS the two journeys that depend on
+    # the same sheet binding, so a later case is never reported as a second
+    # independent product failure.
+    "settings": SETTINGS_CASES,
+    "settings-nav": [SETTINGS_NAV],
+    "settings-password": [SETTINGS_PASSWORD],
+    "settings-relaunch": [SETTINGS_RELAUNCH],
     "gold1": [GOLD[0]], "gold2": [GOLD[1]], "gold3": [GOLD[2]],
     "gold4": [GOLD[3]],
     # Gold1 performs real Save, Keychain cold relaunch and the mock session GET.
@@ -48,11 +74,20 @@ SUITES = {
     "recovery": RECOVERY, "interaction": INTERACTION,
     "all": GOLD + RECOVERY + INTERACTION,
 }
-# Settings includes an OS Passwords prompt on some iOS 26 simulators.
-# Bound this single XCTest below the runner's observed 15-minute cancellation
-# window so timeout evidence can still be uploaded as INFRA_ERROR.
-SETTINGS_XCTEST_TIMEOUT_SECONDS = 300
+# The subprocess bound owns the whole simulator handshake, not the test.
+# Archived runs measure 115-220s between SIMULATOR_CASE_START and the first
+# `Test Case ... started` line (Run #45232747405: 186s; Run #45227799195:
+# 220s; passing Run #45123032861: ~200s). The previous 300s bound therefore
+# left ~115s for a journey measured to need ~130s, and Run #45232747405 was
+# killed after it had already reached setup.settings_navigation_verified.
+# The per-scenario contract now lives inside XCTest via
+# executionTimeAllowance (180/240/300s); this constant is only the outer
+# fuse, kept identical to the other suites so it can never again race the
+# test it is meant to time out.
+XCODEBUILD_SUBPROCESS_TIMEOUT_SECONDS = 720
+SETTINGS_XCTEST_TIMEOUT_SECONDS = XCODEBUILD_SUBPROCESS_TIMEOUT_SECONDS
 SHA = re.compile(r"^[0-9a-f]{40}$")
+STAGE = re.compile(r"HERMES_BOOTSTRAP stage=([A-Za-z0-9_.]+)")
 SAFE_CASE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*\.test[A-Za-z0-9_]+$")
 
 
@@ -118,6 +153,23 @@ def observed_selected_pass(log: Path, testcase: str) -> bool:
                log.read_text(encoding="utf-8", errors="replace").splitlines())
 
 
+def observed_stages(log: Path) -> list[str]:
+    """Ordered, de-duplicated HERMES_BOOTSTRAP stage markers.
+
+    These are the harness's own transition log. They turn an opaque
+    `infra.xctest_timeout` into "the run died after stage X", which is the
+    only honest way to localise a killed subprocess.
+    """
+    if not log.is_file():
+        return []
+    stages: list[str] = []
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = STAGE.search(line)
+        if match and match.group(1) not in stages:
+            stages.append(match.group(1))
+    return stages
+
+
 def classify_case(exit_code: int, diagnostics: list[str],
                   testcase: str) -> tuple[str, str | None]:
     """Distinguish a blocked common setup from an actual product assertion."""
@@ -126,6 +178,11 @@ def classify_case(exit_code: int, diagnostics: list[str],
     stage = match.group(1) if match else None
     if exit_code == 0:
         return "PASS", None
+    # XCTest's own per-scenario allowance is a real, attributable failure:
+    # the case ran and overran its declared budget. It is never an
+    # infrastructure timeout and must not be reported as one.
+    if "execution time allowance" in raw.lower():
+        return "FAIL", "test.execution_time_allowance"
     # XCTFail prints a failing Test Case line even when the assertion line
     # does not mention XCTest by name.
     assertion = any(("Test Case" in line and " failed" in line) or
@@ -134,7 +191,7 @@ def classify_case(exit_code: int, diagnostics: list[str],
     if not assertion:
         return "INFRA_ERROR", stage or "infra.xcodebuild"
     if "SETUP_BLOCKED" in raw:
-        return ("FAIL" if testcase == BOOTSTRAP else "BLOCKED",
+        return (("FAIL" if testcase == BOOTSTRAP else "BLOCKED"),
                 stage or "setup.unknown")
     return "FAIL", stage or "product.assertion"
 
@@ -221,12 +278,14 @@ def main() -> int:
                 "CODE_SIGNING_REQUIRED=YES",
             ]
             print(f"SIMULATOR_CASE_START {testcase} "
-                  f"timeout={SETTINGS_XCTEST_TIMEOUT_SECONDS if testcase == SETTINGS else 720}s",
+                  f"timeout={XCODEBUILD_SUBPROCESS_TIMEOUT_SECONDS}s "
+                  f"(xcodebuild handshake + in-test executionTimeAllowance)",
                   flush=True)
-            rc = run(cmd, log=log, timeout=(
-                SETTINGS_XCTEST_TIMEOUT_SECONDS if testcase == SETTINGS else 720))
+            rc = run(cmd, log=log,
+                     timeout=XCODEBUILD_SUBPROCESS_TIMEOUT_SECONDS)
             lines = diagnostic_lines(log)
             entry["status"], stage = classify_case(rc, lines, testcase)
+            entry["stages"] = observed_stages(log)
             if rc == 0 and not observed_selected_pass(log, testcase):
                 entry["status"] = "INFRA_ERROR"
                 stage = "infra.no_test_executed"
@@ -255,11 +314,27 @@ def main() -> int:
             entry["status"], entry["failure_stage"] = classify_timeout_case(
                 diagnostics, testcase)
             entry["xcodebuild_timed_out"] = True
+            entry["stages"] = observed_stages(output / "xcodebuild-ui.log")
+            # xcodebuild was killed, so its result bundle never finalizes and
+            # carries no attachments. The simulator itself is still alive and
+            # is the only remaining source of a real screenshot for this run.
+            shot = output / "timeout-screen.png"
+            try:
+                run(["xcrun", "simctl", "io", args.device, "screenshot",
+                     str(shot)], timeout=40)
+                if shot.is_file():
+                    entry["timeout_screenshot"] = shot.name
+            except Exception:
+                pass
             entry["diagnostics"] = diagnostics[-3:]
             entry["diagnostics"].append(
                 "xcodebuild exceeded bounded timeout after "
                 + ("selected XCTest failure" if entry["status"] != "INFRA_ERROR"
                    else "no completed selected XCTest failure"))
+            if entry["stages"]:
+                entry["diagnostics"].append(
+                    "Last harness stage before the kill: "
+                    + entry["stages"][-1])
             print(f"SIMULATOR_TIMEOUT {testcase}: {entry['status']} "
                   f"stage={entry['failure_stage']}", flush=True)
         except Exception as error:
@@ -285,6 +360,10 @@ def main() -> int:
                     blocked_by = "bootstrap"
                 elif testcase == GOLD[0] and args.suite in {"gold", "all"}:
                     blocked_by = "gold1"
+                elif testcase in SETTINGS_CASES:
+                    # Same sheet binding and same fixture: a failed scenario
+                    # must not be re-reported as two more product failures.
+                    blocked_by = BLOCKER_LABELS[testcase]
     report["outcome"] = "FAIL" if failed else "PASS"
     write_json(args.output / "simulator-report.json", report)
     print(f"SIMULATOR_VERIFICATION_{report['outcome']} source={args.source_sha} "

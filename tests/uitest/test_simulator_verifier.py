@@ -52,28 +52,57 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_case(0, [], MODULE.BOOTSTRAP),
                          ("PASS", None))
 
-    def test_settings_direct_dismiss_is_manual_suite_not_product_gate(self):
-        self.assertEqual(MODULE.cases_for_suite("settings"), [MODULE.SETTINGS])
-        self.assertNotIn(MODULE.SETTINGS, MODULE.cases_for_suite("gold"))
-        self.assertNotIn(MODULE.SETTINGS, MODULE.cases_for_suite("all"))
-        self.assertIn("HermesSettingsNavigationUITests",
-                      MODULE.SETTINGS)
+    def test_settings_split_into_three_ordered_independent_scenarios(self):
+        cases = MODULE.cases_for_suite("settings")
+        self.assertEqual(cases, MODULE.SETTINGS_CASES)
+        self.assertEqual(len(cases), 3)
+        self.assertEqual(len(set(cases)), 3)
+        # Minimal navigation must be provable without any credential field.
+        self.assertEqual(MODULE.cases_for_suite("settings-nav"),
+                         [MODULE.SETTINGS_NAV])
+        self.assertEqual(MODULE.cases_for_suite("settings-password"),
+                         [MODULE.SETTINGS_PASSWORD])
+        self.assertEqual(MODULE.cases_for_suite("settings-relaunch"),
+                         [MODULE.SETTINGS_RELAUNCH])
+        for case in MODULE.SETTINGS_CASES:
+            self.assertIn("HermesSettingsNavigationUITests", case)
+            self.assertNotIn(case, MODULE.cases_for_suite("gold"))
+            self.assertNotIn(case, MODULE.cases_for_suite("all"))
+
+    def test_failed_settings_scenario_blocks_its_downstream_siblings(self):
+        # One failing scenario must not be re-reported as two more product
+        # failures: the report is fail-fast and stage-attributed.
+        labels = {case: label for case, label in MODULE.BLOCKER_LABELS.items()
+                  if case != MODULE.BOOTSTRAP}
+        self.assertEqual(sorted(labels.values()),
+                         ["settings_nav", "settings_password"])
+        for case, label in labels.items():
+            self.assertIn(case, MODULE.SETTINGS_CASES)
+            self.assertEqual(label, label.lower())
+            self.assertNotIn(".", label)
 
     def test_settings_timeout_preserves_distinct_infra_result(self):
-        self.assertEqual(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 300)
-        self.assertLess(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 720)
+        # The subprocess bound owns the simulator handshake (measured
+        # 115-220s before the first Test Case line), so it must never be
+        # smaller than the in-test allowance window. The old 300s value raced
+        # a journey that had already reached settings_navigation_verified.
+        self.assertEqual(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS, 720)
+        self.assertEqual(MODULE.SETTINGS_XCTEST_TIMEOUT_SECONDS,
+                         MODULE.XCODEBUILD_SUBPROCESS_TIMEOUT_SECONDS)
         source = PATH.read_text(encoding="utf-8")
         self.assertIn("except subprocess.TimeoutExpired:", source)
         self.assertIn("classify_timeout_case(", source)
         self.assertIn("SIMULATOR_TIMEOUT", source)
         self.assertIn("entry[\"xcodebuild_timed_out\"] = True", source)
+        self.assertIn("observed_stages(", source)
+        self.assertIn("timeout-screen.png", source)
         # A completed XCTest failure must survive a later xcodebuild hang.
         # A pure timeout must NOT be manufactured into a product failure.
         selected = MODULE.SETTINGS
         lines = [
             "test.swift:24: error: SETUP_BLOCKED stage=setup.system_password_prompt",
             ("Test Case '-[HermesUITests.HermesSettingsNavigationUITests "
-             "testPushedSettingsPageCanDismissWithoutNativeBack]' failed (75.632 seconds)."),
+             "test03FullSetupSurvivesColdRelaunch]' failed (75.632 seconds)."),
         ]
         self.assertEqual(MODULE.classify_timeout_case(lines, selected),
                          ("BLOCKED", "setup.system_password_prompt"))
@@ -82,6 +111,36 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_timeout_case(
             ["Test Case '-[HermesUITests.OtherSuite wrongMethod]' failed"], selected),
             ("INFRA_ERROR", "infra.xctest_timeout"))
+
+    def test_execution_time_allowance_is_a_real_failure_not_infra(self):
+        # XCTest's own per-scenario bound is attributable and must never be
+        # folded into the infrastructure bucket.
+        self.assertEqual(MODULE.classify_case(65,
+                         ["error: Exceeded execution time allowance (300 seconds)",
+                          "Test Case 'HermesUITests' failed"],
+                         MODULE.SETTINGS),
+                         ("FAIL", "test.execution_time_allowance"))
+
+    def test_harness_stage_trail_is_extracted_in_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "ui.log"
+            log.write_text(
+                "noise\n"
+                "HERMES_BOOTSTRAP stage=setup.child_dismissed\n"
+                "HERMES_BOOTSTRAP stage=setup.system_password_declined"
+                " acknowledged=true\n"
+                "HERMES_BOOTSTRAP stage=setup.direct_settings_dismissed\n"
+                "HERMES_BOOTSTRAP stage=setup.settings_navigation_verified\n"
+                "HERMES_BOOTSTRAP stage=setup.child_dismissed\n",
+                encoding="utf-8")
+            self.assertEqual(MODULE.observed_stages(log), [
+                "setup.child_dismissed",
+                "setup.system_password_declined",
+                "setup.direct_settings_dismissed",
+                "setup.settings_navigation_verified",
+            ])
+            self.assertEqual(MODULE.observed_stages(
+                Path(directory) / "missing.log"), [])
 
     def test_zero_exit_without_requested_test_is_not_a_pass(self):
         with tempfile.TemporaryDirectory() as root:
@@ -216,16 +275,22 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn('XCUIApplication(bundleIdentifier: "com.apple.Passwords")',
                       harness)
         self.assertIn('host.buttons["Not Now"]', harness)
-        # Prevent regression of the inverted predicate that returned false
-        # when the OS "Not Now" button was actually hittable, then attempted
-        # to tap a non-hittable button (a source of invalid activation points).
+        # Prevent regression of two separate defects: the originally inverted
+        # predicate, and abandoning the journey on a single non-hittable
+        # transitional frame (archived Run #45227799195).
         prompt_check = harness.split(
             "static func declineOptionalPasswordSavePrompt(", 1)[1].split(
-            "static func launchAndConnect(", 1)[0]
-        self.assertIn("if !notNow.isHittable {", prompt_check)
+            "static func noteSystemPasswordPromptDeclinedViaMonitor", 1)[0]
+        self.assertIn("guard notNow.isHittable else {", prompt_check)
+        self.assertIn("continue\n", prompt_check)
         self.assertNotIn("if notNow.isHittable {", prompt_check)
-        self.assertLess(prompt_check.index("if !notNow.isHittable {"),
+        self.assertNotIn("return false\n                }", prompt_check)
+        self.assertLess(prompt_check.index("guard notNow.isHittable else {"),
                         prompt_check.index("notNow.tap()"))
+        # A prompt that stays on screen is a failure; an absent prompt is not.
+        self.assertIn("return !sawPrompt", prompt_check)
+        self.assertIn("static private(set) var systemPasswordPromptObserved", harness)
+        self.assertIn("static private(set) var systemPasswordPromptDeclined", harness)
         self.assertIn("stage=setup.system_password_declined", harness)
         self.assertIn('stage: "setup.system_password_prompt"', harness)
         self.assertIn("guard declineOptionalPasswordSavePrompt(app)", harness)
@@ -233,6 +298,39 @@ class SimulatorPlanTests(unittest.TestCase):
         self.assertIn('alert.buttons["Not Now"]', settings)
         self.assertNotIn('alert.buttons["Save"]', settings)
         self.assertNotIn('host.buttons["Save"]', harness)
+
+    def test_settings_scenarios_are_separately_provable(self):
+        root = Path(__file__).resolve().parents[2]
+        settings = (root / "UITests" /
+                    "HermesSettingsNavigationUITests.swift").read_text()
+        harness = (root / "UITests" / "HermesUITestHarness.swift").read_text()
+        # Scenario 1 must be independent of the credential field: it navigates
+        # and dismisses the sheet without ever opening AddInstance.
+        nav_only = harness.split(
+            "static func launchForSettingsNavigationOnly(", 1)[1].split(
+            "/// Product scenarios must prove", 1)[0]
+        self.assertIn('app.buttons["配置连接"]', nav_only)
+        self.assertIn('connectionPage.buttons["HermesSettingsDismiss"]', nav_only)
+        self.assertIn("waitSettingsSheetDismissed(", nav_only)
+        self.assertNotIn("secureTextFields", nav_only)
+        self.assertNotIn("AddInstance", nav_only)
+        self.assertNotIn("app.terminate()", nav_only)
+        # Scenario 2 stops right after the OS prompt contract.
+        self.assertIn("passwordProbeOnly: Bool = false", harness)
+        self.assertIn("if passwordProbeOnly {", harness)
+        self.assertIn("passwordProbeReached = true", harness)
+        self.assertIn("passwordProbeOnly: true", settings)
+        # Scenario 3 owns persistence: cold relaunch and the fixture ledger.
+        self.assertIn("authenticatedSessionGetObserved", harness)
+        self.assertIn("launchAndConnect(\n            verifySettingsDismissal: true)",
+                      settings)
+        self.assertIn("authenticatedSessionGetObserved()", settings)
+        # Each scenario declares its own in-test budget instead of relying on
+        # the subprocess fuse that killed Run #45232747405.
+        for allowance in ("executionTimeAllowance = 180",
+                          "executionTimeAllowance = 240",
+                          "executionTimeAllowance = 300"):
+            self.assertIn(allowance, settings)
 
     def test_diagnostics_redact_token_and_url(self):
         with tempfile.TemporaryDirectory() as directory:
