@@ -75,6 +75,8 @@ extension NativeChatModel {
             RuntimeLogRecorder.shared.record(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
             try applySnapshot(snap, preserveLoadedOlder: preserveLoadedOlder)
+            // 权威历史已经读到：之前的暂时性失败不再成立，停掉退避重试。
+            historyLoadFailurePending = false
             // Do not erase the unresolved accepted-run status after history GET.
             if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
@@ -82,15 +84,31 @@ extension NativeChatModel {
         } catch {
             if generation == revision {
                 if handleAuthenticationFailure(error) { return }
-                self.error = error.localizedDescription
-                RuntimeLogRecorder.shared.record(.error, "history", "load fail err=\(error.localizedDescription)")
-                uncertain = true
-                // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
-                if let savedAt = cachedHistoryDate {
-                    transition(to: .cached(savedAt: savedAt, syncing: false))
-                    notice = "已显示本地历史，联网核对成功前不能发送。"
+                let failure = HistoryLoadFailure.classify(error)
+                RuntimeLogRecorder.shared.record(failure == .transient ? .info : .error,
+                    "history", "load fail kind=\(failure) err=\(error.localizedDescription)")
+                if failure == .transient {
+                    // 网络类失败不含「POST 是否被受理」的信息，不写 `uncertain`
+                    // ——它进的是发送闸门，一旦置位只能等一次成功的 GET 才解除，
+                    // 而这里恰恰没有 GET 可用。只保留「内容可能过期」并自动重试。
+                    // 只读态由 `readOnly` 保守维持：未读到权威历史就不放开写入。
+                    if let savedAt = cachedHistoryDate {
+                        transition(to: .cached(savedAt: savedAt, syncing: false))
+                    } else {
+                        transition(to: .idle)
+                    }
+                    notice = "网络暂时不可用，正在自动重试；当前显示的内容可能不是最新。"
+                    scheduleHistoryLoadRetry()
                 } else {
-                    transition(to: .idle)
+                    self.error = error.localizedDescription
+                    uncertain = true
+                    // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
+                    if let savedAt = cachedHistoryDate {
+                        transition(to: .cached(savedAt: savedAt, syncing: false))
+                        notice = "已显示本地历史，联网核对成功前不能发送。"
+                    } else {
+                        transition(to: .idle)
+                    }
                 }
             }
         }
@@ -553,6 +571,45 @@ extension NativeChatModel {
         RuntimeLogRecorder.shared.record(.info, "recovery",
             "long-run history verified pages=\(pages.count) without POST")
         return !uncertain
+    }
+
+    /// 网络类历史失败后的有界退避重试。**只重试 GET**，永不重发 POST。
+    ///
+    /// 存在意义：`readOnly` 只在一次成功的 `applySnapshot` 里被放开，而 `load`
+    /// 的失败路径没有重试，所以一次网络抖动就会让会话停在只读，直到用户自己
+    /// 刷新或重进会话——那正是「读不进来也发不出去」的来源。
+    ///
+    /// 安全边界：这里发的是 `load`（GET /messages，幂等只读）。它不碰
+    /// `pendingSend`、不提交 chat POST，也不恢复用户暂停的队列，所以
+    /// 「不重复发送」的保证不受影响。
+    func scheduleHistoryLoadRetry() {
+        historyLoadFailurePending = true
+        // 已经有一轮在排队就不再叠加：多次失败会各自调度一次，那会变成风暴。
+        guard historyLoadRetryTask == nil else { return }
+        let ticket = UUID()
+        historyLoadRetryTicket = ticket
+        historyLoadRetryTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.historyLoadRetryTicket == ticket {
+                    self.historyLoadRetryTask = nil
+                    self.historyLoadRetryTicket = nil
+                }
+            }
+            for delay in self.historyLoadRetryDelaysNanoseconds {
+                do { try await Task.sleep(nanoseconds: delay) } catch { return }
+                guard !Task.isCancelled, self.historyLoadRetryTicket == ticket,
+                      !self.suspended, !self.authenticationRequired,
+                      self.historyLoadFailurePending else { return }
+                // 本轮正在推流时，这次 GET 会和流抢同一条链路，也会被
+                // `load` 自己的 `running && streamTask != nil` 直接挡回。
+                // 与其空转，不如把补读留给这一轮结束后的正常路径。
+                if self.running && self.streamTask != nil { return }
+                await self.load(silent: true, preserveLoadedOlder: true)
+                // 成功路径会把标志清掉，重试到此为止。
+                if !self.historyLoadFailurePending { return }
+            }
+        }
     }
 
     /// Follow up an inconclusive run/send automatically while the chat is
@@ -1198,6 +1255,11 @@ extension NativeChatModel {
         automaticReconciliationTask?.cancel()
         automaticReconciliationTask = nil
         automaticReconciliationTicket = nil
+        // 离开会话页时停掉退避重试：它只在界面上看得见这条会话时才有意义，
+        // 且 `suspended` 会让它下次醒来直接返回，留着只是空任务。
+        historyLoadRetryTask?.cancel()
+        historyLoadRetryTask = nil
+        historyLoadRetryTicket = nil
         suspended = true
         flush()
         if let historyStore { Task { await historyStore.flush() } }

@@ -20,7 +20,7 @@ EXEC_LIMIT=${HERMES_TEST_EXEC_TIMEOUT:-180}
 EXTRA_LIMIT=${HERMES_TEST_EXTRA_TIMEOUT:-360}
 suite_shard() {
   case "$1" in
-    backendcapabilities|core|requests|attachmentdispatch|sessionops|modeleffort|gateway|clientaudit|credentials|discovery|quote|slashcommand|transcriptexport|transcriptpager|historycache) echo core ;;
+    backendcapabilities|core|requests|attachmentdispatch|sessionops|modeleffort|gateway|clientaudit|credentials|discovery|quote|slashcommand|transcriptexport|transcriptpager|historycache|historyfailure) echo core ;;
     sessiontask|tasknotifier|taskack|sessionhome|model|drafts|homeflow|appstate|recentmodel|runtimelog|runtimerecorder) echo recovery ;;
     experience|tiledrows|timeline|scroll|scrollgeometry|viewport|conversationreading|findhighlight|findwork|preparation|selectionrelay|blockcoalescer|selectionpublication|input) echo interface ;;
     attachprogress|imagegallery|imagepresentation|build58|iteration53|inlineimage|attachmentinteraction|renderbudget|markdownblocks|renderscheduling|performancestats) echo media ;;
@@ -158,7 +158,7 @@ run attachprogress -swift-version 5 -parse-as-library "$S/AttachmentHistory.swif
 run sessionhome "$S/Models.swift" "$S/SessionTaskCenter.swift" "$S/TaskAcknowledgement.swift" "$S/SessionTaskStore.swift" "$S/SessionHomeSections.swift" tests/sessionhome/main.swift
 run tiledrows "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatToolSummary.swift" "$S/ChatTimeline.swift" tests/tiledrows/main.swift
 run modeleffort "$S/ReasoningEffortPolicy.swift" tests/modeleffort/main.swift
-run model -swift-version 5 -parse-as-library "$S/ChatActivity.swift" "$S/ChatPhase.swift" "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/NativeChatService.swift" "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" "$S/ChatHistoryStore.swift" "$S/ChatAttachmentPlaceholder.swift" "$S/ImageRatioStore.swift" "$S/RuntimeLogStorage.swift" "$S/RuntimeLogRecorder.swift" "$S/ChatSlashCommand.swift" "$S/ChatSendQueue.swift" "$S/ReasoningEffortPolicy.swift" "$S/NativeChatModel.swift" "$S/NativeChatModel+Send.swift" "$S/NativeChatModel+Stream.swift" "$S/NativeChatModel+Control.swift" tests/model/*.swift
+run model -swift-version 5 -parse-as-library "$S/ChatActivity.swift" "$S/ChatPhase.swift" "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/NativeChatService.swift" "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" "$S/ChatHistoryStore.swift" "$S/ChatAttachmentPlaceholder.swift" "$S/ImageRatioStore.swift" "$S/RuntimeLogStorage.swift" "$S/RuntimeLogRecorder.swift" "$S/ChatSlashCommand.swift" "$S/ChatSendQueue.swift" "$S/ReasoningEffortPolicy.swift" "$S/HistoryLoadFailure.swift" "$S/NativeChatModel.swift" "$S/NativeChatModel+Send.swift" "$S/NativeChatModel+Stream.swift" "$S/NativeChatModel+Control.swift" tests/model/*.swift
 run drafts -swift-version 5 -parse-as-library "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" tests/drafts/main.swift
 run homeflow "$S/HomeConversationPolicy.swift" tests/homeflow/main.swift
 run appstate -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/Models.swift" "$S/SessionTaskCenter.swift" "$S/SessionTaskStore.swift" "$S/ChatHistoryIdentity.swift" "$S/ChatHistoryStore.swift" "$S/ChatAttachmentPlaceholder.swift" "$S/ImageRatioStore.swift" "$S/RuntimeLogStorage.swift" "$S/RuntimeLogRecorder.swift" "$S/RecentModelStore.swift" "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" "$S/ChatReadingPosition.swift" "$S/ChatCellStateStore.swift" "$S/SessionRefreshClock.swift" "$S/NativeChatService.swift" "$S/HermesBackend.swift" "$S/BackendCapabilities.swift" "$S/GatewayRunStore.swift" "$S/InstanceCredentialStore.swift" "$S/SessionHomeSections.swift" "$S/SessionTaskDerivedState.swift" "$S/SessionRecoveryCoordinator.swift" "$S/TaskNotification.swift" "$S/TaskNotificationPlanner.swift" "$S/SystemNotificationDeliverer.swift" "$S/NotificationPreference.swift" "$S/TaskAcknowledgement.swift" "$S/CreatedSessionRecoveryStore.swift" "$S/HomeModelActivation.swift" "$S/HomeConversationPolicy.swift" "$S/AppState.swift" tests/appstate/main.swift tests/appstate/TaskCacheTests.swift
@@ -188,6 +188,7 @@ run input "$S/ChatInputPolicy.swift" "$S/ChatReadingShortcutPolicy.swift" tests/
 run quote "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatComposerInsertion.swift" "$S/ChatQuote.swift" tests/quote/main.swift
 run slashcommand "$S/ChatSlashCommand.swift" tests/slashcommand/main.swift
 run historycache -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatHistoryStore.swift" tests/historycache/main.swift
+run historyfailure "$S/HistoryLoadFailure.swift" tests/historyfailure/main.swift
 run renderbudget "$S/ChatRenderBudget.swift" tests/renderbudget/main.swift
 run markdownblocks "$S/MarkdownBlockPlan.swift" tests/markdownblocks/main.swift
 run renderscheduling -swift-version 5 -parse-as-library "$S/ChatRenderScheduler.swift" "$S/ChatStreamPacing.swift" tests/renderscheduling/main.swift
