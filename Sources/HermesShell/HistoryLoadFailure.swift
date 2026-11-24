@@ -56,6 +56,22 @@ enum HistoryLoadFailure: Equatable {
         code == 408 || code == 429 || (500...599).contains(code)
     }
 
+    /// `GET /v1/runs/{id}/events` 返回 404/410：这条 run 的 SSE transport
+    /// 已被服务端回收，**不是**网络故障。
+    ///
+    /// 服务端有两个不对称的保留期（`api_server.py`）：
+    /// `_RUN_STREAM_TTL = 300`（SSE 缓冲，从 run 创建起算）与
+    /// `_RUN_STATUS_TTL = 3600`（终态 status）。所以存在长达近一小时的窗口：
+    /// status 仍可查、history 仍可能报 `active_stream_id`，但订阅它必然 404。
+    ///
+    /// 这正是「长回答执行很久之后卡住」的机制——回合越长，越容易在客户端
+    /// 掉线（锁屏/切后台/网络切换）时跨过那 5 分钟，等回来时 transport 已经没了。
+    /// 客户端把它当成重连失败去重试订阅，就会一直撞在同一堵墙上。
+    static func isRunTransportGone(_ error: Error) -> Bool {
+        guard let code = (error as? HTTPStatusProviding)?.httpStatusHint else { return false }
+        return code == 404 || code == 410
+    }
+
     private static func classify(urlCode: URLError.Code) -> HistoryLoadFailure {
         switch urlCode {
         case .timedOut,

@@ -60,6 +60,27 @@ expectKind(NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut),
 expectKind(NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet),
            .transient, "NSError NSURLErrorNotConnectedToInternet")
 
+// MARK: - run transport 已回收：404/410 是确定性结论，不是网络故障
+
+checks += 1
+if !HistoryLoadFailure.isRunTransportGone(HTTPFailure(code: 404)) {
+    failures.append("404 must be treated as a gone transport")
+}
+checks += 1
+if !HistoryLoadFailure.isRunTransportGone(HTTPFailure(code: 410)) {
+    failures.append("410 must be treated as a gone transport")
+}
+for code in [500, 502, 429, 408, 401, 403, 400] {
+    checks += 1
+    if HistoryLoadFailure.isRunTransportGone(HTTPFailure(code: code)) {
+        failures.append("http \(code) must NOT be treated as a gone transport")
+    }
+}
+checks += 1
+if HistoryLoadFailure.isRunTransportGone(URLError(.timedOut)) {
+    failures.append("a timeout must NOT be treated as a gone transport")
+}
+
 // MARK: - 分类必须无副作用（同一错误连续判断结果一致）
 
 let sample = URLError(.timedOut)

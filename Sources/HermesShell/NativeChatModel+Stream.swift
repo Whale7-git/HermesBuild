@@ -953,6 +953,57 @@ extension NativeChatModel {
                 } catch {
                     guard generation == revision, !Task.isCancelled else { return }
                     if handleAuthenticationFailure(error) { return }
+                    // 服务端已回收这条 run 的 SSE transport，但 durable status 还留着
+                    // （`_RUN_STREAM_TTL` 300s vs `_RUN_STATUS_TTL` 3600s）。所以
+                    // history/status 仍报 active，订阅却必然 404 —— 这是确定性结论，
+                    // 不是网络故障。重试订阅只会一直撞同一堵墙，也没必要把 HTTP 404
+                    // 甩给用户看。改用仍然保留的 status 直接落定。
+                    if HistoryLoadFailure.isRunTransportGone(error) {
+                        RuntimeLogRecorder.shared.record(.warning, "stream",
+                            "transport gone run=\(active)")
+                        self.error = nil
+                        do {
+                            switch try await api.probeActiveRun(sessionID: sessionID, runID: active) {
+                            case .alive:
+                                // status 说还在跑，但实时连接已经没了：收不到帧。
+                                // 不重试订阅，也不假装结束，交给核对流程。
+                                transition(to: .idle)
+                                uncertain = true
+                                notice = "后台任务仍在执行，但实时连接已被服务端回收。"
+                                    + "点「核对状态」获取结果；不会重发消息。"
+                                return
+                            case .terminal:
+                                // 已有终态：用一次权威历史把内容补齐后落定。
+                                let snap = try await api.history(sessionID: sessionID, before: nil)
+                                guard accepts(runContext(for: active, generation: generation)),
+                                      !Task.isCancelled else { return }
+                                try applySnapshot(snap, preserveLoadedOlder: true)
+                                error = nil
+                                transition(to: .idle)
+                                if !uncertain && activeTurnRecovery == nil {
+                                    notice = nil
+                                } else {
+                                    uncertain = true
+                                    notice = "后台任务已结束，但最终内容未完全确认；"
+                                        + "请核对历史后继续，不会重复发送。"
+                                }
+                                return
+                            case .unknown, .unresolved:
+                                transition(to: .idle)
+                                uncertain = true
+                                notice = "无法确认这一轮是否结束。点「核对状态」确认后即可继续；"
+                                    + "不会重复发送。"
+                                return
+                            }
+                        } catch {
+                            if handleAuthenticationFailure(error) { return }
+                            transition(to: .idle)
+                            uncertain = true
+                            notice = "无法确认这一轮是否结束。点「核对状态」确认后即可继续；"
+                                + "不会重复发送。"
+                            return
+                        }
+                    }
                     RuntimeLogRecorder.shared.record(.warning, "stream", "interrupted err=\(error.localizedDescription)")
                     self.error = error.localizedDescription
                 }
