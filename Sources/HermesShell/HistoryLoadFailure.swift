@@ -39,13 +39,24 @@ enum HistoryLoadFailure: Equatable {
             return isTransientStatus(code) ? .transient : .permanent
         }
         if let url = error as? URLError {
-            return classify(urlCodeRawValue: url.code.rawValue)
+            return classify(urlCode: url.code)
         }
         // URLSession 在部分平台把网络错误包成 NSError；只按 domain + code 判断，
         // 不猜 underlying error 的层级。
+        //
+        // 两个平台的 `URLError.Code(rawValue:)` 可选性不同（macOS 非可选、
+        // corelibs 可选），且 corelibs 里个别 `NSURLError*` 常量与对应 Code 的
+        // 数值并不相等——所以这里只能各写各的，不能靠 Int 常量统一。
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain {
-            return classify(urlCodeRawValue: ns.code)
+            #if canImport(FoundationNetworking)
+            if let code = URLError.Code(rawValue: ns.code) {
+                return classify(urlCode: code)
+            }
+            return .permanent
+            #else
+            return classify(urlCode: URLError.Code(rawValue: ns.code))
+            #endif
         }
         // 包括 `APIError.badResponse`（没有状态码）与任何不认识的错误：
         // 宁可不动、交给用户，也不要用重试去掩盖一个真缺陷。
@@ -72,30 +83,24 @@ enum HistoryLoadFailure: Equatable {
         return code == 404 || code == 410
     }
 
-    /// 按 `URLError` 的原始码判断。
-    ///
-    /// 用 Int 原始码而不是 `URLError.Code`：macOS 的
-    /// `URLError.Code(rawValue:)` 返回**非可选**值，`if let` 在那里直接编译失败
-    /// （`initializer for conditional binding must have Optional type`），
-    /// 而 Linux corelibs 上又是可选的。按 Int 比较两边都能过。
-    private static func classify(urlCodeRawValue: Int) -> HistoryLoadFailure {
-        switch urlCodeRawValue {
-        case NSURLErrorTimedOut,
-             NSURLErrorNetworkConnectionLost,
-             NSURLErrorNotConnectedToInternet,
-             NSURLErrorCannotConnectToHost,
-             NSURLErrorCannotFindHost,
-             NSURLErrorDNSLookupFailed,
-             NSURLErrorSecureConnectionFailed,
-             NSURLErrorDataNotAllowed,
-             NSURLErrorCallIsActive,
-             NSURLErrorInternationalRoamingOff,
-             NSURLErrorResourceUnavailable,
-             NSURLErrorCannotLoadFromNetwork:
+    private static func classify(urlCode: URLError.Code) -> HistoryLoadFailure {
+        switch urlCode {
+        case .timedOut,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .secureConnectionFailed,
+             .dataNotAllowed,
+             .callIsActive,
+             .internationalRoamingOff,
+             .resourceUnavailable,
+             .cannotLoadFromNetwork:
             return .transient
         default:
-            // 包括 NSURLErrorCancelled（-999）—— 取消不是失败，调用方本来就该
-            // 丢弃这次结果，绝不能靠重试把它「救」回来。
+            // 包括 .cancelled —— 取消不是失败，调用方本来就该丢弃这次结果，
+            // 绝不能靠重试把它「救」回来。
             return .permanent
         }
     }
