@@ -90,11 +90,10 @@ extension NativeChatModel {
                 if failure == .transient {
                     // 错误本身仍然要暴露：网络不可用正是用户该看到的信息。
                     self.error = error.localizedDescription
-                    // 有未决 POST 时，这次 GET 失败意味着「那笔发送的结果依然无法
-                    // 确认」——此时必须保持 `uncertain`，否则用户可能在消息已经
-                    // 到达服务端的情况下重发。暂时性/永久性在这里不重要，重要的
-                    // 是有没有一笔 POST 还悬着。
-                    if pendingSend != nil { uncertain = true }
+                    // 读取失败 ⇒ 服务端状态未知 ⇒ 不能发。这是既有安全契约，
+                    // 不动它。本次修复只针对「锁永远解不开」：暂时性失败会自动
+                    // 退避重试，一旦补读到权威历史，`applySnapshot` 会正常解除。
+                    uncertain = true
                     if let savedAt = cachedHistoryDate {
                         transition(to: .cached(savedAt: savedAt, syncing: false))
                     } else {
@@ -102,9 +101,9 @@ extension NativeChatModel {
                     }
                     notice = pendingSend != nil
                         ? "已显示本地历史，联网核对成功前不能发送。"
-                        : "网络暂时不可用，正在自动重试；当前显示的内容可能不是最新。"
-                    // 只有「纯读取失败」才值得自动补读；有未决 POST 时补读由
-                    // 核对流程（`reconcilePending`）拥有，这里不能抢。
+                        : "网络暂时不可用，正在自动重试；核对成功后即可继续发送。"
+                    // 有未决 POST 时，补读归核对流程（`reconcilePending`）所有，
+                    // 这里不能再排一个 GET 去和它抢。
                     if pendingSend == nil { scheduleHistoryLoadRetry() }
                 } else {
                     self.error = error.localizedDescription

@@ -20,7 +20,7 @@ func expectKind(_ error: Error, _ expected: HistoryLoadFailure, _ label: String)
     }
 }
 
-// MARK: - 暂时性失败：重试有意义，且不得污染 uncertain
+// MARK: - 暂时性失败：幂等 GET 重试有意义
 
 expectKind(URLError(.timedOut), .transient, "URLError.timedOut")
 expectKind(URLError(.networkConnectionLost), .transient, "URLError.networkConnectionLost")

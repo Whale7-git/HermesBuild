@@ -13,22 +13,23 @@ protocol HTTPStatusProviding {
     var httpStatusHint: Int? { get }
 }
 
-/// `GET /api/sessions/{id}/messages` 失败的性质。
+/// `GET /api/sessions/{id}/messages` 失败的性质，用来决定**要不要自动补读**。
 ///
-/// 这个区分不是为了措辞好看，而是为了让「锁」只落在该落的地方：
+/// 它不决定「能不能发送」。读取失败一律意味着服务端状态未知，因此
+/// `uncertain` 照旧置位、发送照旧锁住——这是既有安全契约，不经本次改动。
 ///
-/// - `uncertain` 的语义是**「POST 结果待核对」**（见 `ChatFacts.uncertain`）。
-///   它进 `allowsNewTurn` / `allowsSteer` / `allowsResend` 的 guard，是一道硬闸。
-/// - 一次历史 GET 超时**不包含任何关于 POST 是否被受理的信息**。把它塞进
-///   `uncertain` 会让「网络抖了一下」和「消息可能已经发出去了」变成同一个状态，
-///   然后用同一把锁锁死发送。用户侧的观感就是「读不进来也发不出去，只能手动刷新」。
+/// 本次要修的缺陷是另一半：`uncertain` 只在一次成功的 `applySnapshot` 里解除，
+/// 而 `load` 失败后**没有任何重试**。于是一次网络抖动就把会话钉在
+/// 「已显示本地历史，联网核对成功前不能发送」，直到用户手动刷新或重进会话。
 ///
-/// 所以：暂时性失败只保留「内容不是最新」这一事实，交给自动退避重试去恢复；
-/// 只有确定性失败才允许把会话钉进待核对态。
+/// 区分两类失败，让锁的时长匹配失败的性质：
+///
+/// - `transient`：超时、断连、DNS/连接失败、5xx、429、408。幂等 GET 重试有意义，
+///   所以按 2s/5s/12s 退避补读，成功即解除锁定。
+/// - `permanent`：认证、会话不存在、契约不合法。重试只会放大问题，
+///   交给用户处理（重新登录 / 换会话）。
 enum HistoryLoadFailure: Equatable {
-    /// 超时、断连、DNS/连接失败、5xx、429、408。重试有意义，且幂等（GET）。
     case transient
-    /// 认证、会话不存在、契约不合法。重试无用，重复请求只会加重问题。
     case permanent
 
     static func classify(_ error: Error) -> HistoryLoadFailure {
@@ -47,7 +48,7 @@ enum HistoryLoadFailure: Equatable {
             return classify(urlCode: code)
         }
         // 包括 `APIError.badResponse`（没有状态码）与任何不认识的错误：
-        // 宁可保守锁定，也不要用重试去掩盖一个真缺陷。
+        // 宁可不动、交给用户，也不要用重试去掩盖一个真缺陷。
         return .permanent
     }
 
@@ -71,7 +72,8 @@ enum HistoryLoadFailure: Equatable {
              .cannotLoadFromNetwork:
             return .transient
         default:
-            // 包括 .cancelled —— 取消不是失败，调用方本来就该丢弃这次结果。
+            // 包括 .cancelled —— 取消不是失败，调用方本来就该丢弃这次结果，
+            // 绝不能靠重试把它「救」回来。
             return .permanent
         }
     }
