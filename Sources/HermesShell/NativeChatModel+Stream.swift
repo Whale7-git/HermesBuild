@@ -88,17 +88,24 @@ extension NativeChatModel {
                 RuntimeLogRecorder.shared.record(failure == .transient ? .info : .error,
                     "history", "load fail kind=\(failure) err=\(error.localizedDescription)")
                 if failure == .transient {
-                    // 网络类失败不含「POST 是否被受理」的信息，不写 `uncertain`
-                    // ——它进的是发送闸门，一旦置位只能等一次成功的 GET 才解除，
-                    // 而这里恰恰没有 GET 可用。只保留「内容可能过期」并自动重试。
-                    // 只读态由 `readOnly` 保守维持：未读到权威历史就不放开写入。
+                    // 错误本身仍然要暴露：网络不可用正是用户该看到的信息。
+                    self.error = error.localizedDescription
+                    // 有未决 POST 时，这次 GET 失败意味着「那笔发送的结果依然无法
+                    // 确认」——此时必须保持 `uncertain`，否则用户可能在消息已经
+                    // 到达服务端的情况下重发。暂时性/永久性在这里不重要，重要的
+                    // 是有没有一笔 POST 还悬着。
+                    if pendingSend != nil { uncertain = true }
                     if let savedAt = cachedHistoryDate {
                         transition(to: .cached(savedAt: savedAt, syncing: false))
                     } else {
                         transition(to: .idle)
                     }
-                    notice = "网络暂时不可用，正在自动重试；当前显示的内容可能不是最新。"
-                    scheduleHistoryLoadRetry()
+                    notice = pendingSend != nil
+                        ? "已显示本地历史，联网核对成功前不能发送。"
+                        : "网络暂时不可用，正在自动重试；当前显示的内容可能不是最新。"
+                    // 只有「纯读取失败」才值得自动补读；有未决 POST 时补读由
+                    // 核对流程（`reconcilePending`）拥有，这里不能抢。
+                    if pendingSend == nil { scheduleHistoryLoadRetry() }
                 } else {
                     self.error = error.localizedDescription
                     uncertain = true
