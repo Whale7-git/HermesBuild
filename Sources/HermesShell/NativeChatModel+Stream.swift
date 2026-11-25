@@ -770,12 +770,14 @@ extension NativeChatModel {
                             self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
                             return
                         }
-                        try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
-                        if outcome == .completed && !terminalReceipt.confirmsCompletion(in: finalHistory) {
+                        if !RunFinalizer.canSettle([finalHistory], sessionID: self.sessionID,
+                            runID: receipt.runID, receipt: terminalReceipt, outcome: outcome, requireReply: true) {
                             self.uncertain = true
+                            self.latestRecoverySnapshot = finalHistory
                             self.notice = "任务已结束，最终回复仍在同步。"
                             return
                         }
+                        try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
                         guard self.clearAcceptedTurnRecovery() else { return }
                         self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
                             || self.activeRecoveryUnreadable
@@ -865,6 +867,8 @@ extension NativeChatModel {
             var retries = 0
             var resubscribed = 0
             var terminalEvent: String?
+            var terminalOutcome: RunTerminalStatus?
+            var terminalEvidenceSaved = false
             while generation == revision && !Task.isCancelled {
                 do {
                     try await api.streamNativeTurn(streamID:active,lastEventID:lastEventID) { frame in
@@ -963,6 +967,10 @@ extension NativeChatModel {
                         if self.buffer.terminal {
                             self.clearApproval()
                             terminalEvent = frame.event
+                            terminalOutcome = RunTerminalEvidence.outcome(of: frame)
+                            if let outcome = terminalOutcome {
+                                terminalEvidenceSaved = self.rememberTerminalStatus(runID: active, outcome: outcome)
+                            }
                             let failure = self.buffer.failure
                             self.recordRuntimeLog(
                                 failure == nil ? .info : .error, "stream",
@@ -1006,6 +1014,12 @@ extension NativeChatModel {
                         }
                         return
                     }
+                    guard let outcome = terminalOutcome, terminalEvidenceSaved else {
+                        // EOF, malformed status and generic stream errors cannot
+                        // retire the accepted receipt or dispatch the queue.
+                        await settleReapedRunTransport(active: active, generation: generation)
+                        return
+                    }
                     let terminalFailure = buffer.failure
                     // 只有「干净收尾」才允许放行排队的那条：中断、核对失败、
                     // 结果不确定都必须把队列留着，让用户看见它还没发出去。
@@ -1023,10 +1037,9 @@ extension NativeChatModel {
                         for attempt in 0..<3 {
                             guard accepts(runContext(for: active, generation: generation)),
                                   !Task.isCancelled else { return }
-                            if ChatFinalHistoryGate.canReplace(
-                                snap, sessionID: sessionID, receipt: receipt,
-                                streamedAssistantPresent: streamedAssistantPresent,
-                                expectedRunID: active) { break }
+                            if RunFinalizer.canSettle([snap], sessionID: sessionID,
+                                runID: active, receipt: receipt, outcome: outcome,
+                                requireReply: streamedAssistantPresent) { break }
                             if attempt == 2 {
                                 uncertain = true
                                 pauseQueueForRecovery()
@@ -1067,8 +1080,7 @@ extension NativeChatModel {
                                 updateQueuePause()
                             }
                         }
-                        if snap.activeStreamID == nil && terminalFailure == nil,
-                           terminalEvent == "done" || terminalEvent == "stream_end" {
+                        if snap.activeStreamID == nil && outcome == .completed && !uncertain {
                             completedReplies &+= 1
                         }
                         // 核对完成，撤掉「核对中」。相位在这里显式落定：
@@ -1084,8 +1096,7 @@ extension NativeChatModel {
                         // unlock a manual send after a consistent history GET,
                         // but it must NEVER authorize automatic queued dispatch.
                         finalHistoryConfirmed = snap.activeStreamID == nil
-                        settled = finalHistoryConfirmed && terminalFailure == nil
-                            && (terminalEvent == "done" || terminalEvent == "stream_end")
+                        settled = finalHistoryConfirmed && outcome == .completed && !uncertain
                     } catch {
                         guard generation == revision, !Task.isCancelled else { return }
                         if handleAuthenticationFailure(error) { return }

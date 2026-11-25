@@ -80,6 +80,14 @@ extension ModelTests {
         expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: true,
             persistenceIssue: false, recoveryDegraded: true).title == "核对状态",
             "label must match the verification action")
+        expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "stream_end",
+            data: #"{"status":"unknown"}"#, id: "1")) == nil, "unknown stream end is not completion")
+        expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "apperror",
+            data: #"{"message":"network"}"#, id: "2")) == nil, "transport error is not failed Run")
+        expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "apperror",
+            data: #"{"status":"failed"}"#, id: "3")) == .failed, "typed failure is durable evidence")
+        expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "stream_end",
+            data: #"{"status":"work_limit"}"#, id: "4")) == .interrupted, "work limit cannot dispatch queue")
         let service = ActivityRecoveryService()
         let model = NativeChatModel(sessionID: "activity", api: service)
         await model.load()

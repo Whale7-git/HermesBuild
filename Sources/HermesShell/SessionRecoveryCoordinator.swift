@@ -168,7 +168,9 @@ final class SessionRecoveryCoordinator {
                         pages.append(older)
                     }
                     guard valid, (pages.last?.olderOffset ?? Int.max) <= boundary,
-                          receipt.confirmsCompletion(in: pages) else { continue }
+                          RunFinalizer.canSettle(pages, sessionID: sessionID,
+                              runID: receipt.runID, receipt: receipt, outcome: outcome,
+                              requireReply: true) else { continue }
                     }
                     // Recheck the head: a concurrently appended turn must not
                     // be confused with the accepted turn being verified.

@@ -84,7 +84,7 @@ enum GatewayEventMap {
             return emit("cancel", ["message": "cancelled"], id: frame.id)
 
         case "run.failed":
-            return emit("apperror", ["message": text(body["error"]) ?? "回复任务失败"], id: frame.id)
+            return emit("apperror", ["message": text(body["error"]) ?? "回复任务失败", "status": "failed"], id: frame.id)
 
         case "approval.responded":
             var payload: [String: Any] = [:]

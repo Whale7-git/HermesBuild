@@ -581,6 +581,47 @@ enum RunTerminalStatus: String, Codable, Equatable, Sendable {
     }
 }
 
+/// Protocol evidence is distinct from transport termination. In particular,
+/// an untyped error or explicit unknown status cannot authorize retirement.
+enum RunTerminalEvidence {
+    static func outcome(of frame: SSEFrame) -> RunTerminalStatus? {
+        let body = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any]
+        let status = (body?["status"] as? String)?.lowercased()
+        switch frame.event {
+        case "done": return .completed // caller validates the snapshot identity first
+        case "cancel":
+            let message = body?["message"] as? String
+            return status == "interrupted" || message == "interrupted" || message == "partial"
+                ? .interrupted : .cancelled
+        case "stream_end":
+            if status == "work_limit" { return .interrupted }
+            if let status { return RunTerminalStatus(rawValue: status) }
+            // Legacy WebUI stream_end has no status. It can end the transport
+            // but cannot prove a successful Run or authorize queued dispatch.
+            return nil
+        case "apperror", "error":
+            return status == "failed" ? .failed : nil
+        default: return nil
+        }
+    }
+}
+
+/// One final-history evidence policy used by all transport/status owners.
+/// The exact receipt cannot be replaced by another Run's evidence.
+enum RunFinalizer {
+    static func canSettle(_ pages: [ChatSnapshot], sessionID: String,
+                          runID: String, receipt: ActiveTurnRecovery?,
+                          outcome: RunTerminalStatus,
+                          requireReply: Bool) -> Bool {
+        guard let newest = pages.first, newest.sessionID == sessionID,
+              newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
+        if let receipt, receipt.runID != runID { return false }
+        if outcome != .completed { return true }
+        if let receipt { return receipt.confirmsCompletion(in: pages) }
+        return !requireReply
+    }
+}
+
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
 /// Stored in a protected, per-account/session file. An active run ID is never
 /// evidence that its associated POST can be replayed.

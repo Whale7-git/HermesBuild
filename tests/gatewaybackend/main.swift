@@ -361,8 +361,8 @@ actor ConcurrencyProbe {
         }
         check(malformedTerminal == ["apperror"],
               "an unmappable terminal frame still surfaces a visible failure")
-        check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == nil,
-              "a terminal frame retires the run even when mapping produced no app frames")
+        check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == run,
+              "a malformed generic error cannot retire an accepted run")
         // 非终态坏帧不能顺手清 run：只有白名单里的原始事件名才有这个权力。
         _ = try await restarted.startNativeTurn(sessionID: "s", text: "fixture")
         transport.frames = [SSEFrame(event: "message.delta", data: "not json", id: "9")]
