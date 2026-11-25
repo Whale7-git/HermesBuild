@@ -18,6 +18,7 @@ var transcriptPublications = 0
     var failStart = false
     var delayStart = false
     var emitDone = false
+    var acceptedText = ""
     var terminalHistoryEntered = false
     var deferTerminalHistory = false
     var active:String?
@@ -49,6 +50,7 @@ var transcriptPublications = 0
         startCalls += 1
         if delayStart { try await Task.sleep(nanoseconds:100_000_000) }
         if failStart { throw URLError(.timedOut) }
+        acceptedText = text
         active = "test-stream"
         return active!
     }
@@ -56,6 +58,9 @@ var transcriptPublications = 0
     func streamNativeTurn(streamID:String,lastEventID:String?,onFrame:(SSEFrame) async throws -> Bool) async throws {
         if emitDone {
             active = nil
+            // A completed turn must be visible in the authoritative GET.
+            historyRows.append(["id": "accepted-user-\(startCalls)", "role": "user", "content": acceptedText])
+            historyRows.append(["id": "accepted-answer-\(startCalls)", "role": "assistant", "content": "completed"])
             deferTerminalHistory = true
             _ = try await onFrame(SSEFrame(event:"done",data:"{\"session\":{\"session_id\":\"test\",\"messages\":[]}}",id:"test:1"))
             return
@@ -306,7 +311,7 @@ var transcriptPublications = 0
             ["id": "recovered-answer", "role": "assistant", "content": "completed"]
         ]
         await failedModel.refresh()
-        precondition(failedModel.canSend && !failedModel.uncertain)
+        try await eventually { failedModel.canSend && !failedModel.uncertain }
         failedModel.disconnect()
         print("MODEL_PASS failed terminal history locks until verified refresh")
         for throwsOnDisconnect in [false,true] {
