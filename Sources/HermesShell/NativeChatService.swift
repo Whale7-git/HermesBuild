@@ -1,18 +1,5 @@
 import Foundation
 
-enum RunTerminalStatus: String, Equatable, Sendable {
-    case completed, failed, cancelled, interrupted
-
-    var notice: String {
-        switch self {
-        case .completed: return "后台任务已完成，服务端历史已重新同步。"
-        case .failed: return "后台任务执行失败，已同步现有历史；请查看任务错误。"
-        case .cancelled: return "后台任务已取消，已同步现有历史。"
-        case .interrupted: return "后台任务已中断，已同步现有历史。"
-        }
-    }
-}
-
 enum ActiveRunProbe: Equatable, Sendable {
     case alive
     case terminal(RunTerminalStatus)

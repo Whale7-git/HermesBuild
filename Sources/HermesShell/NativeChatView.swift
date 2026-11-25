@@ -2,32 +2,6 @@ import SwiftUI
 import UIKit
 import Combine
 
-private struct ChatTaskSignalRecorder: ViewModifier {
-    @ObservedObject var model: NativeChatModel
-    let onChange: () -> Void
-
-    func body(content: Content) -> some View {
-        content
-            // 相位本身也要观察：首次加载完成是 `loading -> idle`（或
-            // `.streaming`），此时 running/submitting/stopping 全都是 false，
-            // 上面那些派生字段一个都不变。只挂派生字段会让「打开会话后恢复
-            // 已正常」这个事实等到离页才被发现，任务中心的旧提醒一直挂着。
-            // 相位转移本身很稀疏，且信号写入已按值去重，不会带来额外刷新。
-            .onChange(of: model.phase) { _, _ in onChange() }
-            .onChange(of: model.running) { _, _ in onChange() }
-            .onChange(of: model.submitting) { _, _ in onChange() }
-            .onChange(of: model.reconnecting) { _, _ in onChange() }
-            .onChange(of: model.pendingApprovals) { _, _ in onChange() }
-            .onChange(of: model.pendingClarifies) { _, _ in onChange() }
-            .onChange(of: model.stopping) { _, _ in onChange() }
-            .onChange(of: model.uncertain) { _, _ in onChange() }
-            .onChange(of: model.hasPendingSend) { _, _ in onChange() }
-            .onChange(of: model.runRecoveryNoticeShown) { _, _ in onChange() }
-            .onChange(of: model.localPersistenceIssue) { _, _ in onChange() }
-            .onChange(of: model.queuePersistenceFailed) { _, _ in onChange() }
-    }
-}
-
 /// 会话级对象容器：把「一次创建、整个会话生命周期内不变」的东西收拢到一份，
 /// 并只在视图身份首次出现时构造。
 ///
@@ -43,6 +17,9 @@ private struct ChatTaskSignalRecorder: ViewModifier {
 @MainActor
 final class ChatSessionObjects: ObservableObject {
     let model: NativeChatModel
+    let runtimeKey: ConversationRuntimeRegistry.Key
+    let presentation: UUID
+    let registry: ConversationRuntimeRegistry
     let timeline: ChatTimelineProjection
     /// 与模型同一作用域键的草稿存储：输入框用它做防抖落盘。
     let draftStore: ChatDraftStore
@@ -63,7 +40,14 @@ final class ChatSessionObjects: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
 
     init(sessionID: String, api: HermesBackend, instanceID: String, accountScope: String,
-         readingStore: ChatReadingPositionStore, historyStore: ChatHistoryStore) {
+         readingStore: ChatReadingPositionStore, historyStore: ChatHistoryStore,
+         registry: ConversationRuntimeRegistry) {
+        self.registry = registry
+        let lease = UUID()
+        self.presentation = lease
+        let key = ConversationRuntimeRegistry.Key(instanceID: instanceID,
+            accountScope: accountScope, sessionID: sessionID)
+        self.runtimeKey = key
         let scope = instanceID + "|" + accountScope
         // A06：草稿键编码 [instanceID, accountScope, sessionID]，账号间不串；
         // legacyBaseURL 用于保存时清理无账号维度的 v1 旧键。
@@ -72,14 +56,16 @@ final class ChatSessionObjects: ObservableObject {
         let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
             sessionID: sessionID, legacyBaseURL: api.webConsoleBaseURL.absoluteString,
             fileStore: fileStore)
-        let model = NativeChatModel(sessionID: sessionID, api: api, draftStore: store,
-                                    historyStore: historyStore, displayScope: scope)
+        let model = registry.claim(key, presentation: lease) {
+            NativeChatModel(sessionID: sessionID, api: api, draftStore: store,
+                            historyStore: historyStore, displayScope: scope)
+        }
         self.model = model
         self.draftStore = store
         self.timeline = ChatTimelineProjection(model: model)
         self.imageRatios = ImageRatioStore.shared.snapshot(scope: scope, sessionID: sessionID)
         self.initialReadingPosition = readingStore.load()
-        self.initialDraft = model.draft
+        self.initialDraft = store.load()
         // 去掉首值：初值已经通过 initialDraft 播种，重复推送会白跑一次同步。
         self.draftChanges = model.$draft.dropFirst().eraseToAnyPublisher()
         model.objectWillChange
@@ -190,6 +176,7 @@ struct NativeChatView: View {
 
     init(sessionID: String, title: String, api: HermesBackend, instanceID: String, accountScope: String,
          readingStore: ChatReadingPositionStore, historyStore: ChatHistoryStore,
+         registry: ConversationRuntimeRegistry,
          onOpenSidebar: @escaping () -> Void = {}) {
         self.sessionID = sessionID
         self.title = title
@@ -211,7 +198,7 @@ struct NativeChatView: View {
         // 读取也一并挪进去，避免每次宿主重建都白做一遍。
         _objects = StateObject(wrappedValue: ChatSessionObjects(
             sessionID: sessionID, api: api, instanceID: instanceID, accountScope: accountScope,
-            readingStore: readingStore, historyStore: historyStore))
+            readingStore: readingStore, historyStore: historyStore, registry: registry))
     }
 
     var model: NativeChatModel { objects.model }
@@ -231,33 +218,17 @@ struct NativeChatView: View {
         return current?.isEmpty == false ? current! : "默认模型"
     }
 
-    private var activityTitle: String { model.activity.title }
-
     var statusSnapshot: ChatStatusSnapshot {
-        ChatStatusSnapshot(reasoning: model.reasoning, running: model.activity.showsProgress,
-            notice: model.hidesRoutineRecoveryNotice ? nil : model.notice, activityTitle: model.hidesRoutineRecoveryNotice ? "正在同步…" : activityTitle, activityInChrome: true)
+        let presentation = model.presentationState
+        return ChatStatusSnapshot(reasoning: model.reasoning, running: presentation.showsProgress,
+            notice: presentation.notice, activityTitle: presentation.title, activityInChrome: true)
     }
 
     /// Persist facts this page has actually observed. The caller supplies a
     /// fresh set so the computation never becomes part of SwiftUI's body type.
     private func recordTaskSignals() {
-        var signals: Set<SessionTaskSignal> = []
-        if model.running || model.submitting || model.reconnecting { signals.insert(.running) }
-        if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
-        // clarify 同样让这一轮停住等用户，任务中心必须能看出「在等人」，
-        // 否则用户会以为任务卡死。
-        if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
-        if model.stopping { signals.insert(.stopping) }
-        if model.uncertain || model.activeRecoveryUnreadable
-            || (model.activeTurnRecovery != nil && !model.running)
-            || (model.hasPendingSend && !model.submitting) {
-            signals.insert(.needsVerification)
-        }
-        if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil
-            || model.queuePersistenceFailed {
-            signals.insert(.recoveryIssue)
-        }
-        app.setSessionTaskSignals(signals, for: sessionID)
+        guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
+        app.recordRuntimeSignals(model, key: objects.runtimeKey)
     }
 
     // Split the very long ViewBuilder chain into type-checkable segments.
@@ -308,10 +279,15 @@ struct NativeChatView: View {
     private var lifecycleContent: some View {
         layoutContent
         .task { [app] in
+            guard objects.registry.reattach(objects.runtimeKey, presentation: objects.presentation,
+                                            model: model) else { return }
+            app.bindRuntime(model, key: objects.runtimeKey)
+            guard displayScope == app.historyInstanceID + "|" + app.historyAccountScope,
+                  app.currentSessionID == sessionID else { return }
             visible = true
             // 输入框的初值是模型读到的本地草稿，这里同步一次基线，
             // 之后才用「与上次交给模型的值是否相同」判断模型侧改写。
-            syncedDraft = model.draft
+            syncedDraft = objects.initialDraft
             let instance = app.active.id
             let account = app.historyAccountScope
             let changeToken = app.activeChangeToken
@@ -363,7 +339,8 @@ struct NativeChatView: View {
             guard !Task.isCancelled, visible, app.active.id == instance,
                   app.historyAccountScope == account, app.activeChangeToken == changeToken,
                   app.currentSessionID == sessionID else { return }
-            await model.load()
+            if model.suspended { await model.resumeForeground() }
+            else { await model.load(silent: !model.transcript.messages.isEmpty, preserveLoadedOlder: true) }
             // The initial disk restore may already contain an unresolved
             // accepted POST; onChange cannot see that pre-existing value.
             model.scheduleAutomaticReconciliation()
@@ -427,10 +404,16 @@ struct NativeChatView: View {
             focusedUserTurnID = nil
             focusedUserTurnText = nil
             controllerBox.value?.turnReading.reset()
-            model.disconnect()
             recordTaskSignals()
-            app.resetRequestTaskSignalIndex()
+            // Presentation detachment is not transport suspension. A live
+            // runtime retains its SSE cursor and exact POST owner.
+            objects.registry.detach(objects.runtimeKey, presentation: objects.presentation)
             visible = false
+            // Let the child composer finish its final synchronous draft save
+            // before the registry may evict an offscreen settled runtime.
+            Task { @MainActor [weak app] in
+                app?.wakeUnopenedSessionRecovery()
+            }
             pendingPanel = nil; afterPanelAction = nil; activePanel = nil
             attachmentHighlightTask?.cancel()
             attachmentHighlight = nil
@@ -439,7 +422,7 @@ struct NativeChatView: View {
             scheduleFind(.cancelled, jump: false)
             foregroundResumeTask?.cancel(); foregroundResumeTask = nil
         }
-        .modifier(ChatTaskSignalRecorder(model: model, onChange: recordTaskSignals))
+        // AppState observes runtime state even after the presentation detaches.
     }
 
     private var observationContent: some View {
@@ -516,13 +499,13 @@ struct NativeChatView: View {
             attachmentSendTask?.cancel(); attachmentSendTask = nil
             attachments.cancelUploads()
             preparingAttachmentSend = false
-            attachments.reset(sessionID: sessionID)
+            // The old account's attachment state is no longer writable.
             cancelExport()
             foregroundResumeTask?.cancel(); foregroundResumeTask = nil
             // 认证图片缓存按「实例 + 账号」隔离；切换账号必须整片清掉，
             // 否则上一个账号能读到的附件图会残留在内存里。
             RemoteImageLoader.shared.purgeAuthenticated()
-            model.disconnect()
+            // AppState retires the old registry synchronously on scope change.
         }
         .onChange(of: app.sessionActionError) { _, error in
             if let error { showToast(error) }
@@ -554,6 +537,8 @@ struct NativeChatView: View {
         }
         // 服务端确认换模型后，同步输入栏标签；不靠重新进会话才刷新。
         .onChange(of: app.currentSession?.model) { _, newValue in
+            guard displayScope == app.historyInstanceID + "|" + app.historyAccountScope,
+                  app.currentSessionID == sessionID else { return }
             if let newValue, !newValue.isEmpty { model.sessionModel = newValue }
         }
         .onReceive(NotificationCenter.default.publisher(for: RecoveryNetworkWakeup.restored)) { _ in
@@ -587,7 +572,7 @@ struct NativeChatView: View {
                 cancelExport()
                 foregroundResumeTask?.cancel(); foregroundResumeTask = nil
                 restoreCancelled = true
-                model.disconnect()
+                // AppState owns network suspension for all runtimes.
             }
         }
     }

@@ -37,6 +37,23 @@ extension AppStateTests {
         let unknown = try snapshot(unknown: true)
         let running = try snapshot(active: "run-original")
         let restricted = try snapshot(readOnly: true)
+        // Three scopes, twelve unresolved sessions: unattempted work wins
+        // even when the first batch has already passed its cooldown.
+        let keys = (0..<12).map { index in
+            SessionRecoveryCoordinator.Key(instanceID: "host-\(index % 3)",
+                accountScope: "account", sessionID: "session-\(index)")
+        }
+        let first = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: [:], now: 100)
+        precondition(first.count == 5)
+        let attempted = Dictionary(uniqueKeysWithValues: first.map { ($0, 100.0) })
+        let second = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: attempted, now: 161)
+        precondition(second.count == 5 && Set(first).isDisjoint(with: Set(second)))
+        let secondAttempts = attempted.merging(
+            Dictionary(uniqueKeysWithValues: second.map { ($0, 161.0) })) { _, new in new }
+        let third = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: secondAttempts, now: 222)
+        precondition(Set(first + second + third) == Set(keys))
+        precondition(SessionRecoveryCoordinator.eligibleKeys(first, attempted: attempted,
+            now: 101).isEmpty)
         precondition(SessionRecoveryCoordinator.canRetireAcceptedReceipt(
             from: absent, sessionID: "proof-session"), "verified absent allows read-only reconciliation")
         precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(

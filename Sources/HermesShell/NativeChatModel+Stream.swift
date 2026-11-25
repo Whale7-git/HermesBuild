@@ -37,6 +37,7 @@ extension NativeChatModel {
     /// 那个 GET 自己就是置起 `reconciling` 的人，不能被同一个标志挡住。
     func load(silent: Bool = false, preserveLoadedOlder: Bool = false,
               allowWhileReconciling: Bool = false) async {
+        guard !runtimeRetired else { return }
         if submitting { resumeRequested = true; return }
         guard !syncing, !loading else { return }
         // A-07：核对流程自己持有 `reconciling`，只有它能带 allowWhileReconciling 进来。
@@ -47,6 +48,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         let generation = revision
         suspended = false
@@ -72,7 +74,7 @@ extension NativeChatModel {
         do {
             let snap = try await api.history(sessionID:sessionID,before:nil)
             guard generation == revision, !Task.isCancelled else { return }
-            RuntimeLogRecorder.shared.record(.info, "history",
+            self.recordRuntimeLog(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
             try applySnapshot(snap, preserveLoadedOlder: preserveLoadedOlder)
             // 权威历史已经读到：之前的暂时性失败不再成立，停掉退避重试。
@@ -81,7 +83,8 @@ extension NativeChatModel {
             if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
             if case .active(let active) = snap.activeRunEvidence {
-                if reapedTransportRunID == active {
+                if reapedTransportRunID == active ||
+                    (activeTurnRecovery?.runID == active && activeTurnRecovery?.terminalStatus != nil) {
                     uncertain = true
                     pauseQueueForRecovery()
                     await settleReapedRunTransport(active: active, generation: generation)
@@ -95,7 +98,7 @@ extension NativeChatModel {
             if generation == revision {
                 if handleAuthenticationFailure(error) { return }
                 let failure = HistoryLoadFailure.classify(error)
-                RuntimeLogRecorder.shared.record(failure == .transient ? .info : .error,
+                self.recordRuntimeLog(failure == .transient ? .info : .error,
                     "history", "load fail kind=\(failure) err=\(error.localizedDescription)")
                 if failure == .transient {
                     // 错误本身仍然要暴露：网络不可用正是用户该看到的信息。
@@ -156,7 +159,7 @@ extension NativeChatModel {
             let projectedCount = buffer.messages.count + newMessages.count
             let projectedBytes = loadedBytes + addedBytes
             guard projectedCount <= Self.maxLoadedMessages, projectedBytes <= Self.maxLoadedBytes else {
-                RuntimeLogRecorder.shared.record(.warning, "paging",
+                self.recordRuntimeLog(.warning, "paging",
                     "refused page count=\(projectedCount) bytes=\(projectedBytes)")
                 olderLimitReached = true
                 notice = "已到本地历史窗口上限（\(Self.maxLoadedMessages) 条 / \(Self.maxLoadedBytes / 1024 / 1024) MB）。更早内容可用「导出 Markdown → 获取完整历史」查看。"
@@ -166,7 +169,7 @@ extension NativeChatModel {
             buffer.tools.insert(contentsOf: newTools, at: 0)
             olderOffset = snap.olderOffset
             olderLimitReached = false
-            RuntimeLogRecorder.shared.record(.info, "paging",
+            self.recordRuntimeLog(.info, "paging",
                 "page ok added=\(newMessages.count) offset=\(snap.olderOffset)")
             confirmedHistory?.prepend(snap)
             if let confirmedHistory { historyStore?.schedule(confirmedHistory) }
@@ -179,7 +182,7 @@ extension NativeChatModel {
             if error is CancellationError { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
-            RuntimeLogRecorder.shared.record(.error, "paging", "page fail err=\(error.localizedDescription)")
+            self.recordRuntimeLog(.error, "paging", "page fail err=\(error.localizedDescription)")
         }
     }
 
@@ -452,8 +455,12 @@ extension NativeChatModel {
         // assistant answer into permission to send another POST.
         if let receipt = activeTurnRecovery, !submitting {
             if snap.activeStreamID == receipt.runID {
-                if pendingSend == nil { uncertain = false }
-            } else if receipt.confirmsCompletion(in: snap) {
+                if receipt.terminalStatus != nil {
+                    // A lagging history response cannot resurrect a proven terminal Run.
+                    uncertain = true
+                    pauseQueueForRecovery()
+                } else if pendingSend == nil { uncertain = false }
+            } else if receipt.terminalStatus == nil && receipt.confirmsCompletion(in: snap) {
                 if clearAcceptedTurnRecovery(), pendingSend == nil {
                     uncertain = false
                     notice = nil
@@ -584,9 +591,9 @@ extension NativeChatModel {
         }
         guard clearAcceptedTurnRecovery() else { return false }
         uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
-        if !uncertain { notice = nil }
+        if !uncertain { notice = receipt.terminalStatus?.notice }
         error = nil
-        RuntimeLogRecorder.shared.record(.info, "recovery",
+        self.recordRuntimeLog(.info, "recovery",
             "long-run history verified pages=\(pages.count) without POST")
         return !uncertain
     }
@@ -594,6 +601,7 @@ extension NativeChatModel {
     /// Single foreground GET-only owner. Time controls rate, not safety.
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
+        guard !runtimeRetired else { return }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
@@ -703,18 +711,25 @@ extension NativeChatModel {
         guard !suspended, !submitting, !stopping, !authenticationRequired else { return }
         activeRunProbeTask?.cancel()
         activeRunProbeRunID = receipt.runID
+        let ticket = UUID()
+        activeRunProbeTicket = ticket
         let generation = revision
         activeRunProbeTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if self.activeRunProbeRunID == receipt.runID {
+                if self.activeRunProbeTicket == ticket {
                     self.activeRunProbeTask = nil
                     self.activeRunProbeRunID = nil
+                    self.activeRunProbeTicket = nil
                 }
             }
             do {
-                let result = try await self.api.probeActiveRun(
-                    sessionID: self.sessionID, runID: receipt.runID)
+                let result: ActiveRunProbe
+                if let terminal = receipt.terminalStatus { result = .terminal(terminal) }
+                else {
+                    result = try await self.api.probeActiveRun(
+                        sessionID: self.sessionID, runID: receipt.runID)
+                }
                 guard generation == self.revision, !Task.isCancelled,
                       !self.suspended,
                       self.activeTurnRecovery == receipt else { return }
@@ -740,10 +755,15 @@ extension NativeChatModel {
                     // A confirmed terminal status still requires a final read-only
                     // history GET; do not replay the original accepted POST.
                     self.pauseQueueForRecovery()
+                    guard self.rememberTerminalStatus(runID: receipt.runID, outcome: outcome),
+                          let terminalReceipt = self.activeTurnRecovery else {
+                        self.uncertain = true
+                        return
+                    }
                     do {
                         let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
                         guard generation == self.revision, !Task.isCancelled, !self.suspended,
-                              self.activeTurnRecovery == receipt else { return }
+                              self.activeTurnRecovery == terminalReceipt else { return }
                         guard finalHistory.sessionID == self.sessionID,
                               finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                             self.uncertain = true
@@ -757,7 +777,7 @@ extension NativeChatModel {
                         self.notice = outcome.notice
                     } catch {
                         guard generation == self.revision, !Task.isCancelled,
-                              self.activeTurnRecovery == receipt else { return }
+                              self.activeTurnRecovery == terminalReceipt else { return }
                         if self.handleAuthenticationFailure(error) { return }
                         self.uncertain = true
                         self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
@@ -814,6 +834,7 @@ extension NativeChatModel {
     ///   每重入一次减一，耗尽就落定成待核对态，把决定权交回用户，
     ///   而不是让界面永远停在「正在恢复」。
     func attach(streamID:String, recoverBudget: Int = 3) {
+        guard !runtimeRetired else { return }
         streamTask?.cancel()
         publishTask?.cancel()
         publishTask = nil
@@ -848,7 +869,7 @@ extension NativeChatModel {
                         guard self.accepts(self.runContext(for: active, generation: generation)),
                               !Task.isCancelled else { return true }
                         if !self.streamConnected {
-                            RuntimeLogRecorder.shared.record(.info, "stream", "connected stream=\(active) resumed=\(self.lastEventID != nil)")
+                            self.recordRuntimeLog(.info, "stream", "connected stream=\(active) resumed=\(self.lastEventID != nil)")
                         }
                         // 收到帧即「已连上」。若此前处于重连中，这一帧就结束了恢复期，
                         // 恢复提示与残留错误一并撤掉。
@@ -938,7 +959,7 @@ extension NativeChatModel {
                             self.clearApproval()
                             terminalEvent = frame.event
                             let failure = self.buffer.failure
-                            RuntimeLogRecorder.shared.record(
+                            self.recordRuntimeLog(
                                 failure == nil ? .info : .error, "stream",
                                 "terminal event=\(frame.event)\(failure.map { " err=\($0)" } ?? "")")
                             self.flush()
@@ -965,7 +986,7 @@ extension NativeChatModel {
                         await settleReapedRunTransport(active: active, generation: generation)
                         return
                     }
-                    RuntimeLogRecorder.shared.record(.warning, "stream", "interrupted err=\(error.localizedDescription)")
+                    self.recordRuntimeLog(.warning, "stream", "interrupted err=\(error.localizedDescription)")
                     self.error = error.localizedDescription
                 }
                 guard generation == revision, !Task.isCancelled else { return }
@@ -1008,7 +1029,7 @@ extension NativeChatModel {
                                 reconciling = false
                                 notice = "回复已结束，但最终历史尚未同步；已保留当前回复并暂停自动续发，可稍后核对。"
                                 flush()
-                                RuntimeLogRecorder.shared.record(.warning, "stream",
+                                self.recordRuntimeLog(.warning, "stream",
                                     "final history pending run=\(active) attempts=3")
                                 return
                             }
@@ -1110,7 +1131,7 @@ extension NativeChatModel {
                 var recovered = false
                 while retries < 3 && !recovered {
                     retries += 1
-                    RuntimeLogRecorder.shared.record(.info, "stream", "recover attempt=\(retries)")
+                    self.recordRuntimeLog(.info, "stream", "recover attempt=\(retries)")
                     // 重连期间本轮**未结束**：相位是 `.reconnecting`，
                     // `isRunning` 为真，但 `allowsSteer` 为假（服务端此刻没有
                     // 活跃 agent 可注入）。这是本版修掉的真实缺陷。
@@ -1150,7 +1171,7 @@ extension NativeChatModel {
                             // 不重置 `retries`：GET 预算是整轮共享的，
                             // 重订阅只换目标流，不该凭空多给三次核对机会。
                             recovered = true
-                            RuntimeLogRecorder.shared.record(.info, "stream", "recovered stream=\(next)")
+                            self.recordRuntimeLog(.info, "stream", "recovered stream=\(next)")
                             // 只重订阅一次。
                             //
                             // 服务端可能一直报着 active 却一帧都推不出来（run 已死、
@@ -1166,7 +1187,7 @@ extension NativeChatModel {
                             // 这样「服务端报 active 但推不出帧」最终会收敛，而不是无限循环。
                             resubscribed += 1
                             guard resubscribed <= 3 else {
-                                RuntimeLogRecorder.shared.record(.error, "stream",
+                                self.recordRuntimeLog(.error, "stream",
                                     "resubscribe gave no frames stream=\(next)")
                                 transition(to: .idle)
                                 uncertain = true
@@ -1205,7 +1226,7 @@ extension NativeChatModel {
                     }
                 }
                 if !recovered {
-                    RuntimeLogRecorder.shared.record(.error, "stream", "recover exhausted retries=\(retries)")
+                    self.recordRuntimeLog(.error, "stream", "recover exhausted retries=\(retries)")
                     // 预算耗尽：本轮仍未确认结束，退回静止态但置 uncertain 锁住发送。
                     transition(to: .idle)
                     uncertain = true
@@ -1246,19 +1267,26 @@ extension NativeChatModel {
             return
         }
         reapedTransportRunID = active
-        RuntimeLogRecorder.shared.record(.warning, "stream", "transport unavailable; read-only status recovery")
+        self.recordRuntimeLog(.warning, "stream", "transport unavailable; read-only status recovery")
         self.error = nil
         let unconfirmed = "暂未取得最新结果，将自动同步；消息不会重复发送。"
         do {
-            let probe = try await api.probeActiveRun(sessionID: sessionID, runID: active)
+            let probe: ActiveRunProbe
+            if let receipt = activeTurnRecovery, receipt.runID == active,
+               let terminal = receipt.terminalStatus { probe = .terminal(terminal) }
+            else { probe = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             switch probe {
             case .alive:
                 // status 说还在跑，但实时连接已经没了：再也收不到帧。
                 // 不重试订阅，也不假装结束，把决定权交给用户。
                 lockDownRunStatus("任务仍在执行，结果将自动同步。")
-            case .terminal:
-                // 已有终态：用一次权威历史把内容补齐后落定。
+            case .terminal(let outcome):
+                // Preserve exact terminal proof before the fallible final GET.
+                guard rememberTerminalStatus(runID: active, outcome: outcome) else {
+                    lockDownRunStatus(unconfirmed)
+                    return
+                }
                 let snap = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
                 guard !stopping, snap.sessionID == sessionID, !snap.readOnly,
@@ -1273,7 +1301,7 @@ extension NativeChatModel {
                     lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 } else {
                     reapedTransportRunID = nil
-                    notice = nil
+                    notice = outcome.notice
                 }
             case .unknown, .unresolved:
                 lockDownRunStatus(unconfirmed)
@@ -1296,6 +1324,7 @@ extension NativeChatModel {
     }
 
     func resumeForeground() async {
+        guard !runtimeRetired else { return }
         // STOP remains STOP across background transitions. Only a read-only
         // run probe may resolve it; a general refresh would erase its phase.
         if stopping {
@@ -1315,6 +1344,7 @@ extension NativeChatModel {
     /// 否则这里一进来就把标志抹掉，连点「核对」会并发发起多个 GET 互相打断。
     func refresh(silent: Bool = false, preserveLoadedOlder: Bool = false,
                  resetReconciling: Bool = true) async {
+        guard !runtimeRetired else { return }
         if stopping {
             // A manual status check must not convert STOP into an ordinary
             // history load or accidentally reopen ordinary sending.
@@ -1330,6 +1360,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
@@ -1356,6 +1387,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil

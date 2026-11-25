@@ -148,6 +148,23 @@ extension ModelTests {
         complete.disconnect()
         success.active = "run"
         await complete.resumeForeground()
+        // Ordinary recovery stays compact even after the initial quiet window,
+        // while genuine delivery/storage problems must not be hidden.
+        let compact = SessionPresentationState(activity: .needsVerification,
+            transcriptAvailable: true, routineRecovery: true, requiresAction: false,
+            verificationPending: true, errorPresent: true, warningPresent: true, notice: "retry")
+        expect(compact.showsProgress && !compact.showsNotice && !compact.needsVerification
+            && compact.notice == nil, "routine recovery remains compact across surfaces")
+        let actionable = SessionPresentationState(activity: .needsVerification,
+            transcriptAvailable: true, routineRecovery: true, requiresAction: true,
+            verificationPending: true, errorPresent: true, warningPresent: true, notice: "delivery")
+        expect(actionable.showsNotice && actionable.needsVerification && actionable.hasError
+            && actionable.notice == "delivery", "real action and persistence failures remain visible")
+        let stopPresentation = SessionPresentationState(activity: .stopping,
+            transcriptAvailable: true, routineRecovery: true, requiresAction: false,
+            verificationPending: true, errorPresent: false, warningPresent: true, notice: "stop")
+        expect(stopPresentation.title == ChatActivity.stopping.title,
+            "automatic recovery cannot hide an outstanding STOP")
         print("ACTIVITY_STAGE confirmed terminal completion")
         try await eventually { complete.completedReplies == 1 }
         expect(complete.activity == .ready && complete.completedReplies == 1, "done plus canonical idle history emits one real completion")

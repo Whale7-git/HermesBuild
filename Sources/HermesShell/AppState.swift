@@ -214,6 +214,75 @@ final class AppState: ObservableObject {
     private var damagedTaskStore = false
     private var taskDerivedState = SessionTaskDerivedState()
     private let sessionRecovery = SessionRecoveryCoordinator()
+    #if canImport(UIKit)
+    let conversationRuntimes = ConversationRuntimeRegistry()
+
+    private func ownsRuntime(instanceID: String, accountScope: String, sessionID: String) -> Bool {
+        conversationRuntimes.contains(.init(instanceID: instanceID,
+            accountScope: accountScope, sessionID: sessionID))
+    }
+
+    func recordRuntimeSignals(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key,
+                              handoff: Bool = false) {
+        guard !model.runtimeRetired, historyInstanceID == key.instanceID,
+              historyAccountScope == key.accountScope,
+              conversationRuntimes.contains(key, model: model) else { return }
+        var signals: Set<SessionTaskSignal> = []
+        if model.running { signals.insert(.running) }
+        if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
+        if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
+        if model.stopping { signals.insert(.stopping) }
+        if model.uncertain || model.activeRecoveryUnreadable ||
+            (model.activeTurnRecovery != nil && !model.running) ||
+            (model.hasPendingSend && !model.submitting) ||
+            (handoff && (model.activeTurnRecovery != nil || model.hasPendingSend)) {
+            signals.insert(.needsVerification)
+        }
+        if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil ||
+            model.queuePersistenceFailed { signals.insert(.recoveryIssue) }
+        setSessionTaskSignals(signals, for: key.sessionID)
+    }
+
+    func bindRuntime(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
+        model.observeRuntime { [weak self, weak model] in
+            guard let self, let model, self.conversationRuntimes.contains(key, model: model) else { return }
+            self.recordRuntimeSignals(model, key: key)
+            if self.appIsActive { model.scheduleAutomaticReconciliation() }
+        }
+    }
+
+    private func wakeDetachedRuntimes() {
+        for (key, model) in conversationRuntimes.detached {
+            recordRuntimeSignals(model, key: key)
+            guard appIsActive else { continue }
+            if model.suspended && !model.submitting {
+                Task { [weak self, weak model] in
+                    guard let self, let model, self.appIsActive,
+                          self.conversationRuntimes.contains(key, model: model),
+                          !model.runtimeRetired, model.suspended else { return }
+                    await model.resumeForeground()
+                    model.scheduleAutomaticReconciliation()
+                }
+            } else {
+                model.scheduleAutomaticReconciliation()
+            }
+        }
+        let current = currentSessionID.map { ConversationRuntimeRegistry.Key(
+            instanceID: historyInstanceID, accountScope: historyAccountScope, sessionID: $0) }
+        conversationRuntimes.pruneDetached(excluding: current) { [weak self] key, model in
+            self?.recordRuntimeSignals(model, key: key, handoff: true)
+        }
+        // STOP is a distinct read-only owner; a long-lived STOP must not
+        // become dependent on leaving and reentering the conversation.
+        if appIsActive {
+            for (_, model) in conversationRuntimes.all where model.stopping && !model.suspended {
+                model.scheduleStopStatusPolling()
+            }
+        }
+    }
+    #else
+    private func ownsRuntime(instanceID: String, accountScope: String, sessionID: String) -> Bool { false }
+    #endif
     /// 通知投递。默认走系统实现，测试可注入替身。
     let notifier: any TaskNotificationDelivering
     /// Exact IDs delivered for unresolved requests, grouped by the immutable
@@ -437,6 +506,8 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
+        // Cancel the offscreen lease before opening the visible Model.
+        sessionRecovery.cancel()
         invalidateCreationNavigation()
         homeSendError = nil
         openedSession = session
@@ -521,34 +592,94 @@ final class AppState: ObservableObject {
         conversationIsVisible = appActive && conversationVisible
         if !appActive {
             sessionRecovery.cancel()
+            #if canImport(UIKit)
+            conversationRuntimes.suspendAll()
+            #endif
         } else if !wasActive {
-            scheduleUnopenedSessionRecovery()
+            wakeUnopenedSessionRecovery()
         }
     }
 
     /// Only a matching, durable final reply may retire this observation.
     /// Do not let stale async work clear a newly recorded verification signal.
-    func wakeUnopenedSessionRecovery() { scheduleUnopenedSessionRecovery() }
+    func wakeUnopenedSessionRecovery() {
+        #if canImport(UIKit)
+        wakeDetachedRuntimes()
+        #endif
+        scheduleUnopenedSessionRecovery()
+    }
+
+    private func recoveryObservations(instanceID: String, accountScope: String)
+        -> [String: SessionTaskObservation]? {
+        if instanceID == historyInstanceID && accountScope == historyAccountScope {
+            return damagedTaskStore ? nil : sessionTaskObservations
+        }
+        guard case .loaded(let rows) = SessionTaskStore.inspect(
+            instanceID: instanceID, accountScope: accountScope) else { return nil }
+        return rows
+    }
 
     private func scheduleUnopenedSessionRecovery() {
-        guard appIsActive, !needsLogin, !needsInstanceSetup else { return }
-        let originalScope = actionScope
-        sessionRecovery.schedule(
-            api: api, instanceID: historyInstanceID,
-            accountScope: historyAccountScope,
-            observations: sessionTaskObservations,
-            visibleSessionID: currentSessionID
-        ) { [weak self] sessionID, observedVersion in
-            guard let self, self.isCurrent(originalScope),
-                  self.appIsActive, self.currentSessionID != sessionID,
-                  let current = self.sessionTaskObservations[sessionID],
-                  current.signals.contains(.needsVerification),
-                  current.version(for: .needsVerification) == observedVersion else { return }
+        guard appIsActive, !clearingHistory else { return }
+        var candidates: [SessionRecoveryCoordinator.Candidate] = []
+        let configured = instances
+        for instance in configured {
+            let selected = instance.id == active.id
+            guard selected ? (!needsLogin && !needsInstanceSetup) :
+                instance.backend == .gateway else { continue }
+            guard instance.backend != .gateway || !instance.apiKey.isEmpty else { continue }
+            let instanceID = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
+            let account = ChatHistoryIdentity.accountScope(instanceID: instanceID)
+            guard let rows = recoveryObservations(instanceID: instanceID, accountScope: account) else { continue }
+            let unresolved = rows.filter { sessionID, observation in
+                (!selected || currentSessionID != sessionID) &&
+                !ownsRuntime(instanceID: instanceID, accountScope: account, sessionID: sessionID) &&
+                SessionRecoveryCoordinator.recoverySignal(for: observation) != nil
+            }
+            guard !unresolved.isEmpty else { continue }
+            let backend = selected ? api : Self.makeBackend(for: instance)
+            for (sessionID, observation) in unresolved {
+                candidates.append(.init(key: .init(instanceID: instanceID,
+                    accountScope: account, sessionID: sessionID),
+                    observation: observation, api: backend))
+            }
+        }
+        sessionRecovery.schedule(candidates: candidates, isEligible: { [weak self] key, signal, version in
+            guard let self, self.appIsActive, !self.clearingHistory,
+                  let original = configured.first(where: {
+                      ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == key.instanceID
+                  }),
+                  self.instances.contains(original),
+                  ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope
+            else { return false }
+            if self.historyInstanceID == key.instanceID && self.historyAccountScope == key.accountScope {
+                guard !self.needsLogin, self.currentSessionID != key.sessionID else { return false }
+            }
+            guard !self.ownsRuntime(instanceID: key.instanceID, accountScope: key.accountScope,
+                                    sessionID: key.sessionID) else { return false }
+            guard let current = self.recoveryObservations(instanceID: key.instanceID,
+                accountScope: key.accountScope)?[key.sessionID] else { return false }
+            return current.signals.contains(signal) && current.version(for: signal) == version
+        }, onVerified: { [weak self] key, signal, version in
+            guard let self,
+                  var rows = self.recoveryObservations(instanceID: key.instanceID,
+                    accountScope: key.accountScope),
+                  let current = rows[key.sessionID],
+                  current.signals.contains(signal),
+                  current.version(for: signal) == version else { return }
             var remaining = current.signals
             remaining.remove(.needsVerification)
             remaining.remove(.running)
-            self.setSessionTaskSignals(remaining, for: sessionID)
-        }
+            if self.historyInstanceID == key.instanceID && self.historyAccountScope == key.accountScope {
+                self.setSessionTaskSignals(remaining, for: key.sessionID)
+            } else {
+                if remaining.isEmpty { rows.removeValue(forKey: key.sessionID) }
+                else { rows[key.sessionID] = SessionTaskObservation.updating(current, signals: remaining) }
+                if !SessionTaskStore.save(rows, instanceID: key.instanceID, accountScope: key.accountScope) {
+                    self.sessionTaskPersistenceWarning = "部分任务状态未能保存，重新打开会话后将再次核对。"
+                }
+            }
+        })
     }
 
     /// The request identity index belongs to the current instance/account and
@@ -1435,6 +1566,9 @@ final class AppState: ObservableObject {
     /// `clearMarkdownCache` 默认 true：渲染缓存按正文内容寻址，留着不会串内容，
     /// 但会把上一个实例/账号的对话正文继续留在内存里——跨作用域必须清。
     private func resetScopeView(clearMarkdownCache: Bool = true) {
+        #if canImport(UIKit)
+        conversationRuntimes.retireAll()
+        #endif
         sessionRecovery.cancel()
         // A-09：先取消上一代残留的自动刷新，别让它继续持有旧 api 跑网络。
         cancelScopeRefresh()
@@ -1466,6 +1600,9 @@ final class AppState: ObservableObject {
         // 先清当前实例的 cookie（URLSession + WebKit），避免换账号后旧登录态残留。
         if let webUI = api as? HermesAPI { webUI.clearCookies() }
         let instance = historyInstanceID
+        #if canImport(UIKit)
+        conversationRuntimes.retireAll()
+        #endif
         let previous = ChatHistoryIdentity.rotate(instanceID: instance)
         GatewayRunStore.removeAll(instanceID: instance, accountScope: previous)
         // Backend-local run recovery must move to the new account namespace too.
@@ -1535,6 +1672,10 @@ final class AppState: ObservableObject {
     /// 删除一条会话在设备上留下的全部本地状态。
     /// 只清当前账号作用域下的那一份，别的账号不受影响。
     private func discardLocalState(for sessionID: String, instanceID: String, accountScope: String) {
+        #if canImport(UIKit)
+        conversationRuntimes.retire(.init(instanceID: instanceID,
+            accountScope: accountScope, sessionID: sessionID))
+        #endif
         recordCleanupResult(ChatDraftStore.removeSession(
             instanceID: instanceID, accountScope: accountScope, sessionID: sessionID))
         ChatReadingPositionStore(instanceID: instanceID, accountScope: accountScope,
@@ -1666,6 +1807,14 @@ final class AppState: ObservableObject {
         if snapshotDeparting && hasLoadedSessions && instances.indices.contains(activeIndex) {
             rememberSessionList(sessions, scope: sessionListScopeKey)
         }
+        #if canImport(UIKit)
+        if snapshotDeparting && instances.indices.contains(activeIndex) {
+            for (key, model) in conversationRuntimes.all {
+                recordRuntimeSignals(model, key: key, handoff: true)
+            }
+        }
+        conversationRuntimes.retireAll()
+        #endif
         activeIndex = index
         // 比例缓存要等进入会话才用得上，先在后台把本作用域读进内存，
         // 避免会话首帧拿到空快照；读取本身不在主线程。

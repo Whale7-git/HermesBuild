@@ -14,10 +14,7 @@ extension NativeChatView {
         // An ordinary confirmed disk snapshot is already on screen. Its
         // authoritative GET must run, but the healthy cache/sync transition
         // is not a warning and must not insert a yellow row on every open.
-        if model.hidesRoutineRecoveryNotice && !model.transcript.messages.isEmpty { return false }
-        return model.error != nil || model.uncertain
-            || (model.hasPendingSend && !model.submitting) || model.runRecoveryNoticeShown
-            || model.localPersistenceIssue != nil || model.queuePersistenceFailed
+        return model.presentationState.showsNotice
     }
 
     /// One interactive request stays fully visible. Sibling approvals/clarifies

@@ -426,6 +426,42 @@ var transcriptPublications = 0
         resumedService.inspect = nil
         resumed.disconnect()
         print("MODEL_PASS disconnect/load same stream keeps cursor and text deduplication")
+        // Two presentations of one Session must share a runtime. A late
+        // disappear from the previous view cannot retire the replacement.
+        let registry = ConversationRuntimeRegistry()
+        let key = ConversationRuntimeRegistry.Key(instanceID: "a", accountScope: "b", sessionID: "test")
+        let firstLease = UUID(), secondLease = UUID()
+        let runtimeService = AcceptedPendingService()
+        let runtime = registry.claim(key, presentation: firstLease) {
+            NativeChatModel(sessionID: "test", api: runtimeService)
+        }
+        await runtime.load()
+        runtime.draft = "accepted"
+        let runtimePost = Task { await runtime.send() }
+        try await eventually { runtimeService.pending != nil }
+        registry.detach(key, presentation: firstLease)
+        let reopened = registry.claim(key, presentation: secondLease) {
+            fatalError("in-flight runtime must not be reconstructed")
+        }
+        precondition(reopened === runtime && reopened.submitting)
+        registry.detach(key, presentation: firstLease)
+        precondition(registry.owns(key, presentation: secondLease))
+        precondition(!registry.mayWriteDraft(key, presentation: firstLease))
+        precondition(registry.mayWriteDraft(key, presentation: secondLease))
+        precondition(!registry.reattach(key, presentation: firstLease, model: runtime))
+        registry.detach(key, presentation: secondLease)
+        registry.pruneDetached(excluding: nil, limit: 0)
+        precondition(registry.contains(key), "in-flight POST may not be evicted")
+        precondition(registry.reattach(key, presentation: secondLease, model: runtime))
+        registry.retireAll()
+        runtimeService.accepted = true
+        runtimeService.pending?.resume(returning: "accepted-stream")
+        runtimeService.pending = nil
+        _ = await runtimePost.value
+        precondition(runtime.runtimeRetired && runtime.activeTurnRecovery == nil &&
+            !registry.contains(key), "late POST cannot mutate a retired runtime")
+        print("MODEL_PASS runtime lease handoff and retired POST fencing")
+
         let acceptedService = AcceptedPendingService()
         let acceptedModel = NativeChatModel(sessionID:"test",api:acceptedService)
         await acceptedModel.load()

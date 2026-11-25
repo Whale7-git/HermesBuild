@@ -568,6 +568,19 @@ struct ChatSnapshot: Sendable {
     }
 }
 
+enum RunTerminalStatus: String, Codable, Equatable, Sendable {
+    case completed, failed, cancelled, interrupted
+
+    var notice: String {
+        switch self {
+        case .completed: return "后台任务已完成，服务端历史已重新同步。"
+        case .failed: return "后台任务执行失败，已同步现有历史；请查看任务错误。"
+        case .cancelled: return "后台任务已取消，已同步现有历史。"
+        case .interrupted: return "后台任务已中断，已同步现有历史。"
+        }
+    }
+}
+
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
 /// Stored in a protected, per-account/session file. An active run ID is never
 /// evidence that its associated POST can be replayed.
@@ -577,6 +590,9 @@ struct ActiveTurnRecovery: Codable, Equatable {
     let knownIDs: Set<String>
     let text: String
     let attachmentPaths: Set<String>
+    /// Exact Run/Session terminal evidence survives a failed final GET and
+    /// server-side status expiry. Optional for pre-build232 receipts.
+    var terminalStatus: RunTerminalStatus? = nil
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.

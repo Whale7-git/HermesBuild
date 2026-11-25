@@ -1072,6 +1072,7 @@ struct RootView: View {
                     }
                 }
             ),
+            registry: app.conversationRuntimes,
             onOpenSidebar: openSidebar
         )
         .modifier(ChatLogScope(instanceID: app.historyInstanceID,

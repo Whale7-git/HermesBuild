@@ -215,15 +215,15 @@ extension NativeChatView {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
             HStack(spacing: 5) {
-                if model.activity.showsProgress {
+                if model.presentationState.showsProgress {
                     ProgressView().controlSize(.mini)
-                } else if model.activity != .ready {
+                } else if model.presentationState.showsWarning {
                     Image(systemName: "exclamationmark.circle.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(AppTheme.warning)
                 } else {
                     Circle()
-                        .fill(AppTheme.success)
+                        .fill(model.activity == .ready ? AppTheme.success : Color.secondary)
                         .frame(width: 5, height: 5)
                 }
                 Text(statusLine)
@@ -265,7 +265,7 @@ extension NativeChatView {
         app.sessions.first { $0.sessionId == sessionID }?.pinned == true
     }
 
-    private var statusLine: String { model.activity.title }
+    private var statusLine: String { model.presentationState.title }
     var activeFindRowID: String? {
         showFind && findHits.indices.contains(findIndex) ? findHits[findIndex].rowID : nil
     }

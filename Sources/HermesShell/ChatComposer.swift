@@ -25,6 +25,7 @@ struct ChatComposer: View {
     /// 草稿落盘（与模型同一作用域键）。按键期间由本视图防抖写入，
     /// 保证进程被杀后仍能恢复，同时不再逐字触发模型发布。
     var draftStore: ChatDraftStore? = nil
+    var canPersistDraft: () -> Bool = { true }
     /// Reports only a failure category to the chat page; draft text stays local.
     var onPersistenceResult: (LocalStoreWriteResult) -> Void = { _ in }
     var onLocalWriteSuccess: () -> Void = {}
@@ -84,6 +85,7 @@ struct ChatComposer: View {
     init(initialDraft: String, draftSync: ChatComposerDraftSync = ChatComposerDraftSync(),
          insertion: ChatComposerInsertion = ChatComposerInsertion(),
          draftStore: ChatDraftStore? = nil,
+         canPersistDraft: @escaping () -> Bool = { true },
          onPersistenceResult: @escaping (LocalStoreWriteResult) -> Void = { _ in },
          onLocalWriteSuccess: @escaping () -> Void = {},
          focused: Binding<Bool>, modelLabel: String = "默认模型",
@@ -109,6 +111,7 @@ struct ChatComposer: View {
         self.draftSync = draftSync
         self.insertion = insertion
         self.draftStore = draftStore
+        self.canPersistDraft = canPersistDraft
         self.onPersistenceResult = onPersistenceResult
         self.onLocalWriteSuccess = onLocalWriteSuccess
         _focused = focused
@@ -175,7 +178,7 @@ struct ChatComposer: View {
         .task(id: persistedText) {
             guard let draftStore else { return }
             do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, canPersistDraft() else { return }
             let result = draftStore.save(persistedText)
             if result.succeeded {
                 onLocalWriteSuccess()
@@ -190,10 +193,10 @@ struct ChatComposer: View {
             pendingCommand = nil
             text = next
             caretOffset = (next as NSString).length
-            if let draftStore { report(draftStore.save(next)) }
+            if let draftStore, canPersistDraft() { report(draftStore.save(next)) }
         }
         .onDisappear {
-            if let draftStore { report(draftStore.save(persistedText)) }
+            if let draftStore, canPersistDraft() { report(draftStore.save(persistedText)) }
         }
         .onChange(of: readOnly) { _, value in
             if value { composing = false }
@@ -203,7 +206,7 @@ struct ChatComposer: View {
                 composing = false
                 // 失焦立刻落盘：防抖窗口只有 500ms，但用户「打完就切走」很常见，
                 // 这里补一次同步写入，保证进程被杀也不会丢草稿。
-                if let draftStore { report(draftStore.save(persistedText)) }
+                if let draftStore, canPersistDraft() { report(draftStore.save(persistedText)) }
             }
         }
     }
@@ -219,7 +222,7 @@ struct ChatComposer: View {
         quoteReference = parsed.reference
         quoteExpanded = false
         // 立即落盘：避免「已清空」与「防抖写盘」之间的窗口把旧草稿写回磁盘。
-        if let draftStore { report(draftStore.save(persistedText)) }
+        if let draftStore, canPersistDraft() { report(draftStore.save(persistedText)) }
     }
 
     private func report(_ result: LocalStoreWriteResult) {
@@ -233,7 +236,7 @@ struct ChatComposer: View {
         if let reference = insertion.quote {
             quoteReference = reference
             quoteExpanded = false
-            if let draftStore { report(draftStore.save(persistedText)) }
+            if let draftStore, canPersistDraft() { report(draftStore.save(persistedText)) }
             focused = true
             return
         }
@@ -419,7 +422,7 @@ struct ChatComposer: View {
                     Button {
                         self.quoteReference = nil
                         quoteExpanded = false
-                        if let draftStore { report(draftStore.save(persistedText)) }
+                        if let draftStore, canPersistDraft() { report(draftStore.save(persistedText)) }
                     } label: {
                         Image(systemName: "xmark")
                             .font(.caption.weight(.semibold))

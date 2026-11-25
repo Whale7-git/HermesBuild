@@ -74,7 +74,7 @@ extension NativeChatModel {
             queuedTurns = next
             queueSaveFailed = true
             recordLocalWrite(.failed(.encoding), kind: .queue)
-            RuntimeLogRecorder.shared.record(.warning, "send",
+            recordRuntimeLog(.warning, "send",
                 "queued persistence skipped: payload not serializable")
         }
         if draft == composerText { draft = "" }
@@ -83,7 +83,7 @@ extension NativeChatModel {
             : notice
         error = nil
         settledAttachmentPaths = attachments.map(\.path)
-        RuntimeLogRecorder.shared.record(.info, "send",
+        recordRuntimeLog(.info, "send",
             "queued count=\(queuedTurns.count) chars=\(text.count) attachments=\(attachments.count)")
         return true
     }
@@ -100,12 +100,12 @@ extension NativeChatModel {
         let generation = revision
         sendingWhileRunning = true
         defer { sendingWhileRunning = false }
-        RuntimeLogRecorder.shared.record(.info, "send", "steer start chars=\(text.count)")
+        recordRuntimeLog(.info, "send", "steer start chars=\(text.count)")
         do {
             let fallback = try await api.steerNativeTurn(sessionID: sessionID, text: text)
             guard generation == revision, !suspended, !Task.isCancelled else { return false }
             if let fallback {
-                RuntimeLogRecorder.shared.record(.warning, "send",
+                recordRuntimeLog(.warning, "send",
                     "steer refused fallback=\(fallback) -> queued")
                 return enqueue(text: text, attachments: [], composerText: composerText,
                                origin: .userInput, notice: Self.steerFallbackNotice(fallback))
@@ -114,7 +114,7 @@ extension NativeChatModel {
             if draft == composerText { draft = "" }
             // 引导内容不进本地消息列表：它不是一轮独立发言，服务端会把它并进工具结果。
             notice = "已发送引导，本轮回复继续。"
-            RuntimeLogRecorder.shared.record(.info, "send", "steer ok")
+            recordRuntimeLog(.info, "send", "steer ok")
             return true
         } catch {
             guard generation == revision, !suspended, !Task.isCancelled else { return false }
@@ -123,7 +123,7 @@ extension NativeChatModel {
             let failure = error.localizedDescription
             self.error = failure
             notice = "引导结果未确认，草稿已保留；请核对后再决定是否重发。"
-            RuntimeLogRecorder.shared.record(.error, "send", "steer fail err=\(failure)")
+            recordRuntimeLog(.error, "send", "steer fail err=\(failure)")
             return false
         }
     }
@@ -133,7 +133,7 @@ extension NativeChatModel {
     private func interruptThenSend(text: String, attachments: [ChatAttachmentPayload],
                                    composerText: String, origin: ChatSendOrigin,
                                    slashCommand: ChatSlashCommand.Match? = nil) async -> Bool {
-        RuntimeLogRecorder.shared.record(.info, "send", "interrupt start")
+        recordRuntimeLog(.info, "send", "interrupt start")
         if streamID != nil { await stop() }
         guard canSend else {
             notice = "当前回复尚未确认结束，这条没有发出；请先核对状态。"
@@ -209,6 +209,7 @@ extension NativeChatModel {
         let result = await submitQueued(text: queued.text, attachments: queued.attachments,
                                         composerText: queued.composerText, origin: queued.origin,
                                         slashCommand: slashCommand)
+        guard !runtimeRetired else { return false }
         if result.accepted {
             if queuedTurns.first?.id == queued.id {
                 queuedTurns.removeFirst()
@@ -471,7 +472,7 @@ extension NativeChatModel {
                 }
             }
         }
-        RuntimeLogRecorder.shared.record(.info, "send",
+        recordRuntimeLog(.info, "send",
             paused ? "queue auto-dispatch paused" : "queue auto-dispatch resumed")
     }
 
@@ -485,10 +486,11 @@ extension NativeChatModel {
 
     @discardableResult
     private func persistQueue() -> Bool {
+        guard !runtimeRetired else { return false }
         guard let data = ChatSendQueueCodec.encode(queuedTurns) else {
             queueSaveFailed = true
             recordLocalWrite(.failed(.encoding), kind: .queue)
-            RuntimeLogRecorder.shared.record(.warning, "send", "queue update persistence failed")
+            recordRuntimeLog(.warning, "send", "queue update persistence failed")
             return false
         }
         let result = draftStore?.saveQueued(queuedTurns.isEmpty ? nil : data) ?? .ok
@@ -548,6 +550,7 @@ extension NativeChatModel {
                                composerText: String, consumeDraft: Bool,
                                origin: ChatSendOrigin,
                                slashCommand: ChatSlashCommand.Match?) async -> SubmitResult {
+        guard !runtimeRetired else { return SubmitResult(accepted: false, completed: false) }
         let originalDraft: String? = consumeDraft ? draft : nil
         publishTask?.cancel()
         publishTask = nil
@@ -611,7 +614,7 @@ extension NativeChatModel {
         // 关键：**不在 POST 前清 draft**。draft 的 didSet 会落盘到 draftStore，
         // 进程若在发送中被杀，重启后仍能从 draftStore 恢复正文；只有 POST
         // 成功受理后才清（见下方两处 originalDraft 分支）。
-        RuntimeLogRecorder.shared.record(.info, "send",
+        recordRuntimeLog(.info, "send",
             "post start chars=\(text.count) attachments=\(attachments.count) origin=\(origin == .systemPlaceholder ? "placeholder" : "input")")
         do {
             let active = try await api.startNativeTurn(sessionID:sessionID, text:text,
@@ -623,21 +626,28 @@ extension NativeChatModel {
             // Return not-accepted to the queue owner: it must retain an
             // uncertain durable row, even when the old server accepted POST.
             // Manual sends keep their pre-POST PendingSend for GET-only review.
-            if generation != revision &&
-               (phase != .submitting || pendingSend?.id != pendingID) {
-                RuntimeLogRecorder.shared.record(.warning, "send",
+            if runtimeRetired || (generation != revision &&
+               (phase != .submitting || pendingSend?.id != pendingID)) {
+                recordRuntimeLog(.warning, "send",
                     "retired POST success retained for read-only reconciliation")
                 return SubmitResult(accepted: false, completed: true)
             }
             noteRunRecoveryState()
-            RuntimeLogRecorder.shared.record(.info, "send", "post ok stream=\(active)")
+            recordRuntimeLog(.info, "send", "post ok stream=\(active)")
             // Persist a separate accepted-run receipt before discarding the
             // original PendingSend. A crash between these writes is safe:
             // at least one durable record still requires GET reconciliation.
             let acceptedRecoverySaved = rememberAcceptedTurn(
                 runID: active, text: text, attachments: attachments,
                 knownIDs: knownIDs)
-            if let originalDraft, draft == originalDraft { draft = "" }
+            if let originalDraft, draft == originalDraft {
+                // A detached composer may already have persisted newer text.
+                // The old POST may clear only its own original draft.
+                if let store = draftStore {
+                    let current = store.loadDraftResult()
+                    if current.result.succeeded && current.value == originalDraft { draft = "" }
+                } else { draft = "" }
+            }
             setDelivery(.accepted, for: pendingID)
             // Keep the original PendingSend when persisting its replacement
             // failed: this POST was accepted, so an automatic retry is unsafe.
@@ -657,8 +667,10 @@ extension NativeChatModel {
                 transition(to: .idle)
                 // Session was switched while POST was in flight. Only
                 // reconcile its result; do not attach an old stream to a new UI.
+                let shouldResume = resumeRequested || !suspended
                 resumeRequested = false
-                await load(silent: true, preserveLoadedOlder: true)
+                if shouldResume { await load(silent: true, preserveLoadedOlder: true) }
+                else { transition(to: .streaming(connected: false)) }
                 return SubmitResult(accepted: true, completed: true)
             }
             resumeRequested = false
@@ -668,6 +680,7 @@ extension NativeChatModel {
         } catch {
             // POST 失败时页面可能已经切走/刷新：失配就只做本地收尾，
             // 不把旧请求的 error/draft/notice 写回新会话的状态。
+            guard !runtimeRetired else { return SubmitResult(accepted: false, completed: true) }
             guard generation == revision else {
                 // A different phase or submission must never be reset by an
                 // old failure. The durable pending record stays fail-closed.
@@ -677,7 +690,7 @@ extension NativeChatModel {
                 return SubmitResult(accepted: false, completed: true)
             }
             self.error = error.localizedDescription
-            RuntimeLogRecorder.shared.record(.error, "send", "post fail err=\(error.localizedDescription)")
+            recordRuntimeLog(.error, "send", "post fail err=\(error.localizedDescription)")
             // POST 结果不明：退回静止态，用 uncertain 锁住发送。
             // 不保留 `.submitting`——那会让界面永远停在「正在发送…」。
             transition(to: .idle)
