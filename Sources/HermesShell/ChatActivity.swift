@@ -74,3 +74,41 @@ enum ChatNoticeAction: Equatable {
         }
     }
 }
+
+
+/// One product-facing projection for chrome, notices and task panels.
+/// It must never be used as authority to send, stop, or retire a receipt.
+struct SessionPresentationState: Equatable {
+    let title: String
+    let showsProgress: Bool
+    let showsWarning: Bool
+    let showsNotice: Bool
+    let needsVerification: Bool
+    let hasError: Bool
+    let notice: String?
+
+    init(activity: ChatActivity, transcriptAvailable: Bool,
+         routineRecovery: Bool, requiresAction: Bool,
+         verificationPending: Bool, errorPresent: Bool,
+         warningPresent: Bool, notice: String?) {
+        let compactRecovery = transcriptAvailable && routineRecovery && !requiresAction
+            && activity != .stopping && activity != .needsLogin
+        if compactRecovery {
+            title = "正在同步…"
+            showsProgress = true
+            showsWarning = false
+            showsNotice = false
+            needsVerification = false
+            hasError = false
+            self.notice = nil
+        } else {
+            title = activity.title
+            showsProgress = activity.showsProgress
+            showsWarning = warningPresent && !showsProgress
+            showsNotice = warningPresent
+            needsVerification = verificationPending
+            hasError = errorPresent
+            self.notice = notice
+        }
+    }
+}

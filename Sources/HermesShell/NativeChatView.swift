@@ -231,11 +231,10 @@ struct NativeChatView: View {
         return current?.isEmpty == false ? current! : "默认模型"
     }
 
-    private var activityTitle: String { model.activity.title }
-
     var statusSnapshot: ChatStatusSnapshot {
-        ChatStatusSnapshot(reasoning: model.reasoning, running: model.activity.showsProgress,
-            notice: model.hidesRoutineRecoveryNotice ? nil : model.notice, activityTitle: model.hidesRoutineRecoveryNotice ? "正在同步…" : activityTitle, activityInChrome: true)
+        let presentation = model.presentationState
+        return ChatStatusSnapshot(reasoning: model.reasoning, running: presentation.showsProgress,
+            notice: presentation.notice, activityTitle: presentation.title, activityInChrome: true)
     }
 
     /// Persist facts this page has actually observed. The caller supplies a

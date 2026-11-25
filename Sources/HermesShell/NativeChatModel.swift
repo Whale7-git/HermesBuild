@@ -588,6 +588,28 @@ final class NativeChatModel: ObservableObject {
         sessionProvider = provider
     }
 
+    /// Product presentation is distinct from safety facts. Long routine GET
+    /// recovery remains compact; a pending original POST or damaged record
+    /// always stays visible when user action may be needed.
+    var presentationState: SessionPresentationState {
+        let persistence = localPersistenceIssue != nil || queuePersistenceFailed
+        let requiresAction = authenticationRequired || pendingAbsent ||
+            pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+            persistence || runRecoveryNoticeShown ||
+            (hasPendingSend && !submitting && activeTurnRecovery == nil)
+        let verification = uncertain || (hasPendingSend && !submitting) ||
+            runRecoveryNoticeShown
+        let recovery = hidesRoutineRecoveryNotice ||
+            (automaticReconciliationTask != nil &&
+             (historyLoadFailurePending || activeTurnRecovery != nil || reapedTransportRunID != nil))
+        return SessionPresentationState(activity: activity,
+            transcriptAvailable: !transcript.messages.isEmpty,
+            routineRecovery: recovery, requiresAction: requiresAction,
+            verificationPending: verification, errorPresent: error != nil,
+            warningPresent: error != nil || verification || persistence,
+            notice: notice)
+    }
+
     /// 界面状态。优先级即顺序，与重构前逐条一致（既有断言依赖这个顺序）。
     /// 相位只回答「在做什么」，正交事实（登录失效/暂停/核对）由这里按优先级
     /// 覆盖——它们能盖过相位，因为对用户来说它们是更强的信息。

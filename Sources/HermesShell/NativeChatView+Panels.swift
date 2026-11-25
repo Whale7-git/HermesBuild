@@ -252,10 +252,11 @@ extension NativeChatView {
 
     var taskSummary: ChatTaskSummary {
         let queue = ChatQueueStatus(turns: model.queuedTurns)
-        return ChatTaskSummary(activity: model.activity.title, progressing: model.activity.showsProgress,
+        let presentation = model.presentationState
+        return ChatTaskSummary(activity: presentation.title, progressing: presentation.showsProgress,
             queued: queue.waiting, submitting: queue.submitting, uncertain: queue.uncertain,
-            needsVerification: model.uncertain || (model.hasPendingSend && !model.submitting) || model.runRecoveryNoticeShown,
-            hasError: model.error != nil,
+            needsVerification: presentation.needsVerification,
+            hasError: presentation.hasError,
             storageIssue: model.localPersistenceIssue != nil || model.queuePersistenceFailed)
     }
 
