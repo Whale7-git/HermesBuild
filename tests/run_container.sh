@@ -176,7 +176,7 @@ run preparation "$S/ChatPreparationQueue.swift" "$S/ChatViewportLayout.swift" te
 run selectionrelay -swift-version 6 -parse-as-library Vendor/Textual/Sources/Textual/Internal/Helpers/TextSelectionUpdateRelay.swift tests/selectionrelay/main.swift
 run imagepresentation "$S/ChatAttachmentPlaceholder.swift" "$S/ImageRatioStore.swift" "$S/ChatToolSummary.swift" tests/imagepresentation/main.swift
 run recentmodel "$S/RecentModelStore.swift" "$S/Models.swift" "$S/ExternalLinkPolicy.swift" tests/recentmodel/main.swift
-run build58 "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/AttachmentModels.swift" "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" "$S/ChatReadingPosition.swift" "$S/ChatCellStateStore.swift" tests/build58/main.swift
+run build58 "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/AttachmentModels.swift" "$S/LocalDataStorage.swift" "$S/ChatDraftStore.swift" "$S/AttachmentDraftSettlement.swift" "$S/ChatReadingPosition.swift" "$S/ChatCellStateStore.swift" tests/build58/main.swift
 run iteration53 -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/AttachmentModels.swift" "$S/ImageRatioStore.swift" "$S/ParagraphMergeState.swift" "$S/ImageEditPlan.swift" "$S/AttachmentCatalog.swift" tests/iteration53/main.swift
 run gateway -swift-version 6 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/Models.swift" "$S/GatewayRequests.swift" "$S/ReasoningEffortPolicy.swift" "$S/GatewayEventMap.swift" "$S/GatewayDecode.swift" "$S/GatewayAttachmentPaths.swift" "$S/GatewayModelCatalog.swift" "$S/GatewaySessionFilter.swift" tests/gateway/main.swift
 run blockcoalescer Vendor/Textual/Sources/Textual/Internal/StructuredText/BlockCoalescer.swift tests/blockcoalescer/main.swift

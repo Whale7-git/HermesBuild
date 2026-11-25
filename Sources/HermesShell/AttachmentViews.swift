@@ -56,6 +56,29 @@ private struct AttachmentPickerFile: Transferable {
     private let onPersistenceResult: (LocalStoreWriteResult) -> Void
     private var importTask: Task<Void, Never>?
     private var importGeneration = UUID()
+    var mayPersistDraft: () -> Bool = { true }
+
+    /// No stale composer may write after another presentation claims the
+    /// same session. Cancel the import/editor as well as network uploads.
+    func detachPresentation() {
+        importGeneration = UUID()
+        importTask?.cancel()
+        importTask = nil
+        isImporting = false
+        editingID = nil
+        coordinator.cancelUploads()
+    }
+
+    func consumeSettledPaths(_ paths: Set<String>) {
+        guard mayPersistDraft() else { return }
+        let ids = batch.items.compactMap { item -> UUID? in
+            if case .ready(let uploaded) = item.state, paths.contains(uploaded.path) { return item.id }
+            return nil
+        }
+        // These files were accepted, not discarded. No orphan-file warning.
+        for id in ids { coordinator.remove(id) }
+        if !ids.isEmpty { errorMessage = nil }
+    }
 
     deinit { importTask?.cancel() }
 
@@ -148,6 +171,7 @@ private struct AttachmentPickerFile: Transferable {
     func cancelUploads() { coordinator.cancelUploads() }
 
     private func persist(_ batch: AttachmentBatch) {
+        guard mayPersistDraft() else { return }
         let value = batch.persistedValue
         guard !value.items.isEmpty else {
             onPersistenceResult(draftStore.saveAttachmentDraft(nil))
@@ -404,7 +428,7 @@ private struct AttachmentPickerFile: Transferable {
         isImporting = false
         editingID = nil
         errorMessage = nil
-        onPersistenceResult(draftStore.saveAttachmentDraft(nil))
+        if mayPersistDraft() { onPersistenceResult(draftStore.saveAttachmentDraft(nil)) }
         coordinator.reset(sessionID:sessionID)
     }
 

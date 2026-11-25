@@ -424,9 +424,9 @@ extension NativeChatModel {
                 pendingSend = nil
                 pendingAbsent = false
                 acknowledgeDeliveredQueuedTurn(matching: pending)
-                settledAttachmentPaths = pending.attachments.map(\.path)
+                settleAcceptedAttachments(pending.attachments.map(\.path))
                 // Clear only the restored original; preserve a newer draft.
-                if draft == pending.composerText { draft = "" }
+                clearOriginalDraft(pending.composerText)
             case .absent, .failed:
                 let provenAbsent = pending.resolution(in: snap) == .absent
                 if provenAbsent && pending.hiddenFromTranscript == true {
@@ -771,6 +771,11 @@ extension NativeChatModel {
                             return
                         }
                         try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
+                        if outcome == .completed && !terminalReceipt.confirmsCompletion(in: finalHistory) {
+                            self.uncertain = true
+                            self.notice = "任务已结束，最终回复仍在同步。"
+                            return
+                        }
                         guard self.clearAcceptedTurnRecovery() else { return }
                         self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
                             || self.activeRecoveryUnreadable

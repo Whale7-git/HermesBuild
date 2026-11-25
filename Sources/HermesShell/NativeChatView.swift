@@ -288,6 +288,10 @@ struct NativeChatView: View {
             // 输入框的初值是模型读到的本地草稿，这里同步一次基线，
             // 之后才用「与上次交给模型的值是否相同」判断模型侧改写。
             syncedDraft = objects.initialDraft
+            let registry = objects.registry, key = objects.runtimeKey, lease = objects.presentation
+            attachments.mayPersistDraft = { registry.owns(key, presentation: lease) }
+            attachments.consumeSettledPaths(Set(model.settledAttachmentPaths))
+            model.settledAttachmentPaths = []
             let instance = app.active.id
             let account = app.historyAccountScope
             let changeToken = app.activeChangeToken
@@ -397,7 +401,7 @@ struct NativeChatView: View {
         }
         .onDisappear {
             attachmentSendTask?.cancel(); attachmentSendTask = nil
-            attachments.cancelUploads()
+            attachments.detachPresentation()
             preparingAttachmentSend = false
             retirePagination()
             pendingUserTurnFocus = false
@@ -435,7 +439,8 @@ struct NativeChatView: View {
         // 用 onReceive 而不是 onChange(of: model.draft)：后者让 body 依赖草稿字段，
         // 等于把「按键不失效」还回去；这里只消费模型主动改写的推送。
         .onReceive(objects.draftChanges) { value in
-            guard value != syncedDraft else { return }
+            guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation),
+                  value != syncedDraft else { return }
             let previous = syncedDraft
             syncedDraft = value
             draftSync = ChatComposerDraftSync(
@@ -460,12 +465,8 @@ struct NativeChatView: View {
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: false) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in
-            let settled = Set(paths)
-            let ids = attachments.batch.items.compactMap { item -> UUID? in
-                if case .ready(let uploaded) = item.state, settled.contains(uploaded.path) { return item.id }
-                return nil
-            }
-            for id in ids { attachments.remove(id) }
+            guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
+            attachments.consumeSettledPaths(Set(paths))
         }
         // 折叠状态跨会话/进程保留：只存「已折叠」的 id 集合。
         .onChange(of: cellStates) { _, states in

@@ -20,6 +20,7 @@ final class SessionRecoveryCoordinator {
 
     static func recoverySignal(for observation: SessionTaskObservation) -> SessionTaskSignal? {
         if observation.signals.contains(.needsVerification) { return .needsVerification }
+        if observation.signals.contains(.recoveryTracked) { return .recoveryTracked }
         if observation.signals.contains(.running) { return .running }
         return nil
     }
@@ -66,13 +67,17 @@ final class SessionRecoveryCoordinator {
 
     func schedule(candidates: [Candidate],
                   isEligible: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Bool,
-                  onVerified: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Void) {
+                  onPending: @escaping @MainActor (Candidate) -> Void = { _ in },
+                  onVerified: @escaping @MainActor (Key, SessionTaskSignal, Double, RunTerminalStatus) -> Void) {
         guard worker == nil else { return }
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
-        attempted = attempted.filter { indexed[$0.key] != nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        // Preserve cooldowns while a candidate is leased by a Runtime.
+        // Otherwise eviction resets its priority and can starve other hosts.
+        attempted = attempted.filter { now - $0.value < 3600 }
         let selected = Self.eligibleKeys(Array(indexed.keys), attempted: attempted,
-            now: ProcessInfo.processInfo.systemUptime).compactMap { indexed[$0] }
+            now: now).compactMap { indexed[$0] }
         guard !selected.isEmpty else { return }
         let owner = UUID()
         let deadline = Date().addingTimeInterval(30)
@@ -103,8 +108,16 @@ final class SessionRecoveryCoordinator {
                 let accepted = store.loadActiveRun()
                 // A pending POST is independent of an accepted Run. Absence of
                 // either local record never proves successful delivery.
-                guard pending.result.succeeded, pending.value == nil,
-                      accepted.result.succeeded, var data = accepted.value,
+                guard pending.result.succeeded, accepted.result.succeeded else { continue }
+                if pending.value != nil {
+                    // Reuse the canonical pending-delivery and queue
+                    // reconciliation in the app-owned runtime, not a second
+                    // implementation that could lose attachments or replay POST.
+                    guard isEligible(key, signal, version) else { continue }
+                    onPending(candidate)
+                    continue
+                }
+                guard var data = accepted.value,
                       var receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
                 else { continue }
                 do {
@@ -129,15 +142,16 @@ final class SessionRecoveryCoordinator {
                               store.saveActiveRun(updated).succeeded else { continue }
                         data = updated
                     }
-                    // Non-success outcomes remain durable for the visible
-                    // runtime to present; do not label them completed.
-                    guard outcome == .completed else { continue }
+                    // A failed/cancelled/interrupted Run may have no assistant
+                    // row. Its exact terminal proof still permits a final
+                    // history read, but not classification as completed.
                     let latest = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline),
-                          Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID),
-                          let boundary = receipt.historyEnd else { continue }
+                          Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID) else { continue }
                     var pages = [latest]
+                    if outcome == .completed {
+                    guard let boundary = receipt.historyEnd else { continue }
                     var valid = true
                     for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
                         guard !Task.isCancelled, self.ticket == owner,
@@ -155,6 +169,7 @@ final class SessionRecoveryCoordinator {
                     }
                     guard valid, (pages.last?.olderOffset ?? Int.max) <= boundary,
                           receipt.confirmsCompletion(in: pages) else { continue }
+                    }
                     // Recheck the head: a concurrently appended turn must not
                     // be confused with the accepted turn being verified.
                     let head = try await api.history(sessionID: sessionID, before: nil)
@@ -175,8 +190,18 @@ final class SessionRecoveryCoordinator {
                           Self.mayRetireStoredReceipt(
                               expected: data, current: latestReceipt.value,
                               pendingIsEmpty: latestPending.value == nil) else { continue }
-                    guard store.saveActiveRun(nil).succeeded else { continue }
-                    onVerified(key, signal, version)
+                    // Save the authoritative tail for immediate display on
+                    // re-entry. It is a cache, never an authority to resend.
+                    let history = ChatHistoryStore(instanceID: instanceID,
+                        sessionID: sessionID, accountScope: accountScope)
+                    history.schedule(ChatHistoryRecord(snapshot: head))
+                    if outcome == .completed {
+                        guard store.saveActiveRun(nil).succeeded else { continue }
+                    }
+                    // Non-success keeps its exact receipt until the visible
+                    // runtime consumes the outcome. Clear the poll obligation
+                    // only after the matching final GET succeeded.
+                    onVerified(key, signal, version, outcome)
                 } catch is CancellationError {
                     return
                 } catch {

@@ -264,7 +264,18 @@ struct PersistedAttachmentBatch: Codable, Equatable, Sendable {
     let items: [PersistedAttachmentDraft]
 
     static let currentVersion = 1
+
+    /// Only confirmed ready server references are consumed. Locally queued
+    /// bytes and unrelated newly selected attachments must survive.
+    func removingSettledPaths(_ paths: Set<String>) -> PersistedAttachmentBatch {
+        let retained = items.filter { item in
+            guard case .ready(let uploaded) = item.state else { return true }
+            return !paths.contains(uploaded.path)
+        }
+        return PersistedAttachmentBatch(version: version, sessionID: sessionID, items: retained)
+    }
 }
+
 
 /// Value-state is independently tested; completion must match both chip and upload attempt.
 struct AttachmentBatch: Sendable {
