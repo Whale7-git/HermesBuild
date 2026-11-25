@@ -332,7 +332,7 @@ extension NativeChatModel {
             let result: ActiveRunProbe
             if let receipt = activeTurnRecovery, receipt.runID == active,
                let terminal = receipt.terminalStatus { result = .terminal(terminal) }
-            else { result = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
+            else { result = try await recoveryProbe(sessionID: sessionID, runID: active) }
             guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
@@ -364,7 +364,7 @@ extension NativeChatModel {
                     pauseQueueForRecovery()
                     return
                 }
-                let finalHistory = try await api.history(sessionID: sessionID, before: nil)
+                let finalHistory = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,
                       finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {

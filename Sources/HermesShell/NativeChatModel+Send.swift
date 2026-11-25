@@ -289,7 +289,7 @@ extension NativeChatModel {
             defer { reconciling = false }
             uncertain = true
             do {
-                let snapshot = try await api.history(sessionID: sessionID, before: nil)
+                let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
                 switch queuedTurns[0].resolution(in: snapshot) {
                 case .delivered:
@@ -757,7 +757,7 @@ extension NativeChatModel {
                   pendingSend?.id == pending.id, !suspended else { return .failed }
             let cursor = pages[pages.count - 1].olderOffset
             do {
-                let older = try await api.history(sessionID: sessionID, before: cursor)
+                let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
                 guard generation == revision, pendingSend?.id == pending.id,
                       !Task.isCancelled, !suspended,
                       older.sessionID == sessionID, !older.readOnly,
@@ -777,7 +777,7 @@ extension NativeChatModel {
             historyEnd: historyEnd, knownIDs: pending.knownIDs, pages: pages)
         guard decision != .failed else { return .failed }
         do {
-            let current = try await api.history(sessionID: sessionID, before: nil)
+            let current = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard generation == revision, pendingSend?.id == pending.id,
                   !Task.isCancelled, !suspended,
                   current.sessionID == sessionID, !current.readOnly,

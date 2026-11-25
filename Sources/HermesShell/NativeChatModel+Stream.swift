@@ -72,7 +72,7 @@ extension NativeChatModel {
         await warmupCachedHistory()
         guard generation == revision, !Task.isCancelled else { return }
         do {
-            let snap = try await api.history(sessionID:sessionID,before:nil)
+            let snap = try await recoveryHistory(sessionID:sessionID,before:nil)
             guard generation == revision, !Task.isCancelled else { return }
             self.recordRuntimeLog(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
@@ -142,7 +142,7 @@ extension NativeChatModel {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            let snap = try await api.history(sessionID:sessionID,before:requestedOffset)
+            let snap = try await recoveryHistory(sessionID:sessionID,before:requestedOffset)
             guard generation == revision, olderOffset == requestedOffset,
                   !Task.isCancelled, !suspended else { return }
             guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
@@ -534,7 +534,7 @@ extension NativeChatModel {
                   !Task.isCancelled, !suspended else { return false }
             let cursor = pages[pages.count - 1].olderOffset
             do {
-                let older = try await api.history(sessionID: sessionID, before: cursor)
+                let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
                 guard generation == revision, activeTurnRecovery == receipt,
                       !Task.isCancelled, !suspended else { return false }
                 guard older.sessionID == sessionID, !older.readOnly,
@@ -572,7 +572,7 @@ extension NativeChatModel {
         // Re-check the live tail after pagination: another client may have
         // appended rows or restarted execution while we were reading pages.
         do {
-            let current = try await api.history(sessionID: sessionID, before: nil)
+            let current = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard generation == revision, activeTurnRecovery == receipt,
                   !Task.isCancelled, !suspended else { return false }
             guard current.sessionID == sessionID, current.activeRunEvidence == .absent,
@@ -727,7 +727,7 @@ extension NativeChatModel {
                 let result: ActiveRunProbe
                 if let terminal = receipt.terminalStatus { result = .terminal(terminal) }
                 else {
-                    result = try await self.api.probeActiveRun(
+                    result = try await self.recoveryProbe(
                         sessionID: self.sessionID, runID: receipt.runID)
                 }
                 guard generation == self.revision, !Task.isCancelled,
@@ -761,7 +761,7 @@ extension NativeChatModel {
                         return
                     }
                     do {
-                        let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
+                        let finalHistory = try await self.recoveryHistory(sessionID: self.sessionID, before: nil)
                         guard generation == self.revision, !Task.isCancelled, !self.suspended,
                               self.activeTurnRecovery == terminalReceipt else { return }
                         guard finalHistory.sessionID == self.sessionID,
@@ -1033,7 +1033,7 @@ extension NativeChatModel {
                             $0.role == "assistant" && $0.id.hasPrefix("streaming:")
                         }
                         let receipt = activeTurnRecovery
-                        var snap = try await api.history(sessionID:sessionID,before:nil)
+                        var snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         for attempt in 0..<3 {
                             guard accepts(runContext(for: active, generation: generation)),
                                   !Task.isCancelled else { return }
@@ -1052,7 +1052,7 @@ extension NativeChatModel {
                                 return
                             }
                             try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 200_000_000)
-                            snap = try await api.history(sessionID:sessionID,before:nil)
+                            snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         }
                         guard accepts(runContext(for: active, generation: generation)),
                               !Task.isCancelled else { return }
@@ -1156,7 +1156,7 @@ extension NativeChatModel {
                     do {
                         try await Task.sleep(nanoseconds:UInt64(retries) * 100_000_000)
                         guard generation == revision, !Task.isCancelled else { return }
-                        let snap = try await api.history(sessionID:sessionID,before:nil)
+                        let snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         guard generation == revision, !Task.isCancelled else { return }
                         let trackingAccepted = activeTurnRecovery != nil
                         try applySnapshot(snap, preserveLoadedOlder: true)
@@ -1290,7 +1290,7 @@ extension NativeChatModel {
             let probe: ActiveRunProbe
             if let receipt = activeTurnRecovery, receipt.runID == active,
                let terminal = receipt.terminalStatus { probe = .terminal(terminal) }
-            else { probe = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
+            else { probe = try await recoveryProbe(sessionID: sessionID, runID: active) }
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             switch probe {
             case .alive:
@@ -1303,7 +1303,7 @@ extension NativeChatModel {
                     lockDownRunStatus(unconfirmed)
                     return
                 }
-                let snap = try await api.history(sessionID: sessionID, before: nil)
+                let snap = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
                 guard !stopping, snap.sessionID == sessionID, !snap.readOnly,
                       snap.activeRunEvidence == .absent else {

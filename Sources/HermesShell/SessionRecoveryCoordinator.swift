@@ -123,8 +123,11 @@ final class SessionRecoveryCoordinator {
                 do {
                     let run: ActiveRunProbe
                     if let terminal = receipt.terminalStatus { run = .terminal(terminal) }
-                    else { run = try await api.probeActiveRun(sessionID: sessionID,
-                                                             runID: receipt.runID) }
+                    else {
+                        run = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
+                            try await api.probeActiveRun(sessionID: sessionID, runID: receipt.runID)
+                        }
+                    }
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
                     guard case .terminal(let outcome) = run,
@@ -145,7 +148,9 @@ final class SessionRecoveryCoordinator {
                     // A failed/cancelled/interrupted Run may have no assistant
                     // row. Its exact terminal proof still permits a final
                     // history read, but not classification as completed.
-                    let latest = try await api.history(sessionID: sessionID, before: nil)
+                    let latest = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
+                            try await api.history(sessionID: sessionID, before: nil)
+                        }
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline),
                           Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID) else { continue }
@@ -158,7 +163,9 @@ final class SessionRecoveryCoordinator {
                               Date() < deadline else { return }
                         guard isEligible(key, signal, version) else { valid = false; break }
                         let cursor = pages[pages.count - 1].olderOffset
-                        let older = try await api.history(sessionID: sessionID, before: cursor)
+                        let older = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
+                            try await api.history(sessionID: sessionID, before: cursor)
+                        }
                         guard Self.canRetireAcceptedReceipt(from: older, sessionID: sessionID),
                               older.rawMessageEndIndex == cursor,
                               older.olderOffset < cursor else {
@@ -174,7 +181,9 @@ final class SessionRecoveryCoordinator {
                     }
                     // Recheck the head: a concurrently appended turn must not
                     // be confused with the accepted turn being verified.
-                    let head = try await api.history(sessionID: sessionID, before: nil)
+                    let head = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
+                            try await api.history(sessionID: sessionID, before: nil)
+                        }
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline),
                           Self.canRetireAcceptedReceipt(from: head, sessionID: sessionID),

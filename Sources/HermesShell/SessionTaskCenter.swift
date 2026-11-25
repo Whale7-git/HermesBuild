@@ -12,6 +12,7 @@ enum SessionTaskSignal: String, Codable, CaseIterable, Sendable {
     case recoveryIssue
     /// Internal durable recovery index, never an attention badge by itself.
     case recoveryTracked
+    case synchronizing
     case terminalFailed
     case terminalCancelled
     case terminalInterrupted
@@ -138,6 +139,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.terminalFailed) { return "任务失败" }
         if signals.contains(.terminalInterrupted) { return "任务中断" }
         if signals.contains(.terminalCancelled) { return "任务已取消" }
+        if signals.contains(.synchronizing) { return "正在同步" }
         return "正在处理"
     }
 
@@ -148,6 +150,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.needsVerification) { return "确认前不会自动重发" }
         if signals.contains(.stopping) { return "等待服务端确认" }
         if signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted) || signals.contains(.terminalCancelled) { return "已核对最终历史，打开会话查看" }
+        if signals.contains(.synchronizing) { return "自动同步任务结果" }
         return "后台仍在运行"
     }
 

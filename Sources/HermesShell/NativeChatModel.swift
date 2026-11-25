@@ -297,6 +297,22 @@ final class NativeChatModel: ObservableObject {
     /// A cold offscreen owner may read history and attach SSE, but cannot
     /// dispatch an original turn or queued POST before a presentation claims it.
     var recoveryOnly = false
+    var recoveryInstanceID: String?
+    private var recoveryInstance: String {
+        recoveryInstanceID ?? (displayScope.isEmpty ? String(describing: ObjectIdentifier(api)) : displayScope)
+    }
+
+    func recoveryHistory(sessionID: String, before: Int?) async throws -> ChatSnapshot {
+        try await RecoveryScheduler.shared.perform(instance: recoveryInstance, session: sessionID) {
+            try await api.history(sessionID: sessionID, before: before)
+        }
+    }
+
+    func recoveryProbe(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        try await RecoveryScheduler.shared.perform(instance: recoveryInstance, session: sessionID) {
+            try await api.probeActiveRun(sessionID: sessionID, runID: runID)
+        }
+    }
     var runtimeLogToken: RuntimeLogToken?
     #if canImport(UIKit)
     private var runtimeObservation: AnyCancellable?

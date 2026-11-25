@@ -235,11 +235,14 @@ final class AppState: ObservableObject {
         if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
         if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
         if model.stopping { signals.insert(.stopping) }
-        if model.uncertain || model.activeRecoveryUnreadable ||
-            (model.activeTurnRecovery != nil && !model.running) ||
-            (model.hasPendingSend && !model.submitting) ||
-            (handoff && (model.activeTurnRecovery != nil || model.hasPendingSend)) {
+        let presentation = model.presentationState
+        if presentation.needsVerification || model.activeRecoveryUnreadable {
             signals.insert(.needsVerification)
+        } else if presentation.showsProgress && !model.running && !model.submitting {
+            signals.insert(.synchronizing)
+        }
+        if handoff && (model.activeTurnRecovery != nil || model.hasPendingSend) {
+            signals.insert(.recoveryTracked)
         }
         if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil ||
             model.queuePersistenceFailed { signals.insert(.recoveryIssue) }
@@ -268,6 +271,7 @@ final class AppState: ObservableObject {
     }
 
     func bindRuntime(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
+        model.recoveryInstanceID = key.instanceID
         model.observeRuntime { [weak self, weak model] in
             guard let self, let model, self.conversationRuntimes.contains(key, model: model) else { return }
             self.recordRuntimeSignals(model, key: key)
@@ -736,6 +740,7 @@ final class AppState: ObservableObject {
             remaining.remove(.needsVerification)
             remaining.remove(.running)
             remaining.remove(.recoveryTracked)
+            remaining.remove(.synchronizing)
             remaining.remove(.stopping)
             remaining.remove(.waitingForApproval)
             remaining.remove(.waitingForClarify)
