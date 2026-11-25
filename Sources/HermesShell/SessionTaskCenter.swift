@@ -12,6 +12,9 @@ enum SessionTaskSignal: String, Codable, CaseIterable, Sendable {
     case recoveryIssue
     /// Internal durable recovery index, never an attention badge by itself.
     case recoveryTracked
+    case terminalFailed
+    case terminalCancelled
+    case terminalInterrupted
 }
 
 /// Persisted per-session facts. A timestamp is kept only to make updates
@@ -120,6 +123,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         signals.contains(.waitingForApproval) || signals.contains(.waitingForClarify)
             || signals.contains(.needsVerification)
             || signals.contains(.recoveryIssue)
+            || signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted)
     }
     var isRunning: Bool {
         signals.contains(.running) || signals.contains(.stopping)
@@ -131,6 +135,9 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.recoveryIssue) { return "后台恢复需处理" }
         if signals.contains(.needsVerification) { return "发送结果待核对" }
         if signals.contains(.stopping) { return "正在停止" }
+        if signals.contains(.terminalFailed) { return "任务失败" }
+        if signals.contains(.terminalInterrupted) { return "任务中断" }
+        if signals.contains(.terminalCancelled) { return "任务已取消" }
         return "正在处理"
     }
 
@@ -140,6 +147,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.recoveryIssue) { return "检查恢复记录后继续" }
         if signals.contains(.needsVerification) { return "确认前不会自动重发" }
         if signals.contains(.stopping) { return "等待服务端确认" }
+        if signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted) || signals.contains(.terminalCancelled) { return "已核对最终历史，打开会话查看" }
         return "后台仍在运行"
     }
 
@@ -149,6 +157,8 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.recoveryIssue) { return "exclamationmark.triangle.fill" }
         if signals.contains(.needsVerification) { return "paperplane.badge.clock" }
         if signals.contains(.stopping) { return "stop.circle.fill" }
+        if signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted) { return "exclamationmark.circle" }
+        if signals.contains(.terminalCancelled) { return "stop.circle" }
         return "waveform"
     }
 }

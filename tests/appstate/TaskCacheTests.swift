@@ -48,6 +48,14 @@ extension AppStateTests {
         precondition(SessionTaskCenter.summary(sessionID: "tracked", serverStreaming: false,
             observation: tracked) == nil, "internal recovery index is not a user-facing warning")
         precondition(SessionTaskCenter.persistable(tracked.signals) == [.recoveryTracked])
+        let failed = SessionTaskObservation(signals: [.terminalFailed])
+        precondition(SessionRecoveryCoordinator.recoverySignal(for: failed) == nil)
+        let failedSummary = SessionTaskCenter.summary(sessionID: "failed", serverStreaming: false, observation: failed)
+        precondition(failedSummary?.needsAttention == true && failedSummary?.title == "任务失败")
+        let cancelled = SessionTaskObservation(signals: [.terminalCancelled])
+        precondition(SessionRecoveryCoordinator.recoverySignal(for: cancelled) == nil)
+        precondition(SessionTaskCenter.summary(sessionID: "cancelled", serverStreaming: false,
+            observation: cancelled)?.title == "任务已取消")
         let first = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: [:], now: 100)
         precondition(first.count == 5)
         let attempted = Dictionary(uniqueKeysWithValues: first.map { ($0, 100.0) })

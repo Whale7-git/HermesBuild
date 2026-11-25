@@ -715,7 +715,7 @@ final class AppState: ObservableObject {
             #if canImport(UIKit)
             self?.restorePendingRuntime(candidate)
             #endif
-        }, onVerified: { [weak self] key, signal, version in
+        }, onVerified: { [weak self] key, signal, version, outcome in
             guard let self,
                   var rows = self.recoveryObservations(instanceID: key.instanceID,
                     accountScope: key.accountScope),
@@ -726,6 +726,15 @@ final class AppState: ObservableObject {
             remaining.remove(.needsVerification)
             remaining.remove(.running)
             remaining.remove(.recoveryTracked)
+            remaining.remove(.stopping)
+            remaining.remove(.waitingForApproval)
+            remaining.remove(.waitingForClarify)
+            switch outcome {
+            case .completed: break
+            case .failed: remaining.insert(.terminalFailed)
+            case .cancelled: remaining.insert(.terminalCancelled)
+            case .interrupted: remaining.insert(.terminalInterrupted)
+            }
             if self.historyInstanceID == key.instanceID && self.historyAccountScope == key.accountScope {
                 self.setSessionTaskSignals(remaining, for: key.sessionID)
             } else {
