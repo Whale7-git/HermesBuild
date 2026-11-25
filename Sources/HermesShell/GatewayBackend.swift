@@ -285,6 +285,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
 
     func deleteSession(sessionID: String) async throws {
         _ = try await perform(try requests.deleteSession(sessionID: sessionID))
+        runStore.discardTerminal(sessionID: sessionID)
         if let runID = runStore.runID(for: sessionID) {
             runStore.finish(runID: runID)
             clearFailedRunProbes(runID: runID)
@@ -338,7 +339,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                   root["session_id"] as? String == sessionID,
                   let status = root["status"] as? String,
                   let terminal = RunTerminalStatus(rawValue: status) else { return .unresolved }
-            return runStore.clearUnresolved(runID: runID, sessionID: sessionID)
+            return runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal)
                 ? .terminal(terminal) : .unknown
         } catch let error as APIError {
             if case .http(let code, _) = error, code == 401 || code == 403 { throw error }
@@ -351,6 +352,9 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
+            return .terminal(terminal)
+        }
         if runStore.unresolvedRunID(for: sessionID) == runID {
             return try await verifyUnresolvedRun(sessionID: sessionID, runID: runID)
         }
@@ -395,10 +399,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            if runStore.runID(for: sessionID) == runID {
-                runStore.finish(runID: runID)
-            }
-            guard let terminal = RunTerminalStatus(rawValue: status) else { return .unknown }
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else { return .unknown }
             return .terminal(terminal)
         default:
             return recordProbeFailure(runID: runID)
@@ -443,7 +445,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         case "completed", "failed", "cancelled", "interrupted":
             // Only an explicit terminal status can retire the recovery record.
             clearFailedRunProbes(runID: runID)
-            runStore.finish(runID: runID)
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else {
+                return try unresolvedRun(runID: runID)
+            }
             return nil
         default:
             return try unresolvedRun(runID: runID)
@@ -506,7 +511,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return GatewayActiveRunHistory(evidence: .active(runID), pendingControls: controls)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            runStore.finish(runID: runID)
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else {
+                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+            }
             return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
         default:
             _ = recordProbeFailure(runID: runID)
@@ -687,8 +695,9 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             for item in mapped {
                 let ended = try await onFrame(item)
                 if terminalRawNames.contains(rawName),
-                   RunTerminalEvidence.outcome(of: item) != nil {
-                    self.runStore.finish(runID: streamID)
+                   let outcome = RunTerminalEvidence.outcome(of: item),
+                   let sessionID = self.runStore.sessionID(owning: streamID),
+                   self.runStore.recordTerminal(runID: streamID, sessionID: sessionID, outcome: outcome) {
                     self.clearFailedRunProbes(runID: streamID)
                 }
                 if ended { return true }

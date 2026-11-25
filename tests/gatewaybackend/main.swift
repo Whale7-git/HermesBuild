@@ -293,6 +293,10 @@ actor ConcurrencyProbe {
         check(GatewayRunStore(scope: failureScope, defaults: defaults)
                   .runID(for: "s") == nil,
               "verified completion also clears the persisted run identity")
+        transport.statusCode = 404
+        let persistedTerminal = try await backend(scope: failureScope).probeActiveRun(sessionID: "s", runID: run)
+        check(persistedTerminal == .terminal(.completed), "terminal evidence survives an expired status endpoint")
+        transport.statusCode = 200
 
         // build224: 404 is distinct from transient 5xx.
         let missingScope = "instance|build224-missing"
@@ -347,9 +351,8 @@ actor ConcurrencyProbe {
         check(mapped == "apperror", "run.failed terminates visibly")
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == nil, "terminal event retires persistent run")
         check(transport.requests.last?.value(forHTTPHeaderField: "Last-Event-ID") == "6", "SSE resume sequence reaches transport")
-        // A-02：收尾判定在 map 循环之外按原始事件名做。这里给一帧「原始名是终态、
-        // 但 data 解析不了 → map 返回空数组」的坏帧：run 必须照样被清掉，并且上层
-        // 仍收到一个可见的失败帧，否则这条流永远悬挂、下次启动锁死发送。
+        // Malformed terminal frames are not terminal evidence. Surface the
+        // error but retain the exact active record for read-only reconciliation.
         _ = try await restarted.startNativeTurn(sessionID: "s", text: "fixture")
         check(GatewayRunStore(scope: "instance|account", defaults: defaults).runID(for: "s") == run,
               "run is armed again before the malformed terminal frame")
