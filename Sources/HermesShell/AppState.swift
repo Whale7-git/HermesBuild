@@ -278,10 +278,20 @@ final class AppState: ObservableObject {
     private func restorePendingRuntime(_ candidate: SessionRecoveryCoordinator.Candidate) {
         let key = ConversationRuntimeRegistry.Key(instanceID: candidate.key.instanceID,
             accountScope: candidate.key.accountScope, sessionID: candidate.key.sessionID)
-        guard appIsActive, !clearingHistory, conversationRuntimes.detached.count < 4,
+        guard appIsActive, !clearingHistory,
               !(historyInstanceID == key.instanceID && historyAccountScope == key.accountScope &&
                 currentSessionID == key.sessionID),
               ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope else { return }
+        // A permanently unresolved offscreen receipt may not occupy a
+        // recovery slot forever. Rotate only durable, evictable owners.
+        if conversationRuntimes.detached.count >= 4 {
+            let current = currentSessionID.map { ConversationRuntimeRegistry.Key(
+                instanceID: historyInstanceID, accountScope: historyAccountScope, sessionID: $0) }
+            conversationRuntimes.pruneDetached(excluding: current, limit: 3) { [weak self] oldKey, oldModel in
+                self?.recordRuntimeSignals(oldModel, key: oldKey, handoff: true)
+            }
+        }
+        guard conversationRuntimes.detached.count < 4 else { return }
         guard let model = conversationRuntimes.restoreForRecovery(key, make: {
             let files = LocalDataFileStore(instanceID: key.instanceID,
                 accountScope: key.accountScope, sessionID: key.sessionID)

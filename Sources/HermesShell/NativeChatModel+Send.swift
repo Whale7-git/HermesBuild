@@ -651,7 +651,7 @@ extension NativeChatModel {
                 pauseQueueForRecovery()
                 notice = "后台已受理消息，但本地运行记录写入失败；请勿重发，稍后核对。"
             }
-            settledAttachmentPaths = attachments.map(\.path)
+            settleAcceptedAttachments(attachments.map(\.path))
             pendingAbsent = false
             flush()
             streamID = active
@@ -792,6 +792,7 @@ extension NativeChatModel {
             buffer.messages.removeAll { $0.id == pending.id }
             pendingSend = nil
             acknowledgeDeliveredQueuedTurn(matching: pending)
+            settleAcceptedAttachments(pending.attachments.map(\.path))
             clearOriginalDraft(pending.composerText)
             notice = "已从完整历史确认消息送达；没有重新提交。"
             uncertain = false

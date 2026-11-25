@@ -244,6 +244,16 @@ final class NativeChatModel: ObservableObject {
     var stopSubmission = UUID()
     /// One settled send at a time; the view removes only these uploaded refs.
     @Published var settledAttachmentPaths: [String] = []
+
+    func settleAcceptedAttachments(_ paths: [String]) {
+        guard !runtimeRetired else { return }
+        #if canImport(UIKit)
+        if let result = draftStore?.consumeSettledAttachmentPaths(Set(paths), sessionID: sessionID) {
+            recordLocalWrite(result, kind: .draft)
+        }
+        #endif
+        settledAttachmentPaths = paths
+    }
     @Published var draft = "" {
         didSet {
             guard !runtimeRetired else { return }

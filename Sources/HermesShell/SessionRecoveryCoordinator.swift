@@ -72,9 +72,12 @@ final class SessionRecoveryCoordinator {
         guard worker == nil else { return }
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
-        attempted = attempted.filter { indexed[$0.key] != nil }
+        let now = ProcessInfo.processInfo.systemUptime
+        // Preserve cooldowns while a candidate is leased by a Runtime.
+        // Otherwise eviction resets its priority and can starve other hosts.
+        attempted = attempted.filter { now - $0.value < 3600 }
         let selected = Self.eligibleKeys(Array(indexed.keys), attempted: attempted,
-            now: ProcessInfo.processInfo.systemUptime).compactMap { indexed[$0] }
+            now: now).compactMap { indexed[$0] }
         guard !selected.isEmpty else { return }
         let owner = UUID()
         let deadline = Date().addingTimeInterval(30)

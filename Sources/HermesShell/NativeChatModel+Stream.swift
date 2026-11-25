@@ -424,7 +424,7 @@ extension NativeChatModel {
                 pendingSend = nil
                 pendingAbsent = false
                 acknowledgeDeliveredQueuedTurn(matching: pending)
-                settledAttachmentPaths = pending.attachments.map(\.path)
+                settleAcceptedAttachments(pending.attachments.map(\.path))
                 // Clear only the restored original; preserve a newer draft.
                 clearOriginalDraft(pending.composerText)
             case .absent, .failed:
