@@ -161,4 +161,32 @@ do {
           "purging a missing root is a no-op")
 }
 
+// A settled POST must remove only its accepted ready references.
+do {
+    let suite = "hermes.attach.settle." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = ChatDraftStore(instanceID: "a", accountScope: "b", sessionID: "s", defaults: defaults)
+    let unrelated = ChatDraftStore(instanceID: "a", accountScope: "b", sessionID: "other", defaults: defaults)
+    var batch = AttachmentBatch(sessionID: "s")
+    let first = ChatAttachmentPayload(historyPath: "/attachments/accepted.txt")
+    let second = ChatAttachmentPayload(historyPath: "/attachments/other.txt")
+    batch.restoreReady([first, second])
+    let pending = try! batch.append(name: "pending.txt", mime: "text/plain", data: Data([1, 2, 3]))
+    let data = try! JSONEncoder().encode(batch.persistedValue)
+    check(store.saveAttachmentDraft(data).succeeded, "store initial attachment batch")
+    check(unrelated.saveAttachmentDraft(data).succeeded, "unrelated scope fixture")
+    check(store.consumeSettledAttachmentPaths([first.path], sessionID: "wrong").failure == .corruptFile,
+          "a foreign session cannot consume a draft")
+    check(store.consumeSettledAttachmentPaths([first.path], sessionID: "s").succeeded,
+          "accepted path is consumed")
+    let persisted = try! JSONDecoder().decode(PersistedAttachmentBatch.self,
+        from: store.loadAttachmentDraft().value!)
+    check(persisted.items.count == 2 && persisted.items.contains(where: { $0.id == pending }),
+          "pending bytes and unrelated uploaded reference survive")
+    check(unrelated.loadAttachmentDraft().value == data, "other session is unchanged")
+    check(store.consumeSettledAttachmentPaths([first.path], sessionID: "s").succeeded,
+          "settlement is idempotent")
+}
+
 print("BUILD58_FIXES_PASS \(checks) assertions")
