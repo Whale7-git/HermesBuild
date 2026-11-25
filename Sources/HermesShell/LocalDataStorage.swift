@@ -72,6 +72,7 @@ struct LocalDataFileStore: Sendable {
     private static let maxDraftBytes = 2 * 1024 * 1024
     private static let maxQueueBytes = 16 * 1024 * 1024
     private static let maxActiveRunBytes = 128 * 1024
+    static let maxCheckpointBytes = 4 * 1024 * 1024
     private static let maxAttachmentDraftBytes = 48 * 1024 * 1024
 
     let root: URL
@@ -112,6 +113,23 @@ struct LocalDataFileStore: Sendable {
     /// production: this uses the same protected, atomic envelope as PendingSend.
     var activeRunURL: URL {
         root.appendingPathComponent("active-run-\(namespaceHash)-\(scopeHash).json")
+    }
+
+    var checkpointURL: URL {
+        root.appendingPathComponent("checkpoint-\(namespaceHash)-\(scopeHash).json")
+    }
+
+    func loadCheckpoint() -> (value: Data?, result: LocalStoreWriteResult) {
+        switch loadData(checkpointURL, maxBytes: Self.maxCheckpointBytes) {
+        case .missing: return (nil, .ok)
+        case .value(let data): return (data, .ok)
+        case .invalid: return (nil, .failed(.corruptFile))
+        }
+    }
+
+    func saveCheckpoint(_ value: Data?) -> LocalStoreWriteResult {
+        guard let value else { return remove(checkpointURL) }
+        return save(value, to: checkpointURL, maxBytes: Self.maxCheckpointBytes)
     }
 
     var attachmentDraftURL: URL {
@@ -212,10 +230,12 @@ struct LocalDataFileStore: Sendable {
         let third = remove(pendingURL)
         let fourth = remove(activeRunURL)
         let fifth = remove(attachmentDraftURL)
+        let sixth = remove(checkpointURL)
         if !first.succeeded { return first }
         if !second.succeeded { return second }
         if !third.succeeded { return third }
-        return fourth.succeeded ? fifth : fourth
+        if !fourth.succeeded { return fourth }
+        return fifth.succeeded ? sixth : fifth
     }
 
     static func removeAll(instanceID: String, accountScope: String,
@@ -480,6 +500,7 @@ struct LocalDataFileStore: Sendable {
             || name.hasPrefix("pending-\(namespaceHash)-")
             || name.hasPrefix("active-run-\(namespaceHash)-")
             || name.hasPrefix("attachments-\(namespaceHash)-")
+            || name.hasPrefix("checkpoint-\(namespaceHash)-")
     }
 
     private static func digest(_ components: [String]) -> String {

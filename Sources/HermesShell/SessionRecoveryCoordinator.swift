@@ -208,6 +208,7 @@ final class SessionRecoveryCoordinator {
                     history.schedule(ChatHistoryRecord(snapshot: head))
                     if outcome == .completed {
                         guard store.saveActiveRun(nil).succeeded else { continue }
+                        _ = store.saveCheckpoint(nil)
                     }
                     // Non-success keeps its exact receipt until the visible
                     // runtime consumes the outcome. Clear the poll obligation

@@ -88,6 +88,17 @@ extension ModelTests {
             data: #"{"status":"failed"}"#, id: "3")) == .failed, "typed failure is durable evidence")
         expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "stream_end",
             data: #"{"status":"work_limit"}"#, id: "4")) == .interrupted, "work limit cannot dispatch queue")
+        // Codable projection preserves the event deduplication set and
+        // streaming tail, not just Last-Event-ID.
+        var original = ChatTranscript()
+        try original.apply(SSEFrame(event: "token", data: #"{"text":"hello"}"#, id: "1"))
+        let checkpointBytes = try JSONEncoder().encode(original)
+        var restoredProjection = try JSONDecoder().decode(ChatTranscript.self, from: checkpointBytes)
+        expect(restoredProjection.canResume(at: "1"), "checkpoint contains its exact cursor")
+        try restoredProjection.apply(SSEFrame(event: "token", data: #"{"text":"hello"}"#, id: "1"))
+        try restoredProjection.apply(SSEFrame(event: "token", data: #"{"text":" world"}"#, id: "2"))
+        expect(restoredProjection.messages.last?.content == "hello world",
+            "replayed cursor does not duplicate text; next event extends same bubble")
         let service = ActivityRecoveryService()
         let model = NativeChatModel(sessionID: "activity", api: service)
         await model.load()

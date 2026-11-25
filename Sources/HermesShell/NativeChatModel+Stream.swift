@@ -77,6 +77,7 @@ extension NativeChatModel {
             self.recordRuntimeLog(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
             try applySnapshot(snap, preserveLoadedOlder: preserveLoadedOlder)
+            restoreRecoveryCheckpoint(from: snap)
             // 权威历史已经读到：之前的暂时性失败不再成立，停掉退避重试。
             historyLoadFailurePending = false
             // Do not erase the unresolved accepted-run status after history GET.
@@ -913,6 +914,7 @@ extension NativeChatModel {
                             // recovery from the newest authoritative state.
                             self.lastEventID = nil
                             self.buffer.lastEventID = nil
+                            _ = self.draftStore?.saveCheckpoint(nil)
                             self.uncertain = true
                             self.pauseQueueForRecovery()
                             self.notice = "续传记录已过期，已保留消息和待处理卡片；后台状态待核对，发送保持锁定。"
@@ -963,6 +965,9 @@ extension NativeChatModel {
                         }
                         if frame.event == "approval_resolved" {
                             self.noteRunRecoveryState()
+                        }
+                        if frame.id != nil && !self.buffer.terminal {
+                            self.persistRecoveryCheckpoint(force: ["approval", "approval_resolved", "clarify", "clarify_resolved"].contains(frame.event))
                         }
                         if self.buffer.terminal {
                             self.clearApproval()
@@ -1389,6 +1394,7 @@ extension NativeChatModel {
     }
 
     func disconnect() {
+        persistRecoveryCheckpoint(force: true)
         automaticReconciliationTask?.cancel()
         automaticReconciliationTask = nil
         automaticReconciliationTicket = nil

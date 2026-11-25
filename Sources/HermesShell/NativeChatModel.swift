@@ -60,7 +60,7 @@ enum ChatSendMode: String, CaseIterable, Identifiable {
 /// 网关把 run 挂在 `waiting_for_approval` 上、SSE 不断开，所以这张卡片出现时
 /// 本轮并没有结束；不回答的话任务会一直停在这儿。可选项由服务端给（两项或四项），
 /// 客户端不猜——不同场景下 `session` / `always` 未必允许。
-struct ChatPendingApproval: Identifiable, Equatable {
+struct ChatPendingApproval: Identifiable, Codable, Equatable {
     let id: String
     let runID: String
     let requestID: String?
@@ -297,6 +297,46 @@ final class NativeChatModel: ObservableObject {
     /// A cold offscreen owner may read history and attach SSE, but cannot
     /// dispatch an original turn or queued POST before a presentation claims it.
     var recoveryOnly = false
+    var recoveryCheckpointRead = false
+    var lastCheckpointWrite: TimeInterval = -.infinity
+
+    /// A checkpoint is optimization/display state, never authority to send.
+    /// Exact accepted receipt, session scope and full cursor projection are
+    /// checked again against current server history before use.
+    func persistRecoveryCheckpoint(force: Bool = false) {
+        guard !runtimeRetired, let store = draftStore, let receipt = activeTurnRecovery,
+              receipt.terminalStatus == nil, pendingSend == nil,
+              streamID == receipt.runID, let cursor = lastEventID,
+              buffer.canResume(at: cursor), let historyEnd = confirmedHistoryEnd else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastCheckpointWrite >= 2 else { return }
+        lastCheckpointWrite = now
+        let checkpoint = RunRecoveryCheckpoint(version: 1, scope: displayScope,
+            sessionID: sessionID, receipt: receipt, historyEnd: historyEnd,
+            olderOffset: olderOffset, cursor: cursor, projection: buffer,
+            approvals: pendingApprovals, clarifies: pendingClarifies)
+        guard let encoded = try? JSONEncoder().encode(checkpoint) else { return }
+        // A failed/oversized checkpoint must not advance the durable cursor.
+        // The previous complete file remains a valid earlier replay point.
+        _ = store.saveCheckpoint(encoded)
+    }
+
+    func restoreRecoveryCheckpoint(from snapshot: ChatSnapshot) {
+        guard !recoveryCheckpointRead, snapshot.activeRunEvidence != .unknown else { return }
+        recoveryCheckpointRead = true
+        guard let store = draftStore, let receipt = activeTurnRecovery,
+              receipt.terminalStatus == nil, pendingSend == nil,
+              let data = store.loadCheckpoint().value,
+              let saved = try? JSONDecoder().decode(RunRecoveryCheckpoint.self, from: data),
+              let projection = saved.resumeProjection(scope: displayScope, sessionID: sessionID,
+                  receipt: receipt, snapshot: snapshot) else { return }
+        buffer = projection
+        lastEventID = saved.cursor
+        olderOffset = saved.olderOffset
+        // Only current server control evidence can make a card actionable;
+        // saved controls must not reauthorize an already answered request.
+        flush()
+    }
     var recoveryInstanceID: String?
     private var recoveryInstance: String {
         recoveryInstanceID ?? (displayScope.isEmpty ? String(describing: ObjectIdentifier(api)) : displayScope)
@@ -623,6 +663,7 @@ final class NativeChatModel: ObservableObject {
             return false
         }
         activeTurnRecovery = nil
+        _ = draftStore?.saveCheckpoint(nil)
         activeTurnHistoryBoundary = nil
         return true
     }
@@ -1046,5 +1087,64 @@ final class ConversationRuntimeRegistry {
         let old = Array(entries.values)
         entries.removeAll()
         for entry in old { entry.model.retireRuntime() }
+    }
+}
+
+
+/// Protected, bounded snapshot. Cursor, exact deduplication set and all
+/// accumulator state are encoded in one atomic envelope, not separate files.
+struct RunRecoveryCheckpoint: Codable {
+    let version: Int
+    let scope: String
+    let sessionID: String
+    let receipt: ActiveTurnRecovery
+    let historyEnd: Int
+    let olderOffset: Int
+    let cursor: String
+    let projection: ChatTranscript
+    let approvals: [ChatPendingApproval]
+    let clarifies: [ChatPendingClarify]
+
+    func resumeProjection(scope: String, sessionID: String,
+                          receipt: ActiveTurnRecovery, snapshot: ChatSnapshot) -> ChatTranscript? {
+        guard version == 1, self.scope == scope, self.sessionID == sessionID,
+              self.receipt == receipt, receipt.terminalStatus == nil,
+              snapshot.sessionID == sessionID, !snapshot.readOnly,
+              snapshot.activeRunEvidence == .active(receipt.runID),
+              projection.canResume(at: cursor), historyEnd >= 0, olderOffset >= 0,
+              snapshot.rawMessageEndIndex >= historyEnd,
+              snapshot.rawMessageEndIndex <= historyEnd + 1 else { return nil }
+        var result = projection
+        // A newer canonical assistant or tool window is incompatible with this
+        // projection; rebuild from server history instead of risking duplicates.
+        for row in snapshot.messages {
+            if let existing = result.messages.first(where: { $0.id == row.id }) {
+                guard existing.role == row.role, existing.content == row.content,
+                      existing.sourceIndex == row.sourceIndex,
+                      existing.attachmentPaths == row.attachmentPaths else { return nil }
+            } else {
+                // The original accepted local bubble may acquire its canonical
+                // server ID after the last checkpoint. Only that exact row is
+                // allowed; another user/assistant means the base changed.
+                guard row.sourceIndex == historyEnd, row.role == "user",
+                      row.content == receipt.text, Set(row.attachmentPaths) == receipt.attachmentPaths,
+                      let index = result.messages.lastIndex(where: {
+                        $0.role == "user" && $0.sourceIndex == nil && $0.delivery == .accepted &&
+                        $0.content == receipt.text && Set($0.attachmentPaths) == receipt.attachmentPaths
+                      }) else { return nil }
+                let previousID = result.messages[index].id
+                result.messages[index] = row
+                for toolIndex in result.tools.indices where result.tools[toolIndex].afterMessageID == previousID {
+                    result.tools[toolIndex].afterMessageID = row.id
+                }
+            }
+        }
+        for tool in snapshot.tools {
+            guard result.tools.contains(where: {
+                $0.id == tool.id && $0.done == tool.done && $0.isError == tool.isError &&
+                $0.result == tool.result && $0.args == tool.args
+            }) else { return nil }
+        }
+        return result
     }
 }
