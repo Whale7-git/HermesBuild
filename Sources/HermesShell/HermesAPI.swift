@@ -366,9 +366,15 @@ private final class RedirectRejector: NSObject, URLSessionTaskDelegate, @uncheck
     }
 }
 
-enum APIError: LocalizedError {
+enum APIError: LocalizedError, HTTPStatusProviding {
     case badResponse
     case http(Int, String)
+
+    /// 让 `HistoryLoadFailure` 不必认识本类型就能判断「这是不是暂时性故障」。
+    var httpStatusHint: Int? {
+        if case let .http(code, _) = self { return code }
+        return nil
+    }
 
     var errorDescription: String? {
         switch self {

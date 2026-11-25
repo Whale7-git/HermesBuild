@@ -1,5 +1,27 @@
 import SwiftUI
 import Textual
+import Network
+
+/// One app-root monitor. Reachability wakes recovery; it never proves delivery.
+@MainActor
+final class RecoveryNetworkWakeup: ObservableObject {
+    static let restored = Notification.Name("hermes.recovery.networkRestored")
+    private let monitor = NWPathMonitor()
+    private var wasSatisfied: Bool?
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let restored = self.wasSatisfied == false && satisfied
+                self.wasSatisfied = satisfied
+                if restored { NotificationCenter.default.post(name: Self.restored, object: nil) }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "hermes.recovery.network"))
+    }
+    deinit { monitor.cancel() }
+}
 
 /// Chat-first root shell. The conversation is the canvas; the native Hermes
 /// sessions remain available in a left-side drawer without a navigation push.
@@ -14,6 +36,7 @@ struct RootView: View {
     @State private var sidebarOpen = false
     @GestureState private var sidebarGesture = ChatDrawerGestureState()
     @State private var foregroundListPolicy = ForegroundListRefreshPolicy()
+    @StateObject private var recoveryNetworkWakeup = RecoveryNetworkWakeup()
     @State private var drawerGestureOwner = RootDrawerGestureOwnership()
     // Native UITextView selection has priority over full-card drawer dragging.
     @State private var textSelectionOwners = Set<ObjectIdentifier>()
@@ -416,6 +439,17 @@ struct RootView: View {
             } else {
                 textSelectionOwners.remove(owner)
             }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                app.wakeUnopenedSessionRecovery()
+                do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: RecoveryNetworkWakeup.restored)) { _ in
+            guard scenePhase == .active else { return }
+            app.wakeUnopenedSessionRecovery()
         }
         .onReceive(NotificationCenter.default.publisher(for: GatewayBackend.runsChanged)) { event in
             guard let backend = event.object as? GatewayBackend, backend === app.api else { return }

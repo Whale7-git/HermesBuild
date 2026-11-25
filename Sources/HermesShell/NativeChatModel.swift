@@ -294,10 +294,28 @@ final class NativeChatModel: ObservableObject {
     /// It never submits a chat POST or resumes a user-paused queue.
     var automaticReconciliationTask: Task<Void, Never>?
     var automaticReconciliationTicket: UUID?
+    var automaticReconciliationWaiting = false
+    @Published var automaticRecoveryQuiet = false
+    var automaticReconciliationSteadyNanoseconds: UInt64 = 60_000_000_000
+    var automaticReconciliationSlowNanoseconds: UInt64 = 120_000_000_000
+    var automaticReconciliationSlowAfterNanoseconds: UInt64 = 1_800_000_000_000
+    // Transport evidence only, not delivery or terminal evidence.
+    var reapedTransportRunID: String?
+    var hidesRoutineRecoveryNotice: Bool {
+        automaticRecoveryQuiet && !pendingAbsent && !authenticationRequired &&
+            !pendingRecoveryUnreadable && !activeRecoveryUnreadable &&
+            localPersistenceIssue == nil && !queuePersistenceFailed && !runRecoveryNoticeShown &&
+            (error == nil || historyLoadFailurePending)
+    }
     var automaticReconciliationDelaysNanoseconds: [UInt64] = [
         2_000_000_000, 5_000_000_000, 10_000_000_000,
         20_000_000_000, 40_000_000_000, 60_000_000_000
     ]
+    /// 历史 GET 因**网络类**原因失败，还欠一次成功的权威读取。
+    ///
+    /// 与 `uncertain` 严格分开：那个表示「POST 结果待核对」，这个只表示
+    /// 「屏幕上的内容可能不是最新」。把两者混用会让一次超时锁死发送。
+    var historyLoadFailurePending = false
     /// A bounded read-only follow-up after any STOP attempt with no verified
     /// terminal result. Polling never sends a second STOP or chat POST.
     var stopStatusPollTask: Task<Void, Never>?

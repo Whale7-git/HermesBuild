@@ -28,21 +28,25 @@ extension ModelTests {
                      "completed reconciliation releases its single-flight owner")
         model.disconnect()
 
-        // A persistent outage must stop after the explicit budget and never
-        // unlock or replay. Leaving the page cancels a pending retry.
+        // A persistent outage continues beyond the fast retry window and
+        // never unlocks or replays. A later successful GET recovers it.
         let outage = ActivityRecoveryService()
         outage.failHistory = true
         let locked = NativeChatModel(sessionID: "activity", api: outage)
         locked.automaticReconciliationDelaysNanoseconds = [
             1_000_000, 2_000_000, 4_000_000
         ]
+        locked.automaticReconciliationSteadyNanoseconds = 4_000_000
+        locked.automaticReconciliationSlowAfterNanoseconds = 0
+        locked.automaticReconciliationSlowNanoseconds = 4_000_000
         await locked.load()
         locked.scheduleAutomaticReconciliation()
-        await locked.automaticReconciliationTask?.value
-        precondition(outage.historyCalls == 4 && outage.postCalls == 0,
-                     "one failed initial GET plus three bounded automatic retries")
-        precondition(locked.uncertain && !locked.canSend,
-                     "retry exhaustion must preserve the send safety lock")
+        try await eventually { outage.historyCalls >= 5 }
+        precondition(outage.postCalls == 0 && locked.uncertain && !locked.canSend,
+                     "after the fast window, keep the lock and continue read-only recovery")
+        outage.failHistory = false
+        try await eventually { !locked.uncertain && locked.canSend }
+        precondition(outage.postCalls == 0, "steady retry resolves without POST")
         locked.disconnect()
 
         let cancelService = ActivityRecoveryService()
@@ -75,6 +79,6 @@ extension ModelTests {
                      absent.startCalls == 1,
                      "automatic worker must not resend a proven absent POST")
         noResend.disconnect()
-        print("MODEL_PASS automatic read-only recovery, bounded outage and cancellation")
+        print("MODEL_PASS automatic read-only recovery, steady outage recovery and cancellation")
     }
 }
