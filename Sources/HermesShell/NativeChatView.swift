@@ -240,6 +240,9 @@ struct NativeChatView: View {
     /// Persist facts this page has actually observed. The caller supplies a
     /// fresh set so the computation never becomes part of SwiftUI's body type.
     private func recordTaskSignals() {
+        // A disappearing page may be called after the account or instance
+        // switches. Do not project its observations into the new scope.
+        guard displayScope == app.historyInstanceID + "|" + app.historyAccountScope else { return }
         var signals: Set<SessionTaskSignal> = []
         if model.running || model.submitting || model.reconnecting { signals.insert(.running) }
         if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
@@ -428,7 +431,10 @@ struct NativeChatView: View {
             controllerBox.value?.turnReading.reset()
             model.disconnect()
             recordTaskSignals()
-            app.resetRequestTaskSignalIndex()
+            if displayScope == app.historyInstanceID + "|" + app.historyAccountScope,
+               app.currentSessionID == sessionID {
+                app.resetRequestTaskSignalIndex()
+            }
             visible = false
             pendingPanel = nil; afterPanelAction = nil; activePanel = nil
             attachmentHighlightTask?.cancel()
@@ -553,6 +559,8 @@ struct NativeChatView: View {
         }
         // 服务端确认换模型后，同步输入栏标签；不靠重新进会话才刷新。
         .onChange(of: app.currentSession?.model) { _, newValue in
+            guard displayScope == app.historyInstanceID + "|" + app.historyAccountScope,
+                  app.currentSessionID == sessionID else { return }
             if let newValue, !newValue.isEmpty { model.sessionModel = newValue }
         }
         .onReceive(NotificationCenter.default.publisher(for: RecoveryNetworkWakeup.restored)) { _ in

@@ -47,6 +47,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         let generation = revision
         suspended = false
@@ -708,13 +709,16 @@ extension NativeChatModel {
         guard !suspended, !submitting, !stopping, !authenticationRequired else { return }
         activeRunProbeTask?.cancel()
         activeRunProbeRunID = receipt.runID
+        let ticket = UUID()
+        activeRunProbeTicket = ticket
         let generation = revision
         activeRunProbeTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                if self.activeRunProbeRunID == receipt.runID {
+                if self.activeRunProbeTicket == ticket {
                     self.activeRunProbeTask = nil
                     self.activeRunProbeRunID = nil
+                    self.activeRunProbeTicket = nil
                 }
             }
             do {
@@ -1351,6 +1355,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
@@ -1377,6 +1382,7 @@ extension NativeChatModel {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil

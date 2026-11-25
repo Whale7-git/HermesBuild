@@ -290,6 +290,7 @@ final class NativeChatModel: ObservableObject {
     /// disconnect or a newer load, and only `.alive` can attach the run.
     var activeRunProbeTask: Task<Void,Never>?
     var activeRunProbeRunID: String?
+    var activeRunProbeTicket: UUID?
     /// A single bounded, read-only recovery owner for uncertain sends/runs.
     /// It never submits a chat POST or resumes a user-paused queue.
     var automaticReconciliationTask: Task<Void, Never>?
@@ -517,6 +518,7 @@ final class NativeChatModel: ObservableObject {
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
         let result = draftStore?.saveActiveRun(nil) ?? .ok
         guard result.succeeded else {
             recordLocalWrite(result, kind: .runRecovery)

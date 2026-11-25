@@ -223,7 +223,7 @@ extension NativeChatView {
                         .foregroundStyle(AppTheme.warning)
                 } else {
                     Circle()
-                        .fill(AppTheme.success)
+                        .fill(model.activity == .ready ? AppTheme.success : Color.secondary)
                         .frame(width: 5, height: 5)
                 }
                 Text(statusLine)
