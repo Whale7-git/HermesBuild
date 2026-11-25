@@ -67,6 +67,7 @@ final class SessionRecoveryCoordinator {
 
     func schedule(candidates: [Candidate],
                   isEligible: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Bool,
+                  onPending: @escaping @MainActor (Candidate) -> Void = { _ in },
                   onVerified: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Void) {
         guard worker == nil else { return }
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
@@ -104,8 +105,16 @@ final class SessionRecoveryCoordinator {
                 let accepted = store.loadActiveRun()
                 // A pending POST is independent of an accepted Run. Absence of
                 // either local record never proves successful delivery.
-                guard pending.result.succeeded, pending.value == nil,
-                      accepted.result.succeeded, var data = accepted.value,
+                guard pending.result.succeeded, accepted.result.succeeded else { continue }
+                if pending.value != nil {
+                    // Reuse the canonical pending-delivery and queue
+                    // reconciliation in the app-owned runtime, not a second
+                    // implementation that could lose attachments or replay POST.
+                    guard isEligible(key, signal, version) else { continue }
+                    onPending(candidate)
+                    continue
+                }
+                guard var data = accepted.value,
                       var receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
                 else { continue }
                 do {

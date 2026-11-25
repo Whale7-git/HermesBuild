@@ -275,6 +275,33 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func restorePendingRuntime(_ candidate: SessionRecoveryCoordinator.Candidate) {
+        let key = ConversationRuntimeRegistry.Key(instanceID: candidate.key.instanceID,
+            accountScope: candidate.key.accountScope, sessionID: candidate.key.sessionID)
+        guard appIsActive, !clearingHistory, conversationRuntimes.detached.count < 4,
+              !(historyInstanceID == key.instanceID && historyAccountScope == key.accountScope &&
+                currentSessionID == key.sessionID),
+              ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope else { return }
+        guard let model = conversationRuntimes.restoreForRecovery(key, make: {
+            let files = LocalDataFileStore(instanceID: key.instanceID,
+                accountScope: key.accountScope, sessionID: key.sessionID)
+            let store = ChatDraftStore(instanceID: key.instanceID, accountScope: key.accountScope,
+                sessionID: key.sessionID, fileStore: files)
+            let history = ChatHistoryStore(instanceID: key.instanceID,
+                sessionID: key.sessionID, accountScope: key.accountScope)
+            return NativeChatModel(sessionID: key.sessionID, api: candidate.api,
+                draftStore: store, historyStore: history,
+                displayScope: key.instanceID + "|" + key.accountScope)
+        }) else { return }
+        bindRuntime(model, key: key)
+        Task { @MainActor [weak self, weak model] in
+            guard let self, let model, self.appIsActive, !model.runtimeRetired,
+                  self.conversationRuntimes.contains(key, model: model) else { return }
+            await model.load(silent: true)
+            model.scheduleAutomaticReconciliation(immediate: true)
+        }
+    }
+
     private func wakeDetachedRuntimes() {
         for (key, model) in conversationRuntimes.detached {
             recordRuntimeSignals(model, key: key)
@@ -684,6 +711,10 @@ final class AppState: ObservableObject {
             guard let current = self.recoveryObservations(instanceID: key.instanceID,
                 accountScope: key.accountScope)?[key.sessionID] else { return false }
             return current.signals.contains(signal) && current.version(for: signal) == version
+        }, onPending: { [weak self] candidate in
+            #if canImport(UIKit)
+            self?.restorePendingRuntime(candidate)
+            #endif
         }, onVerified: { [weak self] key, signal, version in
             guard let self,
                   var rows = self.recoveryObservations(instanceID: key.instanceID,

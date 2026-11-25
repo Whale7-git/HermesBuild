@@ -161,7 +161,7 @@ extension NativeChatModel {
     /// completion can dispatch the next turn in order.
     @discardableResult
     func flushQueuedIfNeeded(completedStreamID: String? = nil) async -> Bool {
-        guard !running, !stopping, !suspended, !stopAcknowledged else { return false }
+        guard !recoveryOnly, !running, !stopping, !suspended, !stopAcknowledged else { return false }
         // Removing a submitting entry is owned by the completion path. It
         // must never be dispatched again from a foreground/load callback.
         switch ChatQueueDispatchPlan.make(
@@ -550,7 +550,7 @@ extension NativeChatModel {
                                composerText: String, consumeDraft: Bool,
                                origin: ChatSendOrigin,
                                slashCommand: ChatSlashCommand.Match?) async -> SubmitResult {
-        guard !runtimeRetired else { return SubmitResult(accepted: false, completed: false) }
+        guard !runtimeRetired, !recoveryOnly else { return SubmitResult(accepted: false, completed: false) }
         let originalDraft: String? = consumeDraft ? draft : nil
         publishTask?.cancel()
         publishTask = nil

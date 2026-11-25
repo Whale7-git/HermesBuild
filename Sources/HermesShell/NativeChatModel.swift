@@ -284,6 +284,9 @@ final class NativeChatModel: ObservableObject {
     let sessionID: String
     let api:NativeChatService
     private(set) var runtimeRetired = false
+    /// A cold offscreen owner may read history and attach SSE, but cannot
+    /// dispatch an original turn or queued POST before a presentation claims it.
+    var recoveryOnly = false
     var runtimeLogToken: RuntimeLogToken?
     #if canImport(UIKit)
     private var runtimeObservation: AnyCancellable?
@@ -434,6 +437,7 @@ final class NativeChatModel: ObservableObject {
     }
 
     func resumeQueueAfterRecovery() {
+        guard !recoveryOnly else { return }
         queueRecoveryPaused = false
         updateQueuePause()
     }
@@ -636,11 +640,11 @@ final class NativeChatModel: ObservableObject {
 
     /// 能发起新的一轮。运行中为 false —— 那时走 `canSendWhileRunning` 的三条追加路径。
     /// 派生逻辑集中在 `ChatPhase`，这里只负责把正交事实打包传进去。
-    var canSend: Bool { phase.allowsNewTurn(facts) }
+    var canSend: Bool { !recoveryOnly && phase.allowsNewTurn(facts) }
     /// 本轮正在跑时，是否还能把这条发出去（steer / queue / interrupt 三条路径之一）。
     /// `running` 不再直接锁死输入栏：Hermes 支持运行中引导，客户端不该比服务端更保守。
     /// 但 `.reconnecting` 一律不放行——重连期间服务端没有活跃 agent 可注入。
-    var canSendWhileRunning: Bool { phase.allowsSteer(facts) }
+    var canSendWhileRunning: Bool { !recoveryOnly && phase.allowsSteer(facts) }
 
     /// 只有在核对确认后台不存在这条之后才允许重发。
     var canResendPending: Bool { phase.allowsResend(facts) }
@@ -894,6 +898,12 @@ final class ConversationRuntimeRegistry {
     func claim(_ key: Key, presentation: UUID, make: () -> NativeChatModel) -> NativeChatModel {
         access &+= 1
         if var entry = entries[key] {
+            if entry.model.recoveryOnly {
+                entry.model.recoveryOnly = false
+                // Opening a recovery-only runtime is not permission to
+                // automatically resume a queue restored from disk.
+                entry.model.pauseQueueForRecovery()
+            }
             entry.presentation = presentation
             entry.lastPresentation = presentation
             entry.access = access
@@ -903,6 +913,17 @@ final class ConversationRuntimeRegistry {
         let model = make()
         entries[key] = Entry(model: model, presentation: presentation,
             lastPresentation: presentation, access: access)
+        return model
+    }
+
+    func restoreForRecovery(_ key: Key, make: () -> NativeChatModel) -> NativeChatModel? {
+        guard entries[key] == nil else { return nil }
+        access &+= 1
+        let model = make()
+        model.recoveryOnly = true
+        model.pauseQueueForRecovery()
+        entries[key] = Entry(model: model, presentation: nil,
+            lastPresentation: UUID(), access: access)
         return model
     }
 

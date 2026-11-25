@@ -469,8 +469,23 @@ var transcriptPublications = 0
         _ = await runtimePost.value
         precondition(runtime.runtimeRetired && runtime.activeTurnRecovery == nil &&
             !registry.contains(key), "late POST cannot mutate a retired runtime")
+        let recoveryKey = ConversationRuntimeRegistry.Key(instanceID: "cold", accountScope: "b", sessionID: "test")
+        let recoveryService = FakeChatService()
+        let cold = registry.restoreForRecovery(recoveryKey) {
+            NativeChatModel(sessionID: "test", api: recoveryService)
+        }!
+        await cold.load()
+        cold.draft = "never submit from recovery"
+        let coldSent = await cold.send()
+        precondition(!coldSent && recoveryService.startCalls == 0 && !cold.canSend)
+        cold.resumeQueueAfterRecovery()
+        precondition(cold.queueAutomaticDispatchPaused)
+        let coldClaim = registry.claim(recoveryKey, presentation: UUID()) {
+            fatalError("cold owner should be reused")
+        }
+        precondition(coldClaim === cold && !cold.recoveryOnly && cold.queueAutomaticDispatchPaused)
         registry.retireAll()
-        print("MODEL_PASS runtime lease handoff, scope isolation and retired POST fencing")
+        print("MODEL_PASS runtime lease handoff, scope isolation, cold recovery no POST and retired POST fencing")
 
         let acceptedService = AcceptedPendingService()
         let acceptedModel = NativeChatModel(sessionID:"test",api:acceptedService)
