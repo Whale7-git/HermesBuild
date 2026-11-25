@@ -329,7 +329,10 @@ extension NativeChatModel {
         let generation = revision
         let context = runContext(for: active, generation: generation)
         do {
-            let result = try await api.probeActiveRun(sessionID: sessionID, runID: active)
+            let result: ActiveRunProbe
+            if let receipt = activeTurnRecovery, receipt.runID == active,
+               let terminal = receipt.terminalStatus { result = .terminal(terminal) }
+            else { result = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
             guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
@@ -356,6 +359,11 @@ extension NativeChatModel {
                 transition(to: .idle)
                 notice = "后台未找到原任务；已停止本地运行指示，原发送结果仍待核对。"
             case .terminal(let outcome):
+                guard rememberTerminalStatus(runID: active, outcome: outcome) else {
+                    uncertain = true
+                    pauseQueueForRecovery()
+                    return
+                }
                 let finalHistory = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,

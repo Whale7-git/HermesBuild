@@ -488,6 +488,27 @@ final class NativeChatModel: ObservableObject {
         return true
     }
 
+    /// Only an exact, already accepted Run can gain terminal evidence.
+    /// A conflicting status or failed durable write must not unlock sending.
+    @discardableResult
+    func rememberTerminalStatus(runID: String, outcome: RunTerminalStatus) -> Bool {
+        guard var receipt = activeTurnRecovery else { return true }
+        guard receipt.runID == runID else { return false }
+        if let previous = receipt.terminalStatus { return previous == outcome }
+        receipt.terminalStatus = outcome
+        guard let data = try? JSONEncoder().encode(receipt) else {
+            recordLocalWrite(.failed(.encoding), kind: .runRecovery)
+            return false
+        }
+        let result = draftStore?.saveActiveRun(data) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .runRecovery)
+            return false
+        }
+        activeTurnRecovery = receipt
+        return true
+    }
+
     /// A clear is authoritative only after its protected-file removal succeeds.
     /// Failed removal must not silently erase recovery evidence from memory.
     @discardableResult

@@ -22,6 +22,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var active: String?
     var readOnly = false
     var failHistory = false
+    var failHistoryAfterProbe = false
     var failStart = true
     var historyWait: CheckedContinuation<ChatSnapshot, Error>?
     var holdHistory = false
@@ -60,6 +61,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     }
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         probeCalls += 1
+        if failHistoryAfterProbe { failHistory = true }
         return probeResults.count > 1 ? probeResults.removeFirst() : (probeResults.first ?? .unknown)
     }
     func startNativeTurn(sessionID: String, text: String, attachments: [ChatAttachmentPayload]) async throws -> String {
@@ -408,6 +410,42 @@ extension ModelTests {
             }
         }
         print("PENDING_PASS receipt-only run probe attaches alive and fails closed otherwise")
+
+        // A confirmed terminal status must survive an unreachable final GET,
+        // relaunch, and status expiry. Old receipts decode with nil evidence.
+        do {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("HermesTerminalProof-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let files = LocalDataFileStore(instanceID: "terminal", accountScope: "account",
+                sessionID: "test", rootDirectory: root)
+            let store = ChatDraftStore(instanceID: "terminal", accountScope: "account",
+                sessionID: "test", fileStore: files)
+            let receipt = ActiveTurnRecovery(runID: "verified-run", historyEnd: 0,
+                knownIDs: [], text: "request", attachmentPaths: [])
+            precondition(store.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let service = PendingRecoveryService()
+            service.probeResults = [.terminal(.failed)]
+            service.failHistoryAfterProbe = true
+            let first = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+            await first.load()
+            try await eventually { first.activeRunRecovery?.terminalStatus == .failed }
+            precondition(first.uncertain && !first.canSend)
+            first.disconnect()
+            let durable = try JSONDecoder().decode(ActiveTurnRecovery.self,
+                from: store.loadActiveRun().value!)
+            precondition(durable.terminalStatus == .failed)
+            let resumedService = PendingRecoveryService()
+            resumedService.probeResults = [.unknown]
+            let resumed = NativeChatModel(sessionID: "test", api: resumedService, draftStore: store)
+            await resumed.load()
+            try await eventually { resumed.activeTurnRecovery == nil }
+            precondition(resumed.notice == RunTerminalStatus.failed.notice)
+            precondition(resumed.canSend && resumedService.probeCalls == 0
+                && resumedService.startCalls == 0)
+            resumed.disconnect()
+        }
+        print("PENDING_PASS exact terminal proof survives failed history and restart")
 
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must

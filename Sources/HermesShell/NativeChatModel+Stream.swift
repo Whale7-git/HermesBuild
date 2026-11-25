@@ -81,7 +81,8 @@ extension NativeChatModel {
             if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
             if case .active(let active) = snap.activeRunEvidence {
-                if reapedTransportRunID == active {
+                if reapedTransportRunID == active ||
+                    (activeTurnRecovery?.runID == active && activeTurnRecovery?.terminalStatus != nil) {
                     uncertain = true
                     pauseQueueForRecovery()
                     await settleReapedRunTransport(active: active, generation: generation)
@@ -452,8 +453,12 @@ extension NativeChatModel {
         // assistant answer into permission to send another POST.
         if let receipt = activeTurnRecovery, !submitting {
             if snap.activeStreamID == receipt.runID {
-                if pendingSend == nil { uncertain = false }
-            } else if receipt.confirmsCompletion(in: snap) {
+                if receipt.terminalStatus != nil {
+                    // A lagging history response cannot resurrect a proven terminal Run.
+                    uncertain = true
+                    pauseQueueForRecovery()
+                } else if pendingSend == nil { uncertain = false }
+            } else if receipt.terminalStatus == nil && receipt.confirmsCompletion(in: snap) {
                 if clearAcceptedTurnRecovery(), pendingSend == nil {
                     uncertain = false
                     notice = nil
@@ -584,7 +589,7 @@ extension NativeChatModel {
         }
         guard clearAcceptedTurnRecovery() else { return false }
         uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
-        if !uncertain { notice = nil }
+        if !uncertain { notice = receipt.terminalStatus?.notice }
         error = nil
         RuntimeLogRecorder.shared.record(.info, "recovery",
             "long-run history verified pages=\(pages.count) without POST")
@@ -713,8 +718,12 @@ extension NativeChatModel {
                 }
             }
             do {
-                let result = try await self.api.probeActiveRun(
-                    sessionID: self.sessionID, runID: receipt.runID)
+                let result: ActiveRunProbe
+                if let terminal = receipt.terminalStatus { result = .terminal(terminal) }
+                else {
+                    result = try await self.api.probeActiveRun(
+                        sessionID: self.sessionID, runID: receipt.runID)
+                }
                 guard generation == self.revision, !Task.isCancelled,
                       !self.suspended,
                       self.activeTurnRecovery == receipt else { return }
@@ -740,10 +749,15 @@ extension NativeChatModel {
                     // A confirmed terminal status still requires a final read-only
                     // history GET; do not replay the original accepted POST.
                     self.pauseQueueForRecovery()
+                    guard self.rememberTerminalStatus(runID: receipt.runID, outcome: outcome),
+                          let terminalReceipt = self.activeTurnRecovery else {
+                        self.uncertain = true
+                        return
+                    }
                     do {
                         let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
                         guard generation == self.revision, !Task.isCancelled, !self.suspended,
-                              self.activeTurnRecovery == receipt else { return }
+                              self.activeTurnRecovery == terminalReceipt else { return }
                         guard finalHistory.sessionID == self.sessionID,
                               finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                             self.uncertain = true
@@ -757,7 +771,7 @@ extension NativeChatModel {
                         self.notice = outcome.notice
                     } catch {
                         guard generation == self.revision, !Task.isCancelled,
-                              self.activeTurnRecovery == receipt else { return }
+                              self.activeTurnRecovery == terminalReceipt else { return }
                         if self.handleAuthenticationFailure(error) { return }
                         self.uncertain = true
                         self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
@@ -1250,15 +1264,22 @@ extension NativeChatModel {
         self.error = nil
         let unconfirmed = "暂未取得最新结果，将自动同步；消息不会重复发送。"
         do {
-            let probe = try await api.probeActiveRun(sessionID: sessionID, runID: active)
+            let probe: ActiveRunProbe
+            if let receipt = activeTurnRecovery, receipt.runID == active,
+               let terminal = receipt.terminalStatus { probe = .terminal(terminal) }
+            else { probe = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             switch probe {
             case .alive:
                 // status 说还在跑，但实时连接已经没了：再也收不到帧。
                 // 不重试订阅，也不假装结束，把决定权交给用户。
                 lockDownRunStatus("任务仍在执行，结果将自动同步。")
-            case .terminal:
-                // 已有终态：用一次权威历史把内容补齐后落定。
+            case .terminal(let outcome):
+                // Preserve exact terminal proof before the fallible final GET.
+                guard rememberTerminalStatus(runID: active, outcome: outcome) else {
+                    lockDownRunStatus(unconfirmed)
+                    return
+                }
                 let snap = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
                 guard !stopping, snap.sessionID == sessionID, !snap.readOnly,
@@ -1273,7 +1294,7 @@ extension NativeChatModel {
                     lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 } else {
                     reapedTransportRunID = nil
-                    notice = nil
+                    notice = outcome.notice
                 }
             case .unknown, .unresolved:
                 lockDownRunStatus(unconfirmed)
