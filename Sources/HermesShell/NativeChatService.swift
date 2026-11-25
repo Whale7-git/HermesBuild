@@ -111,6 +111,28 @@ extension ChatAttachmentPayload {
 @MainActor
 final class RecoveryScheduler {
     static let shared = RecoveryScheduler()
+    struct OwnerKey: Hashable {
+        let scope: String
+        let session: String
+    }
+    private var owners: [OwnerKey: (ticket: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Ordinary recovery and STOP use one owner per exact session. Replacing
+    /// a timer cancels the old owner; GET admission retains in-flight permits
+    /// until the underlying operation actually returns.
+    func startOwner(key: OwnerKey, ticket: UUID,
+                    operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        owners[key]?.task.cancel()
+        let task = Task { [weak self] in
+            defer {
+                if self?.owners[key]?.ticket == ticket { self?.owners.removeValue(forKey: key) }
+            }
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+        owners[key] = (ticket, task)
+        return task
+    }
     private struct Waiter {
         let id: UUID
         let instance: String

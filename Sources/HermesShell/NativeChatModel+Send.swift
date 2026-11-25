@@ -560,6 +560,7 @@ extension NativeChatModel {
         // POST 在途 + 本轮已开始：`.submitting` 同时表达这两件事，
         // 这正是「18 个布尔能组合出非法状态」的典型例子。
         transition(to: .submitting)
+        lastFinalizedOutcome = nil
         error = nil
         // 斜杠命令：立刻给出「已提交，等待服务端处理」的可见反馈。
         //

@@ -371,7 +371,10 @@ extension NativeChatModel {
             pauseQueueForRecovery()
         }
         reapedTransportRunID = nil
-        if !uncertain { notice = outcome.notice }
+        if !uncertain {
+            lastFinalizedOutcome = outcome
+            notice = outcome.notice
+        }
         return !uncertain
     }
 
@@ -657,7 +660,7 @@ extension NativeChatModel {
         let ticket = UUID()
         automaticReconciliationTicket = ticket
         automaticRecoveryQuiet = true
-        automaticReconciliationTask = Task { [weak self] in
+        automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket) { [weak self] in
             guard let self else { return }
             defer {
                 if self.automaticReconciliationTicket == ticket {

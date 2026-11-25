@@ -127,7 +127,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
             || signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted)
     }
     var isRunning: Bool {
-        signals.contains(.running) || signals.contains(.stopping)
+        signals.contains(.running) || signals.contains(.stopping) || signals.contains(.synchronizing)
     }
 
     var title: String {
@@ -218,7 +218,10 @@ enum SessionTaskCenter {
         observations: [String: SessionTaskObservation],
         liveSessionIDs: Set<String>
     ) -> [String: SessionTaskObservation] {
-        observations.filter { liveSessionIDs.contains($0.key) && !$0.value.signals.isEmpty }
+        observations.filter {
+            !$0.value.signals.isEmpty &&
+            (liveSessionIDs.contains($0.key) || $0.value.signals.contains(.recoveryTracked))
+        }
     }
 
     /// Signals are all local observations; `running` is intentionally not

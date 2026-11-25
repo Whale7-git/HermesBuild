@@ -412,7 +412,7 @@ extension NativeChatModel {
         let ticket = UUID()
         stopStatusPollTicket = ticket
         let delays = stopStatusPollDelaysNanoseconds
-        stopStatusPollTask = Task { [weak self] in
+        stopStatusPollTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket) { [weak self] in
             guard let self else { return }
             defer {
                 if self.stopStatusPollTicket == ticket {

@@ -338,6 +338,12 @@ final class NativeChatModel: ObservableObject {
         flush()
     }
     var recoveryInstanceID: String?
+    var recoveryTrackingRequired: (() -> Bool)?
+    @Published var lastFinalizedOutcome: RunTerminalStatus?
+    var recoveryOwnerKey: RecoveryScheduler.OwnerKey {
+        .init(scope: displayScope.isEmpty ? String(describing: ObjectIdentifier(api)) : displayScope,
+              session: sessionID)
+    }
     private var recoveryInstance: String {
         recoveryInstanceID ?? (displayScope.isEmpty ? String(describing: ObjectIdentifier(api)) : displayScope)
     }
@@ -386,6 +392,7 @@ final class NativeChatModel: ObservableObject {
         runtimeObservation = nil
         #endif
         onAuthenticationRequired = nil
+        recoveryTrackingRequired = nil
         onApprovalArrived = nil; onApprovalResolved = nil
         onClarifyArrived = nil; onClarifyResolved = nil
         disconnect()
@@ -596,6 +603,7 @@ final class NativeChatModel: ObservableObject {
         guard !pendingRecoveryUnreadable else { return .failed(.corruptFile) }
         guard let draftStore else { return .ok }
         guard let pendingSend else { return draftStore.savePending(nil) }
+        guard recoveryTrackingRequired?() != false else { return .failed(.diskWrite) }
         guard let data = try? JSONEncoder().encode(pendingSend) else { return .failed(.encoding) }
         return draftStore.savePending(data)
     }
@@ -607,6 +615,7 @@ final class NativeChatModel: ObservableObject {
                               attachments: [ChatAttachmentPayload],
                               knownIDs: Set<String>) -> Bool {
         guard !runtimeRetired else { return false }
+        guard recoveryTrackingRequired?() != false else { return false }
         var receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,

@@ -1,11 +1,8 @@
 import Foundation
 
-/// App-foreground, bounded, GET-only recovery for sessions whose chat view is
-/// not mounted. Never submits, stops, approves, or dispatches queued turns.
+/// Discovers durable offscreen work and hands it to the application runtime registry.
 @MainActor
 final class SessionRecoveryCoordinator {
-    private var worker: Task<Void, Never>?
-    private var ticket = UUID()
     struct Key: Hashable {
         let instanceID: String
         let accountScope: String
@@ -40,12 +37,6 @@ final class SessionRecoveryCoordinator {
         }.prefix(max(0, limit)).map { $0 }
     }
 
-    func cancel() {
-        ticket = UUID()
-        worker?.cancel()
-        worker = nil
-    }
-
     /// An unknown run status is not authoritative evidence of no active Run.
     static func canRetireAcceptedReceipt(from snapshot: ChatSnapshot, sessionID: String) -> Bool {
         snapshot.sessionID == sessionID && !snapshot.readOnly &&
@@ -65,162 +56,22 @@ final class SessionRecoveryCoordinator {
         now < deadline
     }
 
+    /// Fair discovery only. Each eligible durable session is transferred to
+    /// the same registry-owned Runtime used by a visible conversation.
+    /// No history, status or receipt retirement occurs in this discovery layer.
     func schedule(candidates: [Candidate],
-                  isEligible: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Bool,
-                  onPending: @escaping @MainActor (Candidate) -> Void = { _ in },
-                  onVerified: @escaping @MainActor (Key, SessionTaskSignal, Double, RunTerminalStatus) -> Void) {
-        guard worker == nil else { return }
+                  isEligible: (Key, SessionTaskSignal, Double) -> Bool,
+                  onRestore: (Candidate) -> Void) {
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
         let now = ProcessInfo.processInfo.systemUptime
-        // Preserve cooldowns while a candidate is leased by a Runtime.
-        // Otherwise eviction resets its priority and can starve other hosts.
         attempted = attempted.filter { now - $0.value < 3600 }
-        let selected = Self.eligibleKeys(Array(indexed.keys), attempted: attempted,
-            now: now).compactMap { indexed[$0] }
-        guard !selected.isEmpty else { return }
-        let owner = UUID()
-        let deadline = Date().addingTimeInterval(30)
-        ticket = owner
-        worker = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.ticket == owner { self.worker = nil }
-            }
-            // Serial work prevents burst polling on foreground transitions.
-            for candidate in selected {
-                guard !Task.isCancelled, self.ticket == owner,
-                      Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
-                let key = candidate.key
-                guard let signal = Self.recoverySignal(for: candidate.observation) else { continue }
-                let version = candidate.observation.version(for: signal)
-                guard isEligible(key, signal, version) else { continue }
-                let instanceID = key.instanceID
-                let accountScope = key.accountScope
-                let sessionID = key.sessionID
-                let api = candidate.api
-                self.attempted[key] = ProcessInfo.processInfo.systemUptime
-                let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
-                    sessionID: sessionID,
-                    fileStore: LocalDataFileStore(instanceID: instanceID,
-                        accountScope: accountScope, sessionID: sessionID))
-                let pending = store.loadPending()
-                let accepted = store.loadActiveRun()
-                // A pending POST is independent of an accepted Run. Absence of
-                // either local record never proves successful delivery.
-                guard pending.result.succeeded, accepted.result.succeeded else { continue }
-                if pending.value != nil {
-                    // Reuse the canonical pending-delivery and queue
-                    // reconciliation in the app-owned runtime, not a second
-                    // implementation that could lose attachments or replay POST.
-                    guard isEligible(key, signal, version) else { continue }
-                    onPending(candidate)
-                    continue
-                }
-                guard var data = accepted.value,
-                      var receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
-                else { continue }
-                do {
-                    let run: ActiveRunProbe
-                    if let terminal = receipt.terminalStatus { run = .terminal(terminal) }
-                    else {
-                        run = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
-                            try await api.probeActiveRun(sessionID: sessionID, runID: receipt.runID)
-                        }
-                    }
-                    guard !Task.isCancelled, self.ticket == owner,
-                          Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
-                    guard case .terminal(let outcome) = run,
-                          isEligible(key, signal, version) else { continue }
-                    // Persist exact terminal evidence even if the final history
-                    // is temporarily unavailable. Never retire a newer receipt.
-                    if receipt.terminalStatus == nil {
-                        let current = store.loadActiveRun()
-                        let pendingNow = store.loadPending()
-                        guard current.result.succeeded, pendingNow.result.succeeded,
-                              Self.mayRetireStoredReceipt(expected: data, current: current.value,
-                                  pendingIsEmpty: pendingNow.value == nil) else { continue }
-                        receipt.terminalStatus = outcome
-                        guard let updated = try? JSONEncoder().encode(receipt),
-                              store.saveActiveRun(updated).succeeded else { continue }
-                        data = updated
-                    }
-                    // A failed/cancelled/interrupted Run may have no assistant
-                    // row. Its exact terminal proof still permits a final
-                    // history read, but not classification as completed.
-                    let latest = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
-                            try await api.history(sessionID: sessionID, before: nil)
-                        }
-                    guard !Task.isCancelled, self.ticket == owner,
-                          Self.withinVerificationWindow(now: Date(), deadline: deadline),
-                          Self.canRetireAcceptedReceipt(from: latest, sessionID: sessionID) else { continue }
-                    var pages = [latest]
-                    if outcome == .completed {
-                    guard let boundary = receipt.historyEnd else { continue }
-                    var valid = true
-                    for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
-                        guard !Task.isCancelled, self.ticket == owner,
-                              Date() < deadline else { return }
-                        guard isEligible(key, signal, version) else { valid = false; break }
-                        let cursor = pages[pages.count - 1].olderOffset
-                        let older = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
-                            try await api.history(sessionID: sessionID, before: cursor)
-                        }
-                        guard Self.canRetireAcceptedReceipt(from: older, sessionID: sessionID),
-                              older.rawMessageEndIndex == cursor,
-                              older.olderOffset < cursor else {
-                            valid = false
-                            break
-                        }
-                        pages.append(older)
-                    }
-                    guard valid, (pages.last?.olderOffset ?? Int.max) <= boundary,
-                          RunFinalizer.canSettle(pages, sessionID: sessionID,
-                              runID: receipt.runID, receipt: receipt, outcome: outcome,
-                              requireReply: true) else { continue }
-                    }
-                    // Recheck the head: a concurrently appended turn must not
-                    // be confused with the accepted turn being verified.
-                    let head = try await RecoveryScheduler.shared.perform(instance: instanceID, session: sessionID) {
-                            try await api.history(sessionID: sessionID, before: nil)
-                        }
-                    guard !Task.isCancelled, self.ticket == owner,
-                          Self.withinVerificationWindow(now: Date(), deadline: deadline),
-                          Self.canRetireAcceptedReceipt(from: head, sessionID: sessionID),
-                          head.rawMessageEndIndex == latest.rawMessageEndIndex,
-                          head.messages.last?.id == latest.messages.last?.id else { continue }
-                    // The GETs above may have awaited while another task
-                    // accepted a newer Run or persisted a pending original POST.
-                    // No await may occur between this recheck and the retirement
-                    // write: MainActor serialization prevents a lost update.
-                    let latestPending = store.loadPending()
-                    let latestReceipt = store.loadActiveRun()
-                    guard Self.withinVerificationWindow(now: Date(), deadline: deadline),
-                          isEligible(key, signal, version),
-                          latestPending.result.succeeded, latestReceipt.result.succeeded,
-                          Self.mayRetireStoredReceipt(
-                              expected: data, current: latestReceipt.value,
-                              pendingIsEmpty: latestPending.value == nil) else { continue }
-                    // Save the authoritative tail for immediate display on
-                    // re-entry. It is a cache, never an authority to resend.
-                    let history = ChatHistoryStore(instanceID: instanceID,
-                        sessionID: sessionID, accountScope: accountScope)
-                    history.schedule(ChatHistoryRecord(snapshot: head))
-                    if outcome == .completed {
-                        guard store.saveActiveRun(nil).succeeded else { continue }
-                        _ = store.saveCheckpoint(nil)
-                    }
-                    // Non-success keeps its exact receipt until the visible
-                    // runtime consumes the outcome. Clear the poll obligation
-                    // only after the matching final GET succeeded.
-                    onVerified(key, signal, version, outcome)
-                } catch is CancellationError {
-                    return
-                } catch {
-                    // An inaccessible backend is not evidence of completion.
-                    continue
-                }
-            }
+        for key in Self.eligibleKeys(Array(indexed.keys), attempted: attempted, now: now) {
+            guard let candidate = indexed[key],
+                  let signal = Self.recoverySignal(for: candidate.observation),
+                  isEligible(key, signal, candidate.observation.version(for: signal)) else { continue }
+            attempted[key] = now
+            onRestore(candidate)
         }
     }
 }
