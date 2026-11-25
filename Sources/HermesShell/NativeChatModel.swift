@@ -160,7 +160,7 @@ final class NativeChatModel: ObservableObject {
     /// 正交事实的打包视图，供 `ChatPhase` 的谓词统一消费。
     var facts: ChatFacts {
         ChatFacts(readOnly: readOnly, uncertain: uncertain || pendingRecoveryUnreadable || activeRecoveryUnreadable
-                  || (activeTurnRecovery != nil && !phase.isRunning), suspended: suspended,
+                  || (activeTurnRecovery != nil && !phase.isRunning), suspended: suspended || runtimeRetired,
                   reconciling: reconciling, hasPendingSend: pendingSend != nil,
                   pendingAbsent: pendingAbsent, sendingWhileRunning: sendingWhileRunning)
     }
@@ -182,7 +182,7 @@ final class NativeChatModel: ObservableObject {
         guard api.runRecoveryUnavailable else { return }
         guard !runRecoveryNoticeShown else { return }
         runRecoveryNoticeShown = true
-        RuntimeLogRecorder.shared.record(.warning, "recovery",
+        recordRuntimeLog(.warning, "recovery",
             "run record persistence unavailable; relaunch recovery degraded")
     }
 
@@ -245,6 +245,7 @@ final class NativeChatModel: ObservableObject {
     @Published var settledAttachmentPaths: [String] = []
     @Published var draft = "" {
         didSet {
+            guard !runtimeRetired else { return }
             guard let result = draftStore?.save(draft) else { return }
             // The composer already reports its verified debounced writes. A
             // model-side save is a fallback; only its failure is sticky.
@@ -270,6 +271,35 @@ final class NativeChatModel: ObservableObject {
     @Published var reasoning: String = ""
     let sessionID: String
     let api:NativeChatService
+    private(set) var runtimeRetired = false
+    var runtimeLogToken: RuntimeLogToken?
+
+    var hasUnsettledRuntime: Bool {
+        running || submitting || reconciling || syncing || loading ||
+            uncertain || pendingSend != nil || activeTurnRecovery != nil ||
+            sendingWhileRunning || approving || clarifying
+    }
+
+    func retireRuntime() {
+        guard !runtimeRetired else { return }
+        runtimeRetired = true
+        onAuthenticationRequired = nil
+        onApprovalArrived = nil; onApprovalResolved = nil
+        onClarifyArrived = nil; onClarifyResolved = nil
+        disconnect()
+    }
+
+    func recordRuntimeLog(_ level: RuntimeLogRecorder.Level, _ tag: String, _ message: String) {
+        guard !runtimeRetired else { return }
+        let recorder = RuntimeLogRecorder.shared
+        if let current = recorder.currentToken(),
+           current.scope.sessionID == sessionID,
+           current.scope.instanceID + "|" + current.scope.accountScope == displayScope {
+            runtimeLogToken = current
+        }
+        guard let token = runtimeLogToken else { return }
+        recorder.record(level, tag, message, token: token)
+    }
     var onAuthenticationRequired: (() -> Void)?
     let draftStore:ChatDraftStore?
     let historyStore:ChatHistoryStore?
@@ -459,6 +489,7 @@ final class NativeChatModel: ObservableObject {
 
     @discardableResult
     func persistPendingSend() -> LocalStoreWriteResult {
+        guard !runtimeRetired else { return .failed(.diskWrite) }
         guard !pendingRecoveryUnreadable else { return .failed(.corruptFile) }
         guard let draftStore else { return .ok }
         guard let pendingSend else { return draftStore.savePending(nil) }
@@ -472,6 +503,7 @@ final class NativeChatModel: ObservableObject {
     func rememberAcceptedTurn(runID: String, text: String,
                               attachments: [ChatAttachmentPayload],
                               knownIDs: Set<String>) -> Bool {
+        guard !runtimeRetired else { return false }
         let receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
@@ -493,6 +525,7 @@ final class NativeChatModel: ObservableObject {
     /// A conflicting status or failed durable write must not unlock sending.
     @discardableResult
     func rememberTerminalStatus(runID: String, outcome: RunTerminalStatus) -> Bool {
+        guard !runtimeRetired else { return false }
         guard var receipt = activeTurnRecovery else { return true }
         guard receipt.runID == runID else { return false }
         if let previous = receipt.terminalStatus { return previous == outcome }
@@ -514,6 +547,7 @@ final class NativeChatModel: ObservableObject {
     /// Failed removal must not silently erase recovery evidence from memory.
     @discardableResult
     func clearAcceptedTurnRecovery() -> Bool {
+        guard !runtimeRetired else { return false }
         guard activeTurnRecovery != nil else { return true }
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
@@ -660,7 +694,7 @@ final class NativeChatModel: ObservableObject {
         self.draft = loadedDraft?.value ?? ""
         if let issue = loadedDraft?.result.failure {
             localPersistenceIssue = LocalDataIssue(kind: .draft, failure: issue, observedAt: Date())
-            RuntimeLogRecorder.shared.record(.warning, "local-store",
+            recordRuntimeLog(.warning, "local-store",
                 "persistence degraded kind=draft reason=\(issue.rawValue)")
         }
         let restored = draftStore?.loadPending()
@@ -725,7 +759,7 @@ final class NativeChatModel: ObservableObject {
             if localPersistenceIssue == nil {
                 localPersistenceIssue = LocalDataIssue(kind: .queue, failure: issue, observedAt: Date())
             }
-            RuntimeLogRecorder.shared.record(.warning, "local-store",
+            recordRuntimeLog(.warning, "local-store",
                 "persistence degraded kind=queue reason=\(issue.rawValue)")
         }
     }
@@ -737,7 +771,7 @@ final class NativeChatModel: ObservableObject {
         guard let failure = result?.failure else { return }
         localPersistenceIssue = LocalDataIssue(kind: kind, failure: failure, observedAt: observedAt)
         if kind == .queue { queueSaveFailed = true }
-        RuntimeLogRecorder.shared.record(.warning, "local-store",
+        recordRuntimeLog(.warning, "local-store",
             "persistence degraded kind=\(kind.rawValue) reason=\(failure.rawValue)")
     }
 
@@ -804,5 +838,72 @@ final class NativeChatModel: ObservableObject {
             recordLocalWrite(result, kind: localPersistenceIssue?.kind ?? .draft)
         }
         return result
+    }
+}
+
+
+@MainActor
+final class ConversationRuntimeRegistry {
+    struct Key: Hashable {
+        let instanceID: String
+        let accountScope: String
+        let sessionID: String
+    }
+    private struct Entry {
+        let model: NativeChatModel
+        var presentation: UUID?
+    }
+    private var entries: [Key: Entry] = [:]
+
+    func claim(_ key: Key, presentation: UUID, make: () -> NativeChatModel) -> NativeChatModel {
+        if var entry = entries[key] {
+            entry.presentation = presentation
+            entries[key] = entry
+            return entry.model
+        }
+        let model = make()
+        entries[key] = Entry(model: model, presentation: presentation)
+        return model
+    }
+
+    func owns(_ key: Key, presentation: UUID) -> Bool {
+        entries[key]?.presentation == presentation
+    }
+
+    func contains(_ key: Key) -> Bool { entries[key] != nil }
+
+    func detach(_ key: Key, presentation: UUID) {
+        guard var entry = entries[key], entry.presentation == presentation else { return }
+        entry.presentation = nil
+        entries[key] = entry
+        pruneSettled()
+    }
+
+    var detached: [(Key, NativeChatModel)] {
+        entries.compactMap { key, entry in
+            entry.presentation == nil ? (key, entry.model) : nil
+        }
+    }
+
+    func pruneSettled() {
+        let settled = detached.filter { !$0.1.hasUnsettledRuntime }
+        for (key, model) in settled {
+            entries.removeValue(forKey: key)
+            model.retireRuntime()
+        }
+    }
+
+    func suspendAll() {
+        for entry in entries.values { entry.model.disconnect() }
+    }
+
+    func retire(_ key: Key) {
+        entries.removeValue(forKey: key)?.model.retireRuntime()
+    }
+
+    func retireAll() {
+        let old = Array(entries.values)
+        entries.removeAll()
+        for entry in old { entry.model.retireRuntime() }
     }
 }

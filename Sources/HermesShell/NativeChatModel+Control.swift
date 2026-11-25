@@ -178,7 +178,7 @@ extension NativeChatModel {
             case nil:
                 removePendingApproval(id: pending.id)
                 notice = nil
-                RuntimeLogRecorder.shared.record(.info, "approval", "choice=\(choice) accepted")
+                recordRuntimeLog(.info, "approval", "choice=\(choice) accepted")
             case "unsupported":
                 removePendingApproval(id: pending.id)
                 notice = "当前后端不支持在 App 内审批，请在 WebUI 处理。"
@@ -194,7 +194,7 @@ extension NativeChatModel {
                   pendingApprovals.contains(pending), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
-            RuntimeLogRecorder.shared.record(.error, "approval",
+            recordRuntimeLog(.error, "approval",
                                              "choice=\(choice) failed err=\(error.localizedDescription)")
         }
     }
@@ -249,7 +249,7 @@ extension NativeChatModel {
             case nil:
                 removePendingClarify(id: pending.id)
                 notice = nil
-                RuntimeLogRecorder.shared.record(.info, "clarify", "answered chars=\(text.count)")
+                recordRuntimeLog(.info, "clarify", "answered chars=\(text.count)")
             case "unsupported":
                 removePendingClarify(id: pending.id)
                 notice = "当前后端不支持在 App 内回答补充信息，请在 WebUI 处理。"
@@ -265,7 +265,7 @@ extension NativeChatModel {
                   pendingClarifies.contains(pending), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
-            RuntimeLogRecorder.shared.record(.error, "clarify",
+            recordRuntimeLog(.error, "clarify",
                                              "answer failed err=\(error.localizedDescription)")
         }
     }
@@ -444,7 +444,7 @@ extension NativeChatModel {
     /// and do not spend the reconnect budget on an unauthenticated stream.
     @discardableResult func handleAuthenticationFailure(_ error: Error) -> Bool {
         guard api.requiresAuthentication(after: error) else { return false }
-        RuntimeLogRecorder.shared.record(.error, "auth", "session expired err=\(error.localizedDescription)")
+        recordRuntimeLog(.error, "auth", "session expired err=\(error.localizedDescription)")
         revision &+= 1
         publishTask?.cancel()
         publishTask = nil
