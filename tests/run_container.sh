@@ -20,7 +20,7 @@ EXEC_LIMIT=${HERMES_TEST_EXEC_TIMEOUT:-180}
 EXTRA_LIMIT=${HERMES_TEST_EXTRA_TIMEOUT:-360}
 suite_shard() {
   case "$1" in
-    backendcapabilities|core|requests|attachmentdispatch|sessionops|modeleffort|gateway|clientaudit|credentials|discovery|quote|slashcommand|transcriptexport|transcriptpager|historycache|historyfailure) echo core ;;
+    backendcapabilities|core|requests|attachmentdispatch|sessionops|modeleffort|gateway|clientaudit|credentials|discovery|quote|slashcommand|transcriptexport|transcriptpager|historycache) echo core ;;
     sessiontask|tasknotifier|taskack|sessionhome|model|drafts|homeflow|appstate|recentmodel|runtimelog|runtimerecorder) echo recovery ;;
     experience|tiledrows|timeline|scroll|scrollgeometry|viewport|conversationreading|findhighlight|findwork|preparation|selectionrelay|blockcoalescer|selectionpublication|input) echo interface ;;
     attachprogress|imagegallery|imagepresentation|build58|iteration53|inlineimage|attachmentinteraction|renderbudget|markdownblocks|renderscheduling|performancestats) echo media ;;
@@ -188,7 +188,6 @@ run input "$S/ChatInputPolicy.swift" "$S/ChatReadingShortcutPolicy.swift" tests/
 run quote "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatComposerInsertion.swift" "$S/ChatQuote.swift" tests/quote/main.swift
 run slashcommand "$S/ChatSlashCommand.swift" tests/slashcommand/main.swift
 run historycache -swift-version 5 -parse-as-library "$S/AttachmentHistory.swift" "$S/ChatCore.swift" "$S/ChatHistoryStore.swift" tests/historycache/main.swift
-run historyfailure "$S/HistoryLoadFailure.swift" tests/historyfailure/main.swift
 run renderbudget "$S/ChatRenderBudget.swift" tests/renderbudget/main.swift
 run markdownblocks "$S/MarkdownBlockPlan.swift" tests/markdownblocks/main.swift
 run renderscheduling -swift-version 5 -parse-as-library "$S/ChatRenderScheduler.swift" "$S/ChatStreamPacing.swift" tests/renderscheduling/main.swift

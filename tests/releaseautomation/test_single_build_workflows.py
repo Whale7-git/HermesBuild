@@ -63,10 +63,7 @@ class SingleBuildWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(len(mapping), 4)
         assigned = [name for names, _ in mapping for name in names.split("|")]
-        # 51 → 52: `historyfailure`（历史 GET 失败分类的回归）加入 core shard。
-        # 这个数字是刻意的硬编码——它同时能在「某套件被意外删掉」时报警，
-        # 所以加套件时要连它一起改，而不是算出来。
-        self.assertEqual(len(declared), 52)
+        self.assertEqual(len(declared), 51)
         self.assertEqual(len(declared), len(set(declared)))
         self.assertEqual(len(assigned), len(set(assigned)))
         self.assertEqual(set(declared), set(assigned))

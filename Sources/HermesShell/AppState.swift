@@ -528,6 +528,8 @@ final class AppState: ObservableObject {
 
     /// Only a matching, durable final reply may retire this observation.
     /// Do not let stale async work clear a newly recorded verification signal.
+    func wakeUnopenedSessionRecovery() { scheduleUnopenedSessionRecovery() }
+
     private func scheduleUnopenedSessionRecovery() {
         guard appIsActive, !needsLogin, !needsInstanceSetup else { return }
         let originalScope = actionScope

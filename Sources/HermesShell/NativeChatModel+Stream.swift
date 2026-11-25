@@ -80,7 +80,17 @@ extension NativeChatModel {
             // Do not erase the unresolved accepted-run status after history GET.
             if pendingSend == nil && !uncertain { notice = nil }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
-            if case .active(let active) = snap.activeRunEvidence { attach(streamID:active) }
+            if case .active(let active) = snap.activeRunEvidence {
+                if reapedTransportRunID == active {
+                    uncertain = true
+                    pauseQueueForRecovery()
+                    await settleReapedRunTransport(active: active, generation: generation)
+                } else {
+                    attach(streamID:active)
+                }
+            } else if snap.activeRunEvidence == .absent && activeTurnRecovery == nil && !uncertain {
+                reapedTransportRunID = nil
+            }
         } catch {
             if generation == revision {
                 if handleAuthenticationFailure(error) { return }
@@ -104,8 +114,10 @@ extension NativeChatModel {
                         : "网络暂时不可用，正在自动重试；核对成功后即可继续发送。"
                     // 有未决 POST 时，补读归核对流程（`reconcilePending`）所有，
                     // 这里不能再排一个 GET 去和它抢。
-                    if pendingSend == nil { scheduleHistoryLoadRetry() }
+                    historyLoadFailurePending = true
+                    scheduleAutomaticReconciliation()
                 } else {
+                    historyLoadFailurePending = false
                     self.error = error.localizedDescription
                     uncertain = true
                     // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
@@ -579,80 +591,74 @@ extension NativeChatModel {
         return !uncertain
     }
 
-    /// 网络类历史失败后的有界退避重试。**只重试 GET**，永不重发 POST。
-    ///
-    /// 存在意义：`readOnly` 只在一次成功的 `applySnapshot` 里被放开，而 `load`
-    /// 的失败路径没有重试，所以一次网络抖动就会让会话停在只读，直到用户自己
-    /// 刷新或重进会话——那正是「读不进来也发不出去」的来源。
-    ///
-    /// 安全边界：这里发的是 `load`（GET /messages，幂等只读）。它不碰
-    /// `pendingSend`、不提交 chat POST，也不恢复用户暂停的队列，所以
-    /// 「不重复发送」的保证不受影响。
-    func scheduleHistoryLoadRetry() {
-        historyLoadFailurePending = true
-        // 已经有一轮在排队就不再叠加：多次失败会各自调度一次，那会变成风暴。
-        guard historyLoadRetryTask == nil else { return }
-        let ticket = UUID()
-        historyLoadRetryTicket = ticket
-        historyLoadRetryTask = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.historyLoadRetryTicket == ticket {
-                    self.historyLoadRetryTask = nil
-                    self.historyLoadRetryTicket = nil
-                }
-            }
-            for delay in self.historyLoadRetryDelaysNanoseconds {
-                do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.historyLoadRetryTicket == ticket,
-                      !self.suspended, !self.authenticationRequired,
-                      self.historyLoadFailurePending else { return }
-                // 本轮正在推流时，这次 GET 会和流抢同一条链路，也会被
-                // `load` 自己的 `running && streamTask != nil` 直接挡回。
-                // 与其空转，不如把补读留给这一轮结束后的正常路径。
-                if self.running && self.streamTask != nil { return }
-                await self.load(silent: true, preserveLoadedOlder: true)
-                // 成功路径会把标志清掉，重试到此为止。
-                if !self.historyLoadFailurePending { return }
-            }
+    /// Single foreground GET-only owner. Time controls rate, not safety.
+    /// Immediate wake replaces a sleeping timer, never an in-flight GET.
+    func scheduleAutomaticReconciliation(immediate: Bool = false) {
+        if immediate && automaticReconciliationWaiting {
+            automaticReconciliationTask?.cancel()
+            automaticReconciliationTask = nil
+            automaticReconciliationTicket = nil
+            automaticReconciliationWaiting = false
+            automaticRecoveryQuiet = false
         }
-    }
-
-    /// Follow up an inconclusive run/send automatically while the chat is
-    /// visible. GET-only, bounded and serial. A run/queue safety lock is never
-    /// cleared merely because these attempts exhaust their budget.
-    func scheduleAutomaticReconciliation() {
         guard automaticReconciliationTask == nil, !suspended, !authenticationRequired,
               !stopping, !running, !submitting, !loading, !syncing, !reconciling,
               uncertain || pendingSend != nil || activeTurnRecovery != nil else { return }
-        // An authoritative absence allows an explicit user decision to resend;
-        // the automatic worker must not re-send or nag by rechecking that proof.
         if pendingSend != nil && pendingAbsent && activeTurnRecovery == nil { return }
+        if error != nil && !historyLoadFailurePending && pendingSend == nil &&
+            activeTurnRecovery == nil && reapedTransportRunID == nil { return }
         let runID = activeTurnRecovery?.runID
         let pendingID = pendingSend?.id
         let ticket = UUID()
         automaticReconciliationTicket = ticket
+        automaticRecoveryQuiet = true
         automaticReconciliationTask = Task { [weak self] in
             guard let self else { return }
             defer {
                 if self.automaticReconciliationTicket == ticket {
                     self.automaticReconciliationTask = nil
                     self.automaticReconciliationTicket = nil
+                    self.automaticReconciliationWaiting = false
+                    self.automaticRecoveryQuiet = false
                 }
             }
-            for (attempt, delay) in self.automaticReconciliationDelaysNanoseconds.enumerated() {
+            let began = DispatchTime.now().uptimeNanoseconds
+            var attempt = 0
+            var lastDeepHistoryEnd: Int?
+            while !Task.isCancelled && self.automaticReconciliationTicket == ticket {
+                let elapsed = DispatchTime.now().uptimeNanoseconds - began
+                let delay: UInt64
+                if immediate && attempt == 0 {
+                    delay = 0
+                } else if attempt < self.automaticReconciliationDelaysNanoseconds.count {
+                    delay = self.automaticReconciliationDelaysNanoseconds[attempt]
+                } else {
+                    delay = elapsed >= self.automaticReconciliationSlowAfterNanoseconds
+                        ? self.automaticReconciliationSlowNanoseconds
+                        : self.automaticReconciliationSteadyNanoseconds
+                }
+                self.automaticReconciliationWaiting = true
                 do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
-                      !self.suspended, !self.authenticationRequired, !self.stopping,
-                      !self.running, !self.submitting,
-                      !self.loading, !self.syncing, !self.reconciling,
-                      self.activeTurnRecovery?.runID == runID,
-                      self.pendingSend?.id == pendingID else { return }
-                if let pendingID, self.pendingAbsent,
-                   self.pendingSend?.id == pendingID, runID == nil { return }
-
-                // A lost POST remains a durable PendingSend. Reconcile it by
-                // history only; never invoke send(), resendPending() or flush.
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket else { return }
+                self.automaticReconciliationWaiting = false
+                if DispatchTime.now().uptimeNanoseconds - began >= 20_000_000_000 {
+                    self.automaticRecoveryQuiet = false
+                }
+                guard !self.suspended, !self.authenticationRequired, !self.stopping,
+                      (self.activeTurnRecovery?.runID == runID ||
+                       (runID != nil && self.activeTurnRecovery == nil)),
+                      (self.pendingSend?.id == pendingID ||
+                       (pendingID != nil && self.pendingSend == nil)) else { return }
+                if self.running || (!self.uncertain && self.pendingSend == nil &&
+                                    self.activeTurnRecovery == nil) { return }
+                if self.pendingAbsent && self.activeTurnRecovery == nil { return }
+                if self.error != nil && !self.historyLoadFailurePending &&
+                    self.pendingSend == nil && self.activeTurnRecovery == nil &&
+                    self.reapedTransportRunID == nil { return }
+                if self.loading || self.syncing || self.reconciling || self.submitting {
+                    attempt += 1
+                    continue
+                }
                 if self.pendingSend != nil {
                     _ = await self.reconcilePending()
                 } else {
@@ -667,20 +673,18 @@ extension NativeChatModel {
                 if let probe = self.activeRunProbeTask { await probe.value }
                 guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.stopping, !self.authenticationRequired else { return }
-                // A deep history crawl is expensive; try it only twice in
-                // this recovery window, after the status probe and latest GET.
+                // Bound expensive history crawls. A changed head is new evidence.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
-                   (attempt == 1 || attempt == self.automaticReconciliationDelaysNanoseconds.count - 1) {
+                   let latest = self.latestRecoverySnapshot, latest.activeRunEvidence == .absent,
+                   (attempt == 1 || attempt == self.automaticReconciliationDelaysNanoseconds.count - 1 ||
+                    lastDeepHistoryEnd != latest.rawMessageEndIndex) {
+                    lastDeepHistoryEnd = latest.rawMessageEndIndex
                     _ = await self.reconcileLongAcceptedRun()
                 }
                 if self.running || (!self.uncertain && self.pendingSend == nil &&
-                                   self.activeTurnRecovery == nil) { return }
+                                    self.activeTurnRecovery == nil) { return }
                 if self.pendingAbsent && self.activeTurnRecovery == nil { return }
-            }
-            if self.automaticReconciliationTicket == ticket,
-               !self.suspended, !self.authenticationRequired,
-               (self.uncertain || self.activeTurnRecovery != nil || self.pendingSend != nil) {
-                self.notice = "连接状态暂时无法确认，已完成自动核对；不会重复发送。网络恢复或重新进入会话时将再检查。"
+                attempt += 1
             }
         }
     }
@@ -716,6 +720,10 @@ extension NativeChatModel {
                       self.activeTurnRecovery == receipt else { return }
                 switch result {
                 case .alive:
+                    if self.reapedTransportRunID == receipt.runID {
+                        self.lockDownRunStatus("任务仍在执行，结果将自动同步。")
+                        return
+                    }
                     self.streamID = receipt.runID
                     // The receipt proves the POST was accepted, so an older
                     // pre-POST PendingSend is now resolved as delivered.
@@ -1232,9 +1240,15 @@ extension NativeChatModel {
     /// Swift 6.4.2 的 `-swift-version 5` 类型检查器内部断言崩溃
     /// （`TypeCheckDecl.cpp:2766`），那是编译器缺陷，但拆分后即可绕开。
     func settleReapedRunTransport(active: String, generation: UInt) async {
-        RuntimeLogRecorder.shared.record(.warning, "stream", "transport gone run=\(active)")
+        guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
+        if stopping {
+            await verifyPendingStop()
+            return
+        }
+        reapedTransportRunID = active
+        RuntimeLogRecorder.shared.record(.warning, "stream", "transport unavailable; read-only status recovery")
         self.error = nil
-        let unconfirmed = "无法确认这一轮是否结束。点「核对状态」确认后即可继续；不会重复发送。"
+        let unconfirmed = "暂未取得最新结果，将自动同步；消息不会重复发送。"
         do {
             let probe = try await api.probeActiveRun(sessionID: sessionID, runID: active)
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
@@ -1242,25 +1256,30 @@ extension NativeChatModel {
             case .alive:
                 // status 说还在跑，但实时连接已经没了：再也收不到帧。
                 // 不重试订阅，也不假装结束，把决定权交给用户。
-                lockDownRunStatus("后台任务仍在执行，但实时连接已被服务端回收。"
-                                  + "点「核对状态」获取结果；不会重发消息。")
+                lockDownRunStatus("任务仍在执行，结果将自动同步。")
             case .terminal:
                 // 已有终态：用一次权威历史把内容补齐后落定。
                 let snap = try await api.history(sessionID: sessionID, before: nil)
                 guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
+                guard !stopping, snap.sessionID == sessionID, !snap.readOnly,
+                      snap.activeRunEvidence == .absent else {
+                    lockDownRunStatus(unconfirmed)
+                    return
+                }
                 try applySnapshot(snap, preserveLoadedOlder: true)
                 self.error = nil
                 transition(to: .idle)
                 if uncertain || activeTurnRecovery != nil {
-                    uncertain = true
-                    notice = "后台任务已结束，但最终内容未完全确认；请核对历史后继续，不会重复发送。"
+                    lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 } else {
+                    reapedTransportRunID = nil
                     notice = nil
                 }
             case .unknown, .unresolved:
                 lockDownRunStatus(unconfirmed)
             }
         } catch {
+            guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
             lockDownRunStatus(unconfirmed)
         }
@@ -1268,9 +1287,12 @@ extension NativeChatModel {
 
     /// 落定成「静止 + 待核对」：发送保持锁定，不做任何自动重发。
     private func lockDownRunStatus(_ message: String) {
+        guard !stopping else { return }
         transition(to: .idle)
         uncertain = true
+        pauseQueueForRecovery()
         notice = message
+        scheduleAutomaticReconciliation()
     }
 
     func resumeForeground() async {
@@ -1323,11 +1345,8 @@ extension NativeChatModel {
         automaticReconciliationTask?.cancel()
         automaticReconciliationTask = nil
         automaticReconciliationTicket = nil
-        // 离开会话页时停掉退避重试：它只在界面上看得见这条会话时才有意义，
-        // 且 `suspended` 会让它下次醒来直接返回，留着只是空任务。
-        historyLoadRetryTask?.cancel()
-        historyLoadRetryTask = nil
-        historyLoadRetryTicket = nil
+        automaticReconciliationWaiting = false
+        automaticRecoveryQuiet = false
         suspended = true
         flush()
         if let historyStore { Task { await historyStore.flush() } }

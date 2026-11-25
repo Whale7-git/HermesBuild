@@ -294,6 +294,19 @@ final class NativeChatModel: ObservableObject {
     /// It never submits a chat POST or resumes a user-paused queue.
     var automaticReconciliationTask: Task<Void, Never>?
     var automaticReconciliationTicket: UUID?
+    var automaticReconciliationWaiting = false
+    @Published var automaticRecoveryQuiet = false
+    var automaticReconciliationSteadyNanoseconds: UInt64 = 60_000_000_000
+    var automaticReconciliationSlowNanoseconds: UInt64 = 120_000_000_000
+    var automaticReconciliationSlowAfterNanoseconds: UInt64 = 1_800_000_000_000
+    // Transport evidence only, not delivery or terminal evidence.
+    var reapedTransportRunID: String?
+    var hidesRoutineRecoveryNotice: Bool {
+        automaticRecoveryQuiet && !pendingAbsent && !authenticationRequired &&
+            !pendingRecoveryUnreadable && !activeRecoveryUnreadable &&
+            localPersistenceIssue == nil && !queuePersistenceFailed && !runRecoveryNoticeShown &&
+            (error == nil || historyLoadFailurePending)
+    }
     var automaticReconciliationDelaysNanoseconds: [UInt64] = [
         2_000_000_000, 5_000_000_000, 10_000_000_000,
         20_000_000_000, 40_000_000_000, 60_000_000_000
@@ -303,14 +316,6 @@ final class NativeChatModel: ObservableObject {
     /// 与 `uncertain` 严格分开：那个表示「POST 结果待核对」，这个只表示
     /// 「屏幕上的内容可能不是最新」。把两者混用会让一次超时锁死发送。
     var historyLoadFailurePending = false
-    /// 退避重试的拥有者。只要它在，说明已经有一轮重试在排队，不再叠加。
-    var historyLoadRetryTask: Task<Void, Never>?
-    var historyLoadRetryTicket: UUID?
-    /// 2s / 5s / 12s：三次都拿不到就停手。GET 幂等，但无限重试只会在
-    /// 断网时对着 battery 和白耗电量空转，且文案早已告诉用户当前不是最新。
-    var historyLoadRetryDelaysNanoseconds: [UInt64] = [
-        2_000_000_000, 5_000_000_000, 12_000_000_000
-    ]
     /// A bounded read-only follow-up after any STOP attempt with no verified
     /// terminal result. Polling never sends a second STOP or chat POST.
     var stopStatusPollTask: Task<Void, Never>?

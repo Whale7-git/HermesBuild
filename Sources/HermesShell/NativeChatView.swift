@@ -235,7 +235,7 @@ struct NativeChatView: View {
 
     var statusSnapshot: ChatStatusSnapshot {
         ChatStatusSnapshot(reasoning: model.reasoning, running: model.activity.showsProgress,
-            notice: model.notice, activityTitle: activityTitle, activityInChrome: true)
+            notice: model.hidesRoutineRecoveryNotice ? nil : model.notice, activityTitle: model.hidesRoutineRecoveryNotice ? "正在同步…" : activityTitle, activityInChrome: true)
     }
 
     /// Persist facts this page has actually observed. The caller supplies a
@@ -556,6 +556,10 @@ struct NativeChatView: View {
         .onChange(of: app.currentSession?.model) { _, newValue in
             if let newValue, !newValue.isEmpty { model.sessionModel = newValue }
         }
+        .onReceive(NotificationCenter.default.publisher(for: RecoveryNetworkWakeup.restored)) { _ in
+            guard visible, scenePhase == .active else { return }
+            model.scheduleAutomaticReconciliation(immediate: true)
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active && visible {
                 guard foregroundResumeTask == nil else { return }
@@ -565,7 +569,7 @@ struct NativeChatView: View {
                 foregroundResumeTask = Task {
                     defer { if foregroundResumeTicket == ticket { foregroundResumeTask = nil } }
                     await model.resumeForeground()
-                    model.scheduleAutomaticReconciliation()
+                    model.scheduleAutomaticReconciliation(immediate: true)
                     guard !Task.isCancelled, foregroundResumeTicket == ticket, scenePhase == .active, visible,
                           !model.syncing, !model.loading else { return }
                     let position = readingStore.load()
