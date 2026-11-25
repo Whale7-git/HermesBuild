@@ -23,6 +23,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var readOnly = false
     var failHistory = false
     var failHistoryAfterProbe = false
+    var rowsAfterProbe: [[String: Any]]?
     var failStart = true
     var historyWait: CheckedContinuation<ChatSnapshot, Error>?
     var holdHistory = false
@@ -62,6 +63,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         probeCalls += 1
         if failHistoryAfterProbe { failHistory = true }
+        if let rowsAfterProbe { rows = rowsAfterProbe }
         return probeResults.count > 1 ? probeResults.removeFirst() : (probeResults.first ?? .unknown)
     }
     func startNativeTurn(sessionID: String, text: String, attachments: [ChatAttachmentPayload]) async throws -> String {
@@ -384,6 +386,12 @@ extension ModelTests {
                 precondition(probeStore.saveActiveRun(data).succeeded)
                 let service = PendingRecoveryService()
                 service.probeResults = [result]
+                if result == .terminal(.completed) {
+                    service.rowsAfterProbe = [
+                        ["id": "sent", "role": "user", "content": "receipt text"],
+                        ["id": "reply", "role": "assistant", "content": "final"]
+                    ]
+                }
                 let model = NativeChatModel(
                     sessionID: "test", api: service, draftStore: probeStore)
                 await model.load()
@@ -430,7 +438,7 @@ extension ModelTests {
             service.failHistoryAfterProbe = true
             let first = NativeChatModel(sessionID: "test", api: service, draftStore: store)
             await first.load()
-            try await eventually { first.activeRunRecovery?.terminalStatus == .failed }
+            try await eventually { first.activeTurnRecovery?.terminalStatus == .failed }
             precondition(first.uncertain && !first.canSend)
             first.disconnect()
             let durable = try JSONDecoder().decode(ActiveTurnRecovery.self,
@@ -447,6 +455,45 @@ extension ModelTests {
             resumed.disconnect()
         }
         print("PENDING_PASS exact terminal proof survives failed history and restart")
+
+        do {
+            let defaults = UserDefaults(suiteName: "HermesDraftRace-" + UUID().uuidString)!
+            let store = ChatDraftStore(instanceID: "draft-race", sessionID: "test", defaults: defaults)
+            store.save("original")
+            let model = NativeChatModel(sessionID: "test", api: PendingRecoveryService(), draftStore: store)
+            store.save("newer composer text")
+            model.clearOriginalDraft("original")
+            precondition(store.load() == "newer composer text")
+            store.save("original")
+            model.clearOriginalDraft("original")
+            precondition(store.load().isEmpty)
+        }
+        print("PENDING_PASS receipt cannot erase a newer durable composer draft")
+
+        do {
+            let defaults = UserDefaults(suiteName: "HermesFinalLag-" + UUID().uuidString)!
+            let store = ChatDraftStore(instanceID: "final-lag", sessionID: "test", defaults: defaults)
+            let receipt = ActiveTurnRecovery(runID: "final-lag", historyEnd: 0,
+                knownIDs: [], text: "original", attachmentPaths: [])
+            let encoded = try JSONEncoder().encode(receipt)
+            precondition(store.saveActiveRun(encoded).succeeded)
+            let service = PendingRecoveryService()
+            service.probeResults = [.terminal(.completed)]
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+            await model.load()
+            try await eventually { model.activeTurnRecovery?.terminalStatus == .completed }
+            try await eventually { model.activeRunProbeTask == nil }
+            precondition(model.uncertain && !model.canSend && store.loadActiveRun().value != nil)
+            service.rows = [
+                ["id": "sent", "role": "user", "content": "original"],
+                ["id": "reply", "role": "assistant", "content": "final"]
+            ]
+            await model.refresh(silent: true)
+            try await eventually { model.activeTurnRecovery == nil }
+            precondition(model.canSend && service.startCalls == 0 && service.probeCalls == 1)
+            model.disconnect()
+        }
+        print("PENDING_PASS completed receipt waits for matching final history")
 
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must

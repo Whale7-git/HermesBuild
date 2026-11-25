@@ -253,6 +253,17 @@ final class NativeChatModel: ObservableObject {
             if !result.succeeded { recordLocalWrite(result, kind: .draft) }
         }
     }
+    /// The composer owns newly typed text. A late receipt must not erase
+    /// a newer persisted draft while this runtime is offscreen.
+    func clearOriginalDraft(_ original: String) {
+        guard !runtimeRetired, draft == original else { return }
+        if let store = draftStore {
+            let current = store.loadDraftResult()
+            guard current.result.succeeded, current.value == original else { return }
+        }
+        draft = ""
+    }
+
     @Published var streamID: String?
     /// 会话当前模型（来自历史快照），用于输入栏显示真实标签。
     @Published var sessionModel: String?

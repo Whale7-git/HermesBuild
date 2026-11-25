@@ -77,7 +77,7 @@ extension NativeChatModel {
             recordRuntimeLog(.warning, "send",
                 "queued persistence skipped: payload not serializable")
         }
-        if draft == composerText { draft = "" }
+        clearOriginalDraft(composerText)
         self.notice = queueSaveFailed
             ? "已排队，但这台设备暂时无法保存队列；重启 App 会丢失最新一条。"
             : notice
@@ -111,7 +111,7 @@ extension NativeChatModel {
                                origin: .userInput, notice: Self.steerFallbackNotice(fallback))
             }
             error = nil
-            if draft == composerText { draft = "" }
+            clearOriginalDraft(composerText)
             // 引导内容不进本地消息列表：它不是一轮独立发言，服务端会把它并进工具结果。
             notice = "已发送引导，本轮回复继续。"
             recordRuntimeLog(.info, "send", "steer ok")
@@ -640,14 +640,7 @@ extension NativeChatModel {
             let acceptedRecoverySaved = rememberAcceptedTurn(
                 runID: active, text: text, attachments: attachments,
                 knownIDs: knownIDs)
-            if let originalDraft, draft == originalDraft {
-                // A detached composer may already have persisted newer text.
-                // The old POST may clear only its own original draft.
-                if let store = draftStore {
-                    let current = store.loadDraftResult()
-                    if current.result.succeeded && current.value == originalDraft { draft = "" }
-                } else { draft = "" }
-            }
+            if let originalDraft { clearOriginalDraft(originalDraft) }
             setDelivery(.accepted, for: pendingID)
             // Keep the original PendingSend when persisting its replacement
             // failed: this POST was accepted, so an automatic retry is unsafe.
@@ -698,7 +691,12 @@ extension NativeChatModel {
             setDelivery(.unconfirmed, for:pendingID)
             flush()
             // 供用户直接重发：不覆盖等待期间新输入的内容。
-            if draft.isEmpty, let originalDraft { draft = originalDraft }
+            if draft.isEmpty, let originalDraft {
+                if let store = draftStore {
+                    let current = store.loadDraftResult()
+                    if current.result.succeeded && current.value.isEmpty { draft = originalDraft }
+                } else { draft = originalDraft }
+            }
             if handleAuthenticationFailure(error) {
                 return SubmitResult(accepted: false, completed: true)
             }
@@ -794,7 +792,7 @@ extension NativeChatModel {
             buffer.messages.removeAll { $0.id == pending.id }
             pendingSend = nil
             acknowledgeDeliveredQueuedTurn(matching: pending)
-            if draft == pending.composerText { draft = "" }
+            clearOriginalDraft(pending.composerText)
             notice = "已从完整历史确认消息送达；没有重新提交。"
             uncertain = false
             pendingAbsent = false

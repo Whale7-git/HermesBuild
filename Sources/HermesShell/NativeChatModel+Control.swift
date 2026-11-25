@@ -388,7 +388,14 @@ extension NativeChatModel {
                     buffer.appendStopNotice()
                 }
                 try applySnapshot(finalHistory, preserveLoadedOlder: true)
-                if activeTurnRecovery?.runID == active {
+                if let receipt = activeTurnRecovery, receipt.runID == active {
+                    if outcome == .completed && !receipt.confirmsCompletion(in: finalHistory) {
+                        uncertain = true
+                        pauseQueueForRecovery()
+                        notice = "任务已结束，最终回复仍在同步。"
+                        scheduleAutomaticReconciliation()
+                        return
+                    }
                     guard clearAcceptedTurnRecovery() else { return }
                     uncertain = pendingSend != nil || pendingRecoveryUnreadable
                         || activeRecoveryUnreadable
