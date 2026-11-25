@@ -6,13 +6,37 @@ import Foundation
 final class SessionRecoveryCoordinator {
     private var worker: Task<Void, Never>?
     private var ticket = UUID()
-    private var attempted: [String: Date] = [:]
+    struct Key: Hashable {
+        let instanceID: String
+        let accountScope: String
+        let sessionID: String
+    }
+    struct Candidate {
+        let key: Key
+        let observation: SessionTaskObservation
+        let api: HermesBackend
+    }
+    private var attempted: [Key: TimeInterval] = [:]
+
+    static func eligibleKeys(_ keys: [Key], attempted: [Key: TimeInterval],
+                             now: TimeInterval, cooldown: TimeInterval = 30,
+                             limit: Int = 5) -> [Key] {
+        keys.filter { key in
+            attempted[key].map { now - $0 >= cooldown } ?? true
+        }.sorted { lhs, rhs in
+            let l = attempted[lhs] ?? -Double.infinity
+            let r = attempted[rhs] ?? -Double.infinity
+            if l != r { return l < r }
+            if lhs.instanceID != rhs.instanceID { return lhs.instanceID < rhs.instanceID }
+            if lhs.accountScope != rhs.accountScope { return lhs.accountScope < rhs.accountScope }
+            return lhs.sessionID < rhs.sessionID
+        }.prefix(max(0, limit)).map { $0 }
+    }
 
     func cancel() {
         ticket = UUID()
         worker?.cancel()
         worker = nil
-        attempted.removeAll()
     }
 
     /// An unknown run status is not authoritative evidence of no active Run.
@@ -34,20 +58,16 @@ final class SessionRecoveryCoordinator {
         now < deadline
     }
 
-    func schedule(api: HermesBackend,
-                  instanceID: String, accountScope: String,
-                  observations: [String: SessionTaskObservation],
-                  visibleSessionID: String?,
-                  onVerified: @escaping @MainActor (String, Double) -> Void) {
+    func schedule(candidates: [Candidate],
+                  isEligible: @escaping @MainActor (Key, Double) -> Bool,
+                  onVerified: @escaping @MainActor (Key, Double) -> Void) {
         guard worker == nil else { return }
-        let now = Date()
-        let candidates = observations.filter { sessionID, observation in
-            guard sessionID != visibleSessionID,
-                  observation.signals.contains(.needsVerification) else { return false }
-            let key = instanceID + "|" + accountScope + "|" + sessionID
-            return attempted[key].map { now.timeIntervalSince($0) >= 30 } ?? true
-        }.sorted { $0.value.observedAt < $1.value.observedAt }.prefix(5)
-        guard !candidates.isEmpty else { return }
+        let indexed = Dictionary(candidates.map { ($0.key, $0) },
+                                 uniquingKeysWith: { first, _ in first })
+        attempted = attempted.filter { indexed[$0.key] != nil }
+        let selected = Self.eligibleKeys(Array(indexed.keys), attempted: attempted,
+            now: ProcessInfo.processInfo.systemUptime).compactMap { indexed[$0] }
+        guard !selected.isEmpty else { return }
         let owner = UUID()
         let deadline = Date().addingTimeInterval(30)
         ticket = owner
@@ -57,11 +77,17 @@ final class SessionRecoveryCoordinator {
                 if self.ticket == owner { self.worker = nil }
             }
             // Serial work prevents burst polling on foreground transitions.
-            for (sessionID, observation) in candidates {
+            for candidate in selected {
                 guard !Task.isCancelled, self.ticket == owner,
                       Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
-                let key = instanceID + "|" + accountScope + "|" + sessionID
-                self.attempted[key] = Date()
+                let key = candidate.key
+                let version = candidate.observation.version(for: .needsVerification)
+                guard isEligible(key, version) else { continue }
+                let instanceID = key.instanceID
+                let accountScope = key.accountScope
+                let sessionID = key.sessionID
+                let api = candidate.api
+                self.attempted[key] = ProcessInfo.processInfo.systemUptime
                 let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
                     sessionID: sessionID,
                     fileStore: LocalDataFileStore(instanceID: instanceID,
@@ -117,12 +143,13 @@ final class SessionRecoveryCoordinator {
                     let latestPending = store.loadPending()
                     let latestReceipt = store.loadActiveRun()
                     guard Self.withinVerificationWindow(now: Date(), deadline: deadline),
+                          isEligible(key, version),
                           latestPending.result.succeeded, latestReceipt.result.succeeded,
                           Self.mayRetireStoredReceipt(
                               expected: data, current: latestReceipt.value,
                               pendingIsEmpty: latestPending.value == nil) else { continue }
                     guard store.saveActiveRun(nil).succeeded else { continue }
-                    onVerified(sessionID, observation.version(for: .needsVerification))
+                    onVerified(key, version)
                 } catch is CancellationError {
                     return
                 } catch {

@@ -437,6 +437,8 @@ final class AppState: ObservableObject {
 
     func openSession(_ session: SessionSummary) {
         guard !clearingHistory, !needsLogin else { return }
+        // Cancel the offscreen lease before opening the visible Model.
+        sessionRecovery.cancel()
         invalidateCreationNavigation()
         homeSendError = nil
         openedSession = session
@@ -530,25 +532,74 @@ final class AppState: ObservableObject {
     /// Do not let stale async work clear a newly recorded verification signal.
     func wakeUnopenedSessionRecovery() { scheduleUnopenedSessionRecovery() }
 
+    private func recoveryObservations(instanceID: String, accountScope: String)
+        -> [String: SessionTaskObservation]? {
+        if instanceID == historyInstanceID && accountScope == historyAccountScope {
+            return damagedTaskStore ? nil : sessionTaskObservations
+        }
+        guard case .loaded(let rows) = SessionTaskStore.inspect(
+            instanceID: instanceID, accountScope: accountScope) else { return nil }
+        return rows
+    }
+
     private func scheduleUnopenedSessionRecovery() {
-        guard appIsActive, !needsLogin, !needsInstanceSetup else { return }
-        let originalScope = actionScope
-        sessionRecovery.schedule(
-            api: api, instanceID: historyInstanceID,
-            accountScope: historyAccountScope,
-            observations: sessionTaskObservations,
-            visibleSessionID: currentSessionID
-        ) { [weak self] sessionID, observedVersion in
-            guard let self, self.isCurrent(originalScope),
-                  self.appIsActive, self.currentSessionID != sessionID,
-                  let current = self.sessionTaskObservations[sessionID],
+        guard appIsActive, !clearingHistory else { return }
+        var candidates: [SessionRecoveryCoordinator.Candidate] = []
+        let configured = instances
+        for instance in configured {
+            let selected = instance.id == active.id
+            guard selected ? (!needsLogin && !needsInstanceSetup) :
+                (instance.backend == .gateway && !instance.apiKey.isEmpty) else { continue }
+            let instanceID = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
+            let account = ChatHistoryIdentity.accountScope(instanceID: instanceID)
+            guard let rows = recoveryObservations(instanceID: instanceID, accountScope: account) else { continue }
+            let unresolved = rows.filter { sessionID, observation in
+                (!selected || currentSessionID != sessionID) &&
+                observation.signals.contains(.needsVerification)
+            }
+            guard !unresolved.isEmpty else { continue }
+            let backend = selected ? api : Self.makeBackend(for: instance)
+            for (sessionID, observation) in unresolved {
+                candidates.append(.init(key: .init(instanceID: instanceID,
+                    accountScope: account, sessionID: sessionID),
+                    observation: observation, api: backend))
+            }
+        }
+        sessionRecovery.schedule(candidates: candidates, isEligible: { [weak self] key, version in
+            guard let self, self.appIsActive, !self.clearingHistory,
+                  let original = configured.first(where: {
+                      ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == key.instanceID
+                  }),
+                  self.instances.contains(original),
+                  ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope
+            else { return false }
+            if self.historyInstanceID == key.instanceID && self.historyAccountScope == key.accountScope {
+                guard !self.needsLogin, self.currentSessionID != key.sessionID else { return false }
+            }
+            guard let current = self.recoveryObservations(instanceID: key.instanceID,
+                accountScope: key.accountScope)?[key.sessionID] else { return false }
+            return current.signals.contains(.needsVerification) &&
+                current.version(for: .needsVerification) == version
+        }, onVerified: { [weak self] key, version in
+            guard let self,
+                  var rows = self.recoveryObservations(instanceID: key.instanceID,
+                    accountScope: key.accountScope),
+                  let current = rows[key.sessionID],
                   current.signals.contains(.needsVerification),
-                  current.version(for: .needsVerification) == observedVersion else { return }
+                  current.version(for: .needsVerification) == version else { return }
             var remaining = current.signals
             remaining.remove(.needsVerification)
             remaining.remove(.running)
-            self.setSessionTaskSignals(remaining, for: sessionID)
-        }
+            if self.historyInstanceID == key.instanceID && self.historyAccountScope == key.accountScope {
+                self.setSessionTaskSignals(remaining, for: key.sessionID)
+            } else {
+                if remaining.isEmpty { rows.removeValue(forKey: key.sessionID) }
+                else { rows[key.sessionID] = SessionTaskObservation.updating(current, signals: remaining) }
+                if !SessionTaskStore.save(rows, instanceID: key.instanceID, accountScope: key.accountScope) {
+                    self.sessionTaskPersistenceWarning = "部分任务状态未能保存，重新打开会话后将再次核对。"
+                }
+            }
+        })
     }
 
     /// The request identity index belongs to the current instance/account and
