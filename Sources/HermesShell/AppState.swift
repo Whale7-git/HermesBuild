@@ -693,7 +693,13 @@ final class AppState: ObservableObject {
         // The protected receipt index is authoritative for task discovery even
         // when a UI observation was never published or the task store is damaged.
         for sessionID in LocalDataFileStore.recoverySessions(instanceID: instanceID, accountScope: accountScope) {
-            if rows[sessionID] == nil {
+            if let previous = rows[sessionID] {
+                if !previous.signals.contains(.recoveryTracked) {
+                    rows[sessionID] = SessionTaskObservation.updating(previous,
+                        signals: previous.signals.union([.recoveryTracked]),
+                        at: Date(timeIntervalSince1970: previous.observedAt))
+                }
+            } else {
                 rows[sessionID] = SessionTaskObservation(signals: [.recoveryTracked],
                     observedAt: Date(timeIntervalSince1970: 0))
             }

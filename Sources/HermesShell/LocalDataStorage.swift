@@ -154,9 +154,8 @@ struct LocalDataFileStore: Sendable {
                 sessionID: session, rootDirectory: rootDirectory)
             guard url.lastPathComponent == store.recoveryIndexURL.lastPathComponent,
                   envelope.scopeHash == store.scopeHash else { continue }
-            let pending = store.loadPending(), active = store.loadActiveRun()
-            if pending.value != nil || active.value != nil ||
-                !pending.result.succeeded || !active.result.succeeded {
+            if FileManager.default.fileExists(atPath: store.pendingURL.path) ||
+                FileManager.default.fileExists(atPath: store.activeRunURL.path) {
                 sessions.insert(session)
             }
         }

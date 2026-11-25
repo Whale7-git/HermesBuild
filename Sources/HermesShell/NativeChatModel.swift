@@ -1147,7 +1147,7 @@ struct RunRecoveryCheckpoint: Codable {
               self.receipt == receipt, receipt.terminalStatus == nil,
               snapshot.sessionID == sessionID, !snapshot.readOnly,
               snapshot.activeRunEvidence == .active(receipt.runID),
-              projection.canResume(at: cursor), historyEnd >= 0, olderOffset >= 0,
+              projection.canResume(at: cursor), historyEnd >= 0, historyEnd < Int.max, olderOffset >= 0,
               snapshot.rawMessageEndIndex >= historyEnd,
               snapshot.rawMessageEndIndex <= historyEnd + 1 else { return nil }
         var result = projection

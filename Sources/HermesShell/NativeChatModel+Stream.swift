@@ -361,9 +361,13 @@ extension NativeChatModel {
         }
         let previousUserPause = queueUserPaused
         let previousRecoveryPause = queueRecoveryPaused
+        guard saveFinalizedOutcome(runID: runID, outcome: outcome, history: snap) else {
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
         try applySnapshot(snap, preserveLoadedOlder: true, verifiedTerminalRunID: runID)
-        guard saveFinalizedOutcome(runID: runID, outcome: outcome, history: snap),
-              clearAcceptedTurnRecovery() else {
+        guard clearAcceptedTurnRecovery() else {
             uncertain = true
             pauseQueueForRecovery()
             return false
@@ -618,7 +622,8 @@ extension NativeChatModel {
             notice = "本轮历史超过本次核对上限，无法安全确认；未重新发送消息。"
             return false
         }
-        guard receipt.confirmsCompletion(in: pages) else {
+        guard RunFinalizer.canSettle(pages, sessionID: sessionID, runID: receipt.runID,
+            receipt: receipt, outcome: .completed, requireReply: true) else {
             notice = "已回溯本轮历史，但缺少唯一的原始提问与后续回复证据；发送仍保持锁定。"
             return false
         }
@@ -631,10 +636,19 @@ extension NativeChatModel {
             guard current.sessionID == sessionID, current.activeRunEvidence == .absent,
                   !current.readOnly,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
-                  current.messages.last?.id == latest.messages.last?.id else {
+                  current.messages == latest.messages else {
                 notice = "核对期间服务端历史或运行状态发生变化，请重新核对；未解除发送锁定。"
                 return false
             }
+            let finalized = try finalizeVerifiedRun(current, runID: receipt.runID,
+                outcome: receipt.terminalStatus ?? .completed,
+                proofPages: [current] + pages.dropFirst())
+            if finalized {
+                error = nil
+                self.recordRuntimeLog(.info, "recovery",
+                    "long-run history verified pages=\(pages.count) without POST")
+            }
+            return finalized
         } catch {
             guard generation == revision, !Task.isCancelled else { return false }
             if handleAuthenticationFailure(error) { return false }
@@ -642,13 +656,6 @@ extension NativeChatModel {
             notice = "核对最终状态失败；发送仍保持锁定。"
             return false
         }
-        guard clearAcceptedTurnRecovery() else { return false }
-        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
-        if !uncertain { notice = receipt.terminalStatus?.notice }
-        error = nil
-        self.recordRuntimeLog(.info, "recovery",
-            "long-run history verified pages=\(pages.count) without POST")
-        return !uncertain
     }
 
     /// Single foreground GET-only owner. Time controls rate, not safety.

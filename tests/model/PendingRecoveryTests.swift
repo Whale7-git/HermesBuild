@@ -106,7 +106,9 @@ extension ModelTests {
         let rollbackStore = LocalDataFileStore(
             instanceID: "rollback", accountScope: "account", sessionID: "session",
             rootDirectory: rollbackRoot,
-            destinationReadBackVerifier: { _, _ in readBackCounter.next() != 2 })
+            destinationReadBackVerifier: { url, _ in
+                !url.lastPathComponent.hasPrefix("pending-") || readBackCounter.next() != 2
+            })
         precondition(rollbackStore.savePending(first).succeeded)
         precondition(rollbackStore.savePending(second).failure
             == LocalStoreWriteFailure.diskWrite)

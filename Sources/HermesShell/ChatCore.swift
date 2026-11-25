@@ -868,7 +868,7 @@ struct ChatTranscript: Codable {
             } else if !text.isEmpty {
                 if let id = streamingMessageID {
                     // 优先用缓存下标；下标失效（数组被重建）时才回退线性查找。
-                    if let cached = streamingMessageIndex, cached < messages.count,
+                    if let cached = streamingMessageIndex, cached >= 0, cached < messages.count,
                        messages[cached].id == id {
                         appendStreamingText(text, at: cached)
                     } else if let index = messages.firstIndex(where: { $0.id == id }) {
