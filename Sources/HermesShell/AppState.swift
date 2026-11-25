@@ -549,7 +549,8 @@ final class AppState: ObservableObject {
         for instance in configured {
             let selected = instance.id == active.id
             guard selected ? (!needsLogin && !needsInstanceSetup) :
-                (instance.backend == .gateway && !instance.apiKey.isEmpty) else { continue }
+                instance.backend == .gateway else { continue }
+            guard instance.backend != .gateway || !instance.apiKey.isEmpty else { continue }
             let instanceID = ChatHistoryIdentity.instanceID(id: instance.id, baseURL: instance.baseURL)
             let account = ChatHistoryIdentity.accountScope(instanceID: instanceID)
             guard let rows = recoveryObservations(instanceID: instanceID, accountScope: account) else { continue }

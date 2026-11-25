@@ -97,15 +97,34 @@ final class SessionRecoveryCoordinator {
                 // A pending POST is independent of an accepted Run. Absence of
                 // either local record never proves successful delivery.
                 guard pending.result.succeeded, pending.value == nil,
-                      accepted.result.succeeded, let data = accepted.value,
-                      let receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
+                      accepted.result.succeeded, var data = accepted.value,
+                      var receipt = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data)
                 else { continue }
                 do {
-                    let run = try await api.probeActiveRun(sessionID: sessionID,
-                                                            runID: receipt.runID)
+                    let run: ActiveRunProbe
+                    if let terminal = receipt.terminalStatus { run = .terminal(terminal) }
+                    else { run = try await api.probeActiveRun(sessionID: sessionID,
+                                                             runID: receipt.runID) }
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
-                    guard case .terminal(.completed) = run else { continue }
+                    guard case .terminal(let outcome) = run,
+                          isEligible(key, version) else { continue }
+                    // Persist exact terminal evidence even if the final history
+                    // is temporarily unavailable. Never retire a newer receipt.
+                    if receipt.terminalStatus == nil {
+                        let current = store.loadActiveRun()
+                        let pendingNow = store.loadPending()
+                        guard current.result.succeeded, pendingNow.result.succeeded,
+                              Self.mayRetireStoredReceipt(expected: data, current: current.value,
+                                  pendingIsEmpty: pendingNow.value == nil) else { continue }
+                        receipt.terminalStatus = outcome
+                        guard let updated = try? JSONEncoder().encode(receipt),
+                              store.saveActiveRun(updated).succeeded else { continue }
+                        data = updated
+                    }
+                    // Non-success outcomes remain durable for the visible
+                    // runtime to present; do not label them completed.
+                    guard outcome == .completed else { continue }
                     let latest = try await api.history(sessionID: sessionID, before: nil)
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline),
@@ -116,6 +135,7 @@ final class SessionRecoveryCoordinator {
                     for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
                         guard !Task.isCancelled, self.ticket == owner,
                               Date() < deadline else { return }
+                        guard isEligible(key, version) else { valid = false; break }
                         let cursor = pages[pages.count - 1].olderOffset
                         let older = try await api.history(sessionID: sessionID, before: cursor)
                         guard Self.canRetireAcceptedReceipt(from: older, sessionID: sessionID),

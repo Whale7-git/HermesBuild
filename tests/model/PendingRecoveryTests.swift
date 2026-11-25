@@ -423,7 +423,8 @@ extension ModelTests {
                 sessionID: "test", fileStore: files)
             let receipt = ActiveTurnRecovery(runID: "verified-run", historyEnd: 0,
                 knownIDs: [], text: "request", attachmentPaths: [])
-            precondition(store.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let encoded = try JSONEncoder().encode(receipt)
+            precondition(store.saveActiveRun(encoded).succeeded)
             let service = PendingRecoveryService()
             service.probeResults = [.terminal(.failed)]
             service.failHistoryAfterProbe = true
