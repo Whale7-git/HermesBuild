@@ -325,7 +325,7 @@ var transcriptPublications = 0
             await recovering.load()
             recovering.draft = "one POST"
             await recovering.send()
-            try await eventually { recovery.streamCalls >= 2 && !recovering.running }
+            try await eventually { recovery.streamCalls >= 2 && recovering.canSend }
             precondition(recovery.startCalls == 1 && recovery.cursors[1] == "s:1")
             precondition(recovering.transcript.messages.last?.content == "AB","same stream must retain cursor and deduplication")
             precondition(recovering.canSend && recovery.historyCalls >= 2)
@@ -869,7 +869,7 @@ enum CacheTestError: Error { case unauthorized }
             precondition(inspect().messages.last?.content == "AB","replayed frames must not duplicate in-memory text before history reconciliation")
         }
         active = nil
-        _ = try await onFrame(SSEFrame(event:"stream_end",data:"{}",id:"s:3"))
+        _ = try await onFrame(SSEFrame(event:"stream_end",data:"{\"status\":\"completed\"}",id:"s:3"))
     }
 }
 
