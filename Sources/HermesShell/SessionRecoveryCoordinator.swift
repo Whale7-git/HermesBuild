@@ -18,6 +18,12 @@ final class SessionRecoveryCoordinator {
     }
     private var attempted: [Key: TimeInterval] = [:]
 
+    static func recoverySignal(for observation: SessionTaskObservation) -> SessionTaskSignal? {
+        if observation.signals.contains(.needsVerification) { return .needsVerification }
+        if observation.signals.contains(.running) { return .running }
+        return nil
+    }
+
     static func eligibleKeys(_ keys: [Key], attempted: [Key: TimeInterval],
                              now: TimeInterval, cooldown: TimeInterval = 30,
                              limit: Int = 5) -> [Key] {
@@ -59,8 +65,8 @@ final class SessionRecoveryCoordinator {
     }
 
     func schedule(candidates: [Candidate],
-                  isEligible: @escaping @MainActor (Key, Double) -> Bool,
-                  onVerified: @escaping @MainActor (Key, Double) -> Void) {
+                  isEligible: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Bool,
+                  onVerified: @escaping @MainActor (Key, SessionTaskSignal, Double) -> Void) {
         guard worker == nil else { return }
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
@@ -81,8 +87,9 @@ final class SessionRecoveryCoordinator {
                 guard !Task.isCancelled, self.ticket == owner,
                       Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
                 let key = candidate.key
-                let version = candidate.observation.version(for: .needsVerification)
-                guard isEligible(key, version) else { continue }
+                guard let signal = Self.recoverySignal(for: candidate.observation) else { continue }
+                let version = candidate.observation.version(for: signal)
+                guard isEligible(key, signal, version) else { continue }
                 let instanceID = key.instanceID
                 let accountScope = key.accountScope
                 let sessionID = key.sessionID
@@ -108,7 +115,7 @@ final class SessionRecoveryCoordinator {
                     guard !Task.isCancelled, self.ticket == owner,
                           Self.withinVerificationWindow(now: Date(), deadline: deadline) else { return }
                     guard case .terminal(let outcome) = run,
-                          isEligible(key, version) else { continue }
+                          isEligible(key, signal, version) else { continue }
                     // Persist exact terminal evidence even if the final history
                     // is temporarily unavailable. Never retire a newer receipt.
                     if receipt.terminalStatus == nil {
@@ -135,7 +142,7 @@ final class SessionRecoveryCoordinator {
                     for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > boundary {
                         guard !Task.isCancelled, self.ticket == owner,
                               Date() < deadline else { return }
-                        guard isEligible(key, version) else { valid = false; break }
+                        guard isEligible(key, signal, version) else { valid = false; break }
                         let cursor = pages[pages.count - 1].olderOffset
                         let older = try await api.history(sessionID: sessionID, before: cursor)
                         guard Self.canRetireAcceptedReceipt(from: older, sessionID: sessionID),
@@ -163,13 +170,13 @@ final class SessionRecoveryCoordinator {
                     let latestPending = store.loadPending()
                     let latestReceipt = store.loadActiveRun()
                     guard Self.withinVerificationWindow(now: Date(), deadline: deadline),
-                          isEligible(key, version),
+                          isEligible(key, signal, version),
                           latestPending.result.succeeded, latestReceipt.result.succeeded,
                           Self.mayRetireStoredReceipt(
                               expected: data, current: latestReceipt.value,
                               pendingIsEmpty: latestPending.value == nil) else { continue }
                     guard store.saveActiveRun(nil).succeeded else { continue }
-                    onVerified(key, version)
+                    onVerified(key, signal, version)
                 } catch is CancellationError {
                     return
                 } catch {

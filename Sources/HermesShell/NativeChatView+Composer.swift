@@ -10,6 +10,8 @@ extension NativeChatView {
             draftSync: draftSync,
             insertion: composerInsertion,
             draftStore: draftStore,
+            canPersistDraft: { objects.registry.mayWriteDraft(objects.runtimeKey,
+                presentation: objects.presentation) },
             onPersistenceResult: { model.recordLocalWrite($0, kind: .draft) },
             onLocalWriteSuccess: { model.recordSuccessfulLocalWrite(kind: .draft) },
             focused: $composerFocused,
@@ -50,7 +52,9 @@ extension NativeChatView {
                         // A navigation/account change must never submit an
                         // upload prepared under the previous session's identity.
                         guard visible, attachments.batch.sessionID == sessionID,
-                              model.sessionID == sessionID else { return }
+                              model.sessionID == sessionID,
+                              objects.registry.owns(objects.runtimeKey,
+                                presentation: objects.presentation) else { return }
                     } catch is CancellationError {
                         return
                     } catch {
@@ -72,7 +76,8 @@ extension NativeChatView {
                     // attachment references. No automatic replay of the POST.
                     let accepted = await model.send(attachments: payloads)
                     if !accepted { pendingUserTurnFocus = false }
-                    if AttachmentResetPolicy.shouldReset(accepted: accepted,
+                    if objects.registry.owns(objects.runtimeKey, presentation: objects.presentation),
+                       AttachmentResetPolicy.shouldReset(accepted: accepted,
                         hasError: model.error != nil, uncertain: model.uncertain) {
                         attachments.reset(sessionID: sessionID)
                     }

@@ -1,5 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import Combine
 #else
 import Foundation
 #endif
@@ -273,9 +274,26 @@ final class NativeChatModel: ObservableObject {
     let api:NativeChatService
     private(set) var runtimeRetired = false
     var runtimeLogToken: RuntimeLogToken?
+    #if canImport(UIKit)
+    private var runtimeObservation: AnyCancellable?
+    private var runtimeObservationScheduled = false
+
+    func observeRuntime(_ action: @escaping @MainActor () -> Void) {
+        runtimeObservation = objectWillChange.sink { [weak self] in
+            guard let self, !self.runtimeRetired, !self.runtimeObservationScheduled else { return }
+            self.runtimeObservationScheduled = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.runtimeObservationScheduled = false
+                guard !self.runtimeRetired else { return }
+                action()
+            }
+        }
+    }
+    #endif
 
     var hasUnsettledRuntime: Bool {
-        running || submitting || reconciling || syncing || loading ||
+        streamTask != nil || running || submitting || reconciling || syncing || loading ||
             uncertain || pendingSend != nil || activeTurnRecovery != nil ||
             sendingWhileRunning || approving || clarifying
     }
@@ -283,6 +301,10 @@ final class NativeChatModel: ObservableObject {
     func retireRuntime() {
         guard !runtimeRetired else { return }
         runtimeRetired = true
+        #if canImport(UIKit)
+        runtimeObservation?.cancel()
+        runtimeObservation = nil
+        #endif
         onAuthenticationRequired = nil
         onApprovalArrived = nil; onApprovalResolved = nil
         onClarifyArrived = nil; onClarifyResolved = nil
@@ -852,17 +874,24 @@ final class ConversationRuntimeRegistry {
     private struct Entry {
         let model: NativeChatModel
         var presentation: UUID?
+        var lastPresentation: UUID
+        var access: UInt64
     }
+    private var access: UInt64 = 0
     private var entries: [Key: Entry] = [:]
 
     func claim(_ key: Key, presentation: UUID, make: () -> NativeChatModel) -> NativeChatModel {
+        access &+= 1
         if var entry = entries[key] {
             entry.presentation = presentation
+            entry.lastPresentation = presentation
+            entry.access = access
             entries[key] = entry
             return entry.model
         }
         let model = make()
-        entries[key] = Entry(model: model, presentation: presentation)
+        entries[key] = Entry(model: model, presentation: presentation,
+            lastPresentation: presentation, access: access)
         return model
     }
 
@@ -871,12 +900,29 @@ final class ConversationRuntimeRegistry {
     }
 
     func contains(_ key: Key) -> Bool { entries[key] != nil }
+    func contains(_ key: Key, model: NativeChatModel) -> Bool { entries[key]?.model === model }
+    func mayWriteDraft(_ key: Key, presentation: UUID) -> Bool {
+        entries[key]?.lastPresentation == presentation
+    }
+
+    /// A sheet/scene may temporarily unmount the same view. Restore only its
+    /// existing lease, never take ownership away from a newer presentation.
+    func reattach(_ key: Key, presentation: UUID, model: NativeChatModel) -> Bool {
+        guard var entry = entries[key], entry.model === model,
+              entry.lastPresentation == presentation else { return false }
+        entry.presentation = presentation
+        entries[key] = entry
+        return true
+    }
+
+    var all: [(Key, NativeChatModel)] {
+        entries.map { ($0.key, $0.value.model) }
+    }
 
     func detach(_ key: Key, presentation: UUID) {
         guard var entry = entries[key], entry.presentation == presentation else { return }
         entry.presentation = nil
         entries[key] = entry
-        pruneSettled()
     }
 
     var detached: [(Key, NativeChatModel)] {
@@ -885,12 +931,29 @@ final class ConversationRuntimeRegistry {
         }
     }
 
-    func pruneSettled() {
-        let settled = detached.filter { !$0.1.hasUnsettledRuntime }
-        for (key, model) in settled {
-            entries.removeValue(forKey: key)
-            model.retireRuntime()
+    /// Keep the current route even if its presentation is temporarily hidden.
+    /// Bound offscreen streaming memory; never evict an in-flight original POST
+    /// or a runtime whose persistence is degraded. Remaining work has a durable
+    /// receipt and is handed back to the app's read-only recovery coordinator.
+    func pruneDetached(excluding current: Key?, limit: Int = 4) {
+        let eligible = entries.filter { key, entry in
+            key != current && entry.presentation == nil
         }
+        for (key, entry) in eligible where !entry.model.hasUnsettledRuntime {
+            retire(key)
+        }
+        let remaining = entries.filter { key, entry in
+            key != current && entry.presentation == nil
+        }
+        let excess = max(0, remaining.count - limit)
+        let evictable = remaining.filter { _, entry in
+            let model = entry.model
+            return !model.submitting && !model.sendingWhileRunning && !model.approving &&
+                !model.clarifying && !model.stopping && model.localPersistenceIssue == nil &&
+                !model.queuePersistenceFailed && !model.runRecoveryNoticeShown &&
+                (model.activeTurnRecovery != nil || model.pendingSend != nil)
+        }.sorted { $0.value.access < $1.value.access }
+        for (key, _) in evictable.prefix(excess) { retire(key) }
     }
 
     func suspendAll() {

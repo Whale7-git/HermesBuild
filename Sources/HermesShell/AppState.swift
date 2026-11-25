@@ -225,14 +225,15 @@ final class AppState: ObservableObject {
     func recordRuntimeSignals(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
         guard !model.runtimeRetired, historyInstanceID == key.instanceID,
               historyAccountScope == key.accountScope,
-              conversationRuntimes.contains(key) else { return }
+              conversationRuntimes.contains(key, model: model) else { return }
         var signals: Set<SessionTaskSignal> = []
         if model.running { signals.insert(.running) }
         if !model.pendingApprovals.isEmpty { signals.insert(.waitingForApproval) }
         if !model.pendingClarifies.isEmpty { signals.insert(.waitingForClarify) }
         if model.stopping { signals.insert(.stopping) }
         if model.uncertain || model.activeRecoveryUnreadable ||
-            model.activeTurnRecovery != nil || model.hasPendingSend {
+            (model.activeTurnRecovery != nil && !model.running) ||
+            (model.hasPendingSend && !model.submitting) {
             signals.insert(.needsVerification)
         }
         if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil ||
@@ -240,13 +241,23 @@ final class AppState: ObservableObject {
         setSessionTaskSignals(signals, for: key.sessionID)
     }
 
+    func bindRuntime(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
+        model.observeRuntime { [weak self, weak model] in
+            guard let self, let model, self.conversationRuntimes.contains(key, model: model) else { return }
+            self.recordRuntimeSignals(model, key: key)
+            if self.appIsActive { model.scheduleAutomaticReconciliation() }
+        }
+    }
+
     private func wakeDetachedRuntimes() {
         for (key, model) in conversationRuntimes.detached {
             recordRuntimeSignals(model, key: key)
             guard appIsActive else { continue }
             if model.suspended && !model.submitting {
-                Task { [weak model] in
-                    guard let model, !model.runtimeRetired, model.suspended else { return }
+                Task { [weak self, weak model] in
+                    guard let self, let model, self.appIsActive,
+                          self.conversationRuntimes.contains(key, model: model),
+                          !model.runtimeRetired, model.suspended else { return }
                     await model.resumeForeground()
                     model.scheduleAutomaticReconciliation()
                 }
@@ -254,7 +265,9 @@ final class AppState: ObservableObject {
                 model.scheduleAutomaticReconciliation()
             }
         }
-        conversationRuntimes.pruneSettled()
+        let current = currentSessionID.map { ConversationRuntimeRegistry.Key(
+            instanceID: historyInstanceID, accountScope: historyAccountScope, sessionID: $0) }
+        conversationRuntimes.pruneDetached(excluding: current)
     }
     #else
     private func ownsRuntime(instanceID: String, accountScope: String, sessionID: String) -> Bool { false }
@@ -610,7 +623,7 @@ final class AppState: ObservableObject {
             let unresolved = rows.filter { sessionID, observation in
                 (!selected || currentSessionID != sessionID) &&
                 !ownsRuntime(instanceID: instanceID, accountScope: account, sessionID: sessionID) &&
-                observation.signals.contains(.needsVerification)
+                SessionRecoveryCoordinator.recoverySignal(for: observation) != nil
             }
             guard !unresolved.isEmpty else { continue }
             let backend = selected ? api : Self.makeBackend(for: instance)
@@ -620,7 +633,7 @@ final class AppState: ObservableObject {
                     observation: observation, api: backend))
             }
         }
-        sessionRecovery.schedule(candidates: candidates, isEligible: { [weak self] key, version in
+        sessionRecovery.schedule(candidates: candidates, isEligible: { [weak self] key, signal, version in
             guard let self, self.appIsActive, !self.clearingHistory,
                   let original = configured.first(where: {
                       ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == key.instanceID
@@ -635,15 +648,14 @@ final class AppState: ObservableObject {
                                     sessionID: key.sessionID) else { return false }
             guard let current = self.recoveryObservations(instanceID: key.instanceID,
                 accountScope: key.accountScope)?[key.sessionID] else { return false }
-            return current.signals.contains(.needsVerification) &&
-                current.version(for: .needsVerification) == version
-        }, onVerified: { [weak self] key, version in
+            return current.signals.contains(signal) && current.version(for: signal) == version
+        }, onVerified: { [weak self] key, signal, version in
             guard let self,
                   var rows = self.recoveryObservations(instanceID: key.instanceID,
                     accountScope: key.accountScope),
                   let current = rows[key.sessionID],
-                  current.signals.contains(.needsVerification),
-                  current.version(for: .needsVerification) == version else { return }
+                  current.signals.contains(signal),
+                  current.version(for: signal) == version else { return }
             var remaining = current.signals
             remaining.remove(.needsVerification)
             remaining.remove(.running)
@@ -1544,9 +1556,6 @@ final class AppState: ObservableObject {
     /// 但会把上一个实例/账号的对话正文继续留在内存里——跨作用域必须清。
     private func resetScopeView(clearMarkdownCache: Bool = true) {
         #if canImport(UIKit)
-        for (key, model) in conversationRuntimes.detached {
-            recordRuntimeSignals(model, key: key)
-        }
         conversationRuntimes.retireAll()
         #endif
         sessionRecovery.cancel()
@@ -1580,6 +1589,9 @@ final class AppState: ObservableObject {
         // 先清当前实例的 cookie（URLSession + WebKit），避免换账号后旧登录态残留。
         if let webUI = api as? HermesAPI { webUI.clearCookies() }
         let instance = historyInstanceID
+        #if canImport(UIKit)
+        conversationRuntimes.retireAll()
+        #endif
         let previous = ChatHistoryIdentity.rotate(instanceID: instance)
         GatewayRunStore.removeAll(instanceID: instance, accountScope: previous)
         // Backend-local run recovery must move to the new account namespace too.
@@ -1784,6 +1796,14 @@ final class AppState: ObservableObject {
         if snapshotDeparting && hasLoadedSessions && instances.indices.contains(activeIndex) {
             rememberSessionList(sessions, scope: sessionListScopeKey)
         }
+        #if canImport(UIKit)
+        if snapshotDeparting && instances.indices.contains(activeIndex) {
+            for (key, model) in conversationRuntimes.all {
+                recordRuntimeSignals(model, key: key)
+            }
+        }
+        conversationRuntimes.retireAll()
+        #endif
         activeIndex = index
         // 比例缓存要等进入会话才用得上，先在后台把本作用域读进内存，
         // 避免会话首帧拿到空快照；读取本身不在主线程。

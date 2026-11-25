@@ -44,7 +44,7 @@ private struct ChatTaskSignalRecorder: ViewModifier {
 final class ChatSessionObjects: ObservableObject {
     let model: NativeChatModel
     let runtimeKey: ConversationRuntimeRegistry.Key
-    let presentation = UUID()
+    let presentation: UUID
     let registry: ConversationRuntimeRegistry
     let timeline: ChatTimelineProjection
     /// 与模型同一作用域键的草稿存储：输入框用它做防抖落盘。
@@ -69,6 +69,8 @@ final class ChatSessionObjects: ObservableObject {
          readingStore: ChatReadingPositionStore, historyStore: ChatHistoryStore,
          registry: ConversationRuntimeRegistry) {
         self.registry = registry
+        let lease = UUID()
+        self.presentation = lease
         let key = ConversationRuntimeRegistry.Key(instanceID: instanceID,
             accountScope: accountScope, sessionID: sessionID)
         self.runtimeKey = key
@@ -80,7 +82,7 @@ final class ChatSessionObjects: ObservableObject {
         let store = ChatDraftStore(instanceID: instanceID, accountScope: accountScope,
             sessionID: sessionID, legacyBaseURL: api.webConsoleBaseURL.absoluteString,
             fileStore: fileStore)
-        let model = registry.claim(key, presentation: presentation) {
+        let model = registry.claim(key, presentation: lease) {
             NativeChatModel(sessionID: sessionID, api: api, draftStore: store,
                             historyStore: historyStore, displayScope: scope)
         }
@@ -303,6 +305,9 @@ struct NativeChatView: View {
     private var lifecycleContent: some View {
         layoutContent
         .task { [app] in
+            guard objects.registry.reattach(objects.runtimeKey, presentation: objects.presentation,
+                                            model: model) else { return }
+            app.bindRuntime(model, key: objects.runtimeKey)
             visible = true
             // 输入框的初值是模型读到的本地草稿，这里同步一次基线，
             // 之后才用「与上次交给模型的值是否相同」判断模型侧改写。
@@ -436,7 +441,7 @@ struct NativeChatView: View {
             scheduleFind(.cancelled, jump: false)
             foregroundResumeTask?.cancel(); foregroundResumeTask = nil
         }
-        .modifier(ChatTaskSignalRecorder(model: model, onChange: recordTaskSignals))
+        // AppState observes runtime state even after the presentation detaches.
     }
 
     private var observationContent: some View {
@@ -513,7 +518,7 @@ struct NativeChatView: View {
             attachmentSendTask?.cancel(); attachmentSendTask = nil
             attachments.cancelUploads()
             preparingAttachmentSend = false
-            attachments.reset(sessionID: sessionID)
+            // The old account's attachment state is no longer writable.
             cancelExport()
             foregroundResumeTask?.cancel(); foregroundResumeTask = nil
             // 认证图片缓存按「实例 + 账号」隔离；切换账号必须整片清掉，
