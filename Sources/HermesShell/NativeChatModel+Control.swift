@@ -387,22 +387,10 @@ extension NativeChatModel {
                 if outcome == .cancelled || outcome == .interrupted {
                     buffer.appendStopNotice()
                 }
-                try applySnapshot(finalHistory, preserveLoadedOlder: true)
-                if let receipt = activeTurnRecovery, receipt.runID == active {
-                    if !RunFinalizer.canSettle([finalHistory], sessionID: sessionID,
-                        runID: active, receipt: receipt, outcome: outcome, requireReply: true) {
-                        uncertain = true
-                        pauseQueueForRecovery()
-                        notice = "任务已结束，最终回复仍在同步。"
-                        scheduleAutomaticReconciliation()
-                        return
-                    }
-                    guard clearAcceptedTurnRecovery() else { return }
-                    uncertain = pendingSend != nil || pendingRecoveryUnreadable
-                        || activeRecoveryUnreadable
+                transition(to: .idle)
+                if try !finalizeVerifiedRun(finalHistory, runID: active, outcome: outcome) {
+                    scheduleAutomaticReconciliation()
                 }
-                pauseQueueForRecovery()
-                notice = outcome.notice
             }
         } catch {
             guard accepts(context), stopping else { return }

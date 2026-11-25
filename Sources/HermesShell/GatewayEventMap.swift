@@ -256,6 +256,9 @@ extension GatewayEventMap {
             // 正常的空输出：不能合成快照——ChatSnapshot 会过滤掉空 content 的 assistant 行，
             // messages 变成 []，反而把已经流式渲染的正文清空。用 stream_end 正常收尾。
             var payload: [String: Any] = ["status": "completed"]
+            if let explicitOutput = body["output"] as? String, explicitOutput.isEmpty {
+                payload["empty_output"] = true
+            }
             if let usage { payload["usage"] = usage }
             return emit("stream_end", payload, id: id)
         }

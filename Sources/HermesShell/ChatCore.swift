@@ -584,6 +584,12 @@ enum RunTerminalStatus: String, Codable, Equatable, Sendable {
 /// Protocol evidence is distinct from transport termination. In particular,
 /// an untyped error or explicit unknown status cannot authorize retirement.
 enum RunTerminalEvidence {
+    static func explicitlyEmptyReply(_ frame: SSEFrame) -> Bool {
+        guard outcome(of: frame) == .completed,
+              let body = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any] else { return false }
+        return body["empty_output"] as? Bool == true
+    }
+
     static func outcome(of frame: SSEFrame) -> RunTerminalStatus? {
         let body = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any]
         let status = (body?["status"] as? String)?.lowercased()
@@ -617,7 +623,11 @@ enum RunFinalizer {
               newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
         if let receipt, receipt.runID != runID { return false }
         if outcome != .completed { return true }
-        if let receipt { return receipt.confirmsCompletion(in: pages) }
+        if let receipt {
+            return receipt.confirmsCompletion(in: pages,
+                allowEmptyReply: !requireReply &&
+                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true))
+        }
         return !requireReply
     }
 }
@@ -634,6 +644,8 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// Exact Run/Session terminal evidence survives a failed final GET and
     /// server-side status expiry. Optional for pre-build232 receipts.
     var terminalStatus: RunTerminalStatus? = nil
+    var terminalAllowsEmptyReply: Bool? = nil
+    var commandAllowsEmptyReply: Bool? = nil
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.
@@ -644,7 +656,7 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// Read-only proof from a contiguous suffix, newest page first. Tool rows
     /// occupy raw indexes but aren't rendered; never treat a gap as proof that
     /// there was only one user submission after the accepted POST.
-    func confirmsCompletion(in pages: [ChatSnapshot]) -> Bool {
+    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
               let historyEnd, newest.activeRunEvidence == .absent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
@@ -667,6 +679,7 @@ struct ActiveTurnRecovery: Codable, Equatable {
         guard newUsers.count == 1, let sent = newUsers.first,
               sent.content == text, Set(sent.attachmentPaths) == attachmentPaths,
               let sentIndex = sent.sourceIndex else { return false }
+        if allowEmptyReply && fresh.last?.id == sent.id { return true }
         guard let last = fresh.last, last.role == "assistant",
               let replyIndex = last.sourceIndex, replyIndex > sentIndex else { return false }
         return true

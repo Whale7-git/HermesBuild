@@ -607,10 +607,16 @@ final class NativeChatModel: ObservableObject {
                               attachments: [ChatAttachmentPayload],
                               knownIDs: Set<String>) -> Bool {
         guard !runtimeRetired else { return false }
-        let receipt = ActiveTurnRecovery(
+        var receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
             attachmentPaths: Set(attachments.map(\.path)))
+        if let command = pendingSlashCommand, attachments.isEmpty {
+            switch command.kind {
+            case .compress, .reset: receipt.commandAllowsEmptyReply = true
+            case .other: break
+            }
+        }
         guard let data = try? JSONEncoder().encode(receipt) else {
             recordLocalWrite(.failed(.encoding), kind: .runRecovery)
             return false
@@ -627,12 +633,17 @@ final class NativeChatModel: ObservableObject {
     /// Only an exact, already accepted Run can gain terminal evidence.
     /// A conflicting status or failed durable write must not unlock sending.
     @discardableResult
-    func rememberTerminalStatus(runID: String, outcome: RunTerminalStatus) -> Bool {
+    func rememberTerminalStatus(runID: String, outcome: RunTerminalStatus,
+                                explicitlyEmptyReply: Bool = false) -> Bool {
         guard !runtimeRetired else { return false }
         guard var receipt = activeTurnRecovery else { return true }
         guard receipt.runID == runID else { return false }
-        if let previous = receipt.terminalStatus { return previous == outcome }
+        if let previous = receipt.terminalStatus {
+            guard previous == outcome else { return false }
+            if !explicitlyEmptyReply || receipt.terminalAllowsEmptyReply == true { return true }
+        }
         receipt.terminalStatus = outcome
+        if outcome == .completed && explicitlyEmptyReply { receipt.terminalAllowsEmptyReply = true }
         guard let data = try? JSONEncoder().encode(receipt) else {
             recordLocalWrite(.failed(.encoding), kind: .runRecovery)
             return false
