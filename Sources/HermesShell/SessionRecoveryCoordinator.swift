@@ -20,6 +20,7 @@ final class SessionRecoveryCoordinator {
 
     static func recoverySignal(for observation: SessionTaskObservation) -> SessionTaskSignal? {
         if observation.signals.contains(.needsVerification) { return .needsVerification }
+        if observation.signals.contains(.recoveryTracked) { return .recoveryTracked }
         if observation.signals.contains(.running) { return .running }
         return nil
     }

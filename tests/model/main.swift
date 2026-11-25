@@ -453,14 +453,24 @@ var transcriptPublications = 0
         registry.pruneDetached(excluding: nil, limit: 0)
         precondition(registry.contains(key), "in-flight POST may not be evicted")
         precondition(registry.reattach(key, presentation: secondLease, model: runtime))
-        registry.retireAll()
+        let otherKey = ConversationRuntimeRegistry.Key(instanceID: "other", accountScope: "b", sessionID: "test")
+        let otherLease = UUID()
+        let other = registry.claim(otherKey, presentation: otherLease) {
+            NativeChatModel(sessionID: "test", api: FakeChatService())
+        }
+        registry.detachScope(instanceID: "a", accountScope: "b")
+        precondition(registry.contains(key) && !runtime.runtimeRetired)
+        precondition(registry.owns(otherKey, presentation: otherLease))
+        registry.retireScope(instanceID: "a", accountScope: "b")
+        precondition(registry.contains(otherKey) && !other.runtimeRetired)
         runtimeService.accepted = true
         runtimeService.pending?.resume(returning: "accepted-stream")
         runtimeService.pending = nil
         _ = await runtimePost.value
         precondition(runtime.runtimeRetired && runtime.activeTurnRecovery == nil &&
             !registry.contains(key), "late POST cannot mutate a retired runtime")
-        print("MODEL_PASS runtime lease handoff and retired POST fencing")
+        registry.retireAll()
+        print("MODEL_PASS runtime lease handoff, scope isolation and retired POST fencing")
 
         let acceptedService = AcceptedPendingService()
         let acceptedModel = NativeChatModel(sessionID:"test",api:acceptedService)

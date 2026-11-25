@@ -43,6 +43,11 @@ extension AppStateTests {
             SessionRecoveryCoordinator.Key(instanceID: "host-\(index % 3)",
                 accountScope: "account", sessionID: "session-\(index)")
         }
+        let tracked = SessionTaskObservation(signals: [.recoveryTracked])
+        precondition(SessionRecoveryCoordinator.recoverySignal(for: tracked) == .recoveryTracked)
+        precondition(SessionTaskCenter.summary(sessionID: "tracked", serverStreaming: false,
+            observation: tracked) == nil, "internal recovery index is not a user-facing warning")
+        precondition(SessionTaskCenter.persistable(tracked.signals) == [.recoveryTracked])
         let first = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: [:], now: 100)
         precondition(first.count == 5)
         let attempted = Dictionary(uniqueKeysWithValues: first.map { ($0, 100.0) })

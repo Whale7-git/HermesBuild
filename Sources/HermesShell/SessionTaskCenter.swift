@@ -10,6 +10,8 @@ enum SessionTaskSignal: String, Codable, CaseIterable, Sendable {
     case stopping
     case needsVerification
     case recoveryIssue
+    /// Internal durable recovery index, never an attention badge by itself.
+    case recoveryTracked
 }
 
 /// Persisted per-session facts. A timestamp is kept only to make updates
@@ -160,6 +162,7 @@ enum SessionTaskCenter {
         observation: SessionTaskObservation?
     ) -> SessionTaskSummary? {
         var signals = observation?.signals ?? []
+        signals.remove(.recoveryTracked)
         if serverStreaming == true {
             signals.insert(.running)
         } else if serverStreaming == false {

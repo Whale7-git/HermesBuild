@@ -435,7 +435,8 @@ struct NativeChatView: View {
         // 用 onReceive 而不是 onChange(of: model.draft)：后者让 body 依赖草稿字段，
         // 等于把「按键不失效」还回去；这里只消费模型主动改写的推送。
         .onReceive(objects.draftChanges) { value in
-            guard value != syncedDraft else { return }
+            guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation),
+                  value != syncedDraft else { return }
             let previous = syncedDraft
             syncedDraft = value
             draftSync = ChatComposerDraftSync(
@@ -460,6 +461,7 @@ struct NativeChatView: View {
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: false) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in
+            guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
             let settled = Set(paths)
             let ids = attachments.batch.items.compactMap { item -> UUID? in
                 if case .ready(let uploaded) = item.state, settled.contains(uploaded.path) { return item.id }

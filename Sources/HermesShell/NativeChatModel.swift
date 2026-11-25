@@ -979,6 +979,22 @@ final class ConversationRuntimeRegistry {
         entries.removeValue(forKey: key)?.model.retireRuntime()
     }
 
+    func retireScope(instanceID: String, accountScope: String? = nil) {
+        let keys = entries.keys.filter { key in
+            key.instanceID == instanceID &&
+                (accountScope == nil || key.accountScope == accountScope)
+        }
+        for key in keys { retire(key) }
+    }
+
+    func detachScope(instanceID: String, accountScope: String) {
+        for key in Array(entries.keys) where key.instanceID == instanceID && key.accountScope == accountScope {
+            guard var entry = entries[key] else { continue }
+            entry.presentation = nil
+            entries[key] = entry
+        }
+    }
+
     func retireAll() {
         let old = Array(entries.values)
         entries.removeAll()
