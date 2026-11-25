@@ -84,6 +84,19 @@ struct ChatDraftStore {
             ? .ok : .failed(.diskWrite)
     }
 
+    func loadRunOutcome() -> (value: Data?, result: LocalStoreWriteResult) {
+        if let fileStore { return fileStore.loadRunOutcome() }
+        return (defaults.data(forKey: key + ".outcome"), .ok)
+    }
+
+    @discardableResult
+    func saveRunOutcome(_ value: Data?) -> LocalStoreWriteResult {
+        if let fileStore { return fileStore.saveRunOutcome(value) }
+        if let value { defaults.set(value, forKey: key + ".outcome") }
+        else { defaults.removeObject(forKey: key + ".outcome") }
+        return defaults.data(forKey: key + ".outcome") == value ? .ok : .failed(.diskWrite)
+    }
+
     func loadCheckpoint() -> (value: Data?, result: LocalStoreWriteResult) {
         if let fileStore { return fileStore.loadCheckpoint() }
         return (defaults.data(forKey: key + ".checkpoint"), .ok)
@@ -222,6 +235,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
         defaults.removeObject(forKey: key + ".checkpoint")
+        defaults.removeObject(forKey: key + ".outcome")
         defaults.removeObject(forKey: key + ".attachments")
         defaults.removeObject(forKey: key + ".queueUserPaused")
         if let legacy = legacyKey { defaults.removeObject(forKey: legacy) }
@@ -271,6 +285,7 @@ struct ChatDraftStore {
         defaults.removeObject(forKey: key + ".pending")
         defaults.removeObject(forKey: key + ".activeRun")
         defaults.removeObject(forKey: key + ".checkpoint")
+        defaults.removeObject(forKey: key + ".outcome")
         defaults.removeObject(forKey: key + ".attachments")
         defaults.removeObject(forKey: key + ".queueUserPaused")
         let fileStore = LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
@@ -311,9 +326,10 @@ struct ChatDraftStore {
     }
 
     private static func decodeTuple(_ name: String) -> [String]? {
-        let base = name.hasSuffix(".checkpoint") ? String(name.dropLast(11))
+        let base = name.hasSuffix(".outcome") ? String(name.dropLast(8))
+            : (name.hasSuffix(".checkpoint") ? String(name.dropLast(11))
             : (name.hasSuffix(".pending") ? String(name.dropLast(8))
-            : (name.hasSuffix(".activeRun") ? String(name.dropLast(10)) : name))
+            : (name.hasSuffix(".activeRun") ? String(name.dropLast(10)) : name)))
         let name = base.hasSuffix(queuedSuffix) ? String(base.dropLast(queuedSuffix.count)) : base
         let encoded: String
         if name.hasPrefix(prefix) { encoded = String(name.dropFirst(prefix.count)) }

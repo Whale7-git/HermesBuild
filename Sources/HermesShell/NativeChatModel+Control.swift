@@ -465,19 +465,11 @@ extension NativeChatModel {
         transition(to: .needsLogin)
         readOnly = true
         uncertain = true
-        // 换账号后既不能保留上一账号的待核对正文，也不能凭它的附件引用重发。
-        pendingSend = nil
-        queuedTurns = []
-        queueUserPaused = false
-        queueRecoveryPaused = false
-        updateQueuePause()
-        queueSaveFailed = false
-        let clearResult = draftStore?.saveQueued(nil)
-        if let clearResult, !clearResult.succeeded {
-            recordLocalWrite(clearResult, kind: .queue)
-        } else if localPersistenceIssue?.kind == .queue {
-            localPersistenceIssue = nil
-        }
+        // Hide the transcript and disable every mutation while unauthenticated.
+        // A 401 alone does not prove the account or accepted POST disappeared.
+        // AppState's explicit account retirement performs scoped deletion.
+        pauseQueueForRecovery()
+        lastFinalizedRecord = nil
         clearApproval()
         clearClarify()
         pendingAbsent = false

@@ -279,38 +279,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func ensureRecoveryTracked(_ key: ConversationRuntimeRegistry.Key) -> Bool {
-        guard ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope,
-              instances.contains(where: {
-                  ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == key.instanceID
-              }) else { return false }
-        var rows: [String: SessionTaskObservation]
-        if historyInstanceID == key.instanceID && historyAccountScope == key.accountScope {
-            guard !damagedTaskStore else { return false }
-            rows = sessionTaskObservations
-        } else {
-            switch SessionTaskStore.inspect(instanceID: key.instanceID, accountScope: key.accountScope) {
-            case .missing: rows = [:]
-            case .loaded(let existing): rows = existing
-            case .corrupt: return false
-            }
-        }
-        var signals = rows[key.sessionID]?.signals ?? []
-        signals.insert(.recoveryTracked)
-        rows[key.sessionID] = SessionTaskObservation.updating(rows[key.sessionID], signals: signals)
-        guard SessionTaskStore.save(rows, instanceID: key.instanceID, accountScope: key.accountScope) else { return false }
-        if historyInstanceID == key.instanceID && historyAccountScope == key.accountScope {
-            sessionTaskObservations = rows
-        }
-        return true
-    }
-
     func bindRuntime(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
         model.recoveryInstanceID = key.instanceID
-        model.recoveryTrackingRequired = { [weak self, weak model] in
-            guard let self, let model, self.conversationRuntimes.contains(key, model: model) else { return false }
-            return self.ensureRecoveryTracked(key)
-        }
         model.observeRuntime { [weak self, weak model] in
             guard let self, let model, self.conversationRuntimes.contains(key, model: model) else { return }
             self.recordRuntimeSignals(model, key: key)
@@ -713,11 +683,21 @@ final class AppState: ObservableObject {
 
     private func recoveryObservations(instanceID: String, accountScope: String)
         -> [String: SessionTaskObservation]? {
+        var rows: [String: SessionTaskObservation] = [:]
         if instanceID == historyInstanceID && accountScope == historyAccountScope {
-            return damagedTaskStore ? nil : sessionTaskObservations
+            if !damagedTaskStore { rows = sessionTaskObservations }
+        } else if case .loaded(let existing) = SessionTaskStore.inspect(
+            instanceID: instanceID, accountScope: accountScope) {
+            rows = existing
         }
-        guard case .loaded(let rows) = SessionTaskStore.inspect(
-            instanceID: instanceID, accountScope: accountScope) else { return nil }
+        // The protected receipt index is authoritative for task discovery even
+        // when a UI observation was never published or the task store is damaged.
+        for sessionID in LocalDataFileStore.recoverySessions(instanceID: instanceID, accountScope: accountScope) {
+            if rows[sessionID] == nil {
+                rows[sessionID] = SessionTaskObservation(signals: [.recoveryTracked],
+                    observedAt: Date(timeIntervalSince1970: 0))
+            }
+        }
         return rows
     }
 

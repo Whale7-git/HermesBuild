@@ -78,6 +78,7 @@ struct LocalDataFileStore: Sendable {
     let root: URL
     let scopeHash: String
     let namespaceHash: String
+    private let sessionID: String
     private let destinationReadBackVerifier: DestinationReadBackVerifier
 
     init(instanceID: String, accountScope: String, sessionID: String,
@@ -86,6 +87,7 @@ struct LocalDataFileStore: Sendable {
              url, expected in (try? Data(contentsOf: url)) == expected
          }) {
         root = rootDirectory
+        self.sessionID = sessionID
         scopeHash = Self.digest([instanceID, accountScope, sessionID])
         namespaceHash = Self.digest([instanceID, accountScope])
         self.destinationReadBackVerifier = destinationReadBackVerifier
@@ -113,6 +115,69 @@ struct LocalDataFileStore: Sendable {
     /// production: this uses the same protected, atomic envelope as PendingSend.
     var activeRunURL: URL {
         root.appendingPathComponent("active-run-\(namespaceHash)-\(scopeHash).json")
+    }
+
+    var recoveryIndexURL: URL {
+        root.appendingPathComponent("recovery-index-\(namespaceHash)-\(scopeHash).json")
+    }
+
+    /// The protected discovery marker precedes either kind of receipt. A
+    /// crash between the marker and receipt is harmless; a receipt can never
+    /// become undiscoverable because a UI observation has not been published.
+    private func ensureRecoveryIndex() -> LocalStoreWriteResult {
+        let value = Data(sessionID.utf8)
+        if case .value(let existing) = loadData(recoveryIndexURL, maxBytes: 16 * 1024),
+           existing == value { return .ok }
+        return save(value, to: recoveryIndexURL, maxBytes: 16 * 1024)
+    }
+
+    private func removeRecoveryIndexIfSettled() {
+        let pending = loadPending(), accepted = loadActiveRun()
+        if pending.result.succeeded, accepted.result.succeeded,
+           pending.value == nil, accepted.value == nil {
+            _ = remove(recoveryIndexURL)
+        }
+    }
+
+    static func recoverySessions(instanceID: String, accountScope: String,
+                                 rootDirectory: URL = defaultRoot) -> Set<String> {
+        let namespace = digest([instanceID, accountScope])
+        let prefix = "recovery-index-\(namespace)-"
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: rootDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
+        var sessions: Set<String> = []
+        for url in urls where url.lastPathComponent.hasPrefix(prefix) {
+            guard let envelope = readEnvelope(url, maxBytes: 16 * 1024),
+                  envelope.version == version, envelope.namespaceHash == namespace,
+                  let session = String(data: envelope.payload, encoding: .utf8), !session.isEmpty else { continue }
+            let store = LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
+                sessionID: session, rootDirectory: rootDirectory)
+            guard url.lastPathComponent == store.recoveryIndexURL.lastPathComponent,
+                  envelope.scopeHash == store.scopeHash else { continue }
+            let pending = store.loadPending(), active = store.loadActiveRun()
+            if pending.value != nil || active.value != nil ||
+                !pending.result.succeeded || !active.result.succeeded {
+                sessions.insert(session)
+            }
+        }
+        return sessions
+    }
+
+    var outcomeURL: URL {
+        root.appendingPathComponent("run-outcome-\(namespaceHash)-\(scopeHash).json")
+    }
+
+    func loadRunOutcome() -> (value: Data?, result: LocalStoreWriteResult) {
+        switch loadData(outcomeURL, maxBytes: 128 * 1024) {
+        case .missing: return (nil, .ok)
+        case .value(let data): return (data, .ok)
+        case .invalid: return (nil, .failed(.corruptFile))
+        }
+    }
+
+    func saveRunOutcome(_ value: Data?) -> LocalStoreWriteResult {
+        guard let value else { return remove(outcomeURL) }
+        return save(value, to: outcomeURL, maxBytes: 128 * 1024)
     }
 
     var checkpointURL: URL {
@@ -145,7 +210,13 @@ struct LocalDataFileStore: Sendable {
     }
 
     func saveActiveRun(_ value: Data?) -> LocalStoreWriteResult {
-        guard let value else { return remove(activeRunURL) }
+        guard let value else {
+            let result = remove(activeRunURL)
+            if result.succeeded { removeRecoveryIndexIfSettled() }
+            return result
+        }
+        let index = ensureRecoveryIndex()
+        guard index.succeeded else { return index }
         return save(value, to: activeRunURL, maxBytes: Self.maxActiveRunBytes)
     }
 
@@ -171,7 +242,13 @@ struct LocalDataFileStore: Sendable {
     }
 
     func savePending(_ value: Data?) -> LocalStoreWriteResult {
-        guard let value else { return remove(pendingURL) }
+        guard let value else {
+            let result = remove(pendingURL)
+            if result.succeeded { removeRecoveryIndexIfSettled() }
+            return result
+        }
+        let index = ensureRecoveryIndex()
+        guard index.succeeded else { return index }
         return save(value, to: pendingURL, maxBytes: Self.maxQueueBytes)
     }
 
@@ -231,11 +308,15 @@ struct LocalDataFileStore: Sendable {
         let fourth = remove(activeRunURL)
         let fifth = remove(attachmentDraftURL)
         let sixth = remove(checkpointURL)
+        let seventh = remove(recoveryIndexURL)
+        let eighth = remove(outcomeURL)
         if !first.succeeded { return first }
         if !second.succeeded { return second }
         if !third.succeeded { return third }
         if !fourth.succeeded { return fourth }
-        return fifth.succeeded ? sixth : fifth
+        if !fifth.succeeded { return fifth }
+        if !sixth.succeeded { return sixth }
+        return seventh.succeeded ? eighth : seventh
     }
 
     static func removeAll(instanceID: String, accountScope: String,
@@ -501,6 +582,8 @@ struct LocalDataFileStore: Sendable {
             || name.hasPrefix("active-run-\(namespaceHash)-")
             || name.hasPrefix("attachments-\(namespaceHash)-")
             || name.hasPrefix("checkpoint-\(namespaceHash)-")
+            || name.hasPrefix("recovery-index-\(namespaceHash)-")
+            || name.hasPrefix("run-outcome-\(namespaceHash)-")
     }
 
     private static func digest(_ components: [String]) -> String {

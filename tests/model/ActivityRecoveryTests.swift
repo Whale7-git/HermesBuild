@@ -197,7 +197,7 @@ extension ModelTests {
         await cancelledModel.load()
         try await eventually { !cancelledModel.running && !cancelledModel.reconciling }
         expect(cancelledModel.completedReplies == 0, "server cancellation never emits successful completion")
-        expect(cancelledModel.notice == "回复已取消，历史已同步。", "cancellation remains explicitly visible")
+        expect(cancelledModel.notice == RunTerminalStatus.cancelled.notice, "cancellation remains explicitly visible")
         cancelledModel.disconnect()
 
         let toolService = ActivityRecoveryService()

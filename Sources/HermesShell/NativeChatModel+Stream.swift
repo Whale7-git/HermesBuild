@@ -81,7 +81,9 @@ extension NativeChatModel {
             // 权威历史已经读到：之前的暂时性失败不再成立，停掉退避重试。
             historyLoadFailurePending = false
             // Do not erase the unresolved accepted-run status after history GET.
-            if pendingSend == nil && !uncertain { notice = nil }
+            if pendingSend == nil && !uncertain {
+                notice = lastFinalizedOutcome == .completed ? nil : lastFinalizedOutcome?.notice
+            }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
             if case .active(let active) = snap.activeRunEvidence {
                 if reapedTransportRunID == active ||
@@ -360,7 +362,12 @@ extension NativeChatModel {
         let previousUserPause = queueUserPaused
         let previousRecoveryPause = queueRecoveryPaused
         try applySnapshot(snap, preserveLoadedOlder: true, verifiedTerminalRunID: runID)
-        guard clearAcceptedTurnRecovery() else { return false }
+        guard saveFinalizedOutcome(runID: runID, outcome: outcome, history: snap),
+              clearAcceptedTurnRecovery() else {
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
         uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
         if restoreAutomaticQueue && outcome == .completed && !uncertain {
             // Recovery cannot change the separately persisted user pause.
@@ -372,7 +379,6 @@ extension NativeChatModel {
         }
         reapedTransportRunID = nil
         if !uncertain {
-            lastFinalizedOutcome = outcome
             notice = outcome.notice
         }
         return !uncertain
@@ -406,6 +412,13 @@ extension NativeChatModel {
                snap, sessionID: sessionID, receipt: activeTurnRecovery,
                streamedAssistantPresent: true, expectedRunID: streamID) {
             throw ChatCoreError.server("最终历史尚未确认本轮回复，流式内容已保留")
+        }
+        if verifiedTerminalRunID == nil, let record = lastFinalizedRecord {
+            if snap.activeRunEvidence != .absent || record.historyEnd != snap.rawMessageEndIndex ||
+                record.headID != snap.messages.last?.id {
+                lastFinalizedRecord = nil
+                _ = draftStore?.saveRunOutcome(nil)
+            }
         }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil

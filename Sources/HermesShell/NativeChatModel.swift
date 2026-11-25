@@ -338,8 +338,21 @@ final class NativeChatModel: ObservableObject {
         flush()
     }
     var recoveryInstanceID: String?
-    var recoveryTrackingRequired: (() -> Bool)?
-    @Published var lastFinalizedOutcome: RunTerminalStatus?
+    @Published var lastFinalizedRecord: RunFinalizedRecord?
+    var lastFinalizedOutcome: RunTerminalStatus? { lastFinalizedRecord?.outcome }
+
+    func saveFinalizedOutcome(runID: String, outcome: RunTerminalStatus, history: ChatSnapshot) -> Bool {
+        let record = RunFinalizedRecord(scope: displayScope, sessionID: sessionID, runID: runID,
+            outcome: outcome, historyEnd: history.rawMessageEndIndex, headID: history.messages.last?.id)
+        guard let data = try? JSONEncoder().encode(record) else { return false }
+        let result = draftStore?.saveRunOutcome(data) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .runRecovery)
+            return false
+        }
+        lastFinalizedRecord = record
+        return true
+    }
     var recoveryOwnerKey: RecoveryScheduler.OwnerKey {
         .init(scope: displayScope.isEmpty ? String(describing: ObjectIdentifier(api)) : displayScope,
               session: sessionID)
@@ -392,7 +405,6 @@ final class NativeChatModel: ObservableObject {
         runtimeObservation = nil
         #endif
         onAuthenticationRequired = nil
-        recoveryTrackingRequired = nil
         onApprovalArrived = nil; onApprovalResolved = nil
         onClarifyArrived = nil; onClarifyResolved = nil
         disconnect()
@@ -603,7 +615,6 @@ final class NativeChatModel: ObservableObject {
         guard !pendingRecoveryUnreadable else { return .failed(.corruptFile) }
         guard let draftStore else { return .ok }
         guard let pendingSend else { return draftStore.savePending(nil) }
-        guard recoveryTrackingRequired?() != false else { return .failed(.diskWrite) }
         guard let data = try? JSONEncoder().encode(pendingSend) else { return .failed(.encoding) }
         return draftStore.savePending(data)
     }
@@ -615,7 +626,6 @@ final class NativeChatModel: ObservableObject {
                               attachments: [ChatAttachmentPayload],
                               knownIDs: Set<String>) -> Bool {
         guard !runtimeRetired else { return false }
-        guard recoveryTrackingRequired?() != false else { return false }
         var receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
@@ -863,6 +873,12 @@ final class NativeChatModel: ObservableObject {
             uncertain = true
             localPersistenceIssue = LocalDataIssue(
                 kind: .runRecovery, failure: failure, observedAt: Date())
+        }
+        if pendingSend == nil, activeTurnRecovery == nil,
+           let data = draftStore?.loadRunOutcome().value,
+           let record = try? JSONDecoder().decode(RunFinalizedRecord.self, from: data),
+           record.scope == displayScope, record.sessionID == sessionID {
+            lastFinalizedRecord = record
         }
         queueUserPaused = draftStore?.loadQueueUserPaused() ?? false
         updateQueuePause()
@@ -1167,4 +1183,16 @@ struct RunRecoveryCheckpoint: Codable {
         }
         return result
     }
+}
+
+
+/// Displayable result survives receipt retirement. It is never a source of
+/// sending authority; current server history and active receipts decide that.
+struct RunFinalizedRecord: Codable, Equatable {
+    let scope: String
+    let sessionID: String
+    let runID: String
+    let outcome: RunTerminalStatus
+    let historyEnd: Int
+    let headID: String?
 }

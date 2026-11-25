@@ -131,6 +131,28 @@ import Foundation
         precondition(migrated.loadQueued() == Data("待迁移队列".utf8))
         precondition(migrated.load() == "待迁移草稿", "migration source is removed only after file read-back")
 
+        // Discovery is written before the durable original POST or receipt,
+        // independent of UI observation publication.
+        let discovery = LocalDataFileStore(instanceID: "discover", accountScope: "one",
+            sessionID: "s", rootDirectory: root)
+        let otherDiscovery = LocalDataFileStore(instanceID: "discover", accountScope: "two",
+            sessionID: "s", rootDirectory: root)
+        precondition(discovery.savePending(Data([1])).succeeded)
+        precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
+            accountScope: "one", rootDirectory: root) == ["s"])
+        precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
+            accountScope: "two", rootDirectory: root).isEmpty)
+        precondition(discovery.saveActiveRun(Data([2])).succeeded)
+        precondition(discovery.savePending(nil).succeeded)
+        precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
+            accountScope: "one", rootDirectory: root) == ["s"])
+        precondition(otherDiscovery.savePending(Data([3])).succeeded)
+        precondition(discovery.saveActiveRun(nil).succeeded)
+        precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
+            accountScope: "one", rootDirectory: root).isEmpty)
+        precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
+            accountScope: "two", rootDirectory: root) == ["s"])
+
         let stats = LocalDataFileStore.statistics(instanceID: "instance", accountScope: "acct-1",
                                                   rootDirectory: root)
         precondition(stats.files >= 3 && stats.payloadBytes > 0 && stats.isHealthy)
