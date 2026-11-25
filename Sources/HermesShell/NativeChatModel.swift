@@ -935,7 +935,8 @@ final class ConversationRuntimeRegistry {
     /// Bound offscreen streaming memory; never evict an in-flight original POST
     /// or a runtime whose persistence is degraded. Remaining work has a durable
     /// receipt and is handed back to the app's read-only recovery coordinator.
-    func pruneDetached(excluding current: Key?, limit: Int = 4) {
+    func pruneDetached(excluding current: Key?, limit: Int = 4,
+                       onHandoff: (Key, NativeChatModel) -> Void = { _, _ in }) {
         let eligible = entries.filter { key, entry in
             key != current && entry.presentation == nil
         }
@@ -953,7 +954,10 @@ final class ConversationRuntimeRegistry {
                 !model.queuePersistenceFailed && !model.runRecoveryNoticeShown &&
                 (model.activeTurnRecovery != nil || model.pendingSend != nil)
         }.sorted { $0.value.access < $1.value.access }
-        for (key, _) in evictable.prefix(excess) { retire(key) }
+        for (key, entry) in evictable.prefix(excess) {
+            onHandoff(key, entry.model)
+            retire(key)
+        }
     }
 
     func suspendAll() {

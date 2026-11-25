@@ -446,6 +446,13 @@ var transcriptPublications = 0
         precondition(reopened === runtime && reopened.submitting)
         registry.detach(key, presentation: firstLease)
         precondition(registry.owns(key, presentation: secondLease))
+        precondition(!registry.mayWriteDraft(key, presentation: firstLease))
+        precondition(registry.mayWriteDraft(key, presentation: secondLease))
+        precondition(!registry.reattach(key, presentation: firstLease, model: runtime))
+        registry.detach(key, presentation: secondLease)
+        registry.pruneDetached(excluding: nil, limit: 0)
+        precondition(registry.contains(key), "in-flight POST may not be evicted")
+        precondition(registry.reattach(key, presentation: secondLease, model: runtime))
         registry.retireAll()
         runtimeService.accepted = true
         runtimeService.pending?.resume(returning: "accepted-stream")

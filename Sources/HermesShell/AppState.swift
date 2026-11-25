@@ -222,7 +222,8 @@ final class AppState: ObservableObject {
             accountScope: accountScope, sessionID: sessionID))
     }
 
-    func recordRuntimeSignals(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key) {
+    func recordRuntimeSignals(_ model: NativeChatModel, key: ConversationRuntimeRegistry.Key,
+                              handoff: Bool = false) {
         guard !model.runtimeRetired, historyInstanceID == key.instanceID,
               historyAccountScope == key.accountScope,
               conversationRuntimes.contains(key, model: model) else { return }
@@ -233,7 +234,8 @@ final class AppState: ObservableObject {
         if model.stopping { signals.insert(.stopping) }
         if model.uncertain || model.activeRecoveryUnreadable ||
             (model.activeTurnRecovery != nil && !model.running) ||
-            (model.hasPendingSend && !model.submitting) {
+            (model.hasPendingSend && !model.submitting) ||
+            (handoff && (model.activeTurnRecovery != nil || model.hasPendingSend)) {
             signals.insert(.needsVerification)
         }
         if model.runRecoveryNoticeShown || model.localPersistenceIssue != nil ||
@@ -267,7 +269,16 @@ final class AppState: ObservableObject {
         }
         let current = currentSessionID.map { ConversationRuntimeRegistry.Key(
             instanceID: historyInstanceID, accountScope: historyAccountScope, sessionID: $0) }
-        conversationRuntimes.pruneDetached(excluding: current)
+        conversationRuntimes.pruneDetached(excluding: current) { [weak self] key, model in
+            self?.recordRuntimeSignals(model, key: key, handoff: true)
+        }
+        // STOP is a distinct read-only owner; a long-lived STOP must not
+        // become dependent on leaving and reentering the conversation.
+        if appIsActive {
+            for (_, model) in conversationRuntimes.all where model.stopping && !model.suspended {
+                model.scheduleStopStatusPolling()
+            }
+        }
     }
     #else
     private func ownsRuntime(instanceID: String, accountScope: String, sessionID: String) -> Bool { false }
@@ -1799,7 +1810,7 @@ final class AppState: ObservableObject {
         #if canImport(UIKit)
         if snapshotDeparting && instances.indices.contains(activeIndex) {
             for (key, model) in conversationRuntimes.all {
-                recordRuntimeSignals(model, key: key)
+                recordRuntimeSignals(model, key: key, handoff: true)
             }
         }
         conversationRuntimes.retireAll()

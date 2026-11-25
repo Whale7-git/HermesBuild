@@ -2,32 +2,6 @@ import SwiftUI
 import UIKit
 import Combine
 
-private struct ChatTaskSignalRecorder: ViewModifier {
-    @ObservedObject var model: NativeChatModel
-    let onChange: () -> Void
-
-    func body(content: Content) -> some View {
-        content
-            // 相位本身也要观察：首次加载完成是 `loading -> idle`（或
-            // `.streaming`），此时 running/submitting/stopping 全都是 false，
-            // 上面那些派生字段一个都不变。只挂派生字段会让「打开会话后恢复
-            // 已正常」这个事实等到离页才被发现，任务中心的旧提醒一直挂着。
-            // 相位转移本身很稀疏，且信号写入已按值去重，不会带来额外刷新。
-            .onChange(of: model.phase) { _, _ in onChange() }
-            .onChange(of: model.running) { _, _ in onChange() }
-            .onChange(of: model.submitting) { _, _ in onChange() }
-            .onChange(of: model.reconnecting) { _, _ in onChange() }
-            .onChange(of: model.pendingApprovals) { _, _ in onChange() }
-            .onChange(of: model.pendingClarifies) { _, _ in onChange() }
-            .onChange(of: model.stopping) { _, _ in onChange() }
-            .onChange(of: model.uncertain) { _, _ in onChange() }
-            .onChange(of: model.hasPendingSend) { _, _ in onChange() }
-            .onChange(of: model.runRecoveryNoticeShown) { _, _ in onChange() }
-            .onChange(of: model.localPersistenceIssue) { _, _ in onChange() }
-            .onChange(of: model.queuePersistenceFailed) { _, _ in onChange() }
-    }
-}
-
 /// 会话级对象容器：把「一次创建、整个会话生命周期内不变」的东西收拢到一份，
 /// 并只在视图身份首次出现时构造。
 ///
@@ -308,6 +282,8 @@ struct NativeChatView: View {
             guard objects.registry.reattach(objects.runtimeKey, presentation: objects.presentation,
                                             model: model) else { return }
             app.bindRuntime(model, key: objects.runtimeKey)
+            guard displayScope == app.historyInstanceID + "|" + app.historyAccountScope,
+                  app.currentSessionID == sessionID else { return }
             visible = true
             // 输入框的初值是模型读到的本地草稿，这里同步一次基线，
             // 之后才用「与上次交给模型的值是否相同」判断模型侧改写。
@@ -433,6 +409,11 @@ struct NativeChatView: View {
             // runtime retains its SSE cursor and exact POST owner.
             objects.registry.detach(objects.runtimeKey, presentation: objects.presentation)
             visible = false
+            // Let the child composer finish its final synchronous draft save
+            // before the registry may evict an offscreen settled runtime.
+            Task { @MainActor [weak app] in
+                app?.wakeUnopenedSessionRecovery()
+            }
             pendingPanel = nil; afterPanelAction = nil; activePanel = nil
             attachmentHighlightTask?.cancel()
             attachmentHighlight = nil
