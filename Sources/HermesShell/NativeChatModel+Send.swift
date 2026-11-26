@@ -122,7 +122,7 @@ extension NativeChatModel {
             // 网络失败：草稿留着，提示重试；不回退成排队（否则用户以为已送达）。
             let failure = error.localizedDescription
             self.error = failure
-            notice = "引导结果未确认，草稿已保留；请核对后再决定是否重发。"
+            notice = "暂时无法确认补充消息是否送达，已保留草稿。"
             recordRuntimeLog(.error, "send", "steer fail err=\(failure)")
             return false
         }
@@ -136,7 +136,7 @@ extension NativeChatModel {
         recordRuntimeLog(.info, "send", "interrupt start")
         if streamID != nil { await stop() }
         guard canSend else {
-            notice = "当前回复尚未确认结束，这条没有发出；请先核对状态。"
+            notice = "上一条回复尚未确认结束，这条消息未发送，请同步状态。"
             return false
         }
         return await submit(text: text, attachments: attachments, composerText: composerText,
@@ -271,19 +271,19 @@ extension NativeChatModel {
                 discardPending(restoreDraft: false)
                 guard pendingSend == nil else { return false }
             case .failed:
-                error = "仍无法确认队列首条消息是否已送达；发送保持锁定，请稍后核对。"
+                error = "仍无法确认队列首条消息是否送达，暂不能发送，请稍后同步。"
                 return false
             }
         } else if pendingSend != nil {
             // The failed bubble belongs to an earlier explicit turn. It cannot
             // prove whether this queued POST reached the server, so keep both
             // records locked until the user resolves the visible pending send.
-            error = "还有另一条发送结果待核对；请先处理会话里的待核对消息。"
+            error = "还有一条消息尚未确认送达，请先处理那条消息。"
             return false
         } else {
             let original = queuedTurns[0]
             guard original.hasRecoveryEvidence, let historyEnd = original.historyEnd else {
-                error = "这条队列来自旧版本，未保存发送前的历史边界，无法安全确认是否已送达。请刷新核对后手动处理。"
+                error = "这条消息来自旧版本，暂时无法确认是否送达，请同步后再决定如何处理。"
                 return false
             }
             reconciling = true
@@ -350,14 +350,14 @@ extension NativeChatModel {
                     break
                 case .failed:
                     uncertain = true
-                    error = "仍无法确认队列首条消息是否已送达；发送保持锁定，请稍后核对。"
+                    error = "仍无法确认队列首条消息是否送达，暂不能发送，请稍后同步。"
                     return false
                 }
             } catch {
                 guard stillOwnsProof() else { return false }
                 if handleAuthenticationFailure(error) { return false }
                 uncertain = true
-                self.error = "核对队列消息失败：\(error.localizedDescription)"
+                self.error = "同步队列消息失败：\(error.localizedDescription)"
                 return false
             }
         }
@@ -465,7 +465,7 @@ extension NativeChatModel {
         // bypass the recovery evidence: the edited text can no longer match the
         // delivered row. Require explicit reconcile/discard first.
         guard queuedTurns[index].delivery != .uncertain else {
-            error = "这条消息的发送结果尚未核对，确认已送达或确认不存在后才能编辑。"
+            error = "这条消息尚未确认是否送达，暂不能编辑。"
             return false
         }
         var next = queuedTurns
@@ -531,7 +531,7 @@ extension NativeChatModel {
         guard saved.succeeded else {
             recordLocalWrite(saved, kind: .queue)
             pauseQueueForRecovery()
-            notice = "无法可靠保存队列暂停设置；已保持自动发送锁定。"
+            notice = "队列暂停设置保存失败，自动发送仍已暂停。"
             return
         }
         queueUserPaused = paused
@@ -703,7 +703,7 @@ extension NativeChatModel {
         guard persistPendingSend().succeeded else {
             transition(to: .idle)
             uncertain = true
-            error = "发送快照未能安全保存，本次尚未提交。请检查本地存储后重试。"
+            error = "发送记录保存失败，本次未发送。请检查本地存储后重试。"
             return SubmitResult(accepted: false, completed: false)
         }
         // 只有系统补的占位才标记：用户手打同样文字时 origin 是 .userInput，不产生记录。
@@ -765,7 +765,7 @@ extension NativeChatModel {
             } else {
                 uncertain = true
                 pauseQueueForRecovery()
-                notice = "后台已受理消息，但本地运行记录写入失败；请勿重发，稍后核对。"
+                notice = "消息已受理，但本地记录保存失败。请勿重发，稍后同步。"
             }
             settleAcceptedAttachments(attachments.map(\.path))
             pendingAbsent = false
@@ -816,7 +816,7 @@ extension NativeChatModel {
             if handleAuthenticationFailure(error) {
                 return SubmitResult(accepted: false, completed: true)
             }
-            notice = "发送结果未确认，请先核对状态；草稿和附件已保留。"
+            notice = "暂时无法确认消息是否送达，已保留草稿和附件，请同步状态。"
             if resumeRequested { resumeRequested = false; await load(silent: true, preserveLoadedOlder: true) }
         }
         return SubmitResult(accepted: false, completed: true)
@@ -884,7 +884,7 @@ extension NativeChatModel {
                 pages.append(older)
             } catch {
                 if handleAuthenticationFailure(error) { return .failed }
-                notice = "历史分页核对暂不可用；已保留发送记录，不会自动重发。"
+                notice = "较早的消息暂时无法同步，已保留发送记录，不会自动重发。"
                 return .failed
             }
         }
@@ -924,7 +924,7 @@ extension NativeChatModel {
             // A proven absence enables only explicit user choice, never POST.
             pendingAbsent = true
             uncertain = false
-            notice = "完整历史核对未发现这条消息，可自行决定是否重发。"
+            notice = "未找到这条消息，可自行决定是否重试。"
         }
         flush()
         return decision
@@ -935,7 +935,7 @@ extension NativeChatModel {
         guard canResendPending, let pending = pendingSend else { return false }
         if let id = pending.queuedTurnID {
             guard queuedTurns.contains(where: { $0.id == id }) else {
-                error = "原队列记录已变化，请在恢复中心核对后处理。"
+                error = "原队列消息已变化，请在恢复中心同步后处理。"
                 return false
             }
             return await dispatchSelectedQueuedTurn(id: id)
@@ -979,7 +979,7 @@ extension NativeChatModel {
            !pending.composerText.isEmpty {
             draft = pending.composerText
         }
-        notice = stillUncertain ? "已移除本地占位；后台状态仍待核对，请刷新历史后再发送。" : nil
+        notice = stillUncertain ? "已隐藏本地未确认消息，暂不能确认是否送达，请同步后再发送。" : nil
         flush()
     }
 
