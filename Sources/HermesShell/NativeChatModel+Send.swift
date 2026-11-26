@@ -282,19 +282,50 @@ extension NativeChatModel {
             error = "还有另一条发送结果待核对；请先处理会话里的待核对消息。"
             return false
         } else {
-            guard queuedTurns[0].hasRecoveryEvidence else {
+            let original = queuedTurns[0]
+            guard original.hasRecoveryEvidence, let historyEnd = original.historyEnd else {
                 error = "这条队列来自旧版本，未保存发送前的历史边界，无法安全确认是否已送达。请刷新核对后手动处理。"
                 return false
             }
             reconciling = true
             defer { reconciling = false }
             uncertain = true
+            let generation = revision
+            func stillOwnsProof() -> Bool {
+                generation == revision && !runtimeRetired && !suspended && !Task.isCancelled
+                    && queuedTurns.first == original && pendingSend == nil
+            }
             do {
                 let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
+                guard stillOwnsProof(), snapshot.sessionID == sessionID,
+                      !snapshot.readOnly, snapshot.activeRunEvidence == .absent else { return false }
+                var pages = [snapshot]
+                for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > historyEnd {
+                    guard stillOwnsProof(), let cursor = pages.last?.olderOffset else { return false }
+                    let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
+                    guard stillOwnsProof(), older.sessionID == sessionID, !older.readOnly,
+                          older.activeRunEvidence == .absent,
+                          older.rawMessageEndIndex == cursor, older.olderOffset < cursor else { return false }
+                    pages.append(older)
+                }
+                let decision = DeliveryReconciliationPolicy.resolve(text: original.text,
+                    attachments: original.attachments, historyEnd: historyEnd,
+                    knownIDs: original.knownIDs, pages: pages)
+                guard decision != .failed else {
+                    error = "历史证据不足，已保留队列记录；不会自动重发。"
+                    return false
+                }
+                if pages.count > 1 {
+                    let head = try await recoveryHistory(sessionID: sessionID, before: nil)
+                    guard stillOwnsProof(), head.sessionID == sessionID, !head.readOnly,
+                          head.activeRunEvidence == .absent,
+                          head.rawMessageEndIndex == snapshot.rawMessageEndIndex,
+                          head.messages.last?.id == snapshot.messages.last?.id else { return false }
+                }
+                guard stillOwnsProof() else { return false }
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
-                guard let current = queuedTurns.first, current.id == id,
-                      current.delivery == .uncertain else { return false }
-                switch current.resolution(in: snapshot) {
+                guard stillOwnsProof(), activeTurnRecovery == nil else { uncertain = true; return false }
+                switch decision {
                 case .delivered:
                     guard queuedTurns.first?.id == id else { return false }
                     queuedTurns.removeFirst()
@@ -311,6 +342,7 @@ extension NativeChatModel {
                     return false
                 }
             } catch {
+                guard stillOwnsProof() else { return false }
                 if handleAuthenticationFailure(error) { return false }
                 uncertain = true
                 self.error = "核对队列消息失败：\(error.localizedDescription)"

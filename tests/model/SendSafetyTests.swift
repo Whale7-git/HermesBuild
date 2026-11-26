@@ -14,6 +14,7 @@ import Foundation
     var stopCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
+    var historyPageSize: Int?
     var holdSteer = false
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
@@ -29,8 +30,11 @@ import Foundation
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         historyCalls += 1
         if failHistory { throw URLError(.notConnectedToInternet) }
-        var object: [String: Any] = ["session_id": sessionID, "messages": historyRows,
-                                     "read_only": false]
+        let end = min(max(0, before ?? historyRows.count), historyRows.count)
+        let offset = historyPageSize.map { max(0, end - $0) } ?? 0
+        var object: [String: Any] = ["session_id": sessionID,
+            "messages": historyPageSize == nil ? historyRows : Array(historyRows[offset..<end]),
+            "_messages_offset": offset, "_messages_truncated": offset > 0, "read_only": false]
         if let active { object["active_stream_id"] = active }
         return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
                                 gatewayPendingControls: pendingControlSnapshot)
@@ -793,6 +797,24 @@ import Foundation
         model.disconnect()
     }
 
+    // A delivered queue row can be older than the latest 60 raw records.
+    do {
+        let service = SendSafetyService()
+        service.historyPageSize = 60
+        service.historyRows = [["id": "older", "role": "user", "content": "previous"],
+            ["id": "accepted-older-page", "role": "user", "content": "queued long task"]]
+        service.historyRows += (0..<145).map { ["id": "assistant-\($0)", "role": "assistant", "content": "step \($0)"] }
+        let model = NativeChatModel(sessionID: "queue-long-proof", api: service)
+        let turn = ChatQueuedTurn(id: "long-queue", text: "queued long task", attachments: [],
+            composerText: "queued long task", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 1, knownIDs: ["older"], submittedAt: 1_700_000_000)
+        model.setQueuedTurns([turn])
+        let ready = await model.prepareQueuedTurnForRetry(id: turn.id)
+        precondition(!ready && model.queuedTurns.isEmpty && service.startCalls == 0 && service.historyCalls == 4,
+                     "three contiguous history pages plus head verification prove delivery without POST")
+        model.disconnect()
+    }
+
     do {
         let suite = "HermesQueueRestoreLegacy-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -1140,8 +1162,10 @@ import Foundation
                      model.pendingClarifies.map(\.id) == ["q2"],
                      "a stale card tap must not answer the surviving question")
         let oldQuestion = model.pendingClarifies[0]
-        service.clarify("q2", generation: 13)
-        try await ModelTests.eventually { model.pendingClarify?.executionGeneration == 13 }
+        let newQuestion = ChatPendingClarify(id: oldQuestion.id, runID: oldQuestion.runID,
+            requestID: oldQuestion.requestID, executionGeneration: 13,
+            question: oldQuestion.question, choices: oldQuestion.choices, multiSelect: oldQuestion.multiSelect)
+        model.pendingClarifies = [newQuestion]
         await model.respondToClarify("stale answer", requestID: oldQuestion.id, expected: oldQuestion)
         precondition(service.clarifyCalls.count == callsBeforeStaleAnswer && model.pendingClarify?.executionGeneration == 13,
                      "same-ID newer clarification cannot receive an old card's answer")
