@@ -439,7 +439,7 @@ extension NativeChatView {
         if model.runRecoveryNoticeShown,
            model.error == nil, model.cachedHistoryDate == nil,
            !model.hasPendingSend, !model.uncertain {
-            return "本轮后台恢复记录未能保存；当前页面不会重复发送，重启 App 后可能需要重新核对。"
+            return "这次回复的恢复记录未能保存；不会重复发送，重启 App 后可能需要重新同步。"
         }
         if model.authenticationRequired { return model.activity.title }
         if model.cachedHistoryDate != nil && model.error != nil {
