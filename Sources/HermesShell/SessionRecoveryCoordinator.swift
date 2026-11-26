@@ -59,22 +59,25 @@ final class SessionRecoveryCoordinator {
     /// Fair discovery only. Each eligible durable session is transferred to
     /// the same registry-owned Runtime used by a visible conversation.
     /// No history, status or receipt retirement occurs in this discovery layer.
-    func schedule(candidates: [Candidate],
+    func schedule(candidates: [Candidate], limit: Int = 5,
+                  now: TimeInterval = ProcessInfo.processInfo.systemUptime,
                   isEligible: (Key, SessionTaskSignal, Double) -> Bool,
                   onRestore: (Candidate) -> Bool) {
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
-        let now = ProcessInfo.processInfo.systemUptime
+        guard limit > 0 else { return }
         attempted = attempted.filter { now - $0.value < 3600 }
-        // Eligibility failures must not consume a batch slot. A rejected
-        // admission must not start a cooldown for a runtime that never existed.
-        let eligible = indexed.keys.filter { key in
+        // Revalidate lazily: eligibility can read protected storage. Do not
+        // scan every session on every wake when only a few can be admitted.
+        // Rejected admission does not start a recovery cooldown.
+        var admissionAttempts = 0
+        for key in Self.eligibleKeys(Array(indexed.keys), attempted: attempted, now: now,
+                                     limit: indexed.count) {
+            guard admissionAttempts < limit else { break }
             guard let candidate = indexed[key],
-                  let signal = Self.recoverySignal(for: candidate.observation) else { return false }
-            return isEligible(key, signal, candidate.observation.version(for: signal))
-        }
-        for key in Self.eligibleKeys(Array(eligible), attempted: attempted, now: now) {
-            guard let candidate = indexed[key] else { continue }
+                  let signal = Self.recoverySignal(for: candidate.observation),
+                  isEligible(key, signal, candidate.observation.version(for: signal)) else { continue }
+            admissionAttempts += 1
             if onRestore(candidate) { attempted[key] = now }
         }
     }

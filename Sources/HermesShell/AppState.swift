@@ -738,7 +738,14 @@ final class AppState: ObservableObject {
                     observation: observation, api: backend))
             }
         }
-        sessionRecovery.schedule(candidates: candidates, isEligible: { [weak self] key, signal, version in
+        // Fill free slots or rotate one existing durable owner per wake.
+        // Never evict a runtime that this same batch has just admitted.
+        #if canImport(UIKit)
+        let admissionLimit = max(1, 4 - conversationRuntimes.detached.count)
+        #else
+        let admissionLimit = 0
+        #endif
+        sessionRecovery.schedule(candidates: candidates, limit: admissionLimit, isEligible: { [weak self] key, signal, version in
             guard let self, self.appIsActive, !self.clearingHistory,
                   let original = configured.first(where: {
                       ChatHistoryIdentity.instanceID(id: $0.id, baseURL: $0.baseURL) == key.instanceID
