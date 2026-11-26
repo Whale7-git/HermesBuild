@@ -21,6 +21,11 @@ actor ConcurrencyProbe {
     var status = "running"
     var statusSessionID = "s"
     var statusCode = 200
+    var unknownResolutionSupported = false
+    var unknownAdmission: String?
+    var unknownGeneration: Int?
+    var resolutionResponseCode = 200
+    var resolutionTerminalStatus = "interrupted"
     var pendingControls: [[String: Any]]?
     var failure: Error?
     var requests: [URLRequest] = []
@@ -35,7 +40,16 @@ actor ConcurrencyProbe {
         let q = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         var body: [String: Any] = [:]
         var code = 200
-        if url.path == "/v1/files", request.httpMethod == "POST" {
+        if url.path == "/v1/capabilities" {
+            body = ["features": ["run_unknown_resolution": unknownResolutionSupported],
+                    "endpoints": unknownResolutionSupported
+                        ? ["run_unknown_resolution": ["method": "POST", "path": "/v1/runs/{run_id}/resolve-unknown"]]
+                        : [:]]
+        } else if url.path == "/v1/runs/run-fixture/resolve-unknown", request.httpMethod == "POST" {
+            code = resolutionResponseCode
+            if code == 200 { status = resolutionTerminalStatus }
+            body = ["run_id": "run-fixture"]
+        } else if url.path == "/v1/files", request.httpMethod == "POST" {
             body = ["filename": "fixture.txt", "path": "/state/attachments/s/fixture.txt",
                     "bytes": 4, "mime": "text/plain", "is_image": false]
             code = uploadCode
@@ -44,6 +58,8 @@ actor ConcurrencyProbe {
         } else if url.path == "/v1/runs/run-fixture" {
             body = ["run_id": "run-fixture", "session_id": statusSessionID, "status": status]
             if let pendingControls { body["pending_controls"] = pendingControls }
+            if let unknownAdmission { body["admission_id"] = unknownAdmission }
+            if let unknownGeneration { body["execution_generation"] = unknownGeneration }
             code = statusCode
         } else if url.path.hasSuffix("/stop") {
             code = statusCode
@@ -332,6 +348,49 @@ actor ConcurrencyProbe {
         let confirmedTerminal = try await missing.probeActiveRun(sessionID: "s", runID: run)
         check(confirmedTerminal == .terminal(.completed),
               "exact terminal evidence remains available after tombstone retirement")
+
+        // A real deployment must explicitly advertise the canonical endpoint
+        // and return the exact unknown admission. 404 never qualifies.
+        let resolveScope = "instance|explicit-unknown-resolution"
+        let resolver = backend(scope: resolveScope)
+        _ = try await resolver.startNativeTurn(sessionID: "s", text: "fixture")
+        transport.status = "unknown"
+        transport.unknownAdmission = "admission-fixture"
+        transport.unknownGeneration = 4
+        let originalPOSTCount = transport.requests.filter { $0.httpMethod == "POST" }.count
+        let unsupportedOffer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run)
+        check(unsupportedOffer == nil, "unadvertised resolution cannot be used")
+        transport.unknownResolutionSupported = true
+        transport.statusCode = 404
+        let missingOffer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run)
+        check(missingOffer == nil, "404 is not an eligible unknown execution")
+        transport.statusCode = 200
+        guard let offer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
+            preconditionFailure("exact advertised unknown admission should be offered")
+        }
+        check(transport.requests.filter { $0.httpMethod == "POST" }.count == originalPOSTCount,
+              "eligibility is read only")
+        transport.unknownGeneration = 5
+        let stale = try await resolver.resolveUnknownRun(offer)
+        check(stale == .unknown && transport.requests.filter { $0.httpMethod == "POST" }.count == originalPOSTCount,
+              "changed generation cannot reuse old confirmation")
+        guard let fresh = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
+            preconditionFailure("missing current generation")
+        }
+        let resolved = try await resolver.resolveUnknownRun(fresh)
+        check(resolved == .terminal(.interrupted), "fresh terminal GET proves exact resolution")
+        let resolutionRequests = transport.requests.filter { $0.url?.path.hasSuffix("/resolve-unknown") == true }
+        check(resolutionRequests.count == 1, "one explicit resolution request, never original POST replay")
+        let resolutionBody = try JSONSerialization.jsonObject(with: resolutionRequests[0].httpBody!) as? [String: Any]
+        check(Set(resolutionBody?.keys.map { $0 } ?? []) == ["admission_id", "execution_generation"] &&
+              resolutionBody?["admission_id"] as? String == "admission-fixture" &&
+              resolutionBody?["execution_generation"] as? Int == 5,
+              "wire contract contains only the confirmed admission and epoch")
+        check(GatewayRunStore(scope: resolveScope, defaults: defaults).runID(for: "s") == nil,
+              "terminal proof retires exact local owner")
+        transport.unknownResolutionSupported = false
+        transport.unknownAdmission = nil
+        transport.unknownGeneration = nil
 
         let unauthScope = "instance|build166-auth"
         let unauth = backend(scope: unauthScope)
