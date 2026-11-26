@@ -65,7 +65,7 @@ final class ChatSessionObjects: ObservableObject {
         self.timeline = ChatTimelineProjection(model: model)
         self.imageRatios = ImageRatioStore.shared.snapshot(scope: scope, sessionID: sessionID)
         self.initialReadingPosition = readingStore.load()
-        self.initialDraft = store.load()
+        self.initialDraft = model.draftRecoveryUnreadable ? "" : store.load()
         // 去掉首值：初值已经通过 initialDraft 播种，重复推送会白跑一次同步。
         self.draftChanges = model.$draft.dropFirst().eraseToAnyPublisher()
         model.objectWillChange
@@ -131,7 +131,7 @@ struct NativeChatView: View {
     @State var pendingUserTurnFocus = false
     @State var userIDBeforeSend: String?
     @State var focusedUserTurnID: String?
-    @State var focusedUserTurnText: String?
+    @State var focusedUserTurnProof: ChatTurnFocusProof?
     @State var isLoadingOlder = false
     @State var paginationOwnership = ChatPaginationOwnership()
     @State var paginationTask: Task<Void, Never>?
@@ -360,7 +360,7 @@ struct NativeChatView: View {
                 // Claim BEFORE send. A failed/unknown POST cannot be replayed.
                 if model.canSend && !model.uncertain && model.draft == firstText {
                     syncedDraft = firstText
-                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    userIDBeforeSend = model.latestSubmissionFocus?.localID
                     pendingUserTurnFocus = true
                     let submitted = await model.send()
                     if !submitted { pendingUserTurnFocus = false }
@@ -384,7 +384,7 @@ struct NativeChatView: View {
                items.contains(where: { $0.id == position.rowID }) {
                 resumeHint = nil
             }
-            if let plan = app.consumeFork(for: sessionID) {
+            if !model.draftRecoveryUnreadable, let plan = app.consumeFork(for: sessionID) {
                 // 分支预填是「用户明确要求替换输入框」，因此这里无条件推送，
                 // 同时先把基线对齐，避免 onChange 再推一次。
                 let token = draftSync.token &+ 1
@@ -406,7 +406,7 @@ struct NativeChatView: View {
             retirePagination()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
-            focusedUserTurnText = nil
+            focusedUserTurnProof = nil
             controllerBox.value?.turnReading.reset()
             recordTaskSignals()
             // Presentation detachment is not transport suspension. A live
@@ -472,7 +472,9 @@ struct NativeChatView: View {
             }
         }
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: false) }
-        .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
+        .onChange(of: timeline.itemsStamp) { _, _ in
+            if showFind { scheduleFind(.contentChanged, jump: false) }
+        }
         .onChange(of: model.settledAttachmentPaths) { _, paths in
             guard objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
             attachments.consumeSettledPaths(Set(paths))
@@ -505,7 +507,7 @@ struct NativeChatView: View {
             controllerBox.value?.turnReading.reset()
             pendingUserTurnFocus = false
             focusedUserTurnID = nil
-            focusedUserTurnText = nil
+            focusedUserTurnProof = nil
             attachmentSendTask?.cancel(); attachmentSendTask = nil
             attachments.cancelUploads()
             preparingAttachmentSend = false
@@ -520,28 +522,30 @@ struct NativeChatView: View {
         .onChange(of: app.sessionActionError) { _, error in
             if let error { showToast(error) }
         }
-        // Only real newly appended user messages establish top reading focus.
-        .onChange(of: model.transcript.messages.last(where: { $0.role == "user" })?.id) { oldID, newID in
-            guard let newID, let last = model.transcript.messages.last(where: { $0.role == "user" })
-                else { return }
-            let newTurn = pendingUserTurnFocus && newID != userIDBeforeSend
-            // Native optimistic entries are replaced with server history IDs
-            // after POST confirmation. Preserve that turn's visual focus only
-            // when the replacement text agrees with the original submission.
-            let confirmedReplacement = focusedUserTurnID == oldID
-                && focusedUserTurnText == last.content && newID != oldID
-            guard newTurn || confirmedReplacement else { return }
+        // Only structural changes can replace a local user row. Streaming
+        // text and unrelated background messages cannot steal reading focus.
+        .onChange(of: model.transcript.transcriptStructureID) { _, _ in
+            let proof: ChatTurnFocusProof
+            if pendingUserTurnFocus {
+                guard let next = model.latestSubmissionFocus, next.localID != userIDBeforeSend else { return }
+                proof = next
+            } else {
+                guard let current = focusedUserTurnProof else { return }
+                proof = current
+            }
+            guard let target = proof.targetID(in: model.transcript.messages, coveredFrom: model.olderOffset),
+                  target != focusedUserTurnID else { return }
             pendingUserTurnFocus = false
-            focusedUserTurnID = newID
-            focusedUserTurnText = last.content
+            focusedUserTurnID = target
+            focusedUserTurnProof = proof
             scrollCommand = ChatScrollCommand(sequence: scrollCommand.sequence &+ 1,
-                animated: false, targetID: "m-\(newID)", offsetInRow: 0,
+                animated: false, targetID: "m-\(target)", offsetInRow: 0,
                 findOrdinal: nil, focusTurn: true)
         }
-        // Streaming updates never issue scroll requests. UIKit keeps the reading
-        // anchor or bottom edge when it commits the changed row geometry.
-        .onChange(of: model.transcript.messages.last?.content) { _, _ in
-            guard model.running else { return }
+        // Use a scalar revision rather than comparing large streaming strings.
+        // UIKit retains the reading anchor or bottom edge on geometry updates.
+        .onChange(of: model.transcript.transcriptRevision) { _, _ in
+            guard model.running, model.transcript.messages.last?.role == "assistant" else { return }
             var next = scroll
             if next.receivedAssistantUpdate() { scroll = next }
         }

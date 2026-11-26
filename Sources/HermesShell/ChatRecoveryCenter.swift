@@ -12,6 +12,7 @@ struct ChatRecoveryCenter: View {
     @State private var confirmUnknownResolution = false
     @Environment(\.dismiss) private var dismiss
     @State private var confirmAbandonUnreadable = false
+    @State private var confirmAbandonDraft = false
     @State private var confirmAbandonActive = false
     @State private var confirmAbandonCorruptActive = false
     @State private var reconciling = false
@@ -222,7 +223,13 @@ struct ChatRecoveryCenter: View {
                                       title: localIssueTitle(record), detail: localIssueDetail(issue))
                         }
                     }
-                    if model.localRecordIssues[.draft] != nil {
+                    if model.draftRecoveryUnreadable {
+                        Button("重新读取文字草稿") {
+                            resultText = model.restoreUnreadableDraft().succeeded
+                                ? "已恢复原草稿。" : "草稿仍不可读，原记录未修改。"
+                        }
+                        Button("放弃本地文字草稿", role: .destructive) { confirmAbandonDraft = true }
+                    } else if model.localRecordIssues[.draft] != nil {
                         Button(action: rewriteCurrentDraft) {
                             Label("重新验证当前草稿", systemImage: "doc.badge.arrow.up")
                                 .frame(minHeight: 44)
@@ -255,6 +262,15 @@ struct ChatRecoveryCenter: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+            }
+            .confirmationDialog("放弃本地文字草稿？", isPresented: $confirmAbandonDraft, titleVisibility: .visible) {
+                Button("放弃草稿", role: .destructive) {
+                    resultText = model.abandonUnreadableDraft().succeeded
+                        ? "已放弃本地草稿。" : "草稿删除未通过验证，仍保留原记录。"
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("仅删除当前会话本地文字草稿，不会发送消息或修改服务端历史。")
             }
             .confirmationDialog("放弃损坏的本地发送记录？", isPresented: $confirmAbandonUnreadable, titleVisibility: .visible) {
                 Button("放弃本地记录", role: .destructive) { model.abandonUnreadablePending() }

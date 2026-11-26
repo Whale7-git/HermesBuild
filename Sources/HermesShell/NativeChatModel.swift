@@ -255,9 +255,10 @@ final class NativeChatModel: ObservableObject {
         #endif
         settledAttachmentPaths = paths
     }
+    @Published private(set) var draftRecoveryUnreadable = false
     @Published var draft = "" {
         didSet {
-            guard !runtimeRetired else { return }
+            guard !runtimeRetired, !draftRecoveryUnreadable else { return }
             guard let result = draftStore?.save(draft) else { return }
             // The composer already reports its verified debounced writes. A
             // model-side save is a fallback; only its failure is sticky.
@@ -478,6 +479,8 @@ final class NativeChatModel: ObservableObject {
     /// ActiveTurnRecovery on relaunch; missing evidence remains inconclusive.
     var activeTurnHistoryBoundary: Int?
     var activeTurnRecovery: ActiveTurnRecovery?
+    /// Runtime-only proof for the current explicit send's visual anchor.
+    var latestSubmissionFocus: ChatTurnFocusProof?
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?
@@ -1026,6 +1029,7 @@ final class NativeChatModel: ObservableObject {
         let loadedDraft = draftStore?.loadDraftResult()
         self.draft = loadedDraft?.value ?? ""
         if let issue = loadedDraft?.result.failure {
+            draftRecoveryUnreadable = true
             localRecordIssues[.draft] = LocalDataIssue(kind: .draft, failure: issue, observedAt: Date())
             recordRuntimeLog(.warning, "local-store",
                 "persistence degraded kind=draft reason=\(issue.rawValue)")
@@ -1129,12 +1133,42 @@ final class NativeChatModel: ObservableObject {
     }
 
     func recordSuccessfulLocalWrite(record: LocalDataRecord) {
+        if record == .draft && draftRecoveryUnreadable { return }
         if record == .queuedTurns && queueRecoveryUnreadable { return }
         if record == .pendingSend && pendingRecoveryUnreadable { return }
         if record == .activeRun && activeRecoveryUnreadable { return }
         if localRecordIssues[record] != nil { localRecordIssues.removeValue(forKey: record) }
         if record == .queuedTurns { queueSaveFailed = false }
         if record == .queuePause { updateQueuePause() }
+    }
+
+    /// A failed cold read is not an empty draft. No automatic write is
+    /// allowed until the original record can be read or the user discards it.
+    func restoreUnreadableDraft() -> LocalStoreWriteResult {
+        guard draftRecoveryUnreadable, !runtimeRetired, let draftStore else { return .failed(.corruptFile) }
+        let loaded = draftStore.loadDraftResult()
+        guard loaded.result.succeeded else {
+            recordLocalWrite(loaded.result, record: .draft)
+            return loaded.result
+        }
+        // Keep the write guard set while publishing the recovered value.
+        draft = loaded.value
+        draftRecoveryUnreadable = false
+        recordSuccessfulLocalWrite(record: .draft)
+        return .ok
+    }
+
+    func abandonUnreadableDraft() -> LocalStoreWriteResult {
+        guard draftRecoveryUnreadable, !runtimeRetired, let draftStore else { return .failed(.corruptFile) }
+        let result = draftStore.save("")
+        guard result.succeeded else {
+            recordLocalWrite(result, record: .draft)
+            return result
+        }
+        draft = ""
+        draftRecoveryUnreadable = false
+        recordSuccessfulLocalWrite(record: .draft)
+        return .ok
     }
 
     /// Retry a pending legacy migration without changing the current in-memory

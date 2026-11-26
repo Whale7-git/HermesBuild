@@ -3,6 +3,7 @@ import Foundation
 extension NativeChatModel {
     @discardableResult
     func send(attachments: [ChatAttachmentPayload] = []) async -> Bool {
+        guard !draftRecoveryUnreadable else { return false }
         let originalDraft = draft
         let typed = originalDraft.trimmingCharacters(in:.whitespacesAndNewlines)
         // 服务端要求 message 非空；只有附件时用明确占位，并在用户气泡里显示真实内容。
@@ -739,6 +740,8 @@ extension NativeChatModel {
                                                        attachmentPaths:attachments.map(\.path),
                                                        delivery:.submitting)]
         turn.tools = buffer.tools
+        latestSubmissionFocus = ChatTurnFocusProof(localID: pendingID, historyEnd: confirmedHistoryEnd,
+            knownIDs: knownIDs, text: text, attachmentPaths: Set(attachments.map(\.path)))
         buffer = turn
         flush()
         // 关键：**不在 POST 前清 draft**。draft 的 didSet 会落盘到 draftStore，

@@ -103,7 +103,7 @@ extension NativeChatView {
                     // focus request and an optimistic→confirmed ID handoff.
                     pendingUserTurnFocus = false
                     focusedUserTurnID = nil
-                    focusedUserTurnText = nil
+                    focusedUserTurnProof = nil
                 },
                 onControllerReady: { controllerBox.value = $0 },
                 onFindLocationUnavailable: { showToast("该命中暂未能精确定位，请查看消息高亮") }
@@ -380,7 +380,7 @@ extension NativeChatView {
     func cancelAutomaticTurnFocus() {
         pendingUserTurnFocus = false
         focusedUserTurnID = nil
-        focusedUserTurnText = nil
+        focusedUserTurnProof = nil
     }
 
     func navigate(to id: String, offset: Double = 0, findOrdinal: Int? = nil,

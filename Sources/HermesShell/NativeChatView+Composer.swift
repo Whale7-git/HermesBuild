@@ -6,6 +6,7 @@ extension NativeChatView {
         if preparingAttachmentSend && !attachments.batch.items.isEmpty {
             return "正在上传附件，尚未发送消息…"
         }
+        if model.draftRecoveryUnreadable { return "本地草稿暂不可读，请在恢复中心重试读取。" }
         if model.authenticationRequired { return "登录后即可继续发送。" }
         if model.stopping { return "正在确认是否停止，暂不能发送。" }
         if model.unavailableRunStatusID != nil {
@@ -31,7 +32,7 @@ extension NativeChatView {
             draftSync: draftSync,
             insertion: composerInsertion,
             draftStore: draftStore,
-            canPersistDraft: { objects.registry.mayWriteDraft(objects.runtimeKey,
+            canPersistDraft: { !model.draftRecoveryUnreadable && objects.registry.mayWriteDraft(objects.runtimeKey,
                 presentation: objects.presentation) },
             onPersistenceResult: { model.recordLocalWrite($0, kind: .draft) },
             onLocalWriteSuccess: { model.recordSuccessfulLocalWrite(kind: .draft) },
@@ -42,12 +43,12 @@ extension NativeChatView {
                 composerFocused = false
                 showModelPicker = true
             },
-            readOnly: model.readOnly,
+            readOnly: model.readOnly || model.draftRecoveryUnreadable,
             loading: model.loading,
             running: model.running,
             stopping: model.stopping,
             canStop: model.streamID != nil && !model.submitting,
-            canSend: (model.canSend || model.canSendWhileRunning) && attachments.canSend && !preparingAttachmentSend,
+            canSend: !model.draftRecoveryUnreadable && (model.canSend || model.canSendWhileRunning) && attachments.canSend && !preparingAttachmentSend,
             preparingSubmission: preparingAttachmentSend && !attachments.batch.items.isEmpty,
             hasReadyAttachments: attachments.canSend && !attachments.batch.items.isEmpty,
             hasAttachmentItems: !attachments.batch.items.isEmpty || attachments.isImporting ||
@@ -57,7 +58,7 @@ extension NativeChatView {
                 // upload is confirmed, do not issue ANY Run/Session/chat POST.
                 // Lock the composer across this preflight to avoid a second
                 // tap or overwriting newly typed text during an await.
-                guard !preparingAttachmentSend, visible, attachments.canSend,
+                guard !preparingAttachmentSend, !model.draftRecoveryUnreadable, visible, attachments.canSend,
                       (model.canSend || model.canSendWhileRunning),
                       objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
                 let ticket = UUID()
@@ -106,7 +107,7 @@ extension NativeChatView {
                         attachmentSendTask = nil
                         preparingAttachmentSend = false
                     }
-                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    userIDBeforeSend = model.latestSubmissionFocus?.localID
                     pendingUserTurnFocus = !model.running
                     // A rejected/uncertain POST preserves the draft and ready
                     // attachment references. No automatic replay of the POST.
