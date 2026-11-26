@@ -583,12 +583,16 @@ final class NativeChatModel: ObservableObject {
     @Published var queueClearRefusal: String?
     /// Sticky for this chat page: a verified local write failed at least once.
     /// The value contains only a category and timestamp, never content or IDs.
-    @Published var localPersistenceIssue: LocalDataIssue?
+    @Published private(set) var localPersistenceIssues: [LocalDataKind: LocalDataIssue] = [:]
+    /// One presentation priority, independent of the order of failed writes.
+    var localPersistenceIssue: LocalDataIssue? {
+        [.runRecovery, .queue, .draft, .historyCache].compactMap { localPersistenceIssues[$0] }.first
+    }
     /// A file-write failure also feeds the legacy queue flag for the queue UI.
     /// Keep that derived mirror in sync so every entry point shows the same
     /// sticky state, including the composer and queue manager.
     var queuePersistenceFailed: Bool {
-        queueRecoveryUnreadable || queueSaveFailed || localPersistenceIssue?.kind == .queue
+        queueRecoveryUnreadable || queueSaveFailed || localPersistenceIssues[.queue] != nil
     }
     @Published var sendingWhileRunning = false
     /// Data window for paged history. Kept independent from the mounted-host
@@ -995,7 +999,7 @@ final class NativeChatModel: ObservableObject {
         let loadedDraft = draftStore?.loadDraftResult()
         self.draft = loadedDraft?.value ?? ""
         if let issue = loadedDraft?.result.failure {
-            localPersistenceIssue = LocalDataIssue(kind: .draft, failure: issue, observedAt: Date())
+            localPersistenceIssues[.draft] = LocalDataIssue(kind: .draft, failure: issue, observedAt: Date())
             recordRuntimeLog(.warning, "local-store",
                 "persistence degraded kind=draft reason=\(issue.rawValue)")
         }
@@ -1014,12 +1018,12 @@ final class NativeChatModel: ObservableObject {
             } else {
                 uncertain = true
                 pendingRecoveryUnreadable = true
-                localPersistenceIssue = LocalDataIssue(kind: .queue, failure: .corruptFile, observedAt: Date())
+                localPersistenceIssues[.queue] = LocalDataIssue(kind: .queue, failure: .corruptFile, observedAt: Date())
             }
         } else if let failure = restored?.result.failure {
             pendingRecoveryUnreadable = true
             uncertain = true
-            localPersistenceIssue = LocalDataIssue(kind: .queue, failure: failure, observedAt: Date())
+            localPersistenceIssues[.queue] = LocalDataIssue(kind: .queue, failure: failure, observedAt: Date())
         }
         let restoredActive = draftStore?.loadActiveRun()
         if let data = restoredActive?.value {
@@ -1033,13 +1037,13 @@ final class NativeChatModel: ObservableObject {
             } else {
                 activeRecoveryUnreadable = true
                 uncertain = true
-                localPersistenceIssue = LocalDataIssue(
+                localPersistenceIssues[.runRecovery] = LocalDataIssue(
                     kind: .runRecovery, failure: .corruptFile, observedAt: Date())
             }
         } else if let failure = restoredActive?.result.failure {
             activeRecoveryUnreadable = true
             uncertain = true
-            localPersistenceIssue = LocalDataIssue(
+            localPersistenceIssues[.runRecovery] = LocalDataIssue(
                 kind: .runRecovery, failure: failure, observedAt: Date())
         }
         if pendingSend == nil, activeTurnRecovery == nil,
@@ -1066,7 +1070,7 @@ final class NativeChatModel: ObservableObject {
     func recordLocalWrite(_ result: LocalStoreWriteResult?,
                           kind: LocalDataKind, observedAt: Date = Date()) {
         guard let failure = result?.failure else { return }
-        localPersistenceIssue = LocalDataIssue(kind: kind, failure: failure, observedAt: observedAt)
+        localPersistenceIssues[kind] = LocalDataIssue(kind: kind, failure: failure, observedAt: observedAt)
         if kind == .queue { queueSaveFailed = true }
         recordRuntimeLog(.warning, "local-store",
             "persistence degraded kind=\(kind.rawValue) reason=\(failure.rawValue)")
@@ -1077,10 +1081,7 @@ final class NativeChatModel: ObservableObject {
     /// failed write remains visible until the recovery center proves recovery.
     func recordVerifiedLocalRetry(_ result: LocalStoreWriteResult, kind: LocalDataKind) {
         if result.succeeded {
-            if localPersistenceIssue?.kind == kind {
-                localPersistenceIssue = nil
-            }
-            if kind == .queue { queueSaveFailed = false }
+            recordSuccessfulLocalWrite(kind: kind)
         } else {
             recordLocalWrite(result, kind: kind)
             if kind == .queue { queueSaveFailed = true }
@@ -1092,9 +1093,9 @@ final class NativeChatModel: ObservableObject {
     /// after a verified write; a model-side no-op save is not evidence of a
     /// durable write.
     func recordSuccessfulLocalWrite(kind: LocalDataKind) {
-        if localPersistenceIssue?.kind == kind {
-            localPersistenceIssue = nil
-        }
+        if kind == .queue && (queueRecoveryUnreadable || pendingRecoveryUnreadable) { return }
+        if kind == .runRecovery && activeRecoveryUnreadable { return }
+        localPersistenceIssues.removeValue(forKey: kind)
         if kind == .queue { queueSaveFailed = false }
     }
 

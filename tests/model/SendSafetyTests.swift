@@ -184,6 +184,18 @@ import Foundation
         precondition(failingStore.load() == "recovered text")
         precondition(failingModel.localPersistenceIssue == nil,
                      "a verified successful draft write clears only the draft issue")
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .draft)
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .runRecovery)
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .queue)
+        precondition(failingModel.localPersistenceIssues.count == 3 && failingModel.queuePersistenceFailed)
+        failingModel.recordVerifiedLocalRetry(.ok, kind: .queue)
+        precondition(failingModel.localPersistenceIssues.count == 2 &&
+                     failingModel.localPersistenceIssue?.kind == .runRecovery)
+        failingModel.recordSuccessfulLocalWrite(kind: .runRecovery)
+        precondition(failingModel.localPersistenceIssue?.kind == .draft,
+                     "one repaired category cannot hide another unsaved record")
+        failingModel.recordSuccessfulLocalWrite(kind: .draft)
+        precondition(failingModel.localPersistenceIssue == nil)
     }
 
     // Queue persistence now consumes the actual storage result instead of
