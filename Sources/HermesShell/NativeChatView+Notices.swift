@@ -26,6 +26,7 @@ extension NativeChatView {
     @ViewBuilder
     var pendingRequestsSection: some View {
         let requests = pendingRequestIDs
+        Group {
         if !requests.isEmpty {
             let selected = expandedRequestID.flatMap { id in
                 requests.contains(where: { $0.id == id }) ? id : nil
@@ -68,14 +69,24 @@ extension NativeChatView {
                 }
             }
             .background(AppTheme.surface)
-            .onChange(of: model.pendingClarifies.map { clarifyKey($0) }) { _, keys in
-                let valid = Set(keys)
-                clarifyTextModes.formIntersection(valid)
-                clarifyDrafts = clarifyDrafts.filter { valid.contains($0.key) }
-                clarifySelections = clarifySelections.filter { valid.contains($0.key) }
-            }
             .overlay(alignment: .top) {
                 Rectangle().fill(AppTheme.hairline).frame(height: 0.5)
+            }
+        }
+        }
+        // Observe the stable parent even when the final card disappears.
+        // A same-ID payload replacement invalidates previous choice indices.
+        .onChange(of: model.pendingClarifies, initial: true) { previous, current in
+            let valid = Set(current.filter { request in
+                !previous.contains(where: { clarifyKey($0) == clarifyKey(request) && $0 != request })
+            }.map { clarifyKey($0) })
+            clarifyTextModes.formIntersection(valid)
+            clarifyDrafts = clarifyDrafts.filter { valid.contains($0.key) }
+            clarifySelections = clarifySelections.filter { valid.contains($0.key) }
+        }
+        .onChange(of: requests.map(\.id), initial: true) { _, ids in
+            if let expandedRequestID, !ids.contains(expandedRequestID) {
+                self.expandedRequestID = nil
             }
         }
     }

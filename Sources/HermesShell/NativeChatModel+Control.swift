@@ -47,9 +47,10 @@ extension NativeChatModel {
         if pendingApprovals.isEmpty { approving = false }
     }
 
-    func removePendingApproval(requestID: String, runID: String) {
+    func removePendingApproval(requestID: String, runID: String, generation: Int? = nil) {
         guard let pending = pendingApprovals.first(where: {
-            $0.requestID == requestID && $0.runID == runID
+            $0.requestID == requestID && $0.runID == runID &&
+            (generation == nil || $0.executionGeneration == generation)
         }) else { return }
         removePendingApproval(id: pending.id)
     }
@@ -122,8 +123,12 @@ extension NativeChatModel {
         // clear queueRecoveryPaused. The control projection never authorizes it.
     }
 
-    func removePendingClarify(requestID: String) {
-        guard let pending = pendingClarifies.first(where: { $0.requestID == requestID }) else { return }
+    func removePendingClarify(requestID: String, runID: String? = nil, generation: Int? = nil) {
+        guard let active = runID ?? streamID,
+              let pending = pendingClarifies.first(where: {
+                  $0.requestID == requestID && $0.runID == active &&
+                  (generation == nil || $0.executionGeneration == generation)
+              }) else { return }
         removePendingClarify(id: pending.id)
     }
 
@@ -134,16 +139,19 @@ extension NativeChatModel {
         guard let pending = pendingApprovals.first(where: { $0.id == requestID }) else {
             return false
         }
-        return (expected == nil || expected == pending) && !approving && !suspended && pending.choices.contains(choice)
-            && streamID == pending.runID && !pending.runID.isEmpty
+        return (expected == nil || expected == pending) && !approving && !suspended &&
+            !runtimeRetired && running && !stopping && !reconciling &&
+            pending.requestID != nil && pending.choices.contains(choice) &&
+            streamID == pending.runID && !pending.runID.isEmpty
     }
 
     func canRespondToClarify(requestID: String, expected: ChatPendingClarify? = nil) -> Bool {
         guard let pending = pendingClarifies.first(where: { $0.id == requestID }) else {
             return false
         }
-        return (expected == nil || expected == pending) && !clarifying && !suspended && streamID == pending.runID
-            && !pending.runID.isEmpty
+        return (expected == nil || expected == pending) && !clarifying && !suspended &&
+            !runtimeRetired && running && !stopping && !reconciling &&
+            streamID == pending.runID && !pending.runID.isEmpty
     }
 
     /// 回传一次审批决定。
@@ -160,8 +168,8 @@ extension NativeChatModel {
         } else {
             target = pendingApprovals.count == 1 ? pendingApproval : nil
         }
-        guard let pending = target, expected == nil || expected == pending, !approving, !suspended,
-              pending.choices.contains(choice), streamID == pending.runID else { return }
+        guard let pending = target,
+              canRespondToApproval(requestID: pending.id, choice: choice, expected: expected ?? pending) else { return }
         // runID 必须已知：没有它连往哪儿发都不知道，宁可不发也不猜。
         guard !pending.runID.isEmpty else {
             notice = "无法确定这条审批所属的轮次，请刷新会话后重试。"
@@ -186,14 +194,15 @@ extension NativeChatModel {
                 notice = nil
                 recordRuntimeLog(.info, "approval", "choice=\(choice) accepted")
             case "unsupported":
-                removePendingApproval(id: pending.id)
+                // Unsupported response does not prove the server prompt ended.
                 notice = "当前后端不支持在 App 内审批，请在 WebUI 处理。"
+                error = notice
             case "not_pending":
                 removePendingApproval(id: pending.id)
                 notice = "这条审批已经失效（超时或被别处处理），稍后会同步最新状态。"
             case let other?:
-                removePendingApproval(id: pending.id)
-                notice = "服务端拒绝了这次审批（\(other)）。"
+                notice = "服务端拒绝了这次审批（\(other)）；已保留请求，可核对后重试。"
+                error = notice
             }
         } catch {
             guard generation == revision, !suspended,
@@ -229,8 +238,8 @@ extension NativeChatModel {
         } else {
             target = pendingClarifies.count == 1 ? pendingClarify : nil
         }
-        guard let pending = target, expected == nil || expected == pending, !clarifying, !suspended,
-              streamID == pending.runID else { return }
+        guard let pending = target,
+              canRespondToClarify(requestID: pending.id, expected: expected ?? pending) else { return }
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         // 开放式提问允许任意文本，但空串没有意义：服务端会当成空答案。
         guard !text.isEmpty else {
@@ -261,14 +270,14 @@ extension NativeChatModel {
                 notice = nil
                 recordRuntimeLog(.info, "clarify", "answered chars=\(text.count)")
             case "unsupported":
-                removePendingClarify(id: pending.id)
                 notice = "当前后端不支持在 App 内回答补充信息，请在 WebUI 处理。"
+                error = notice
             case "not_pending":
                 removePendingClarify(id: pending.id)
                 notice = "这条提问已经失效（超时或被别处处理），稍后会同步最新状态。"
             case let other?:
-                removePendingClarify(id: pending.id)
-                notice = "服务端拒绝了这次回答（\(other)）。"
+                notice = "服务端拒绝了这次回答（\(other)）；已保留请求和输入，可核对后重试。"
+                error = notice
             }
         } catch {
             guard generation == revision, !suspended,

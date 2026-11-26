@@ -19,6 +19,8 @@ import Foundation
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
     var holdApproval = true
+    var approvalOutcome: String?
+    var clarifyOutcome: String?
     var approvalCalls: [(String, Int, String)] = []
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
@@ -78,13 +80,13 @@ import Foundation
     func approveNativeTurn(runID: String, choice: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
         approvalCalls.append((requestID, executionGeneration, choice))
-        if !holdApproval { return nil }
+        if !holdApproval { return approvalOutcome }
         return try await withCheckedThrowingContinuation { pendingApproval = $0 }
     }
     func clarifyNativeTurn(runID: String, answer: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
         clarifyCalls.append((requestID, executionGeneration, answer))
-        return nil
+        return clarifyOutcome
     }
     func streamNativeTurn(streamID: String, lastEventID: String?,
                           onFrame: (SSEFrame) async throws -> Bool) async throws {
@@ -1063,6 +1065,34 @@ import Foundation
         let dispatched = await model.dispatchSelectedQueuedTurn(id: "second")
         precondition(dispatched && service.sent.last?.0 == "second" &&
                      model.queuedTurns.map(\.id) == ["first"])
+        model.disconnect()
+    }
+
+    // A rejection is not evidence that the prompt has been resolved.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "control-rejected", api: service)
+        await model.load(); model.draft = "go"; _ = await model.send()
+        service.holdApproval = false
+        service.approvalOutcome = "rejected"
+        service.approval("reject-approval")
+        try await ModelTests.eventually { model.pendingApproval?.requestID == "reject-approval" }
+        guard let approval = model.pendingApproval else { preconditionFailure("missing approval") }
+        await model.respondToApproval("once", requestID: approval.id, expected: approval)
+        precondition(model.pendingApprovals.contains(approval) && model.error != nil)
+        model.removePendingApproval(requestID: "reject-approval", runID: approval.runID,
+            generation: approval.executionGeneration - 1)
+        precondition(model.pendingApprovals.contains(approval), "stale generation cannot resolve approval")
+        service.clarifyOutcome = "rejected"
+        service.clarify("reject-clarify", generation: 9, choices: ["one", "two"])
+        try await ModelTests.eventually { model.pendingClarify?.requestID == "reject-clarify" }
+        guard let clarify = model.pendingClarify else { preconditionFailure("missing clarify") }
+        await model.respondToClarify("one", requestID: clarify.id, expected: clarify)
+        precondition(model.pendingClarifies.contains(clarify) && model.error != nil)
+        model.removePendingClarify(requestID: clarify.requestID, runID: clarify.runID, generation: 8)
+        precondition(model.pendingClarifies.contains(clarify), "old generation cannot resolve current clarify")
+        model.removePendingClarify(requestID: clarify.requestID, runID: "wrong-run", generation: 9)
+        precondition(model.pendingClarifies.contains(clarify), "foreign Run cannot resolve clarify")
         model.disconnect()
     }
 

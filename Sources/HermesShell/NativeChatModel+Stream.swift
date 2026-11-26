@@ -997,7 +997,8 @@ extension NativeChatModel {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
                                let requestID = resolved["request_id"] as? String {
                                 let runID = self.streamID ?? active
-                                self.removePendingApproval(requestID: requestID, runID: runID)
+                                self.removePendingApproval(requestID: requestID, runID: runID,
+                                    generation: resolved["execution_generation"] as? Int)
                             }
                         } else if frame.event == "clarify" {
                             // agent 卡在这儿等服务端拿到答复。以前只写一句
@@ -1019,7 +1020,8 @@ extension NativeChatModel {
                         } else if frame.event == "clarify_resolved" {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
                                let requestID = resolved["request_id"] as? String {
-                                self.removePendingClarify(requestID: requestID)
+                                self.removePendingClarify(requestID: requestID, runID: self.streamID ?? active,
+                                    generation: resolved["execution_generation"] as? Int)
                             }
                         }
                         if frame.event == "approval_resolved" {
