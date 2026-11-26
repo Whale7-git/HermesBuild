@@ -325,10 +325,13 @@ actor ConcurrencyProbe {
             $0.url?.path == "/v1/runs" && $0.httpMethod == "POST"
         }.count == beforeProbePOSTs, "verification cannot submit a second POST")
         transport.status = "completed"
-        let confirmedTerminal = try await missing.probeActiveRun(sessionID: "s", runID: run)
-        check(confirmedTerminal == .terminal(.completed)
+        let confirmedHistory = try await backend(scope: missingScope).history(sessionID: "s", before: nil)
+        check(confirmedHistory.activeRunEvidence == .absent
               && missingStore.unresolvedRunID(for: "s") == nil,
-              "exact terminal status can safely retire the unresolved tombstone")
+              "cold history refresh can safely retire a tombstone using exact terminal status")
+        let confirmedTerminal = try await missing.probeActiveRun(sessionID: "s", runID: run)
+        check(confirmedTerminal == .terminal(.completed),
+              "exact terminal evidence remains available after tombstone retirement")
 
         let unauthScope = "instance|build166-auth"
         let unauth = backend(scope: unauthScope)

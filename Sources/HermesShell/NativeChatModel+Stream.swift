@@ -397,7 +397,23 @@ extension NativeChatModel {
         if snap.activeRunEvidence == .unknown {
             uncertain = true
             pauseQueueForRecovery()
-            notice = "后台状态暂时无法确认；已保留当前回复与待处理请求，不会自动重发。"
+            notice = "回复状态暂时无法确认，已保留消息，不会重复发送。"
+            // Reading the transcript and authorizing another POST are different
+            // operations. On a cold open with no local content to protect,
+            // show returned history even while Run status is unavailable.
+            // Do not change confirmedHistoryEnd, cursor, receipt, or send gate.
+            if buffer.messages.isEmpty && buffer.tools.isEmpty && lastEventID == nil &&
+               pendingSend == nil && pendingApprovals.isEmpty && pendingClarifies.isEmpty {
+                buffer.messages = snap.messages
+                buffer.tools = snap.tools
+                buffer.usage = snap.usage
+                olderOffset = snap.olderOffset
+                _ = trimLoadedMessages()
+                if let first = buffer.messages.first?.sourceIndex {
+                    olderOffset = max(olderOffset, first)
+                }
+                flush()
+            }
             // History lookup failure cannot erase the accepted receipt. Probe
             // the exact Run independently, including after a run-status 404;
             // otherwise the status remains unknown forever on this screen.

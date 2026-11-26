@@ -20,6 +20,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var historyPageCalls = 0
     var appendHeadOnOlderPage = false
     var active: String?
+    var statusUnknown = false
     var readOnly = false
     var failHistory = false
     var failHistoryAfterProbe = false
@@ -54,7 +55,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
         let snapshot = try ChatSnapshot(data: JSONSerialization.data(withJSONObject: [
             "session_id": sessionID, "messages": visibleRows, "_messages_offset": pageOffset,
             "read_only": readOnly, "active_stream_id": active as Any? ?? NSNull()
-        ]))
+        ]), runStatusUnknown: statusUnknown)
         if holdHistory { return try await withCheckedThrowingContinuation { historyWait = $0 } }
         return snapshot
     }
@@ -500,6 +501,25 @@ extension ModelTests {
             }
         }
         print("PENDING_PASS receipt-only run probe attaches alive and fails closed otherwise")
+
+        // A lost status record is not authority to send, but must not hide
+        // the canonical transcript when opening an otherwise empty model.
+        do {
+            let service = PendingRecoveryService()
+            service.statusUnknown = true
+            service.rows = [
+                ["id": "sent", "role": "user", "content": "original"],
+                ["id": "reply", "role": "assistant", "content": "already stored"]
+            ]
+            let model = NativeChatModel(sessionID: "test", api: service)
+            await model.load()
+            precondition(model.transcript.messages.map(\.id) == ["sent", "reply"])
+            precondition(model.uncertain && !model.canSend && service.startCalls == 0)
+            model.draft = "must not send"
+            let sent = await model.send()
+            precondition(!sent && service.startCalls == 0)
+            model.disconnect()
+        }
 
         // A confirmed terminal status must survive an unreachable final GET,
         // relaunch, and status expiry. Old receipts decode with nil evidence.
