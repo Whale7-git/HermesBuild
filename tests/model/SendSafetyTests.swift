@@ -313,6 +313,16 @@ import Foundation
         model.abandonUnreadableActiveRecovery()
         precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable && !model.canSend,
                      "failed local deletion cannot unlock an unreadable receipt")
+        precondition(model.draftRecoveryUnreadable)
+        // Storage becomes accessible, with the original draft still present.
+        // A late composer/model publication must not replace it with empty text.
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        precondition(store.save("original retained draft").succeeded)
+        model.draft = ""
+        precondition(store.load() == "original retained draft")
+        precondition(model.restoreUnreadableDraft().succeeded)
+        precondition(!model.draftRecoveryUnreadable && model.draft == "original retained draft")
         model.disconnect()
         print("COLD_STORAGE_LOCK_PASS unavailable receipts block POST and cannot be cleared by failed deletion")
     }

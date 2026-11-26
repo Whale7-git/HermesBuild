@@ -374,10 +374,10 @@ actor ConcurrencyProbe {
         let stale = try await resolver.resolveUnknownRun(offer)
         check(stale == .unknown && transport.requests.filter { $0.httpMethod == "POST" }.count == originalPOSTCount,
               "changed generation cannot reuse old confirmation")
-        guard let fresh = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
+        guard let freshOffer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
             preconditionFailure("missing current generation")
         }
-        let resolved = try await resolver.resolveUnknownRun(fresh)
+        let resolved = try await resolver.resolveUnknownRun(freshOffer)
         check(resolved == .terminal(.interrupted), "fresh terminal GET proves exact resolution")
         let resolutionRequests = transport.requests.filter { $0.url?.path.hasSuffix("/resolve-unknown") == true }
         check(resolutionRequests.count == 1, "one explicit resolution request, never original POST replay")

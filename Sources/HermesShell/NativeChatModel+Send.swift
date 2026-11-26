@@ -3,6 +3,7 @@ import Foundation
 extension NativeChatModel {
     @discardableResult
     func send(attachments: [ChatAttachmentPayload] = []) async -> Bool {
+        guard !draftRecoveryUnreadable else { return false }
         let originalDraft = draft
         let typed = originalDraft.trimmingCharacters(in:.whitespacesAndNewlines)
         // 服务端要求 message 非空；只有附件时用明确占位，并在用户气泡里显示真实内容。

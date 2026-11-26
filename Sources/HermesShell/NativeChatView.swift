@@ -65,7 +65,7 @@ final class ChatSessionObjects: ObservableObject {
         self.timeline = ChatTimelineProjection(model: model)
         self.imageRatios = ImageRatioStore.shared.snapshot(scope: scope, sessionID: sessionID)
         self.initialReadingPosition = readingStore.load()
-        self.initialDraft = store.load()
+        self.initialDraft = model.draftRecoveryUnreadable ? "" : store.load()
         // 去掉首值：初值已经通过 initialDraft 播种，重复推送会白跑一次同步。
         self.draftChanges = model.$draft.dropFirst().eraseToAnyPublisher()
         model.objectWillChange
@@ -384,7 +384,7 @@ struct NativeChatView: View {
                items.contains(where: { $0.id == position.rowID }) {
                 resumeHint = nil
             }
-            if let plan = app.consumeFork(for: sessionID) {
+            if !model.draftRecoveryUnreadable, let plan = app.consumeFork(for: sessionID) {
                 // 分支预填是「用户明确要求替换输入框」，因此这里无条件推送，
                 // 同时先把基线对齐，避免 onChange 再推一次。
                 let token = draftSync.token &+ 1
