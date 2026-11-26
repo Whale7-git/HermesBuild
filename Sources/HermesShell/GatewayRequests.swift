@@ -136,13 +136,13 @@ struct GatewayRequests {
         try make("v1/capabilities")
     }
 
-    func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) throws -> URLRequest {
-        let id = try Self.validatedID(offer.runID)
-        guard !offer.admissionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              offer.executionGeneration >= 0 else { throw GatewayRequestError.invalidID }
+    func resolveUnknownRun(runID: String, admissionID: String, executionGeneration: Int) throws -> URLRequest {
+        let id = try Self.validatedID(runID)
+        guard !admissionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              executionGeneration >= 0 else { throw GatewayRequestError.invalidID }
         return try make("v1/runs/\(id)/resolve-unknown", body: [
-            "admission_id": offer.admissionID,
-            "execution_generation": offer.executionGeneration
+            "admission_id": admissionID,
+            "execution_generation": executionGeneration
         ])
     }
 
