@@ -39,14 +39,14 @@ struct ChatQueueManager: View {
                                              ? AppTheme.warning : AppTheme.success)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(editingID != nil ? "编辑中 · 暂停派发"
-                                 : (recoveryLocked ? "恢复安全锁定 · 暂停续发"
+                                 : (recoveryLocked ? "发送结果未确认 · 已暂停队列"
                                     : (model.queueAutomaticDispatchPaused
                                         ? "自动续发已暂停" : "自动续发已开启")))
                                 .font(.subheadline.weight(.semibold))
                             Text(editingID != nil
                                  ? "保存或取消不会自动发送这条消息。"
                                  : (recoveryLocked
-                                    ? "仍有运行或发送结果待核对。自动续发锁定不会覆盖你的手动暂停设置。"
+                                    ? "上一条回复或发送结果尚未确认。队列已暂停，你的手动暂停设置不会改变。"
                                     : (model.queueAutomaticDispatchPaused
                                         ? "已按你的设置手动暂停自动续发。"
                                         : "当前回复结束后，将按顺序自动发送。")))
@@ -60,7 +60,7 @@ struct ChatQueueManager: View {
                             .disabled(editingID != nil || recoveryLocked)
                             .accessibilityLabel("自动续发排队消息")
                             .accessibilityHint(recoveryLocked
-                                ? "必须先核对运行与发送状态，不能解除恢复安全锁定"
+                                ? "请先同步发送状态，确认后才能继续队列"
                                 : (editingID != nil ? "请先保存或取消队列编辑" : ""))
                     }
                     if recoveryLocked, let onRecovery {
@@ -69,7 +69,7 @@ struct ChatQueueManager: View {
                         }
                         .disabled(editingID != nil)
                         .frame(minHeight: 44, alignment: .leading)
-                        .accessibilityHint("打开只读核对与恢复中心，不自动重发消息")
+                        .accessibilityHint("打开恢复中心查看发送状态，不会自动重发消息")
                     }
                     if let refusal = model.queueClearRefusal {
                         Label(refusal, systemImage: "exclamationmark.triangle")
@@ -108,7 +108,7 @@ struct ChatQueueManager: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     if model.queuedTurns.first?.delivery == .uncertain {
-                        Label("首条消息的发送结果未确认。先核对会话，确认没有这条后再重试，避免重复执行。",
+                        Label("队首消息尚未确认送达。先同步会话，确认没有这条消息后再重试，避免重复发送。",
                               systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(AppTheme.warning)
@@ -191,7 +191,7 @@ struct ChatQueueManager: View {
             }
             if turn.delivery != .waiting {
                 Label(turn.delivery == .submitting ? "正在提交，等待服务端受理"
-                      : "发送结果未确认；重试前请先核对会话",
+                      : "发送结果未确认；重试前请先同步会话",
                       systemImage: turn.delivery == .submitting
                           ? "clock" : "exclamationmark.triangle")
                     .font(.caption2)
@@ -211,7 +211,7 @@ struct ChatQueueManager: View {
                 }
                 .disabled(turn.delivery != .waiting || editingID != nil || recoveringID != nil)
                 .accessibilityHint(turn.delivery == .uncertain
-                    ? "发送结果未确认；先核对并确认不存在后才能编辑"
+                    ? "发送结果未确认；确认未送达后才能编辑"
                     : (turn.delivery == .submitting ? "正在提交，暂时不能编辑" : ""))
                 Spacer()
                 Button {
@@ -222,7 +222,7 @@ struct ChatQueueManager: View {
                     }
                 } label: {
                     Label(recoveringID == turn.id
-                          ? "核对中…"
+                          ? "正在同步…"
                           : (turn.delivery == .uncertain ? "确认后重试" : "立即发送"),
                           systemImage: turn.delivery == .uncertain
                               ? "arrow.clockwise" : "paperplane")
@@ -306,7 +306,7 @@ struct ChatQueueManager: View {
         switch turn.delivery {
         case .waiting: return "待发送消息"
         case .submitting: return "正在提交的消息"
-        case .uncertain: return "发送结果待核对的消息"
+        case .uncertain: return "发送结果未确认的消息"
         }
     }
 

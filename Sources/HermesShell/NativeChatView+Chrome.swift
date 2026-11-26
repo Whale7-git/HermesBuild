@@ -157,7 +157,7 @@ extension NativeChatView {
                     .disabled(model.transcript.messages.isEmpty || export.isBusy
                               || !canFetchFullExport)
                     if !canFetchFullExport {
-                        Text("生成中、核对中或离线时，仍可导出已加载内容。")
+                        Text("回复中、同步中或离线时，仍可导出已加载内容。")
                     }
                 } label: {
                     Label("导出会话", systemImage: "doc.text")
