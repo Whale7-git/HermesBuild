@@ -422,9 +422,12 @@ struct ChatSnapshot: Sendable {
     let modelProvider: String?
     let usage: ChatUsage
     let gatewayPendingControls: GatewayPendingControlSnapshot?
+    /// A retired local run index is a recovery limitation, never absence.
+    let unavailableRunID: String?
 
     init(data: Data, runStatusUnknown: Bool = false,
-         gatewayPendingControls: GatewayPendingControlSnapshot? = nil) throws {
+         gatewayPendingControls: GatewayPendingControlSnapshot? = nil,
+         unavailableRunID: String? = nil) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ChatCoreError.malformed("expected object")
         }
@@ -441,6 +444,7 @@ struct ChatSnapshot: Sendable {
         }
         sessionID = id
         self.gatewayPendingControls = gatewayPendingControls
+        self.unavailableRunID = runStatusUnknown ? unavailableRunID : nil
         let offset = max(0, session["_messages_offset"] as? Int ?? 0)
         guard offset <= Int.max - rows.count else {
             throw ChatCoreError.malformed("history offset exceeds supported range")
