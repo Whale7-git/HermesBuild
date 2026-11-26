@@ -48,6 +48,7 @@ private struct AttachmentPickerFile: Transferable {
     @Published private(set) var editingID: UUID?
     @Published var errorMessage: String?
     @Published private(set) var draftRecoveryUnreadable = false
+    @Published private(set) var lastPersistenceResult: LocalStoreWriteResult?
     /// nil 表示 `attachmentBaseURL` 没通过 `AttachmentPreviewPolicy` 的校验
     /// （非 http(s)、带 userinfo/query、含 `..` 段）。此时禁用图片预览，
     /// 而不是用 `try!` 崩掉整个输入框（F-37）。
@@ -171,23 +172,33 @@ private struct AttachmentPickerFile: Transferable {
     }
     func cancelUploads() { coordinator.cancelUploads() }
 
+    private func reportPersistence(_ result: LocalStoreWriteResult) {
+        lastPersistenceResult = result
+        onPersistenceResult(result)
+    }
+
+    func retryDraftPersistence() {
+        guard !draftRecoveryUnreadable, mayPersistDraft(), !isImporting, !isEditing else { return }
+        persist(batch)
+    }
+
     private func persist(_ batch: AttachmentBatch) {
         guard mayPersistDraft(), !draftRecoveryUnreadable else { return }
         let value = batch.persistedValue
         guard !value.items.isEmpty else {
-            onPersistenceResult(draftStore.saveAttachmentDraft(nil))
+            reportPersistence(draftStore.saveAttachmentDraft(nil))
             return
         }
         guard let data = try? JSONEncoder().encode(value) else {
-            onPersistenceResult(.failed(.encoding))
+            reportPersistence(.failed(.encoding))
             return
         }
         guard draftStore.attachmentDraftFits(data) else {
             errorMessage = "附件总大小已接近上限，无法保存草稿；发送成功前请勿关闭此页面。"
-            onPersistenceResult(.failed(.payloadTooLarge))
+            reportPersistence(.failed(.payloadTooLarge))
             return
         }
-        onPersistenceResult(draftStore.saveAttachmentDraft(data))
+        reportPersistence(draftStore.saveAttachmentDraft(data))
     }
 
     private func restorePersistedDraft() {
@@ -197,7 +208,7 @@ private struct AttachmentPickerFile: Transferable {
         let loaded = draftStore.loadAttachmentDraft()
         if loaded.result.failure != nil {
             errorMessage = "草稿附件暂不可读，原数据已保留。请重试恢复，或明确放弃本地附件草稿。"
-            onPersistenceResult(loaded.result)
+            reportPersistence(loaded.result)
             return
         }
         guard let data = loaded.value else {
@@ -207,7 +218,7 @@ private struct AttachmentPickerFile: Transferable {
         }
         guard let value = try? JSONDecoder().decode(PersistedAttachmentBatch.self, from: data) else {
             errorMessage = "草稿附件数据已损坏，原数据已保留。请重试恢复，或明确放弃本地附件草稿。"
-            onPersistenceResult(.failed(.corruptFile))
+            reportPersistence(.failed(.corruptFile))
             return
         }
         do {
@@ -227,7 +238,7 @@ private struct AttachmentPickerFile: Transferable {
             // resumes only from the user's next explicit send action.
         } catch {
             errorMessage = "草稿附件无法恢复：\(error.localizedDescription)"
-            onPersistenceResult(.failed(.corruptFile))
+            reportPersistence(.failed(.corruptFile))
         }
     }
     func retryDraftRecovery() {
@@ -238,7 +249,7 @@ private struct AttachmentPickerFile: Transferable {
     func discardUnreadableDraft() {
         guard draftRecoveryUnreadable, mayPersistDraft(), !isImporting, !isEditing else { return }
         let result = draftStore.saveAttachmentDraft(nil)
-        onPersistenceResult(result)
+        reportPersistence(result)
         guard result.succeeded else {
             errorMessage = "未能删除本地附件草稿，原数据已保留。"
             return
@@ -469,7 +480,7 @@ private struct AttachmentPickerFile: Transferable {
         isImporting = false
         editingID = nil
         errorMessage = nil
-        if mayPersistDraft() { onPersistenceResult(draftStore.saveAttachmentDraft(nil)) }
+        if mayPersistDraft() { reportPersistence(draftStore.saveAttachmentDraft(nil)) }
         coordinator.reset(sessionID:sessionID)
     }
 
@@ -563,6 +574,18 @@ struct AttachmentComposerBar: View {
                         Button("关闭", systemImage:"xmark") { model.errorMessage = nil }.labelStyle(.iconOnly).frame(minWidth:44, minHeight:44)
                     }
                 }
+            }
+            if showsItems, model.lastPersistenceResult?.failure != nil && !model.draftRecoveryUnreadable {
+                HStack {
+                    Text("附件草稿尚未保存")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.warning)
+                    Spacer()
+                    Button("重新保存") { model.retryDraftPersistence() }
+                        .font(.caption)
+                        .disabled(isLocked || model.isImporting || model.isEditing)
+                }
+                .padding(.vertical, 4)
             }
             if showsItems, model.draftRecoveryUnreadable {
                 HStack {

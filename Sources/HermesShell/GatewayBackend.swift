@@ -460,7 +460,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         guard try await unknownRunResolutionOffer(sessionID: offer.sessionID, runID: offer.runID) == offer,
               runStore.ownsUnknownResolutionCandidate(sessionID: offer.sessionID, runID: offer.runID) else { return .unknown }
         try Task.checkCancellation()
-        _ = try await perform(requests.resolveUnknownRun(offer))
+        _ = try await perform(requests.resolveUnknownRun(runID: offer.runID,
+            admissionID: offer.admissionID, executionGeneration: offer.executionGeneration))
         // An acknowledgement is not terminal proof. A fresh, exact GET is
         // required and no failure path repeats the resolution or chat POST.
         try Task.checkCancellation()

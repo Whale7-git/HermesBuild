@@ -462,6 +462,15 @@ struct NativeChatView: View {
         .onChange(of: attachments.errorMessage) { _, value in
             if let value { showToast(value) }
         }
+        .onChange(of: attachments.lastPersistenceResult, initial: true) { _, value in
+            guard let value,
+                  objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
+            if value.succeeded {
+                model.recordSuccessfulLocalWrite(record: .attachmentDraft)
+            } else {
+                model.recordLocalWrite(value, record: .attachmentDraft)
+            }
+        }
         .onChange(of: findQuery) { _, _ in scheduleFind(.queryChanged, jump: false) }
         .onChange(of: items) { _, _ in if showFind { scheduleFind(.contentChanged, jump: false) } }
         .onChange(of: model.settledAttachmentPaths) { _, paths in
