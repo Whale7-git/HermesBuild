@@ -134,7 +134,8 @@ extension ModelTests {
             sessionID: "test", receipt: checkpointReceipt, historyEnd: 0, olderOffset: 0,
             cursor: "cursor-1", projection: checkpointProjection, approvals: [], clarifies: [])
         let checkpointData = try JSONEncoder().encode(checkpoint)
-        precondition(checkpointStore.saveActiveRun(try JSONEncoder().encode(checkpointReceipt)).succeeded)
+        let checkpointReceiptData = try JSONEncoder().encode(checkpointReceipt)
+        precondition(checkpointStore.saveActiveRun(checkpointReceiptData).succeeded)
         precondition(checkpointStore.saveCheckpoint(checkpointData).succeeded)
         precondition(checkpointStore.saveCheckpoint(Data(repeating: 1,
             count: LocalDataFileStore.maxCheckpointBytes + 1)).failure == .payloadTooLarge)
