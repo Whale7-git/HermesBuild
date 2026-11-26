@@ -11,9 +11,9 @@ extension NativeChatView {
 
     var showsNoticeBar: Bool {
         guard !showsFullPageFailure else { return false }
-        // Safety notices cannot disappear while the actual recovery lock is active.
-        guard !noticeBarDismissed || model.presentationState.needsVerification
-                || model.localPersistenceIssue != nil || model.queuePersistenceFailed else { return false }
+        // Dismiss presentation only. The title/task panel and composer retain
+        // the state and recovery entry; the model's send authority is unchanged.
+        guard !noticeBarDismissed else { return false }
         // An ordinary confirmed disk snapshot is already on screen. Its
         // authoritative GET must run, but the healthy cache/sync transition
         // is not a warning and must not insert a yellow row on every open.
@@ -26,6 +26,7 @@ extension NativeChatView {
     @ViewBuilder
     var pendingRequestsSection: some View {
         let requests = pendingRequestIDs
+        Group {
         if !requests.isEmpty {
             let selected = expandedRequestID.flatMap { id in
                 requests.contains(where: { $0.id == id }) ? id : nil
@@ -68,14 +69,24 @@ extension NativeChatView {
                 }
             }
             .background(AppTheme.surface)
-            .onChange(of: model.pendingClarifies.map { clarifyKey($0) }) { _, keys in
-                let valid = Set(keys)
-                clarifyTextModes.formIntersection(valid)
-                clarifyDrafts = clarifyDrafts.filter { valid.contains($0.key) }
-                clarifySelections = clarifySelections.filter { valid.contains($0.key) }
-            }
             .overlay(alignment: .top) {
                 Rectangle().fill(AppTheme.hairline).frame(height: 0.5)
+            }
+        }
+        }
+        // Observe the stable parent even when the final card disappears.
+        // A same-ID payload replacement invalidates previous choice indices.
+        .onChange(of: model.pendingClarifies, initial: true) { previous, current in
+            let valid = Set(current.filter { request in
+                !previous.contains(where: { clarifyKey($0) == clarifyKey(request) && $0 != request })
+            }.map { clarifyKey($0) })
+            clarifyTextModes.formIntersection(valid)
+            clarifyDrafts = clarifyDrafts.filter { valid.contains($0.key) }
+            clarifySelections = clarifySelections.filter { valid.contains($0.key) }
+        }
+        .onChange(of: requests.map(\.id), initial: true) { _, ids in
+            if let expandedRequestID, !ids.contains(expandedRequestID) {
+                self.expandedRequestID = nil
             }
         }
     }
@@ -330,7 +341,7 @@ extension NativeChatView {
             Button { performNoticeAction(noticeAction) } label: {
                 HStack(spacing: 4) {
                     if noticeChecking { ProgressView().controlSize(.mini) }
-                    Text(noticeChecking ? "核对中…" : noticeAction.title)
+                    Text(noticeChecking ? "同步中…" : noticeAction.title)
                 }
             }
             .font(.caption.weight(.medium))
@@ -339,9 +350,7 @@ extension NativeChatView {
             .disabled(noticeChecking || model.loading || model.syncing
                       || model.submitting || model.reconciling
                       || model.authenticationRequired)
-            if !model.presentationState.needsVerification &&
-                model.localPersistenceIssue == nil && !model.queuePersistenceFailed {
-                Button {
+            Button {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { noticeBarDismissed = true }
                 } label: {
                     Image(systemName: "xmark")
@@ -352,7 +361,6 @@ extension NativeChatView {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭提示")
-            }
         }
         .padding(.leading, AppTheme.pagePadding)
         .padding(.trailing, 4)
@@ -377,14 +385,14 @@ extension NativeChatView {
                 // GET only; never replay the uncertain original POST.
                 let result = await model.reconcilePending()
                 switch result {
-                case .delivered: showToast("历史已确认送达，没有重复发送")
-                case .absent: showToast("历史未发现该消息，可选择重发或放弃")
-                case .failed: showToast("尚不能确认发送结果，请稍后核对")
+                case .delivered: showToast("消息已送达，没有重复发送")
+                case .absent: showToast("未找到这条消息，可以选择重试或放弃")
+                case .failed: showToast("暂时无法确认是否送达，请稍后重试")
                 }
             case .verifyStatus, .retry:
                 if model.stopping {
                     await model.verifyPendingStop()
-                    showToast(model.stopping ? "停止状态仍待确认，原因见提示" : "已确认任务终态，历史已同步")
+                    showToast(model.stopping ? "还无法确认是否已停止" : "状态已更新")
                     return
                 }
                 let hadAcceptedRun = model.activeTurnRecovery != nil
@@ -393,20 +401,20 @@ extension NativeChatView {
                 if let probe = model.activeRunProbeTask { await probe.value }
                 let longHistoryVerified = await model.reconcileLongAcceptedRun()
                 if longHistoryVerified {
-                    showToast("已回溯本轮完整历史，确认回复完成")
+                    showToast("回复已完整同步")
                 } else if model.error != nil {
-                    showToast("联网核对失败，发送仍保持锁定")
+                    showToast("同步失败，暂时不能发送")
                 } else if hadAcceptedRun && model.activeTurnRecovery == nil && !model.uncertain && !model.running {
-                    showToast("已确认后台任务结束")
+                    showToast("已确认回复结束")
                 } else if model.activeTurnRecovery != nil && !model.running {
-                    showToast("后台任务仍待确认，原因见提示")
+                    showToast("还无法确认回复是否结束")
                 } else if model.uncertain {
-                    model.notice = model.notice ?? "本次核对仍无法确认后台状态；不会自动重发。"
-                    showToast("已核对，后台状态仍不确定")
+                    model.notice = model.notice ?? "暂时无法确认回复状态，不会重复发送。"
+                    showToast("暂时无法确认回复状态")
                 } else if model.running {
-                    showToast("已核对，后台任务仍在运行")
+                    showToast("回复仍在进行")
                 } else {
-                    showToast("已核对服务端历史，状态已更新")
+                    showToast("消息已同步")
                 }
             case .details:
                 break
@@ -431,14 +439,14 @@ extension NativeChatView {
         if model.runRecoveryNoticeShown,
            model.error == nil, model.cachedHistoryDate == nil,
            !model.hasPendingSend, !model.uncertain {
-            return "本轮后台恢复记录未能保存；当前页面不会重复发送，重启 App 后可能需要重新核对。"
+            return "这次回复的恢复记录未能保存；不会重复发送，重启 App 后可能需要重新同步。"
         }
         if model.authenticationRequired { return model.activity.title }
         if model.cachedHistoryDate != nil && model.error != nil {
-            return "联网核对失败 · 显示本地历史"
+            return "同步失败 · 已显示本地历史"
         }
-        if model.hasPendingSend { return model.notice ?? "发送结果待核对 · 文字和附件已保留" }
-        if model.uncertain { return model.notice ?? "后台状态待核对，不会自动重发消息" }
+        if model.hasPendingSend { return model.notice ?? "暂未确认送达 · 已保留文字和附件" }
+        if model.uncertain { return model.notice ?? "回复状态尚未确认，不会重复发送" }
         return model.error ?? model.activity.title
     }
     @ViewBuilder

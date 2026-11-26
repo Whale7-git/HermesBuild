@@ -169,6 +169,7 @@ struct ChatComposer: View {
             }
             if let contextPressure { contextPressureNotice(contextPressure) }
             if readOnly && !quietReadOnlyNotice { readOnlyNotice }
+            else if !readOnly && readOnlyMessage != nil && !quietReadOnlyNotice { readOnlyNotice }
             inputCard
         }
         .background(AppTheme.canvas)
@@ -256,7 +257,7 @@ struct ChatComposer: View {
     /// 只读态不再整体消失，说明行固定 32pt，输入框保留为禁用态。
     private var readOnlyNotice: some View {
         HStack(spacing: 8) {
-            Image(systemName: loading ? "clock" : "lock")
+            Image(systemName: loading || preparingSubmission ? "clock" : "info.circle")
             Text(readOnlyMessage ?? (loading ? "正在读取会话…" : "此会话只读"))
         }
         .font(.footnote)

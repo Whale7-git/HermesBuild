@@ -157,6 +157,33 @@ enum ChatBackgroundEnvelope {
     }
 }
 
+/// Visual reading focus belongs to the explicit local submission, not the
+/// newest row that happens to contain identical text. This is presentation
+/// evidence only; it never grants permission to send or settle a receipt.
+struct ChatTurnFocusProof: Equatable, Sendable {
+    let localID: String
+    let historyEnd: Int?
+    let knownIDs: Set<String>
+    let text: String
+    let attachmentPaths: Set<String>
+
+    func targetID(in messages: [ChatMessage], coveredFrom: Int) -> String? {
+        if messages.contains(where: {
+            $0.id == localID && $0.role == "user" && $0.sourceIndex == nil
+                && $0.content == text && Set($0.attachmentPaths) == attachmentPaths
+        }) { return localID }
+        guard let historyEnd, coveredFrom <= historyEnd else { return nil }
+        let candidates = messages.filter { message in
+            guard let index = message.sourceIndex else { return false }
+            return index >= historyEnd && !knownIDs.contains(message.id)
+                && message.role == "user" && ChatBackgroundEnvelope.userBody(message) == nil
+        }
+        guard candidates.count == 1, let message = candidates.first,
+              message.content == text, Set(message.attachmentPaths) == attachmentPaths else { return nil }
+        return message.id
+    }
+}
+
 /// A message can arrive with zero-width characters, BOMs or control marks that
 /// survive a whitespace trim but render as an empty assistant block. Keep the
 /// original content byte-for-byte; only presentation and reply copying ask this
@@ -217,6 +244,7 @@ struct ChatStreamingTailSnapshot: Equatable {
     let toolsAreLive: Bool
     let transcriptRevision: UInt64
     let transcriptStructureRevision: UInt64
+    var transcriptStructureID: UUID? = nil
 }
 
 enum ChatStreamingTailProof {
@@ -225,10 +253,10 @@ enum ChatStreamingTailProof {
     /// without rebuilding the full timeline.
     static func canReplaceTail(from previous: ChatStreamingTailSnapshot,
                                to next: ChatStreamingTailSnapshot) -> Bool {
-        guard next.transcriptRevision > previous.transcriptRevision,
+        guard let structureID = previous.transcriptStructureID,
+              next.transcriptStructureID == structureID,
+              next.transcriptRevision > previous.transcriptRevision,
               next.transcriptStructureRevision == previous.transcriptStructureRevision,
-              previous.tools == next.tools,
-              previous.notices == next.notices,
               previous.running == next.running,
               previous.toolsAreLive == next.toolsAreLive,
               previous.messages.count == next.messages.count,
@@ -421,9 +449,12 @@ struct ChatSnapshot: Sendable {
     let modelProvider: String?
     let usage: ChatUsage
     let gatewayPendingControls: GatewayPendingControlSnapshot?
+    /// A retired local run index is a recovery limitation, never absence.
+    let unavailableRunID: String?
 
     init(data: Data, runStatusUnknown: Bool = false,
-         gatewayPendingControls: GatewayPendingControlSnapshot? = nil) throws {
+         gatewayPendingControls: GatewayPendingControlSnapshot? = nil,
+         unavailableRunID: String? = nil) throws {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ChatCoreError.malformed("expected object")
         }
@@ -440,6 +471,7 @@ struct ChatSnapshot: Sendable {
         }
         sessionID = id
         self.gatewayPendingControls = gatewayPendingControls
+        self.unavailableRunID = runStatusUnknown ? unavailableRunID : nil
         let offset = max(0, session["_messages_offset"] as? Int ?? 0)
         guard offset <= Int.max - rows.count else {
             throw ChatCoreError.malformed("history offset exceeds supported range")
@@ -646,6 +678,10 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
     var terminalStatus: RunTerminalStatus? = nil
     var terminalAllowsEmptyReply: Bool? = nil
     var commandAllowsEmptyReply: Bool? = nil
+    /// Local transaction identity; older receipts remain decodable but do not
+    /// gain permission to retire another pending send by payload equality.
+    var pendingSendID: String? = nil
+    var queuedTurnID: String? = nil
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.
@@ -728,6 +764,10 @@ struct ChatTranscript: Codable, Sendable {
     /// Changes whenever message/tool/notice structure changes. Tail content
     /// updates deliberately do not advance it.
     private(set) var transcriptStructureRevision: UInt64 = 0
+    /// Numeric revisions may collide after replacing a transcript. Rotate
+    /// this token on every structural mutation, including diverging copies.
+    /// Optional preserves decoding of older durable checkpoints.
+    private(set) var transcriptStructureID: UUID? = UUID()
     var messages: [ChatMessage] {
         get { storage.messages }
         set {
@@ -735,6 +775,7 @@ struct ChatTranscript: Codable, Sendable {
             if !updatingStreamingTail {
                 transcriptRevision &+= 1
                 transcriptStructureRevision &+= 1
+                transcriptStructureID = UUID()
             }
         }
         _modify {
@@ -745,6 +786,7 @@ struct ChatTranscript: Codable, Sendable {
             if !updatingStreamingTail {
                 transcriptRevision &+= 1
                 transcriptStructureRevision &+= 1
+                transcriptStructureID = UUID()
             }
         }
     }
@@ -754,6 +796,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.tools = newValue
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
         _modify {
             var value = storage.tools
@@ -762,6 +805,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.tools = value
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
     }
     /// 本轮收尾产生的通知行；`var` + 默认值不破坏既有 memberwise 调用。
@@ -771,6 +815,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.notices = newValue
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
         _modify {
             var value = storage.notices
@@ -779,6 +824,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.notices = value
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
     }
     var usage: ChatUsage? {

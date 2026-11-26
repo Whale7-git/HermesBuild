@@ -47,6 +47,8 @@ private struct AttachmentPickerFile: Transferable {
     @Published private(set) var isImporting = false
     @Published private(set) var editingID: UUID?
     @Published var errorMessage: String?
+    @Published private(set) var draftRecoveryUnreadable = false
+    @Published private(set) var lastPersistenceResult: LocalStoreWriteResult?
     /// nil 表示 `attachmentBaseURL` 没通过 `AttachmentPreviewPolicy` 的校验
     /// （非 http(s)、带 userinfo/query、含 `..` 段）。此时禁用图片预览，
     /// 而不是用 `try!` 崩掉整个输入框（F-37）。
@@ -151,9 +153,9 @@ private struct AttachmentPickerFile: Transferable {
     var isEditing: Bool { editingID != nil }
     /// Queued local files are sendable: preflight uploads them BEFORE any chat
     /// POST. Do not require a server reference just to enable the send button.
-    var canSend: Bool { !isImporting && !isEditing }
+    var canSend: Bool { !isImporting && !isEditing && !draftRecoveryUnreadable }
     func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
-        guard !isImporting, !isEditing else { throw AttachmentError.invalidMetadata }
+        guard canSend else { throw AttachmentError.invalidMetadata }
         do {
             let payloads = try await coordinator.prepareForSend(sessionID: sessionID)
             try Task.checkCancellation()
@@ -170,41 +172,60 @@ private struct AttachmentPickerFile: Transferable {
     }
     func cancelUploads() { coordinator.cancelUploads() }
 
+    private func reportPersistence(_ result: LocalStoreWriteResult) {
+        lastPersistenceResult = result
+        onPersistenceResult(result)
+    }
+
+    func retryDraftPersistence() {
+        guard !draftRecoveryUnreadable, mayPersistDraft(), !isImporting, !isEditing else { return }
+        persist(batch)
+    }
+
     private func persist(_ batch: AttachmentBatch) {
-        guard mayPersistDraft() else { return }
+        guard mayPersistDraft(), !draftRecoveryUnreadable else { return }
         let value = batch.persistedValue
         guard !value.items.isEmpty else {
-            onPersistenceResult(draftStore.saveAttachmentDraft(nil))
+            reportPersistence(draftStore.saveAttachmentDraft(nil))
             return
         }
         guard let data = try? JSONEncoder().encode(value) else {
-            onPersistenceResult(.failed(.encoding))
+            reportPersistence(.failed(.encoding))
             return
         }
         guard draftStore.attachmentDraftFits(data) else {
             errorMessage = "附件总大小已接近上限，无法保存草稿；发送成功前请勿关闭此页面。"
-            onPersistenceResult(.failed(.payloadTooLarge))
+            reportPersistence(.failed(.payloadTooLarge))
             return
         }
-        onPersistenceResult(draftStore.saveAttachmentDraft(data))
+        reportPersistence(draftStore.saveAttachmentDraft(data))
     }
 
     private func restorePersistedDraft() {
+        // Freeze writes during restoration, including coordinator callbacks.
+        // An unreadable snapshot is not evidence of an empty draft.
+        draftRecoveryUnreadable = true
         let loaded = draftStore.loadAttachmentDraft()
-        if let failure = loaded.result.failure {
-            errorMessage = "草稿附件无法恢复，请重新添加。"
-            onPersistenceResult(loaded.result)
+        if loaded.result.failure != nil {
+            errorMessage = "草稿附件暂不可读，原数据已保留。请重试恢复，或明确放弃本地附件草稿。"
+            reportPersistence(loaded.result)
             return
         }
-        guard let data = loaded.value else { return }
+        guard let data = loaded.value else {
+            draftRecoveryUnreadable = false
+            errorMessage = nil
+            return
+        }
         guard let value = try? JSONDecoder().decode(PersistedAttachmentBatch.self, from: data) else {
-            errorMessage = "草稿附件数据已损坏，请重新添加。"
-            onPersistenceResult(.failed(.corruptFile))
+            errorMessage = "草稿附件数据已损坏，原数据已保留。请重试恢复，或明确放弃本地附件草稿。"
+            reportPersistence(.failed(.corruptFile))
             return
         }
         do {
             try coordinator.restorePersisted(value)
             batch = coordinator.batch
+            draftRecoveryUnreadable = false
+            errorMessage = nil
             persist(batch)
             if batch.restoreSizeMismatches > 0 {
                 errorMessage = "已有附件的服务器大小与原始文件不同，已保留已上传引用；请核对附件内容。"
@@ -217,11 +238,29 @@ private struct AttachmentPickerFile: Transferable {
             // resumes only from the user's next explicit send action.
         } catch {
             errorMessage = "草稿附件无法恢复：\(error.localizedDescription)"
-            onPersistenceResult(.failed(.corruptFile))
+            reportPersistence(.failed(.corruptFile))
         }
     }
+    func retryDraftRecovery() {
+        guard draftRecoveryUnreadable, mayPersistDraft(), !isImporting, !isEditing else { return }
+        restorePersistedDraft()
+    }
+
+    func discardUnreadableDraft() {
+        guard draftRecoveryUnreadable, mayPersistDraft(), !isImporting, !isEditing else { return }
+        let result = draftStore.saveAttachmentDraft(nil)
+        reportPersistence(result)
+        guard result.succeeded else {
+            errorMessage = "未能删除本地附件草稿，原数据已保留。"
+            return
+        }
+        draftRecoveryUnreadable = false
+        coordinator.reset(sessionID: batch.sessionID)
+        errorMessage = nil
+    }
+
     func importFiles(_ result: Result<[URL], Error>) {
-        guard !isImporting else { return }
+        guard !isImporting, !draftRecoveryUnreadable else { return }
         let urls: [URL]
         do { urls = try result.get() }
         catch {
@@ -259,7 +298,7 @@ private struct AttachmentPickerFile: Transferable {
     /// Photos picker returns data blobs, not file URLs. Infer a stable name and
     /// MIME from the item's preferred type; never fabricate an upload progress.
     func importPhotos(_ items: [PhotosPickerItem]) {
-        guard !isImporting else { return }
+        guard !isImporting, !draftRecoveryUnreadable else { return }
         guard !items.isEmpty else { return }
         guard items.count + batch.items.count <= batch.maxCount else {
             errorMessage = "最多添加 \(batch.maxCount) 个附件"; return
@@ -323,7 +362,7 @@ private struct AttachmentPickerFile: Transferable {
     /// 相机拍摄结果复用相册导入的校验与上传通路：同样走 coordinator.add，
     /// 不新增上传路径。nil 表示取消拍摄，直接丢弃。
     func importCameraImage(_ data: Data?) {
-        guard !isImporting, let data, !data.isEmpty else { return }
+        guard !isImporting, !draftRecoveryUnreadable, let data, !data.isEmpty else { return }
         guard batch.items.count + 1 <= batch.maxCount else {
             errorMessage = "最多添加 \(batch.maxCount) 个附件"; return
         }
@@ -377,11 +416,18 @@ private struct AttachmentPickerFile: Transferable {
     }
 
     func beginEditing(_ id: UUID) async -> AttachmentEditSelection? {
-        guard !isEditing, !isImporting,
+        guard !isEditing, !isImporting, !draftRecoveryUnreadable, mayPersistDraft(),
               let draft = batch.items.first(where: { $0.id == id }),
               AttachmentPreviewPolicy.rasterMIMEs.contains(draft.mime.lowercased()) else { return nil }
         editingID = id
-        defer { editingID = nil }
+        let generation = importGeneration
+        let sessionID = batch.sessionID
+        var openedEditor = false
+        defer {
+            if !openedEditor, editingID == id, importGeneration == generation {
+                editingID = nil
+            }
+        }
 
         var data = draft.data
         if data.isEmpty {
@@ -391,13 +437,16 @@ private struct AttachmentPickerFile: Transferable {
                 return nil
             }
             do {
-                data = try await previewLoader.imageData(sessionID: batch.sessionID,
+                data = try await previewLoader.imageData(sessionID: sessionID,
                                                          attachment: uploaded)
             } catch {
+                guard editingID == id, importGeneration == generation, mayPersistDraft() else { return nil }
                 errorMessage = "读取原图失败：\(error.localizedDescription)"
                 return nil
             }
         }
+        guard !Task.isCancelled, editingID == id, importGeneration == generation,
+              batch.sessionID == sessionID, mayPersistDraft() else { return nil }
         guard !data.isEmpty else {
             errorMessage = "原图暂时不可用，无法继续编辑。"
             return nil
@@ -406,13 +455,15 @@ private struct AttachmentPickerFile: Transferable {
             errorMessage = AttachmentPhotoImportError.dimensionsTooLarge.localizedDescription
             return nil
         }
-        return AttachmentEditSelection(id: id, sessionID: batch.sessionID,
-            generation: importGeneration, name: draft.name, data: data)
+        openedEditor = true
+        return AttachmentEditSelection(id: id, sessionID: sessionID,
+            generation: generation, name: draft.name, data: data)
     }
 
     func saveEdit(_ selection: AttachmentEditSelection, data: Data) throws {
         guard editingID == selection.id, importGeneration == selection.generation,
-              batch.sessionID == selection.sessionID else { throw AttachmentError.invalidMetadata }
+              batch.sessionID == selection.sessionID, !draftRecoveryUnreadable,
+              mayPersistDraft() else { throw AttachmentError.invalidMetadata }
         let stem = String((selection.name as NSString).deletingPathExtension.prefix(80))
         let name = (stem.isEmpty ? "image" : stem) + "-edited-" + UUID().uuidString.prefix(8) + ".jpg"
         try coordinator.replace(selection.id, name: name, mime: "image/jpeg", data: data)
@@ -422,13 +473,14 @@ private struct AttachmentPickerFile: Transferable {
     /// Also call on instance change (recreate this model for a NEW API/base URL).
     /// Do NOT clear until chat/start acceptance is confirmed; ambiguous sends retain attachments.
     func reset(sessionID: String) {
+        guard !draftRecoveryUnreadable else { return }
         importGeneration = UUID()
         importTask?.cancel()
         importTask = nil
         isImporting = false
         editingID = nil
         errorMessage = nil
-        if mayPersistDraft() { onPersistenceResult(draftStore.saveAttachmentDraft(nil)) }
+        if mayPersistDraft() { reportPersistence(draftStore.saveAttachmentDraft(nil)) }
         coordinator.reset(sessionID:sessionID)
     }
 
@@ -437,6 +489,7 @@ private struct AttachmentPickerFile: Transferable {
     /// 队列项里存的是服务端引用（`path`），不需要重新上传；只把这些引用
     /// 恢复成 `.ready` 状态的草稿，让再次发送时附件不丢。
     func restoreReady(_ payloads: [ChatAttachmentPayload]) {
+        guard !draftRecoveryUnreadable else { return }
         coordinator.restoreReady(payloads)
     }
 }
@@ -450,6 +503,7 @@ struct AttachmentComposerBar: View {
     var showsItems = true
     var launchPicker = 0
     @State private var askAttachmentSource = false
+    @State private var confirmDiscardUnreadable = false
     @State private var choosingFiles = false
     @State private var choosingPhotos = false
     @State private var choosingCamera = false
@@ -482,7 +536,7 @@ struct AttachmentComposerBar: View {
                     }
                     .accessibilityLabel("添加附件")
                     .accessibilityHint("选择照片、拍照或文件")
-                    .disabled(isLocked || model.isImporting || model.batch.items.count >= model.batch.maxCount)
+                    .disabled(isLocked || model.draftRecoveryUnreadable || model.isImporting || model.batch.items.count >= model.batch.maxCount)
                 }
             }
             if showsItems, model.isImporting { ProgressView("正在读取附件…").font(.caption) }
@@ -516,12 +570,41 @@ struct AttachmentComposerBar: View {
                 HStack(alignment:.top) {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                     Spacer(minLength:4)
-                    Button("关闭", systemImage:"xmark") { model.errorMessage = nil }.labelStyle(.iconOnly).frame(minWidth:44, minHeight:44)
+                    if !model.draftRecoveryUnreadable {
+                        Button("关闭", systemImage:"xmark") { model.errorMessage = nil }.labelStyle(.iconOnly).frame(minWidth:44, minHeight:44)
+                    }
                 }
             }
+            if showsItems, model.lastPersistenceResult?.failure != nil && !model.draftRecoveryUnreadable {
+                HStack {
+                    Text("附件草稿尚未保存")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.warning)
+                    Spacer()
+                    Button("重新保存") { model.retryDraftPersistence() }
+                        .font(.caption)
+                        .disabled(isLocked || model.isImporting || model.isEditing)
+                }
+                .padding(.vertical, 4)
+            }
+            if showsItems, model.draftRecoveryUnreadable {
+                HStack {
+                    Button("重试恢复") { model.retryDraftRecovery() }
+                    Spacer()
+                    Button("放弃本地草稿", role: .destructive) { confirmDiscardUnreadable = true }
+                }
+                .font(.caption)
+                .disabled(isLocked)
+            }
+        }
+        .confirmationDialog("放弃无法读取的本地附件草稿？", isPresented: $confirmDiscardUnreadable, titleVisibility: .visible) {
+            Button("放弃本地草稿", role: .destructive) { model.discardUnreadableDraft() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作仅删除本地附件草稿，无法确认服务器上是否还保留文件。")
         }
         .onChange(of: launchPicker) { _, trigger in
-            if trigger > 0 && !isLocked { askAttachmentSource = true }
+            if trigger > 0 && !isLocked && !model.draftRecoveryUnreadable { askAttachmentSource = true }
         }
         .confirmationDialog("添加附件", isPresented: $askAttachmentSource,
                             titleVisibility: .visible) {

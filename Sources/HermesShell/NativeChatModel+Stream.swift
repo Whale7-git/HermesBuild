@@ -22,7 +22,7 @@ extension NativeChatModel {
         // The cache is intentionally bounded. Never present missing tool IDs
         // as proof that the server history contains no other tools.
         if cached.uncachedToolCount > 0 && notice == nil {
-            notice = "本地缓存尚缺 \(cached.uncachedToolCount) 项工具记录；联网刷新后核对。"
+            notice = "本地尚缺 \(cached.uncachedToolCount) 项工具记录，联网后可同步。"
         }
         olderOffset = max(cached.olderOffset, buffer.messages.first?.sourceIndex ?? cached.olderOffset)
         sessionModel = cached.model
@@ -43,6 +43,9 @@ extension NativeChatModel {
         // A-07：核对流程自己持有 `reconciling`，只有它能带 allowWhileReconciling 进来。
         guard allowWhileReconciling || !reconciling else { return }
         if running && streamTask != nil { return }
+        restoreUnreadableRecoveryRecords()
+        // A previous idle snapshot must never serve as proof for this GET.
+        latestRecoverySnapshot = nil
         publishTask?.cancel()
         publishTask = nil
         activeRunProbeTask?.cancel()
@@ -116,8 +119,8 @@ extension NativeChatModel {
                         transition(to: .idle)
                     }
                     notice = pendingSend != nil
-                        ? "已显示本地历史，联网核对成功前不能发送。"
-                        : "网络暂时不可用，正在自动重试；核对成功后即可继续发送。"
+                        ? "已显示本地消息，联网同步成功前暂不能发送。"
+                        : "网络暂时不可用，正在自动重试。"
                     // 有未决 POST 时，补读归核对流程（`reconcilePending`）所有，
                     // 这里不能再排一个 GET 去和它抢。
                     historyLoadFailurePending = true
@@ -129,7 +132,7 @@ extension NativeChatModel {
                     // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
                     if let savedAt = cachedHistoryDate {
                         transition(to: .cached(savedAt: savedAt, syncing: false))
-                        notice = "已显示本地历史，联网核对成功前不能发送。"
+                        notice = "已显示本地消息，联网同步成功前暂不能发送。"
                     } else {
                         transition(to: .idle)
                     }
@@ -372,7 +375,7 @@ extension NativeChatModel {
             pauseQueueForRecovery()
             return false
         }
-        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
+        uncertain = pendingSend != nil || recoveryRecordsUnreadable
         if restoreAutomaticQueue && outcome == .completed && !uncertain {
             // Recovery cannot change the separately persisted user pause.
             queueUserPaused = previousUserPause
@@ -394,9 +397,32 @@ extension NativeChatModel {
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.
         if snap.activeRunEvidence == .unknown {
+            latestRecoverySnapshot = nil
             uncertain = true
             pauseQueueForRecovery()
-            notice = "后台状态暂时无法确认；已保留当前回复与待处理请求，不会自动重发。"
+            if let unavailable = snap.unavailableRunID {
+                unavailableRunStatusID = unavailable
+                automaticRecoveryQuiet = false
+            }
+            notice = unavailableRunStatusID == nil
+                ? "回复状态暂时无法确认，已保留消息，不会重复发送。"
+                : "服务暂时找不到原任务。消息已保留，可重新同步或新建会话。"
+            // Reading the transcript and authorizing another POST are different
+            // operations. On a cold open with no local content to protect,
+            // show returned history even while Run status is unavailable.
+            // Do not change confirmedHistoryEnd, cursor, receipt, or send gate.
+            if buffer.messages.isEmpty && buffer.tools.isEmpty && lastEventID == nil &&
+               pendingSend == nil && pendingApprovals.isEmpty && pendingClarifies.isEmpty {
+                buffer.messages = snap.messages
+                buffer.tools = snap.tools
+                buffer.usage = snap.usage
+                olderOffset = snap.olderOffset
+                _ = trimLoadedMessages()
+                if let first = buffer.messages.first?.sourceIndex {
+                    olderOffset = max(olderOffset, first)
+                }
+                flush()
+            }
             // History lookup failure cannot erase the accepted receipt. Probe
             // the exact Run independently, including after a run-status 404;
             // otherwise the status remains unknown forever on this screen.
@@ -425,6 +451,7 @@ extension NativeChatModel {
             }
         }
         latestRecoverySnapshot = snap
+        unavailableRunStatusID = nil
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
         var windowTrimmed = false
@@ -478,20 +505,29 @@ extension NativeChatModel {
         if let pending = pendingSend, !submitting {
             switch pending.resolution(in: snap) {
             case .delivered:
+                guard acknowledgeDeliveredQueuedTurn(matching: pending) else {
+                    uncertain = true
+                    pendingAbsent = false
+                    pauseQueueForRecovery()
+                    break
+                }
+                guard clearPendingSend(expectedID: pending.id) else {
+                    uncertain = true
+                    break
+                }
                 buffer.messages.removeAll { $0.id == pending.id }
-                pendingSend = nil
-                pendingAbsent = false
-                acknowledgeDeliveredQueuedTurn(matching: pending)
                 settleAcceptedAttachments(pending.attachments.map(\.path))
-                // Clear only the restored original; preserve a newer draft.
-                clearOriginalDraft(pending.composerText)
+                // A queue transaction does not own the composer draft.
+                if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             case .absent, .failed:
                 let provenAbsent = pending.resolution(in: snap) == .absent
                 if provenAbsent && pending.hiddenFromTranscript == true {
                     // An explicitly dismissed placeholder can be retired only
                     // after authoritative proof of absence.
-                    pendingSend = nil
-                    pendingAbsent = false
+                    guard clearPendingSend(expectedID: pending.id) else {
+                        uncertain = true
+                        break
+                    }
                     uncertain = false
                     notice = nil
                     break
@@ -504,8 +540,8 @@ extension NativeChatModel {
                         timestamp: pending.createdAt,
                         attachmentPaths: pending.attachments.map(\.path), delivery: .unconfirmed))
                 }
-                notice = pendingAbsent ? "历史核对未发现本次消息，可选择重发或放弃。"
-                    : "当前历史不足以确认本次发送结果，暂不能重发；请稍后核对。"
+                notice = pendingAbsent ? "未找到这条消息，可以选择重试或放弃。"
+                    : "暂时无法确认这条消息是否送达，请稍后同步，不要重复发送。"
             }
         }
         // A restored accepted turn is independent from PendingSend. Even if
@@ -517,7 +553,9 @@ extension NativeChatModel {
                     // A lagging history response cannot resurrect a proven terminal Run.
                     uncertain = true
                     pauseQueueForRecovery()
-                } else if pendingSend == nil { uncertain = false }
+                } else if settleAcceptedReceipt(receipt), pendingSend == nil {
+                    uncertain = recoveryRecordsUnreadable
+                }
             } else if receipt.terminalStatus == nil && receipt.confirmsCompletion(in: snap) {
                 if clearAcceptedTurnRecovery(), pendingSend == nil {
                     uncertain = false
@@ -526,7 +564,7 @@ extension NativeChatModel {
             } else {
                 uncertain = true
                 pauseQueueForRecovery()
-                notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                notice = "暂时无法确认回复是否结束，已保留消息，不会重复发送。"
                 probeAcceptedRun(receipt)
             }
         }
@@ -570,7 +608,7 @@ extension NativeChatModel {
             return false
         }
         if latest.activeStreamID == receipt.runID {
-            notice = "后台任务仍在运行；本轮结束前不会解除发送锁定。"
+            notice = "回复仍在进行，结束前暂不能发送。"
             return false
         }
         guard latest.activeStreamID == nil else {
@@ -578,7 +616,7 @@ extension NativeChatModel {
             return false
         }
         guard latest.olderOffset > boundary else {
-            notice = "最新历史已经覆盖本轮起点，但尚不足以确认结束；发送仍保持锁定。"
+            notice = "暂时无法确认回复是否完整，请稍后同步。"
             return false
         }
         let generation = revision
@@ -599,15 +637,15 @@ extension NativeChatModel {
                       older.rawMessageEndIndex == cursor,
                       older.olderOffset < cursor,
                       older.activeRunEvidence == .absent else {
-                    notice = "历史分页发生变化或不连续；未解除发送锁定，请稍后核对。"
+                    notice = "暂时无法读取完整消息，请稍后同步。"
                     return false
                 }
                 if older.activeStreamID == receipt.runID {
-                    notice = "后台任务仍在运行；本轮结束前不会解除发送锁定。"
+                    notice = "回复仍在进行，结束前暂不能发送。"
                     return false
                 }
                 guard older.activeStreamID == nil else {
-                    notice = "后台出现了另一轮运行；本轮发送仍保持锁定，请稍后核对。"
+                    notice = "还有其他回复在进行，请稍后同步。"
                     return false
                 }
                 pages.append(older)
@@ -615,17 +653,17 @@ extension NativeChatModel {
                 guard generation == revision, !Task.isCancelled else { return false }
                 if handleAuthenticationFailure(error) { return false }
                 self.error = error.localizedDescription
-                notice = "回溯历史失败；发送仍保持锁定，未重新提交消息。"
+                notice = "较早的消息同步失败，未重复发送。"
                 return false
             }
         }
         guard (pages.last?.olderOffset ?? Int.max) <= boundary else {
-            notice = "本轮历史超过本次核对上限，无法安全确认；未重新发送消息。"
+            notice = "这次回复内容较长，尚无法确认是否完整，未重复发送。"
             return false
         }
         guard RunFinalizer.canSettle(pages, sessionID: sessionID, runID: receipt.runID,
             receipt: receipt, outcome: .completed, requireReply: true) else {
-            notice = "已回溯本轮历史，但缺少唯一的原始提问与后续回复证据；发送仍保持锁定。"
+            notice = "尚无法确认原消息与回复是否匹配，暂不能发送。"
             return false
         }
         // Re-check the live tail after pagination: another client may have
@@ -638,7 +676,7 @@ extension NativeChatModel {
                   !current.readOnly,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
                   current.messages == latest.messages else {
-                notice = "核对期间服务端历史或运行状态发生变化，请重新核对；未解除发送锁定。"
+                notice = "同步期间消息或回复状态发生变化，请重新同步。"
                 return false
             }
             let finalized = try finalizeVerifiedRun(current, runID: receipt.runID,
@@ -654,7 +692,7 @@ extension NativeChatModel {
             guard generation == revision, !Task.isCancelled else { return false }
             if handleAuthenticationFailure(error) { return false }
             self.error = error.localizedDescription
-            notice = "核对最终状态失败；发送仍保持锁定。"
+            notice = "暂时无法确认回复是否结束，请稍后同步。"
             return false
         }
     }
@@ -662,7 +700,7 @@ extension NativeChatModel {
     /// Single foreground GET-only owner. Time controls rate, not safety.
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
-        guard !runtimeRetired else { return }
+        guard !runtimeRetired, unavailableRunStatusID == nil else { return }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
@@ -707,7 +745,8 @@ extension NativeChatModel {
                 }
                 self.automaticReconciliationWaiting = true
                 do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket else { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      self.unavailableRunStatusID == nil else { return }
                 self.automaticReconciliationWaiting = false
                 if DispatchTime.now().uptimeNanoseconds - began >= 20_000_000_000 {
                     self.automaticRecoveryQuiet = false
@@ -739,7 +778,8 @@ extension NativeChatModel {
                       (self.pendingSend?.id == pendingID ||
                        (pendingID != nil && self.pendingSend == nil)) else { return }
                 if let probe = self.activeRunProbeTask { await probe.value }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                guard self.unavailableRunStatusID == nil,
+                      !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.stopping, !self.authenticationRequired else { return }
                 // Bound expensive history crawls. A changed head is new evidence.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
@@ -800,15 +840,13 @@ extension NativeChatModel {
                         return
                     }
                     self.streamID = receipt.runID
-                    // The receipt proves the POST was accepted, so an older
-                    // pre-POST PendingSend is now resolved as delivered.
-                    if self.pendingSend != nil {
-                        self.pendingSend = nil
-                        self.pendingAbsent = false
-                    }
-                    self.uncertain = false
-                    self.resumeQueueAfterRecovery()
-                    self.notice = nil
+                    // Acceptance cannot resolve an unrelated pending transaction.
+                    let settled = self.settleAcceptedReceipt(receipt)
+                    self.uncertain = !settled || self.pendingSend != nil || self.recoveryRecordsUnreadable
+                    if !self.uncertain {
+                        self.resumeQueueAfterRecovery()
+                        self.notice = nil
+                    } else { self.pauseQueueForRecovery() }
                     self.attach(streamID: receipt.runID)
                 case .terminal(let outcome):
                     guard self.streamID == nil, !self.running else { return }
@@ -827,7 +865,7 @@ extension NativeChatModel {
                         guard finalHistory.sessionID == self.sessionID,
                               finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                             self.uncertain = true
-                            self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
+                            self.notice = "任务已结束，最后的回复尚未完整同步。"
                             return
                         }
                         _ = try self.finalizeVerifiedRun(finalHistory, runID: receipt.runID,
@@ -837,13 +875,15 @@ extension NativeChatModel {
                               self.activeTurnRecovery == terminalReceipt else { return }
                         if self.handleAuthenticationFailure(error) { return }
                         self.uncertain = true
-                        self.notice = "任务已结束，但最终历史同步失败；未重新发送消息，请稍后核对。"
+                        self.notice = "任务已结束，但最后的回复同步失败，请稍后重试。"
                     }
                 case .unresolved:
                     // Bounded exact-Run 404 proof retires the local live
                     // indicator, not the accepted POST receipt. Discard any
                     // retired SSE callback without touching a newer stream.
                     guard self.streamID == nil || self.streamID == receipt.runID else { return }
+                    self.unavailableRunStatusID = receipt.runID
+                    self.automaticRecoveryQuiet = false
                     self.uncertain = true
                     self.pauseQueueForRecovery()
                     self.revision &+= 1
@@ -851,11 +891,11 @@ extension NativeChatModel {
                     self.streamTask = nil
                     self.streamID = nil
                     self.transition(to: .idle)
-                    self.notice = "服务端连续未找到原 Run；本地运行标记已收敛，消息仍待核对。"
+                    self.notice = "服务暂时找不到原任务，消息已保留。可重新同步或新建会话。"
                 case .unknown:
                     self.uncertain = true
                     self.pauseQueueForRecovery()
-                    self.notice = "已受理的后台任务目前无法确认是否结束；请核对历史，消息不会重新发送。"
+                    self.notice = "暂时无法确认回复是否结束，已保留消息，不会重复发送。"
                 }
             } catch {
                 guard generation == self.revision, !Task.isCancelled,
@@ -863,7 +903,7 @@ extension NativeChatModel {
                 if self.handleAuthenticationFailure(error) { return }
                 self.uncertain = true
                 self.pauseQueueForRecovery()
-                self.notice = "后台任务状态核对失败；消息不会重新发送，请稍后刷新。"
+                self.notice = "回复状态同步失败，请稍后重试，不会重复发送。"
             }
         }
     }
@@ -966,7 +1006,7 @@ extension NativeChatModel {
                             _ = self.draftStore?.saveCheckpoint(nil)
                             self.uncertain = true
                             self.pauseQueueForRecovery()
-                            self.notice = "续传记录已过期，已保留消息和待处理卡片；后台状态待核对，发送保持锁定。"
+                            self.notice = "连接无法继续，已保留消息与待处理请求，暂不能发送。"
                         }
                         if frame.event == "approval" {
                             // run 挂在服务端等这一票。能认出请求就出卡片；
@@ -981,13 +1021,14 @@ extension NativeChatModel {
                                     self.onApprovalArrived?(self.sessionID, pending.requestID)
                                 }
                             } else {
-                                self.notice = "需要审批：服务端没有给出可操作的选项，请在 WebUI 处理。"
+                                self.notice = "这次审批暂不能在 App 内处理，可在网页版继续。"
                             }
                         } else if frame.event == "approval_resolved" {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
                                let requestID = resolved["request_id"] as? String {
                                 let runID = self.streamID ?? active
-                                self.removePendingApproval(requestID: requestID, runID: runID)
+                                self.removePendingApproval(requestID: requestID, runID: runID,
+                                    generation: resolved["execution_generation"] as? Int)
                             }
                         } else if frame.event == "clarify" {
                             // agent 卡在这儿等服务端拿到答复。以前只写一句
@@ -1004,12 +1045,13 @@ extension NativeChatModel {
                             } else {
                                 // 解析不出 request_id / execution_generation 就没法答复，
                                 // 与其留一张点了会 400 的卡片，不如明说去哪儿处理。
-                                self.notice = "需要补充信息：服务端没有给出可回答的请求标识，请在 WebUI 处理。"
+                                self.notice = "这次补充信息暂不能在 App 内填写，可在网页版继续。"
                             }
                         } else if frame.event == "clarify_resolved" {
                             if let resolved = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any],
                                let requestID = resolved["request_id"] as? String {
-                                self.removePendingClarify(requestID: requestID)
+                                self.removePendingClarify(requestID: requestID, runID: self.streamID ?? active,
+                                    generation: resolved["execution_generation"] as? Int)
                             }
                         }
                         if frame.event == "approval_resolved" {
@@ -1034,7 +1076,7 @@ extension NativeChatModel {
                             // Even an SSE done frame cannot unlock sending or
                             // flush the queue until that exact run is verified.
                             if self.stopping {
-                                self.notice = "已收到任务结束事件，仍需确认停止终态和最终历史。"
+                                self.notice = "正在确认回复是否已停止，并同步最后的消息。"
                                 return true
                             }
                             // 终态已到：本轮结束。核对标志与相位正交，单独置起。
@@ -1099,7 +1141,7 @@ extension NativeChatModel {
                                 pauseQueueForRecovery()
                                 transition(to: .idle)
                                 reconciling = false
-                                notice = "回复已结束，但最终历史尚未同步；已保留当前回复并暂停自动续发，可稍后核对。"
+                                notice = "回复已结束，最后的消息尚未同步；已保留内容并暂停队列。"
                                 flush()
                                 self.recordRuntimeLog(.warning, "stream",
                                     "final history pending run=\(active) attempts=3")
@@ -1126,7 +1168,7 @@ extension NativeChatModel {
                         // 把发送锁住（不假装还在跑，也不假装已结束）。
                         transition(to: .idle)
                         uncertain = true
-                        notice = "历史核对失败，发送保持锁定；请刷新确认后台状态。"
+                        notice = "消息同步失败，暂不能发送，请稍后重试。"
                     }
                     let decision = ChatRuntimeCoordinator.terminalAction(
                         stopPending: stopping || stopAcknowledged,
@@ -1140,7 +1182,7 @@ extension NativeChatModel {
                         // cannot be made safe merely by reaching idle.
                         uncertain = true
                         pauseQueueForRecovery()
-                        notice = notice ?? "本轮终态证据不完整；发送仍锁定，请核对状态。"
+                        notice = notice ?? "尚无法确认回复是否结束，请同步状态。"
                     }
                     if decision == .finishAndDispatch {
                         // 斜杠命令的兜底说明：命令已原样转发，但服务端没有任何
@@ -1160,7 +1202,7 @@ extension NativeChatModel {
                 // A stop acknowledgement keeps the sending lock even if SSE
                 // disconnects; status verification owns its terminal decision.
                 if stopping {
-                    notice = "停止请求已受理，流连接已断开；请核对后台任务状态。"
+                    notice = "已请求停止，但连接中断，正在确认回复状态。"
                     return
                 }
                 // EOF and transport errors both recover via GET only. The
@@ -1228,7 +1270,7 @@ extension NativeChatModel {
                                     "resubscribe gave no frames stream=\(next)")
                                 transition(to: .idle)
                                 uncertain = true
-                                notice = "连接反复中断，无法确认这一轮是否结束。点「核对状态」确认后即可继续；不会重复发送。"
+                                notice = "网络不稳定，暂时无法确认回复是否结束。请同步状态，不会重复发送。"
                                 return
                             }
                             break
@@ -1251,7 +1293,7 @@ extension NativeChatModel {
                                 return
                             }
                             error = nil
-                            notice = "连接已恢复，但无法确认上一轮是否结束。已暂停自动发送，请核对后再继续。"
+                            notice = "连接已恢复，上一条回复状态尚未确认，已暂停队列。"
                             transition(to: .idle)
                             uncertain = true
                             return
@@ -1273,7 +1315,7 @@ extension NativeChatModel {
                     // 「后台状态」对用户不是可操作的概念（他看不到服务端在跑什么），
                     // 「刷新」也不是这里的动作（重连是自动的）。真正要表达的是：
                     // 连接断过、这一轮到底结束没有不确定、点一下核对就能确认、不会重复执行。
-                    notice = "连接中断过，这一轮是否已结束还不确定。点「核对状态」确认后即可继续；不会重复发送。"
+                    notice = "连接中断后，暂时无法确认回复是否结束。请同步状态，不会重复发送。"
                     return
                 }
             }
@@ -1337,7 +1379,11 @@ extension NativeChatModel {
                 } else {
                     lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 }
-            case .unknown, .unresolved:
+            case .unresolved:
+                unavailableRunStatusID = active
+                automaticRecoveryQuiet = false
+                lockDownRunStatus("服务暂时找不到原任务，消息已保留。可重新同步或新建会话。")
+            case .unknown:
                 lockDownRunStatus(unconfirmed)
             }
         } catch {
@@ -1373,12 +1419,11 @@ extension NativeChatModel {
         noteRunRecoveryState()
     }
 
-    /// A-07：`resetReconciling` 默认 true，保留「普通刷新会清掉忙碌标志」的既有语义。
-    /// `reconcilePending()` 必须传 false —— 它自己持有 `reconciling` 并在 defer 里清，
-    /// 否则这里一进来就把标志抹掉，连点「核对」会并发发起多个 GET 互相打断。
+    /// Only the pending reconciliation owner may refresh while holding the
+    /// reconciliation lock. An ordinary refresh cannot revoke that ownership.
     func refresh(silent: Bool = false, preserveLoadedOlder: Bool = false,
                  resetReconciling: Bool = true) async {
-        guard !runtimeRetired else { return }
+        guard !runtimeRetired, !resetReconciling || !reconciling else { return }
         if stopping {
             // A manual status check must not convert STOP into an ordinary
             // history load or accidentally reopen ordinary sending.
@@ -1398,9 +1443,6 @@ extension NativeChatModel {
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
-        // A-07：只有普通刷新才清标志；核对流程自己管理这个生命周期。
-        // 相位上：清掉「核对中」就退回 idle（接着 load 会再置 loading/syncing）。
-        if resetReconciling { reconciling = false }
         if case .reconnecting = phase { transition(to: .idle) }
         await load(silent: silent, preserveLoadedOlder: preserveLoadedOlder,
                    allowWhileReconciling: !resetReconciling)

@@ -19,6 +19,8 @@ import Foundation
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
     var holdApproval = true
+    var approvalOutcome: String?
+    var clarifyOutcome: String?
     var approvalCalls: [(String, Int, String)] = []
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
@@ -78,13 +80,13 @@ import Foundation
     func approveNativeTurn(runID: String, choice: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
         approvalCalls.append((requestID, executionGeneration, choice))
-        if !holdApproval { return nil }
+        if !holdApproval { return approvalOutcome }
         return try await withCheckedThrowingContinuation { pendingApproval = $0 }
     }
     func clarifyNativeTurn(runID: String, answer: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
         clarifyCalls.append((requestID, executionGeneration, answer))
-        return nil
+        return clarifyOutcome
     }
     func streamNativeTurn(streamID: String, lastEventID: String?,
                           onFrame: (SSEFrame) async throws -> Bool) async throws {
@@ -162,7 +164,7 @@ import Foundation
         defer { defaults.removePersistentDomain(forName: suite) }
         let failingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesDraftFailureRoot-" + UUID().uuidString)
-        try Data("not-a-directory".utf8).write(to: failingRoot)
+        try FileManager.default.createDirectory(at: failingRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: failingRoot) }
         let failingStore = ChatDraftStore(
             instanceID: "draft-failure", accountScope: "account", sessionID: "session",
@@ -171,6 +173,10 @@ import Foundation
                                           sessionID: "session", rootDirectory: failingRoot))
         let failingModel = NativeChatModel(sessionID: "draft-failure", api: SendSafetyService(),
                                            draftStore: failingStore)
+        // Isolate a runtime draft-write outage from a cold unreadable store.
+        precondition(!failingModel.recoveryRecordsUnreadable && failingModel.localPersistenceIssues.isEmpty)
+        try FileManager.default.removeItem(at: failingRoot)
+        try Data("not-a-directory".utf8).write(to: failingRoot)
         failingModel.draft = "must stay in memory"
         failingModel.recordLocalWrite(.failed(.diskWrite), kind: .draft)
         precondition(failingModel.localPersistenceIssue?.kind == .draft)
@@ -182,6 +188,38 @@ import Foundation
         precondition(failingStore.load() == "recovered text")
         precondition(failingModel.localPersistenceIssue == nil,
                      "a verified successful draft write clears only the draft issue")
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .draft)
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .runRecovery)
+        failingModel.recordLocalWrite(.failed(.diskWrite), kind: .queue)
+        precondition(failingModel.localPersistenceIssues.count == 3 && failingModel.queuePersistenceFailed)
+        failingModel.recordVerifiedLocalRetry(.ok, kind: .queue)
+        precondition(failingModel.localPersistenceIssues.count == 2 &&
+                     failingModel.localPersistenceIssue?.kind == .runRecovery)
+        failingModel.recordSuccessfulLocalWrite(kind: .runRecovery)
+        precondition(failingModel.localPersistenceIssue?.kind == .draft,
+                     "one repaired category cannot hide another unsaved record")
+        failingModel.recordSuccessfulLocalWrite(kind: .draft)
+        precondition(failingModel.localPersistenceIssue == nil)
+
+        // Two files in the same category cannot acknowledge each other.
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .pendingSend)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .queuedTurns)
+        failingModel.recordSuccessfulLocalWrite(record: .queuedTurns)
+        precondition(failingModel.queuePersistenceFailed &&
+                     failingModel.localRecordIssues[.pendingSend] != nil)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .queuePause)
+        failingModel.resumeQueueAfterRecovery()
+        precondition(failingModel.queueAutomaticDispatchPaused,
+                     "automatic recovery cannot bypass an unsaved pause")
+        failingModel.recordSuccessfulLocalWrite(record: .pendingSend)
+        precondition(failingModel.queuePersistenceFailed)
+        failingModel.recordSuccessfulLocalWrite(record: .queuePause)
+        precondition(!failingModel.queuePersistenceFailed)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .attachmentDraft)
+        failingModel.recordSuccessfulLocalWrite(kind: .draft)
+        precondition(failingModel.localRecordIssues[.attachmentDraft] != nil)
+        failingModel.recordSuccessfulLocalWrite(record: .attachmentDraft)
+        precondition(failingModel.localPersistenceIssue == nil)
     }
 
     // Queue persistence now consumes the actual storage result instead of
@@ -230,11 +268,21 @@ import Foundation
                      "an explicit retry reports the same verified failure")
         try FileManager.default.removeItem(at: root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        precondition(model.validateLocalData().succeeded)
+        precondition(model.queueSaveFailed && model.localPersistenceIssue?.kind == .queue,
+                     "reading accessible old or absent files cannot acknowledge a failed newer write")
+        precondition(model.retryLocalMigration().succeeded && model.queueSaveFailed,
+                     "no-op migration cannot acknowledge the current queue")
         let repaired = model.retryQueuePersistence()
         model.recordVerifiedLocalRetry(repaired, kind: .queue)
-        precondition(repaired.succeeded && !model.queueSaveFailed
-                     && model.localPersistenceIssue == nil,
-                     "only a verified explicit retry clears the sticky queue failure")
+        precondition(repaired.succeeded && !model.queueSaveFailed &&
+                     !model.queuePersistenceFailed &&
+                     model.localPersistenceIssue?.kind == .draft,
+                     "queue retry must not erase the independent draft write failure")
+        let draftRetry = store.save(model.draft)
+        model.recordVerifiedLocalRetry(draftRetry, kind: .draft)
+        precondition(draftRetry.succeeded && model.localPersistenceIssue == nil,
+                     "each failed record clears only after its own verified repair")
         model.disconnect()
     }
 
@@ -265,8 +313,45 @@ import Foundation
         model.abandonUnreadableActiveRecovery()
         precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable && !model.canSend,
                      "failed local deletion cannot unlock an unreadable receipt")
+        precondition(model.draftRecoveryUnreadable)
+        // Storage becomes accessible, with the original draft still present.
+        // A late composer/model publication must not replace it with empty text.
+        try FileManager.default.removeItem(at: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        precondition(store.save("original retained draft").succeeded)
+        model.draft = ""
+        precondition(store.load() == "original retained draft")
+        precondition(model.restoreUnreadableDraft().succeeded)
+        precondition(!model.draftRecoveryUnreadable && model.draft == "original retained draft")
         model.disconnect()
         print("COLD_STORAGE_LOCK_PASS unavailable receipts block POST and cannot be cleared by failed deletion")
+    }
+
+    // A corrupt queue must not be interpreted as an empty, writable queue.
+    do {
+        let suite = "HermesQueueReadRepair-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ChatDraftStore(instanceID: "repair", accountScope: "account",
+            sessionID: "repair", defaults: defaults)
+        let invalid = Data("bad queue".utf8)
+        precondition(store.saveQueued(invalid).succeeded)
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "repair", api: service, draftStore: store)
+        await model.load()
+        precondition(model.queueRecoveryUnreadable && !model.canSend)
+        model.setQueuedTurns([])
+        precondition(store.loadQueued() == invalid)
+        precondition(!model.retryQueuePersistence().succeeded)
+        let recovered = ChatQueuedTurn(id: "repair-original", text: "original", attachments: [],
+            composerText: "original", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .submitting, historyEnd: 0, knownIDs: [], submittedAt: 1)
+        precondition(store.saveQueued(ChatSendQueueCodec.encode([recovered])).succeeded)
+        precondition(model.restoreUnreadableRecoveryRecords())
+        precondition(!model.queueRecoveryUnreadable && model.queuedTurns.first?.id == recovered.id)
+        precondition(model.queuedTurns.first?.delivery == .uncertain && model.queueRecoveryPaused)
+        precondition(!model.canSend && service.startCalls == 0)
+        model.disconnect()
     }
 
     // Recovery and enqueue must never silently override a user's pause.
@@ -328,7 +413,7 @@ import Foundation
         precondition(service.active == "run-1" && service.startCalls == 1
                      && service.stopCalls == 1,
                      "rejected STOP preserves the live Run and never repeats either POST")
-        precondition(model.notice?.contains("HTTP \(code)") == true,
+        precondition(model.notice?.contains("停止请求未被接受") == true,
                      "rejected STOP status is shown distinctly from an accepted STOP")
         model.disconnect()
     }
@@ -366,7 +451,7 @@ import Foundation
         precondition(model.stopping && !model.canSend && service.startCalls == 1
                      && service.stopCalls == 1,
                      "exhausted polling must not unlock, dispatch or issue another STOP")
-        precondition(model.notice?.contains("返回会话时将自动继续核对") == true,
+        precondition(model.notice?.contains("返回会话时将自动继续同步") == true,
                      "poll budget exhaustion preserves lock and clearly explains safe foreground follow-up")
         model.disconnect()
     }
@@ -1039,6 +1124,34 @@ import Foundation
         model.disconnect()
     }
 
+    // A rejection is not evidence that the prompt has been resolved.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "control-rejected", api: service)
+        await model.load(); model.draft = "go"; _ = await model.send()
+        service.holdApproval = false
+        service.approvalOutcome = "rejected"
+        service.approval("reject-approval")
+        try await ModelTests.eventually { model.pendingApproval?.requestID == "reject-approval" }
+        guard let approval = model.pendingApproval else { preconditionFailure("missing approval") }
+        await model.respondToApproval("once", requestID: approval.id, expected: approval)
+        precondition(model.pendingApprovals.contains(approval) && model.error != nil)
+        model.removePendingApproval(requestID: "reject-approval", runID: approval.runID,
+            generation: approval.executionGeneration - 1)
+        precondition(model.pendingApprovals.contains(approval), "stale generation cannot resolve approval")
+        service.clarifyOutcome = "rejected"
+        service.clarify("reject-clarify", generation: 9, choices: ["one", "two"])
+        try await ModelTests.eventually { model.pendingClarify?.requestID == "reject-clarify" }
+        guard let clarify = model.pendingClarify else { preconditionFailure("missing clarify") }
+        await model.respondToClarify("one", requestID: clarify.id, expected: clarify)
+        precondition(model.pendingClarifies.contains(clarify) && model.error != nil)
+        model.removePendingClarify(requestID: clarify.requestID, runID: clarify.runID, generation: 8)
+        precondition(model.pendingClarifies.contains(clarify), "old generation cannot resolve current clarify")
+        model.removePendingClarify(requestID: clarify.requestID, runID: "wrong-run", generation: 9)
+        precondition(model.pendingClarifies.contains(clarify), "foreign Run cannot resolve clarify")
+        model.disconnect()
+    }
+
     // An acknowledgement for an old approval must not dismiss its replacement.
     do {
         let service = SendSafetyService()
@@ -1320,6 +1433,48 @@ import Foundation
                      "read-only history is not authoritative delivery evidence")
     }
 
+    // Identical payloads do not imply identical local send transactions.
+    do {
+        let model = NativeChatModel(sessionID: "queue-transaction-id", api: SendSafetyService())
+        let turn = ChatQueuedTurn(id: "queue-id", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 1, knownIDs: ["old"], submittedAt: 1)
+        model.setQueuedTurns([turn])
+        var manual = NativeChatModel.PendingSend(id: "local-manual", text: "same",
+            attachments: [], composerText: "same", historyEnd: 1, knownIDs: ["old"],
+            createdAt: 1, origin: .userInput)
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: manual))
+        precondition(model.queuedTurns == [turn], "manual receipt cannot consume an identical queue row")
+        manual.queuedTurnID = "another-queue"
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: manual) && model.queuedTurns == [turn])
+        manual.queuedTurnID = turn.id
+        let decoded = try JSONDecoder().decode(NativeChatModel.PendingSend.self, from: JSONEncoder().encode(manual))
+        precondition(decoded.queuedTurnID == turn.id)
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: decoded) && model.queuedTurns.isEmpty)
+        model.disconnect()
+    }
+
+    // An accepted Run only owns the pending and queue transaction named in
+    // its persisted receipt, never another identical user message.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "receipt-ownership", api: service)
+        let queued = ChatQueuedTurn(id: "receipt-queue", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 0, knownIDs: [], submittedAt: 1)
+        model.setQueuedTurns([queued])
+        model.pendingSend = NativeChatModel.PendingSend(id: "unrelated", text: "same",
+            attachments: [], composerText: "same", historyEnd: 0, knownIDs: [],
+            createdAt: 1, origin: .userInput)
+        let receipt = ActiveTurnRecovery(runID: "accepted", historyEnd: 0, knownIDs: [],
+            text: "same", attachmentPaths: [], pendingSendID: "earlier", queuedTurnID: queued.id)
+        model.activeTurnRecovery = receipt
+        precondition(model.settleAcceptedReceipt(receipt))
+        precondition(model.pendingSend?.id == "unrelated" && model.queuedTurns.isEmpty)
+        precondition(model.clearPendingSend(expectedID: "earlier") == false)
+        model.disconnect()
+    }
+
     // Q205-01/02 and build206: refusing an in-flight clear must preserve
     // recovery evidence; the warning expires on a successful mutation.
     do {
@@ -1434,7 +1589,7 @@ import Foundation
         try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
             frames: [], hasIncompleteControl: true)))
         precondition(model.uncertain && model.queueRecoveryPaused
-                     && model.notice?.contains("快照数据不完整") == true,
+                     && model.notice?.contains("暂时未能完整加载") == true,
                      "incomplete control data fails closed and preserves the send lock")
         model.disconnect()
     }

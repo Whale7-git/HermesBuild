@@ -2,6 +2,28 @@ import SwiftUI
 import UIKit
 
 extension NativeChatView {
+    private var composerStatusMessage: String? {
+        if preparingAttachmentSend && !attachments.batch.items.isEmpty {
+            return "正在上传附件，尚未发送消息…"
+        }
+        if model.draftRecoveryUnreadable { return "本地草稿暂不可读，请在恢复中心重试读取。" }
+        if model.authenticationRequired { return "登录后即可继续发送。" }
+        if model.stopping { return "正在确认是否停止，暂不能发送。" }
+        if model.unavailableRunStatusID != nil {
+            return "原任务状态暂不可用，可同步重试或新建会话。"
+        }
+        if model.uncertain || model.recoveryRecordsUnreadable {
+            if model.syncing || model.loading || model.reconciling {
+                return "正在同步消息，暂不能发送。"
+            }
+            return "上一条消息状态尚未确认，暂不能发送。"
+        }
+        if model.cachedHistoryDate != nil {
+            return model.syncing ? "正在同步最新消息…" : "正在显示本地历史，联网后可发送。"
+        }
+        return nil
+    }
+
     var composerSection: some View {
         ChatComposer(
             // 输入文本由输入框自己持有（见 ChatComposer）：一次按键只失效输入框子树，
@@ -10,7 +32,7 @@ extension NativeChatView {
             draftSync: draftSync,
             insertion: composerInsertion,
             draftStore: draftStore,
-            canPersistDraft: { objects.registry.mayWriteDraft(objects.runtimeKey,
+            canPersistDraft: { !model.draftRecoveryUnreadable && objects.registry.mayWriteDraft(objects.runtimeKey,
                 presentation: objects.presentation) },
             onPersistenceResult: { model.recordLocalWrite($0, kind: .draft) },
             onLocalWriteSuccess: { model.recordSuccessfulLocalWrite(kind: .draft) },
@@ -21,24 +43,32 @@ extension NativeChatView {
                 composerFocused = false
                 showModelPicker = true
             },
-            readOnly: model.readOnly,
+            readOnly: model.readOnly || model.draftRecoveryUnreadable,
             loading: model.loading,
             running: model.running,
             stopping: model.stopping,
             canStop: model.streamID != nil && !model.submitting,
-            canSend: (model.canSend || model.canSendWhileRunning) && !attachments.isEditing && !preparingAttachmentSend,
-            preparingSubmission: preparingAttachmentSend,
+            canSend: !model.draftRecoveryUnreadable && (model.canSend || model.canSendWhileRunning) && attachments.canSend && !preparingAttachmentSend,
+            preparingSubmission: preparingAttachmentSend && !attachments.batch.items.isEmpty,
             hasReadyAttachments: attachments.canSend && !attachments.batch.items.isEmpty,
-            hasAttachmentItems: !attachments.batch.items.isEmpty || attachments.isImporting || attachments.errorMessage != nil,
+            hasAttachmentItems: !attachments.batch.items.isEmpty || attachments.isImporting ||
+                attachments.errorMessage != nil || attachments.lastPersistenceResult?.failure != nil,
             onSend: { text in
                 // Prepare files only after the explicit send tap. Until every
                 // upload is confirmed, do not issue ANY Run/Session/chat POST.
                 // Lock the composer across this preflight to avoid a second
                 // tap or overwriting newly typed text during an await.
-                guard !preparingAttachmentSend else { return }
+                guard !preparingAttachmentSend, !model.draftRecoveryUnreadable, visible, attachments.canSend,
+                      (model.canSend || model.canSendWhileRunning),
+                      objects.registry.owns(objects.runtimeKey, presentation: objects.presentation) else { return }
                 let ticket = UUID()
+                let needsUpload = !attachments.batch.items.isEmpty
                 attachmentSendTicket = ticket
                 preparingAttachmentSend = true
+                // Capture the exact submitted text before any suspension. A
+                // later composer publication must never replace this snapshot.
+                syncedDraft = text
+                model.draft = text
                 attachmentSendTask = Task {
                     defer {
                         if attachmentSendTicket == ticket {
@@ -48,13 +78,20 @@ extension NativeChatView {
                     }
                     let payloads: [ChatAttachmentPayload]
                     do {
-                        payloads = try await attachments.prepareForSend(sessionID: sessionID)
-                            .map(ChatAttachmentPayload.init(uploaded:))
+                        if needsUpload {
+                            payloads = try await attachments.prepareForSend(sessionID: sessionID)
+                                .map(ChatAttachmentPayload.init(uploaded:))
+                        } else {
+                            // Text-only sends have no upload preflight and must
+                            // not toggle the UIKit editor into a read-only state.
+                            payloads = []
+                        }
                         try Task.checkCancellation()
                         // A navigation/account change must never submit an
                         // upload prepared under the previous session's identity.
-                        guard visible, attachments.batch.sessionID == sessionID,
-                              model.sessionID == sessionID,
+                        guard visible, attachmentSendTicket == ticket,
+                              attachments.batch.sessionID == sessionID,
+                              model.sessionID == sessionID, model.draft == text,
                               objects.registry.owns(objects.runtimeKey,
                                 presentation: objects.presentation) else { return }
                     } catch is CancellationError {
@@ -70,9 +107,7 @@ extension NativeChatView {
                         attachmentSendTask = nil
                         preparingAttachmentSend = false
                     }
-                    syncedDraft = text
-                    model.draft = text
-                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    userIDBeforeSend = model.latestSubmissionFocus?.localID
                     pendingUserTurnFocus = !model.running
                     // A rejected/uncertain POST preserves the draft and ready
                     // attachment references. No automatic replay of the POST.
@@ -81,7 +116,9 @@ extension NativeChatView {
                     if objects.registry.owns(objects.runtimeKey, presentation: objects.presentation),
                        AttachmentResetPolicy.shouldReset(accepted: accepted,
                         hasError: model.error != nil, uncertain: model.uncertain) {
-                        attachments.reset(sessionID: sessionID)
+                        // The model and UI share exact accepted references.
+                        // Never clear a newly prepared sibling attachment.
+                        attachments.consumeSettledPaths(Set(payloads.map(\.path)))
                     }
                 }
             },
@@ -98,10 +135,7 @@ extension NativeChatView {
                     isLocked: model.submitting || model.reconciling || !model.canSend || preparingAttachmentSend,
                     showsItems: false, launchPicker: attachmentPickerTrigger)
             ),
-            readOnlyMessage: preparingAttachmentSend
-                ? "正在上传附件，尚未提交消息…"
-                : (model.cachedHistoryDate != nil
-                    ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil),
+            readOnlyMessage: composerStatusMessage,
             // Silent verified cache warmup; the editor still stays read-only
             // until the server GET establishes authority. Keep all problems
             // visible as actionable, persistent UI states.

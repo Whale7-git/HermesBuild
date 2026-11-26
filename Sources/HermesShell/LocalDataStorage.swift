@@ -33,6 +33,31 @@ enum LocalDataKind: String, CaseIterable, Hashable, Sendable {
     case runRecovery
 }
 
+/// Independently persisted records must not acknowledge each other's failures.
+/// These identifiers describe local record types, not user content or IDs.
+enum LocalDataRecord: String, CaseIterable, Hashable, Sendable {
+    case activeRun, runOutcome, pendingSend, queuePause, queuedTurns
+    case draft, attachmentDraft, historyCache
+
+    var kind: LocalDataKind {
+        switch self {
+        case .activeRun, .runOutcome: return .runRecovery
+        case .pendingSend, .queuePause, .queuedTurns: return .queue
+        case .draft, .attachmentDraft: return .draft
+        case .historyCache: return .historyCache
+        }
+    }
+
+    static func primary(for kind: LocalDataKind) -> Self {
+        switch kind {
+        case .runRecovery: return .activeRun
+        case .queue: return .queuedTurns
+        case .draft: return .draft
+        case .historyCache: return .historyCache
+        }
+    }
+}
+
 struct LocalDataIssue: Equatable, Sendable {
     let kind: LocalDataKind
     let failure: LocalStoreWriteFailure

@@ -1,5 +1,28 @@
 import Foundation
 
+// The optimistic-to-canonical visual handoff must never focus an unrelated
+// equal-text row. It is deliberately independent from send authority.
+do {
+    let proof = ChatTurnFocusProof(localID: "local-exact", historyEnd: 5,
+        knownIDs: ["old"], text: "same", attachmentPaths: ["/fixture/a"])
+    let original = ChatMessage(id: "local-exact", role: "user", content: "same",
+        attachmentPaths: ["/fixture/a"], delivery: .accepted)
+    let older = ChatMessage(id: "old", role: "user", content: "same",
+        sourceIndex: 4, attachmentPaths: ["/fixture/a"])
+    let real = ChatMessage(id: "canonical", role: "user", content: "same",
+        sourceIndex: 5, attachmentPaths: ["/fixture/a"])
+    let notice = ChatMessage(id: "notice", role: "user",
+        content: "[OUT-OF-BAND USER MESSAGE — notification]\nFixture\n[/OUT-OF-BAND USER MESSAGE]",
+        sourceIndex: 6, displayKind: "internal_notification")
+    let sibling = ChatMessage(id: "sibling", role: "user", content: "same",
+        sourceIndex: 7, attachmentPaths: ["/fixture/a"])
+    precondition(proof.targetID(in: [older, original], coveredFrom: 0) == "local-exact")
+    precondition(proof.targetID(in: [older, real, notice], coveredFrom: 0) == "canonical")
+    precondition(proof.targetID(in: [real, sibling], coveredFrom: 5) == nil)
+    precondition(proof.targetID(in: [real], coveredFrom: 6) == nil)
+    precondition(proof.targetID(in: [older], coveredFrom: 0) == nil)
+}
+
 var assertions = 0
 var failures = 0
 func expect(_ condition: @autoclosure () -> Bool, _ label: String) {
@@ -274,13 +297,15 @@ test("transcript_streaming_revision") {
         messages: t.messages, tools: t.tools, notices: t.notices,
         running: true, toolsAreLive: true,
         transcriptRevision: t.transcriptRevision,
-        transcriptStructureRevision: t.transcriptStructureRevision)
+        transcriptStructureRevision: t.transcriptStructureRevision,
+        transcriptStructureID: t.transcriptStructureID)
     try t.apply(frame("token", #"{"text":"b"}"#, "second"))
     let after = ChatStreamingTailSnapshot(
         messages: t.messages, tools: t.tools, notices: t.notices,
         running: true, toolsAreLive: true,
         transcriptRevision: t.transcriptRevision,
-        transcriptStructureRevision: t.transcriptStructureRevision)
+        transcriptStructureRevision: t.transcriptStructureRevision,
+        transcriptStructureID: t.transcriptStructureID)
     expect(after.transcriptRevision > before.transcriptRevision,
            "token frame advances the transcript revision")
     expect(after.transcriptStructureRevision == before.transcriptStructureRevision,
@@ -289,6 +314,17 @@ test("transcript_streaming_revision") {
     expect(ChatStreamingTailProof.canReplaceTail(from: before, to: after),
            "tail-only revision accepts the streaming fast path")
 
+    // A separately rebuilt transcript can have identical numeric revisions.
+    var replacementMessages = after.messages
+    replacementMessages[0].content = "different history"
+    replacementMessages[replacementMessages.count - 1].content = "new tail"
+    let collision = ChatStreamingTailSnapshot(messages: replacementMessages,
+        tools: after.tools, notices: after.notices, running: true, toolsAreLive: true,
+        transcriptRevision: after.transcriptRevision + 1,
+        transcriptStructureRevision: after.transcriptStructureRevision, transcriptStructureID: UUID())
+    expect(!ChatStreamingTailProof.canReplaceTail(from: after, to: collision),
+           "independent structure identity fences counter collisions")
+
     var structureChanged = t
     structureChanged.messages[0].content = "edited history"
     try structureChanged.apply(frame("token", #"{"text":"c"}"#, "2"))
@@ -296,7 +332,8 @@ test("transcript_streaming_revision") {
         messages: structureChanged.messages, tools: structureChanged.tools,
         notices: structureChanged.notices, running: true, toolsAreLive: true,
         transcriptRevision: structureChanged.transcriptRevision,
-        transcriptStructureRevision: structureChanged.transcriptStructureRevision)
+        transcriptStructureRevision: structureChanged.transcriptStructureRevision,
+        transcriptStructureID: structureChanged.transcriptStructureID)
     expect(!ChatStreamingTailProof.canReplaceTail(from: after, to: changed),
            "earlier-row mutation cannot use the tail fast path")
 
@@ -304,7 +341,8 @@ test("transcript_streaming_revision") {
         messages: t.messages, tools: t.tools, notices: t.notices,
         running: true, toolsAreLive: true,
         transcriptRevision: t.transcriptRevision,
-        transcriptStructureRevision: t.transcriptStructureRevision)
+        transcriptStructureRevision: t.transcriptStructureRevision,
+        transcriptStructureID: t.transcriptStructureID)
     expect(!ChatStreamingTailProof.canReplaceTail(from: unchanged, to: unchanged),
            "an unchanged revision cannot claim a tail update")
 }

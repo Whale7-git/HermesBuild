@@ -9,6 +9,7 @@ import FoundationNetworking
 private struct GatewayActiveRunHistory {
     let evidence: ActiveRunEvidence
     let pendingControls: GatewayPendingControlSnapshot?
+    var unavailableRunID: String? = nil
 }
 
 /// 直连 Hermes 网关的后端。
@@ -326,7 +327,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
                                           activeRunID: active, requestedSessionID: sessionID,
                                           runStatusUnknown: runSnapshot.evidence == .unknown,
-                                          pendingControls: runSnapshot.pendingControls)
+                                          pendingControls: runSnapshot.pendingControls,
+                                          unavailableRunID: runSnapshot.unavailableRunID)
     }
 
     /// An unresolved tombstone is sticky until the exact same Run reports a
@@ -407,12 +409,81 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    // Upstream canonical admission contract (api_server_authority_runs.py):
+    // only an owned status=unknown with exact admission/generation is eligible.
+    // Capabilities are fetched from the current deployment, never inferred
+    // from a backend kind, a missing Run, or a previous successful request.
+    func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer? {
+        guard runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+        struct Capabilities: Decodable {
+            struct Features: Decodable { let run_unknown_resolution: Bool? }
+            struct Endpoint: Decodable { let method: String; let path: String }
+            struct Endpoints: Decodable { let run_unknown_resolution: Endpoint? }
+            let features: Features
+            let endpoints: Endpoints
+        }
+        struct Status: Decodable {
+            let run_id: String
+            let session_id: String
+            let status: String
+            let admission_id: String?
+            let execution_generation: Int?
+        }
+        do {
+            let capabilityData = try await perform(requests.advertisedCapabilities())
+            guard let caps = try? JSONDecoder().decode(Capabilities.self, from: capabilityData),
+                  caps.features.run_unknown_resolution == true,
+                  let route = caps.endpoints.run_unknown_resolution,
+                  route.method == "POST", route.path == "/v1/runs/{run_id}/resolve-unknown",
+                  runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+            try Task.checkCancellation()
+            let statusData = try await perform(requests.runStatus(runID: runID))
+            try Task.checkCancellation()
+            guard let status = try? JSONDecoder().decode(Status.self, from: statusData),
+                  status.run_id == runID, status.session_id == sessionID, status.status == "unknown",
+                  let admission = status.admission_id,
+                  !admission.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let generation = status.execution_generation, generation >= 0,
+                  runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+            return UnknownRunResolutionOffer(sessionID: sessionID, runID: runID,
+                admissionID: admission, executionGeneration: generation)
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 404 { return nil }
+            throw error
+        }
+    }
+
+    func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) async throws -> ActiveRunProbe {
+        // The user confirmed the displayed epoch. Re-read both capability and
+        // status immediately before mutation; a different generation must not
+        // be accepted by silently substituting a fresh offer.
+        guard try await unknownRunResolutionOffer(sessionID: offer.sessionID, runID: offer.runID) == offer,
+              runStore.ownsUnknownResolutionCandidate(sessionID: offer.sessionID, runID: offer.runID) else { return .unknown }
+        try Task.checkCancellation()
+        _ = try await perform(requests.resolveUnknownRun(runID: offer.runID,
+            admissionID: offer.admissionID, executionGeneration: offer.executionGeneration))
+        // An acknowledgement is not terminal proof. A fresh, exact GET is
+        // required and no failure path repeats the resolution or chat POST.
+        try Task.checkCancellation()
+        let data = try await perform(requests.runStatus(runID: offer.runID))
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              root["run_id"] as? String == offer.runID,
+              root["session_id"] as? String == offer.sessionID,
+              root["admission_id"] as? String == offer.admissionID,
+              let status = root["status"] as? String,
+              let outcome = RunTerminalStatus(rawValue: status),
+              runStore.ownsUnknownResolutionCandidate(sessionID: offer.sessionID, runID: offer.runID),
+              runStore.recordTerminal(runID: offer.runID, sessionID: offer.sessionID, outcome: outcome) else { return .unknown }
+        clearFailedRunProbes(runID: offer.runID)
+        return .terminal(outcome)
+    }
+
     private func activeRun(sessionID: String, allowBackoff: Bool = true) async throws -> String? {
         guard let runID = runStore.runID(for: sessionID) else { return nil }
         let now = Date().timeIntervalSince1970
         if allowBackoff, let retryAt = nextRunProbeAt[runID], now < retryAt {
             throw GatewayDecodeError.malformed(
-                "后台任务状态仍待核对；已暂停频繁重试，不会清除运行记录或自动重发。")
+                "暂时无法确认回复状态，已暂停频繁同步。不会重复发送。")
         }
         let data: Data
         do {
@@ -436,7 +507,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return try unresolvedRun(runID: runID)
         }
         guard runStore.runID(for: sessionID) == runID else {
-            throw GatewayDecodeError.malformed("任务状态已变化，请刷新核对")
+            throw GatewayDecodeError.malformed("任务状态已变化，请重新同步")
         }
         switch status {
         case "queued", "running", "waiting_for_approval", "waiting_for_clarification", "stopping":
@@ -462,9 +533,29 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// and cancellation still abort.
     private func activeRunForHistory(sessionID: String) async throws -> GatewayActiveRunHistory {
         guard let runID = runStore.runID(for: sessionID) else {
-            return GatewayActiveRunHistory(
-                evidence: runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown,
-                pendingControls: nil)
+            guard let unresolvedID = runStore.unresolvedRunID(for: sessionID) else {
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            // A tombstone may outlive the model receipt (including a crash).
+            // Give the exact original Run a read-only path to converge; never
+            // infer absence from a 404, an old reply, or elapsed time.
+            if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: unresolvedID),
+               runStore.recordTerminal(runID: unresolvedID, sessionID: sessionID, outcome: terminal) {
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            if let retryAt = nextRunProbeAt[unresolvedID], Date().timeIntervalSince1970 < retryAt {
+                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                    unavailableRunID: unresolvedID)
+            }
+            let proof = try await verifyUnresolvedRun(sessionID: sessionID, runID: unresolvedID)
+            if case .terminal = proof, runStore.runID(for: sessionID) == nil,
+               runStore.unresolvedRunID(for: sessionID) == nil {
+                clearFailedRunProbes(runID: unresolvedID)
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            nextRunProbeAt[unresolvedID] = Date().timeIntervalSince1970 + 30
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                unavailableRunID: runStore.unresolvedRunID(for: sessionID))
         }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
@@ -478,7 +569,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 if code == 401 || code == 403 { throw error }
                 if code == 404 {
                     _ = recordRunNotFound(runID: runID, sessionID: sessionID)
-                    return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+                    return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                        unavailableRunID: runStore.unresolvedRunID(for: sessionID))
                 }
             }
             _ = recordProbeFailure(runID: runID)
@@ -560,7 +652,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         nextRunProbeAt[runID] = Date().timeIntervalSince1970
             + Double(min(60, 2 << exponent))
         throw GatewayDecodeError.malformed(
-            "后台任务连续无法确认状态；运行记录已保留，请稍后核对，不会自动重发。")
+            "暂时无法确认回复状态。记录已保留，请稍后同步，不会重复发送。")
     }
 
     func startNativeTurn(sessionID: String, text: String) async throws -> String {

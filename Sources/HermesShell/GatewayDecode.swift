@@ -199,7 +199,8 @@ enum GatewayDecode {
     static func snapshot(_ data: Data, offset: Int, activeRunID: String? = nil,
                          requestedSessionID: String? = nil,
                          runStatusUnknown: Bool = false,
-                         pendingControls: GatewayPendingControlSnapshot? = nil) throws -> ChatSnapshot {
+                         pendingControls: GatewayPendingControlSnapshot? = nil,
+                         unavailableRunID: String? = nil) throws -> ChatSnapshot {
         let root = try gatewayRoot(data, what: "会话消息")
         if let error = root["error"], !(error is NSNull) {
             throw GatewayDecodeError.server(gatewayString(error) ?? "会话消息读取失败")
@@ -370,7 +371,7 @@ enum GatewayDecode {
 
         let assembled = try JSONSerialization.data(withJSONObject: ["session": session])
         return try ChatSnapshot(data: assembled, runStatusUnknown: runStatusUnknown,
-                                gatewayPendingControls: pendingControls)
+                                gatewayPendingControls: pendingControls, unavailableRunID: unavailableRunID)
     }
 
     // MARK: - 3) 模型目录占位判定

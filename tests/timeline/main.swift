@@ -737,4 +737,19 @@ check(payloadIndex.find("CAFE") != nil && payloadIndex.find("not found") == nil,
 check(payloadIndex.find("needle", after: payloadNext.nextOffset)?.nextOffset == payloadFirst.nextOffset,
       "next search wraps without losing the first match")
 check(ToolPayloadIndex(text: "").pageText(0).isEmpty, "empty result still has safe page")
-print("TOOL_INSPECTOR_PASS 180 records and full grapheme-safe payload search")
+check(ToolPayloadIndex.build(text: payloadFixture, isCancelled: { true }) == nil &&
+      payloadIndex.find("needle", isCancelled: { true }) == nil,
+      "cancelled indexing and searching return no stale result")
+var projectedTools = inspectorTools
+for i in projectedTools.indices { projectedTools[i].afterMessageID = "turn" }
+projectedTools[0].done = false
+projectedTools[1].isError = true
+let toolMessages = [ChatMessage(id: "turn", role: "user", content: "run")]
+let livePanel = ChatTaskToolInspector.snapshot(messages: toolMessages, tools: projectedTools, live: true)
+let offlinePanel = ChatTaskToolInspector.snapshot(messages: toolMessages, tools: projectedTools, live: false)
+check(livePanel.counts.active == 1 && offlinePanel.counts.unresolved == 1 &&
+      offlinePanel.counts.active == 0 && livePanel.counts.failed == 1,
+      "task panel projection distinguishes active and unresolved tool status")
+check(livePanel.matching(filter: .all, query: "cafe").map(\.id) == ["tool-3"],
+      "lightweight projection searches all tool labels")
+print("TOOL_INSPECTOR_PASS 180 records, metadata projection, cancellation and full grapheme-safe payload search")

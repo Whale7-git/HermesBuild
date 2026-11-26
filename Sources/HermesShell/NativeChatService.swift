@@ -7,6 +7,15 @@ enum ActiveRunProbe: Equatable, Sendable {
     case unknown
 }
 
+/// A read-only preflight bound to one canonical lost execution epoch.
+/// It cannot be synthesized from a 404 or inferred from transcript content.
+struct UnknownRunResolutionOffer: Equatable, Sendable {
+    let sessionID: String
+    let runID: String
+    let admissionID: String
+    let executionGeneration: Int
+}
+
 @MainActor
 protocol NativeChatService:AnyObject {
     func requiresAuthentication(after error: Error) -> Bool
@@ -20,6 +29,9 @@ protocol NativeChatService:AnyObject {
     /// prove completion; this method lets a durable receipt verify its exact
     /// run without replaying the original POST.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe
+    func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer?
+    /// User-confirmed mutation only. Never automatically repeat it.
+    func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) async throws -> ActiveRunProbe
     func startNativeTurn(sessionID:String,text:String) async throws -> String
     /// 带附件发送。必须在协议 requirement 里声明：否则调用按静态类型派发，
     /// 只会命中 extension 的默认实现（旧实现会忽略附件），HermesAPI 的真实实现
@@ -52,6 +64,8 @@ extension NativeChatService {
     /// Unknown is fail-closed. A backend that cannot prove the exact run is
     /// alive must never turn the receipt into permission to send again.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
+    func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer? { nil }
+    func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) async throws -> ActiveRunProbe { .unknown }
     /// 未实现 steer 的服务按「不支持」处理，调用方会退回排队语义，不会静默丢弃。
     func steerNativeTurn(sessionID:String,text:String) async throws -> String? { "unsupported" }
     /// 没有审批通道的服务：明确回报「不支持」，让界面提示去对应终端处理，

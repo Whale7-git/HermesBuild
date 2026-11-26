@@ -78,7 +78,7 @@ extension ModelTests {
             persistenceIssue: true, recoveryDegraded: true) == .details,
             "persistence warning opens details")
         expect(ChatNoticeAction.choose(hasPendingSend: false, uncertain: true,
-            persistenceIssue: false, recoveryDegraded: true).title == "核对状态",
+            persistenceIssue: false, recoveryDegraded: true).title == "同步状态",
             "label must match the verification action")
         expect(RunTerminalEvidence.outcome(of: SSEFrame(event: "stream_end",
             data: #"{"status":"unknown"}"#, id: "1")) == nil, "unknown stream end is not completion")

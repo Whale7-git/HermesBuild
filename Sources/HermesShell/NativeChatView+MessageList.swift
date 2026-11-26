@@ -103,7 +103,7 @@ extension NativeChatView {
                     // focus request and an optimistic→confirmed ID handoff.
                     pendingUserTurnFocus = false
                     focusedUserTurnID = nil
-                    focusedUserTurnText = nil
+                    focusedUserTurnProof = nil
                 },
                 onControllerReady: { controllerBox.value = $0 },
                 onFindLocationUnavailable: { showToast("该命中暂未能精确定位，请查看消息高亮") }
@@ -371,16 +371,16 @@ extension NativeChatView {
     private func reconcilePending() {
         Task {
             switch await model.reconcilePending() {
-            case .delivered: showToast("已核对：后台已有这条消息")
+            case .delivered: showToast("已在历史中找到这条消息")
             case .absent: showToast("当前历史未发现这条消息，可选择重发")
-            case .failed: showToast("暂不能确认发送结果，请稍后再核对")
+            case .failed: showToast("暂不能确认发送结果，请稍后再同步")
             }
         }
     }
     func cancelAutomaticTurnFocus() {
         pendingUserTurnFocus = false
         focusedUserTurnID = nil
-        focusedUserTurnText = nil
+        focusedUserTurnProof = nil
     }
 
     func navigate(to id: String, offset: Double = 0, findOrdinal: Int? = nil,

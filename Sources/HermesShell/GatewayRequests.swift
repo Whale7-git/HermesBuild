@@ -132,6 +132,20 @@ struct GatewayRequests {
         return try make("v1/runs/\(id)")
     }
 
+    func advertisedCapabilities() throws -> URLRequest {
+        try make("v1/capabilities")
+    }
+
+    func resolveUnknownRun(runID: String, admissionID: String, executionGeneration: Int) throws -> URLRequest {
+        let id = try Self.validatedID(runID)
+        guard !admissionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              executionGeneration >= 0 else { throw GatewayRequestError.invalidID }
+        return try make("v1/runs/\(id)/resolve-unknown", body: [
+            "admission_id": admissionID,
+            "execution_generation": executionGeneration
+        ])
+    }
+
     /// 运行中追加输入，不打断当前轮；服务端在下一个边界注入。
     func steerRun(runID: String, text: String) throws -> URLRequest {
         let id = try Self.validatedID(runID)
