@@ -409,6 +409,74 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    // Upstream canonical admission contract (api_server_authority_runs.py):
+    // only an owned status=unknown with exact admission/generation is eligible.
+    // Capabilities are fetched from the current deployment, never inferred
+    // from a backend kind, a missing Run, or a previous successful request.
+    func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer? {
+        guard runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+        struct Capabilities: Decodable {
+            struct Features: Decodable { let run_unknown_resolution: Bool? }
+            struct Endpoint: Decodable { let method: String; let path: String }
+            struct Endpoints: Decodable { let run_unknown_resolution: Endpoint? }
+            let features: Features
+            let endpoints: Endpoints
+        }
+        struct Status: Decodable {
+            let run_id: String
+            let session_id: String
+            let status: String
+            let admission_id: String?
+            let execution_generation: Int?
+        }
+        do {
+            let capabilityData = try await perform(requests.advertisedCapabilities())
+            guard let caps = try? JSONDecoder().decode(Capabilities.self, from: capabilityData),
+                  caps.features.run_unknown_resolution == true,
+                  let route = caps.endpoints.run_unknown_resolution,
+                  route.method == "POST", route.path == "/v1/runs/{run_id}/resolve-unknown",
+                  runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+            try Task.checkCancellation()
+            let statusData = try await perform(requests.runStatus(runID: runID))
+            try Task.checkCancellation()
+            guard let status = try? JSONDecoder().decode(Status.self, from: statusData),
+                  status.run_id == runID, status.session_id == sessionID, status.status == "unknown",
+                  let admission = status.admission_id,
+                  !admission.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let generation = status.execution_generation, generation >= 0,
+                  runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
+            return UnknownRunResolutionOffer(sessionID: sessionID, runID: runID,
+                admissionID: admission, executionGeneration: generation)
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 404 { return nil }
+            throw error
+        }
+    }
+
+    func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) async throws -> ActiveRunProbe {
+        // The user confirmed the displayed epoch. Re-read both capability and
+        // status immediately before mutation; a different generation must not
+        // be accepted by silently substituting a fresh offer.
+        guard try await unknownRunResolutionOffer(sessionID: offer.sessionID, runID: offer.runID) == offer,
+              runStore.ownsUnknownResolutionCandidate(sessionID: offer.sessionID, runID: offer.runID) else { return .unknown }
+        try Task.checkCancellation()
+        _ = try await perform(requests.resolveUnknownRun(offer))
+        // An acknowledgement is not terminal proof. A fresh, exact GET is
+        // required and no failure path repeats the resolution or chat POST.
+        try Task.checkCancellation()
+        let data = try await perform(requests.runStatus(runID: offer.runID))
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              root["run_id"] as? String == offer.runID,
+              root["session_id"] as? String == offer.sessionID,
+              root["admission_id"] as? String == offer.admissionID,
+              let status = root["status"] as? String,
+              let outcome = RunTerminalStatus(rawValue: status),
+              runStore.ownsUnknownResolutionCandidate(sessionID: offer.sessionID, runID: offer.runID),
+              runStore.recordTerminal(runID: offer.runID, sessionID: offer.sessionID, outcome: outcome) else { return .unknown }
+        clearFailedRunProbes(runID: offer.runID)
+        return .terminal(outcome)
+    }
+
     private func activeRun(sessionID: String, allowBackoff: Bool = true) async throws -> String? {
         guard let runID = runStore.runID(for: sessionID) else { return nil }
         let now = Date().timeIntervalSince1970

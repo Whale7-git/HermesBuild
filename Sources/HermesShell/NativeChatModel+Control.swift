@@ -1,6 +1,54 @@
 import Foundation
 
 extension NativeChatModel {
+    var unknownResolutionRunID: String? {
+        guard uncertain, !runtimeRetired, !suspended, !running, !stopping,
+              !submitting, !loading, !syncing, !reconciling,
+              !recoveryRecordsUnreadable else { return nil }
+        return activeTurnRecovery?.runID ?? unavailableRunStatusID
+    }
+
+    func checkUnknownRunResolution() async throws -> UnknownRunResolutionOffer? {
+        guard let runID = unknownResolutionRunID else { return nil }
+        let generation = revision
+        reconciling = true
+        defer { if revision == generation { reconciling = false } }
+        let offer = try await api.unknownRunResolutionOffer(sessionID: sessionID, runID: runID)
+        guard !runtimeRetired, !suspended, !Task.isCancelled, revision == generation,
+              offer?.sessionID == sessionID, offer?.runID == runID else { return nil }
+        return offer
+    }
+
+    /// The confirmation is owned by the UI; background recovery never calls
+    /// this method. Only the subsequent canonical GET may restore sending.
+    func confirmUnknownRunResolution(_ offer: UnknownRunResolutionOffer) async -> Bool {
+        guard unknownResolutionRunID == offer.runID, offer.sessionID == sessionID else { return false }
+        let generation = revision
+        reconciling = true
+        defer { if revision == generation { reconciling = false } }
+        pauseQueueForRecovery()
+        do {
+            let result = try await api.resolveUnknownRun(offer)
+            guard !runtimeRetired, !suspended, !Task.isCancelled, revision == generation else { return false }
+            if case .terminal(let outcome) = result {
+                guard rememberTerminalStatus(runID: offer.runID, outcome: outcome) else { return false }
+                // Release this single-flight owner before normal refresh;
+                // there is no suspension between the release and call.
+                reconciling = false
+                await refresh(silent: true, preserveLoadedOlder: true)
+                return !uncertain && !recoveryRecordsUnreadable
+            }
+            notice = "服务暂未确认任务结束，消息已保留。请同步状态后再处理。"
+            return false
+        } catch {
+            guard revision == generation, !runtimeRetired, !suspended else { return false }
+            if handleAuthenticationFailure(error) { return false }
+            uncertain = true
+            notice = "暂时无法确认恢复结果，不会自动重复提交。请同步状态。"
+            return false
+        }
+    }
+
     /// Upsert one server request without disturbing sibling requests from the
     /// same run. Returns true only when this identity was newly inserted.
     @discardableResult

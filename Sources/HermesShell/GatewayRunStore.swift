@@ -97,6 +97,15 @@ final class GatewayRunStore {
 
     func runID(for sessionID: String) -> String? { current()[sessionID] }
 
+    /// Mutation requires the exact live local owner, not just a plausible ID.
+    func ownsUnknownResolutionCandidate(sessionID: String, runID: String) -> Bool {
+        guard isValid, !persistenceFailed else { return false }
+        let active = self.runID(for: sessionID)
+        let retired = unresolvedRunID(for: sessionID)
+        guard active == nil || active == runID, retired == nil || retired == runID else { return false }
+        return active == runID || retired == runID
+    }
+
     private func currentTerminals() -> [String: TerminalReceipt] {
         guard isValid else { return [:] }
         guard let defaults else { return terminalReceipts }

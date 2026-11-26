@@ -8,6 +8,8 @@ struct ChatRecoveryCenter: View {
     var onManageQueue: () -> Void
     var onNewConversation: (() -> Void)? = nil
     @State private var confirmNewConversation = false
+    @State private var unknownResolutionOffer: UnknownRunResolutionOffer?
+    @State private var confirmUnknownResolution = false
     @Environment(\.dismiss) private var dismiss
     @State private var confirmAbandonUnreadable = false
     @State private var confirmAbandonActive = false
@@ -169,6 +171,23 @@ struct ChatRecoveryCenter: View {
                               detail: model.cachedHistoryDate == nil
                                 ? "打开会话时会先显示本机副本，再联网核对。"
                                 : "联网核对完成后可继续发送。")
+                    if model.unknownResolutionRunID != nil {
+                        Button("检查能否恢复原会话") {
+                            Task {
+                                do {
+                                    let offer = try await model.checkUnknownRunResolution()
+                                    unknownResolutionOffer = offer
+                                    confirmUnknownResolution = offer != nil
+                                    if offer == nil {
+                                        resultText = "服务没有提供可安全处理的失联任务记录。消息已保留，可重新同步或新建会话。"
+                                    }
+                                } catch {
+                                    resultText = "暂时无法检查恢复方式，请稍后同步。"
+                                }
+                            }
+                        }
+                        .frame(minHeight: 44)
+                    }
                     if model.uncertain && !model.running && !model.stopping,
                        onNewConversation != nil {
                         Button("新建会话继续聊天") { confirmNewConversation = true }
@@ -257,6 +276,20 @@ struct ChatRecoveryCenter: View {
                 }
             } message: {
                 Text("不会停止服务端任务或重发消息。确认前请先核对服务端历史。")
+            }
+            .confirmationDialog("结束已失联的任务？", isPresented: $confirmUnknownResolution, titleVisibility: .visible) {
+                Button("确认处理失联任务", role: .destructive) {
+                    guard let offer = unknownResolutionOffer else { return }
+                    unknownResolutionOffer = nil
+                    Task {
+                        let settled = await model.confirmUnknownRunResolution(offer)
+                        resultText = settled ? "任务状态已恢复，消息已同步。" :
+                            "暂时无法确认恢复结果，原消息和发送限制已保留。"
+                    }
+                }
+                Button("取消", role: .cancel) { unknownResolutionOffer = nil }
+            } message: {
+                Text("服务确认这次任务已失联。处理后仍需同步任务结果，不会重发原消息，也不会自动继续排队消息。")
             }
             .confirmationDialog("新建一个独立会话？", isPresented: $confirmNewConversation, titleVisibility: .visible) {
                 Button("新建会话") { onNewConversation?() }
