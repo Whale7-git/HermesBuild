@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 enum ChatPanel: Identifiable {
@@ -37,22 +38,17 @@ struct ChatTaskPanel: View {
     @State private var toolFilter: ChatTaskToolFilter = .all
     @State private var toolQuery = ""
     @State private var visibleToolLimit = 40
+    @State private var toolSnapshot = ChatTaskToolInspector.Snapshot()
+    @State private var matchingTools: [ChatTaskToolInspector.Row] = []
+    @State private var projectedStructureID: UUID?
+    @State private var projectedLive: Bool?
     @Environment(\.dismiss) private var dismiss
     private var queue: ChatQueueStatus { ChatQueueStatus(turns: model.queuedTurns) }
 
     var body: some View {
-        let live = model.running && model.streamConnected && !model.uncertain &&
-            !model.suspended && !model.transcript.terminal
-        let liveIDs = live ? ChatActivity.activeToolIDs(
-            messages: model.transcript.messages, tools: model.transcript.tools) : []
-        let tools = ChatTaskToolInspector.currentTurn(
-            messages: model.transcript.messages, tools: model.transcript.tools)
-        let counts = ChatTaskToolInspector.counts(
-            tools, activeIDs: liveIDs, running: live)
-        let matching = ChatTaskToolInspector.matching(
-            ChatTaskToolInspector.filtered(tools, by: toolFilter,
-                activeIDs: liveIDs, running: live), query: toolQuery)
-        let visible = ChatTaskToolInspector.visibleNewest(matching, limit: visibleToolLimit)
+        let counts = toolSnapshot.counts
+        let matching = matchingTools
+        let visible = matching.prefix(visibleToolLimit)
         NavigationStack {
             List {
                 Section("当前会话") {
@@ -124,7 +120,7 @@ struct ChatTaskPanel: View {
                         }
                     }
                     if matching.isEmpty {
-                        Text(tools.isEmpty ? "当前没有可关联的工具记录" : "没有符合筛选条件的工具")
+                        Text(toolSnapshot.rows.isEmpty ? "当前没有可关联的工具记录" : "没有符合筛选条件的工具")
                             .foregroundStyle(.secondary)
                     } else {
                         Text("显示 \(visible.count) / \(matching.count) 条 · 最新在前")
@@ -132,15 +128,14 @@ struct ChatTaskPanel: View {
                         ForEach(visible) { tool in
                             Button { onLocateTool(tool.id) } label: {
                                 HStack(alignment: .top, spacing: 10) {
-                                    Image(systemName: tool.isError ? "exclamationmark.circle"
-                                          : (tool.done ? "checkmark.circle" : "clock"))
-                                        .foregroundStyle(tool.isError ? AppTheme.warning : Color.secondary)
+                                    Image(systemName: tool.status == .failed ? "exclamationmark.circle"
+                                          : (tool.status == .finished ? "checkmark.circle" : "clock"))
+                                        .foregroundStyle(tool.status == .failed ? AppTheme.warning : Color.secondary)
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(tool.name).font(.subheadline).foregroundStyle(.primary)
-                                        Text(tool.isError ? "执行失败" :
-                                             (tool.done ? "已完成" :
-                                              (live && liveIDs.contains(tool.id)
-                                               ? "执行中" : "状态待核对")))
+                                        Text(tool.status == .failed ? "执行失败" :
+                                             (tool.status == .finished ? "已完成" :
+                                              (tool.status == .active ? "执行中" : "状态待核对")))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 4)
@@ -165,13 +160,31 @@ struct ChatTaskPanel: View {
                 }
             }
             .scrollContentBackground(.hidden).background(AppTheme.canvas)
-            .onChange(of: toolFilter) { _, _ in visibleToolLimit = 40 }
-            .onChange(of: toolQuery) { _, _ in visibleToolLimit = 40 }
+            .onReceive(model.$transcript.combineLatest(model.$phase, model.$uncertain, model.$suspended)) { values in
+                let (transcript, phase, uncertain, suspended) = values
+                let live = phase.isRunning && phase.isConnected && !uncertain && !suspended && !transcript.terminal
+                if let identity = transcript.transcriptStructureID,
+                   identity == projectedStructureID, live == projectedLive { return }
+                projectedStructureID = transcript.transcriptStructureID
+                projectedLive = live
+                let snapshot = ChatTaskToolInspector.snapshot(messages: transcript.messages,
+                    tools: transcript.tools, live: live)
+                if snapshot != toolSnapshot {
+                    toolSnapshot = snapshot
+                    matchingTools = snapshot.matching(filter: toolFilter, query: toolQuery)
+                }
+            }
+            .onChange(of: toolFilter) { _, _ in updateToolFilter() }
+            .onChange(of: toolQuery) { _, _ in updateToolFilter() }
             .navigationTitle("任务与消息队列").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
                 Button("完成") { dismiss() }
             } }
         }
+    }
+    private func updateToolFilter() {
+        visibleToolLimit = 40
+        matchingTools = toolSnapshot.matching(filter: toolFilter, query: toolQuery)
     }
 }
 

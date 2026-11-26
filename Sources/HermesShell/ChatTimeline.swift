@@ -276,6 +276,53 @@ enum ChatTaskToolInspector {
         let unresolved: Int
     }
 
+    enum RowStatus: Equatable {
+        case finished, failed, active, unresolved
+    }
+    struct Row: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let status: RowStatus
+    }
+    struct Snapshot: Equatable {
+        var rows: [Row] = []
+        var counts: Counts = Counts(total: 0, finished: 0, failed: 0, active: 0, unresolved: 0)
+
+        func matching(filter: ChatTaskToolFilter, query: String) -> [Row] {
+            let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard term.utf16.count <= 512 else { return [] }
+            return rows.filter { row in
+                let matchesStatus: Bool
+                switch filter {
+                case .all: matchesStatus = true
+                case .failed: matchesStatus = row.status == .failed
+                case .active: matchesStatus = row.status == .active
+                case .unresolved: matchesStatus = row.status == .unresolved
+                }
+                return matchesStatus && (term.isEmpty ||
+                    row.name.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil ||
+                    row.id.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil)
+            }
+        }
+    }
+
+    /// The task panel needs identities, labels and state, not tool payloads.
+    /// Build a lightweight projection only on structure or liveness changes.
+    static func snapshot(messages: [ChatMessage], tools: [ChatTool], live: Bool) -> Snapshot {
+        let current = currentTurn(messages: messages, tools: tools)
+        var finished = 0, failed = 0, active = 0, unresolved = 0
+        let rows = current.reversed().map { tool -> Row in
+            let status: RowStatus
+            if tool.isError { failed += 1; status = .failed }
+            else if tool.done { finished += 1; status = .finished }
+            else if live { active += 1; status = .active }
+            else { unresolved += 1; status = .unresolved }
+            return Row(id: tool.id, name: tool.name, status: status)
+        }
+        return Snapshot(rows: rows, counts: Counts(total: rows.count,
+            finished: finished, failed: failed, active: active, unresolved: unresolved))
+    }
+
     static func currentTurn(messages: [ChatMessage], tools: [ChatTool]) -> [ChatTool] {
         let start = messages.lastIndex(where: { $0.role == "user" }) ?? messages.startIndex
         let anchors = Set(messages[start...].map(\.id))
