@@ -1039,6 +1039,14 @@ import Foundation
         precondition(service.approvalCalls.isEmpty &&
                      model.pendingApprovals.map(\.id) == ["a2"],
                      "a stale card tap must not approve its surviving sibling")
+        let staleApproval = model.pendingApprovals[0]
+        let replacementApproval = ChatPendingApproval(id: staleApproval.id, runID: staleApproval.runID,
+            requestID: staleApproval.requestID, executionGeneration: staleApproval.executionGeneration + 1,
+            detail: staleApproval.detail, command: staleApproval.command, choices: staleApproval.choices)
+        model.pendingApprovals = [replacementApproval]
+        await model.respondToApproval("once", requestID: staleApproval.id, expected: staleApproval)
+        precondition(service.approvalCalls.isEmpty && model.pendingApprovals == [replacementApproval],
+                     "same-ID newer approval cannot receive an old card's decision")
         let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
                                       executionGeneration: 3,
                                       detail: "", command: nil, choices: ["once"])
@@ -1131,6 +1139,12 @@ import Foundation
         precondition(service.clarifyCalls.count == callsBeforeStaleAnswer &&
                      model.pendingClarifies.map(\.id) == ["q2"],
                      "a stale card tap must not answer the surviving question")
+        let oldQuestion = model.pendingClarifies[0]
+        service.clarify("q2", generation: 13)
+        try await ModelTests.eventually { model.pendingClarify?.executionGeneration == 13 }
+        await model.respondToClarify("stale answer", requestID: oldQuestion.id, expected: oldQuestion)
+        precondition(service.clarifyCalls.count == callsBeforeStaleAnswer && model.pendingClarify?.executionGeneration == 13,
+                     "same-ID newer clarification cannot receive an old card's answer")
         model.disconnect()
     }
 

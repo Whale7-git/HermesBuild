@@ -87,11 +87,14 @@ extension AppStateTests {
         coordinator.schedule(candidates: candidates, limit: 1, now: 101,
             isEligible: { key, _, _ in key != first[0] },
             onRestore: { candidate in admitted.append(candidate.key); return true })
-        precondition(admitted == rejected, "a rejected admission must remain immediately eligible")
+        precondition(admitted == [first[2]], "rejected admission rotates behind untried work")
         coordinator.schedule(candidates: candidates, limit: 1, now: 102,
             isEligible: { key, _, _ in key != first[0] },
             onRestore: { candidate in admitted.append(candidate.key); return true })
-        precondition(admitted == [first[1], first[2]], "successful admission alone starts cooldown")
+        precondition(admitted == [first[2], first[3]], "untried candidates cannot starve")
+        coordinator.schedule(candidates: candidates.filter { $0.key == first[1] }, limit: 1, now: 103,
+            isEligible: { _, _, _ in true }, onRestore: { candidate in admitted.append(candidate.key); return true })
+        precondition(admitted.last == first[1], "rejected admission has no cooldown")
         print("RECOVERY_ADMISSION_PASS bounded batch, rejected admission retry and cooldown")
 
         precondition(SessionRecoveryCoordinator.canRetireAcceptedReceipt(
