@@ -1102,16 +1102,10 @@ final class NativeChatModel: ObservableObject {
         guard !recoveryRecordsUnreadable else { return .failed(.corruptFile) }
         guard let draftStore else { return .ok }
         let results = draftStore.retryMigration()
-        if results.draft.succeeded {
-            if localPersistenceIssue?.kind == .draft { localPersistenceIssue = nil }
-        } else { recordLocalWrite(results.draft, kind: .draft) }
-        if results.queue.succeeded {
-            if localPersistenceIssue?.kind == .queue { localPersistenceIssue = nil }
-            queueSaveFailed = false
-        } else {
-            queueSaveFailed = true
-            recordLocalWrite(results.queue, kind: .queue)
-        }
+        // Migration/read success does not prove the current in-memory value
+        // was saved. Only a successful explicit write can clear a write issue.
+        if !results.draft.succeeded { recordLocalWrite(results.draft, kind: .draft) }
+        if !results.queue.succeeded { recordLocalWrite(results.queue, kind: .queue) }
         return results.draft.succeeded ? results.queue : results.draft
     }
 
@@ -1125,12 +1119,12 @@ final class NativeChatModel: ObservableObject {
         let validation = draftStore.validateStoredData()
         let migrationResult = migration.draft.succeeded ? migration.queue : migration.draft
         let result = migrationResult.succeeded ? validation : migrationResult
-        if result.succeeded {
-            localPersistenceIssue = nil
-            queueSaveFailed = false
-        } else {
+        if !result.succeeded {
             recordLocalWrite(result, kind: localPersistenceIssue?.kind ?? .draft)
         }
+        // Reading old bytes (or a missing file) cannot acknowledge a failed
+        // newer write. Preserve the warning until the corresponding write
+        // succeeds; keep independent queue failures visible as well.
         return result
     }
 }

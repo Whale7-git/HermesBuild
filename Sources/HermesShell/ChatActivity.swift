@@ -12,23 +12,23 @@ enum ChatActivity: Equatable {
     var title: String {
         switch self {
         case .ready: return "就绪"
-        case .loading: return "正在读取会话…"
-        case .syncing: return "正在同步历史…"
+        case .loading: return "正在同步…"
+        case .syncing: return "正在同步…"
         case .sending: return "正在发送…"
         case .connecting: return "正在连接回复…"
         case .replying: return "Hermes 正在回复…"
         case .stopping: return "正在停止…"
         case .reconnecting: return "连接中断，正在恢复…"
-        case .verifying: return "正在核对后台状态…"
-        case .suspended: return "连接已暂停 · 返回后核对"
-        case .needsVerification: return "后台状态待核对"
+        case .verifying: return "正在同步…"
+        case .suspended: return "连接已暂停"
+        case .needsVerification: return "回复状态尚未确认"
         case .needsLogin: return "登录已失效 · 请重新登录"
         case .readOnly: return "只读会话"
         case .waitingForApproval: return "等待你确认"
         case .waitingForClarify: return "等待你补充信息"
-        case .cached(let syncing): return syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 待联网核对"
+        case .cached(let syncing): return syncing ? "正在同步…" : "离线历史"
         case .tool(let name): return "正在执行 \(name)…"
-        case .failed: return "操作未完成 · 请查看提示"
+        case .failed: return "暂时无法完成"
         }
     }
 
@@ -72,7 +72,7 @@ enum ChatNoticeAction: Equatable {
     var title: String {
         switch self {
         case .details: return "详情"
-        case .reconcilePending, .verifyStatus: return "核对状态"
+        case .reconcilePending, .verifyStatus: return "同步状态"
         case .retry: return "重试"
         }
     }

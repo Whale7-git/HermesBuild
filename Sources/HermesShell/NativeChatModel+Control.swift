@@ -98,7 +98,7 @@ extension NativeChatModel {
             for pending in nextClarifies { _ = upsertPendingClarify(pending) }
             uncertain = true
             pauseQueueForRecovery()
-            notice = "后台仍有待处理审批或澄清，但快照数据不完整；已保留原卡片并锁定发送。"
+            notice = "还有需要你处理的请求，暂时未能完整加载。已保留原请求，暂不能发送。"
             return
         }
 
@@ -195,13 +195,13 @@ extension NativeChatModel {
                 recordRuntimeLog(.info, "approval", "choice=\(choice) accepted")
             case "unsupported":
                 // Unsupported response does not prove the server prompt ended.
-                notice = "当前后端不支持在 App 内审批，请在 WebUI 处理。"
+                notice = "这次审批需要在网页版完成，App 暂不支持。"
                 error = notice
             case "not_pending":
                 removePendingApproval(id: pending.id)
                 notice = "这条审批已经失效（超时或被别处处理），稍后会同步最新状态。"
-            case let other?:
-                notice = "服务端拒绝了这次审批（\(other)）；已保留请求，可核对后重试。"
+            case .some:
+                notice = "服务未能接受这次审批，已保留请求，可同步后重试。"
                 error = notice
             }
         } catch {
@@ -270,13 +270,13 @@ extension NativeChatModel {
                 notice = nil
                 recordRuntimeLog(.info, "clarify", "answered chars=\(text.count)")
             case "unsupported":
-                notice = "当前后端不支持在 App 内回答补充信息，请在 WebUI 处理。"
+                notice = "这次补充信息需要在网页版填写，App 暂不支持。"
                 error = notice
             case "not_pending":
                 removePendingClarify(id: pending.id)
                 notice = "这条提问已经失效（超时或被别处处理），稍后会同步最新状态。"
-            case let other?:
-                notice = "服务端拒绝了这次回答（\(other)）；已保留请求和输入，可核对后重试。"
+            case .some:
+                notice = "服务未能接受这次回答，已保留输入，可同步后重试。"
                 error = notice
             }
         } catch {
@@ -315,7 +315,7 @@ extension NativeChatModel {
             guard generation == revision, streamID == active, !Task.isCancelled else { return }
             stopAcknowledged = true
             stopRejectedStatusCode = nil
-            notice = "停止请求已受理，正在核对后台任务是否真正结束。"
+            notice = "已请求停止，正在确认回复是否结束。"
             await verifyPendingStop()
             if stopping { scheduleStopStatusPolling() }
         } catch {
@@ -327,10 +327,10 @@ extension NativeChatModel {
             if let stopError = error as? ChatStopHTTPError,
                case .rejected(let code) = stopError {
                 stopRejectedStatusCode = code
-                notice = "停止请求被服务端拒绝（HTTP \(code)）；正在核对原 Run，发送保持锁定。"
+                notice = "停止请求未被接受，正在确认回复状态，暂不能发送。"
             } else {
                 stopRejectedStatusCode = nil
-                notice = "停止请求结果未知；正在核对原 Run，发送保持锁定。"
+                notice = "停止请求结果未知，正在确认回复状态，暂不能发送。"
             }
             // A failed/unknown STOP response is not terminal evidence. Perform
             // a fresh GET-only check, then continue the bounded poll if needed.
@@ -356,19 +356,19 @@ extension NativeChatModel {
             switch result {
             case .alive:
                 if stopAcknowledged {
-                    notice = "停止请求已受理，后台任务尚未结束；发送仍保持锁定。"
-                } else if let code = stopRejectedStatusCode {
-                    notice = "停止请求被服务端拒绝（HTTP \(code)），原任务仍运行；发送保持锁定。"
+                    notice = "已请求停止，回复尚未结束，暂不能发送。"
+                } else if stopRejectedStatusCode != nil {
+                    notice = "停止请求未被接受，回复仍在进行。"
                 } else {
-                    notice = "停止请求结果未知，原任务仍运行；发送保持锁定。"
+                    notice = "停止请求结果未知，回复仍在进行。"
                 }
             case .unknown:
                 if stopAcknowledged {
-                    notice = "停止请求已受理，暂时无法确认后台终态；发送仍保持锁定。"
-                } else if let code = stopRejectedStatusCode {
-                    notice = "停止请求被服务端拒绝（HTTP \(code)），后台状态仍未知；发送保持锁定。"
+                    notice = "已请求停止，暂时无法确认回复是否结束。"
+                } else if stopRejectedStatusCode != nil {
+                    notice = "停止请求未被接受，暂时无法确认回复是否结束。"
                 } else {
-                    notice = "停止请求结果未知，后台状态仍未知；发送保持锁定。"
+                    notice = "停止请求结果未知，暂时无法确认回复是否结束。"
                 }
             case .unresolved:
                 uncertain = true
@@ -376,7 +376,7 @@ extension NativeChatModel {
                 streamID = nil
                 stopAcknowledged = false
                 transition(to: .idle)
-                notice = "后台未找到原任务；已停止本地运行指示，原发送结果仍待核对。"
+                notice = "服务暂时找不到这次任务，尚不能确认是否停止。"
             case .terminal(let outcome):
                 guard rememberTerminalStatus(runID: active, outcome: outcome) else {
                     uncertain = true
@@ -389,7 +389,7 @@ extension NativeChatModel {
                       finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
                     uncertain = true
                     pauseQueueForRecovery()
-                    notice = "后台已结束，但最终历史尚未确认；请稍后核对。"
+                    notice = "任务已结束，最后的回复尚未同步，请稍后重试。"
                     return
                 }
                 stopStatusPollTask?.cancel()
@@ -417,7 +417,7 @@ extension NativeChatModel {
             self.error = error.localizedDescription
             uncertain = true
             pauseQueueForRecovery()
-            notice = "停止请求已受理，但终态或历史同步失败；不会重复提交消息。"
+            notice = "暂时无法同步停止状态或最后的回复，不会重复发送消息。"
         }
     }
 
@@ -448,7 +448,7 @@ extension NativeChatModel {
                       self.streamID == active, self.stopping, !self.suspended else { return }
             }
             if generation == self.revision, self.streamID == active, self.stopping {
-                self.notice = "停止状态暂未得到服务端确认；不会再次发送停止或聊天请求。返回会话时将自动继续核对。"
+                self.notice = "尚未确认是否停止，返回会话时将自动继续同步，不会重复发送请求。"
             }
         }
     }

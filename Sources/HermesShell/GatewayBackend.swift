@@ -462,9 +462,27 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     /// and cancellation still abort.
     private func activeRunForHistory(sessionID: String) async throws -> GatewayActiveRunHistory {
         guard let runID = runStore.runID(for: sessionID) else {
-            return GatewayActiveRunHistory(
-                evidence: runStore.unresolvedRunID(for: sessionID) == nil ? .absent : .unknown,
-                pendingControls: nil)
+            guard let unresolvedID = runStore.unresolvedRunID(for: sessionID) else {
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            // A tombstone may outlive the model receipt (including a crash).
+            // Give the exact original Run a read-only path to converge; never
+            // infer absence from a 404, an old reply, or elapsed time.
+            if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: unresolvedID),
+               runStore.recordTerminal(runID: unresolvedID, sessionID: sessionID, outcome: terminal) {
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            if let retryAt = nextRunProbeAt[unresolvedID], Date().timeIntervalSince1970 < retryAt {
+                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+            }
+            let proof = try await verifyUnresolvedRun(sessionID: sessionID, runID: unresolvedID)
+            if case .terminal = proof, runStore.runID(for: sessionID) == nil,
+               runStore.unresolvedRunID(for: sessionID) == nil {
+                clearFailedRunProbes(runID: unresolvedID)
+                return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
+            }
+            nextRunProbeAt[unresolvedID] = Date().timeIntervalSince1970 + 30
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
