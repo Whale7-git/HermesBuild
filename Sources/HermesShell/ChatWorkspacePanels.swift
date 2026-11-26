@@ -50,17 +50,23 @@ struct ChatTaskPanel: View {
         NavigationStack {
             List {
                 Section("当前会话") {
-                    Label(model.activity.title,
-                          systemImage: model.activity.showsProgress ? "waveform" : "bubble.left")
+                    Label(model.presentationState.title,
+                          systemImage: model.presentationState.showsProgress ? "waveform"
+                          : (model.presentationState.showsWarning ? "exclamationmark.circle" : "bubble.left"))
                     if model.pendingApproval != nil {
                         Label("需要你确认后继续；请回聊天页处理审批。", systemImage: "hand.raised")
                             .foregroundStyle(AppTheme.warning)
                         Button("返回聊天处理审批") { dismiss() }
                     }
-                    if let error = model.error {
+                    if model.pendingClarify != nil {
+                        Label("需要你补充信息后继续。", systemImage: "questionmark.bubble")
+                            .foregroundStyle(AppTheme.warning)
+                        Button("返回聊天补充信息") { dismiss() }
+                    }
+                    if model.presentationState.hasError, let error = model.error {
                         Text(error).font(.footnote).foregroundStyle(AppTheme.warning).textSelection(.enabled)
                     }
-                    if let notice = model.notice {
+                    if let notice = model.presentationState.notice {
                         Text(notice).font(.footnote).foregroundStyle(.secondary)
                     }
                 }

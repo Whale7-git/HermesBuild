@@ -10,7 +10,10 @@ extension NativeChatView {
     }
 
     var showsNoticeBar: Bool {
-        guard !noticeBarDismissed, !showsFullPageFailure else { return false }
+        guard !showsFullPageFailure else { return false }
+        // Safety notices cannot disappear while the actual recovery lock is active.
+        guard !noticeBarDismissed || model.presentationState.needsVerification
+                || model.localPersistenceIssue != nil || model.queuePersistenceFailed else { return false }
         // An ordinary confirmed disk snapshot is already on screen. Its
         // authoritative GET must run, but the healthy cache/sync transition
         // is not a warning and must not insert a yellow row on every open.
@@ -61,7 +64,7 @@ extension NativeChatView {
                         .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
-                    .accessibilityLabel("待处理请求 \(requests.count) 个，当前显示 \(requests[0].kind)")
+                    .accessibilityLabel("待处理请求 \(requests.count) 个，当前显示 \(requests.first(where: { $0.id == selected })?.kind ?? "请求")")
                 }
             }
             .background(AppTheme.surface)
@@ -297,7 +300,7 @@ extension NativeChatView {
         if model.stopping { return .verifyStatus }
         return ChatNoticeAction.choose(
             hasPendingSend: model.hasPendingSend,
-            uncertain: model.uncertain,
+            uncertain: model.uncertain || model.activity == .needsVerification,
             persistenceIssue: model.localPersistenceIssue != nil || model.queuePersistenceFailed,
             recoveryDegraded: model.runRecoveryNoticeShown)
     }
@@ -325,17 +328,20 @@ extension NativeChatView {
             .disabled(noticeChecking || model.loading || model.syncing
                       || model.submitting || model.reconciling
                       || model.authenticationRequired)
-            Button {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { noticeBarDismissed = true }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+            if !model.presentationState.needsVerification &&
+                model.localPersistenceIssue == nil && !model.queuePersistenceFailed {
+                Button {
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { noticeBarDismissed = true }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("关闭提示")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭提示")
         }
         .padding(.leading, AppTheme.pagePadding)
         .padding(.trailing, 4)

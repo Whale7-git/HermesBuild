@@ -134,7 +134,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "等待你确认" }
         if signals.contains(.waitingForClarify) { return "等待你补充信息" }
         if signals.contains(.recoveryIssue) { return "后台恢复需处理" }
-        if signals.contains(.needsVerification) { return "发送结果待核对" }
+        if signals.contains(.needsVerification) { return "后台状态待核对" }
         if signals.contains(.stopping) { return "正在停止" }
         if signals.contains(.terminalFailed) { return "任务失败" }
         if signals.contains(.terminalInterrupted) { return "任务中断" }
@@ -147,7 +147,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "回复停在审批步骤" }
         if signals.contains(.waitingForClarify) { return "Hermes 正在等待你的回答" }
         if signals.contains(.recoveryIssue) { return "检查恢复记录后继续" }
-        if signals.contains(.needsVerification) { return "确认前不会自动重发" }
+        if signals.contains(.needsVerification) { return "核对运行或发送结果；不会自动重发" }
         if signals.contains(.stopping) { return "等待服务端确认" }
         if signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted) || signals.contains(.terminalCancelled) { return "已核对最终历史，打开会话查看" }
         if signals.contains(.synchronizing) { return "自动同步任务结果" }
@@ -158,7 +158,7 @@ struct SessionTaskSummary: Identifiable, Equatable, Sendable {
         if signals.contains(.waitingForApproval) { return "hand.raised.fill" }
         if signals.contains(.waitingForClarify) { return "text.bubble.fill" }
         if signals.contains(.recoveryIssue) { return "exclamationmark.triangle.fill" }
-        if signals.contains(.needsVerification) { return "paperplane.badge.clock" }
+        if signals.contains(.needsVerification) { return "clock.badge.questionmark" }
         if signals.contains(.stopping) { return "stop.circle.fill" }
         if signals.contains(.terminalFailed) || signals.contains(.terminalInterrupted) { return "exclamationmark.circle" }
         if signals.contains(.terminalCancelled) { return "stop.circle" }

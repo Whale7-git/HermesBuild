@@ -16,6 +16,8 @@ let facts = ["verify": SessionTaskObservation(signals: [.needsVerification])]
 state.update(sessions: rows, observations: facts)
 check(state.summaries.map(\.sessionID) == ["verify", "run"], "stable task ordering")
 check(state.byID["verify"]?.needsAttention == true, "indexed task matches summary")
+check(state.byID["verify"]?.title == "后台状态待核对",
+      "a verification signal does not assert that original POST delivery is unknown")
 check(state.all.attention.map(\.sessionId) == ["verify"], "all snapshot attention")
 check(state.pinnedOnly.attention.map(\.sessionId) == ["verify"], "pinned attention")
 check(state.pinnedOnly.running.isEmpty, "pinned filter excludes unpinned run")

@@ -202,6 +202,16 @@ extension ModelTests {
             verificationPending: true, errorPresent: false, warningPresent: true, notice: "stop")
         expect(stopPresentation.title == ChatActivity.stopping.title,
             "automatic recovery cannot hide an outstanding STOP")
+        let approvalPresentation = SessionPresentationState(activity: .waitingForApproval,
+            transcriptAvailable: true, routineRecovery: true, requiresAction: false,
+            verificationPending: false, errorPresent: false, warningPresent: false, notice: nil)
+        expect(approvalPresentation.title == "等待你确认" && !approvalPresentation.showsProgress,
+            "interactive approval never appears as background synchronization")
+        let clarifyPresentation = SessionPresentationState(activity: .waitingForClarify,
+            transcriptAvailable: true, routineRecovery: true, requiresAction: false,
+            verificationPending: false, errorPresent: false, warningPresent: false, notice: nil)
+        expect(clarifyPresentation.title == "等待你补充信息" && !clarifyPresentation.showsProgress,
+            "interactive clarification is not a running spinner")
         print("ACTIVITY_STAGE confirmed terminal completion")
         try await eventually { complete.completedReplies == 1 }
         expect(complete.activity == .ready && complete.completedReplies == 1, "done plus canonical idle history emits one real completion")
