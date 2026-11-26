@@ -12,6 +12,7 @@ final class ChatTimelineProjection: ObservableObject {
         let toolsAreLive: Bool
         let transcriptRevision: UInt64
         let transcriptStructureRevision: UInt64
+        let transcriptStructureID: UUID?
 
         static func == (lhs: Source, rhs: Source) -> Bool {
             lhs.messages == rhs.messages && lhs.tools == rhs.tools
@@ -24,7 +25,8 @@ final class ChatTimelineProjection: ObservableObject {
                 messages: messages, tools: tools, notices: notices,
                 running: running, toolsAreLive: toolsAreLive,
                 transcriptRevision: transcriptRevision,
-                transcriptStructureRevision: transcriptStructureRevision)
+                transcriptStructureRevision: transcriptStructureRevision,
+                transcriptStructureID: transcriptStructureID)
         }
     }
     @Published private(set) var items: [ChatRowItem] = [] {
@@ -69,7 +71,8 @@ final class ChatTimelineProjection: ObservableObject {
                        running: phase.isRunning && !transcript.terminal,
                        toolsAreLive: toolsAreLive && !transcript.terminal,
                        transcriptRevision: transcript.transcriptRevision,
-                       transcriptStructureRevision: transcript.transcriptStructureRevision)
+                       transcriptStructureRevision: transcript.transcriptStructureRevision,
+                       transcriptStructureID: transcript.transcriptStructureID)
             }
             .sink { [weak self] source in
                 guard let self else { return }
@@ -86,7 +89,10 @@ final class ChatTimelineProjection: ObservableObject {
                         self.items = updated
                         return
                     }
-                    if source == previous { return }
+                    if source == previous {
+                        self.previousSource = source
+                        return
+                    }
                     if let updated = self.fastToolUpdate(from: previous, to: source) {
                         self.previousSource = source
                         self.items = updated

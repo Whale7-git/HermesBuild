@@ -2,8 +2,6 @@ name: Hermes offline diagnostics (nonblocking)
 
 # Diagnostics do NOT gate candidate IPA builds or release promotion.
 on:
-  push:
-    branches: [chore/diagnostics-quality-convergence-20261127]
   pull_request:
     branches: [main]
   workflow_dispatch:
