@@ -26,7 +26,7 @@ extension NativeChatView {
             running: model.running,
             stopping: model.stopping,
             canStop: model.streamID != nil && !model.submitting,
-            canSend: (model.canSend || model.canSendWhileRunning) && !attachments.isEditing && !preparingAttachmentSend,
+            canSend: (model.canSend || model.canSendWhileRunning) && attachments.canSend && !preparingAttachmentSend,
             preparingSubmission: preparingAttachmentSend,
             hasReadyAttachments: attachments.canSend && !attachments.batch.items.isEmpty,
             hasAttachmentItems: !attachments.batch.items.isEmpty || attachments.isImporting || attachments.errorMessage != nil,
