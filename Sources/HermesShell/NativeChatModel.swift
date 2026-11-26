@@ -625,6 +625,9 @@ final class NativeChatModel: ObservableObject {
         /// Dismissing the provisional bubble cannot destroy POST evidence.
         /// Optional preserves decoding of durable records created by old builds.
         var hiddenFromTranscript: Bool? = nil
+        // Optional for backward compatibility. Text and attachment equality
+        // never grants ownership of another queued transaction.
+        var queuedTurnID: String? = nil
 
         func resolution(in snapshot: ChatSnapshot) -> PendingReconcileResult {
             DeliveryReconciliationPolicy.resolve(

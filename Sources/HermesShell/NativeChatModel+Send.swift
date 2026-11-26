@@ -209,7 +209,7 @@ extension NativeChatModel {
         let slashCommand = queued.attachments.isEmpty ? ChatSlashCommand.parse(queued.text) : nil
         let result = await submitQueued(text: queued.text, attachments: queued.attachments,
                                         composerText: queued.composerText, origin: queued.origin,
-                                        slashCommand: slashCommand)
+                                        slashCommand: slashCommand, queuedTurnID: queued.id)
         guard !runtimeRetired else { return false }
         if result.accepted {
             if queuedTurns.first?.id == queued.id {
@@ -233,8 +233,9 @@ extension NativeChatModel {
         guard queueEditingTurnID == nil, !reconciling else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery != .submitting else { return }
-        queuedTurns.remove(at: index)
-        persistQueue()
+        var next = queuedTurns
+        next.remove(at: index)
+        commitQueueMutation(next)
     }
 
     /// Explicit recovery for a queue turn whose POST result was lost. The
@@ -243,10 +244,10 @@ extension NativeChatModel {
         guard queuedTurns.first?.id == id,
               queuedTurns.first?.delivery != .submitting,
               let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return false }
-        queuedTurns[index].delivery = .waiting
-        queuedTurns[index].automaticAfterStreamID = nil
-        persistQueue()
-        return true
+        var next = queuedTurns
+        next[index].delivery = .waiting
+        next[index].automaticAfterStreamID = nil
+        return commitQueueMutation(next)
     }
 
     /// Recover an uncertain queued turn without guessing whether its failed
@@ -259,15 +260,10 @@ extension NativeChatModel {
               queuedTurns.first?.id == id,
               queuedTurns.first?.delivery == .uncertain else { return false }
 
-        if let pending = pendingSend, pending.text == queuedTurns[0].text,
-           pending.attachments == queuedTurns[0].attachments {
+        if let pending = pendingSend, pending.queuedTurnID == id {
             switch await reconcilePending() {
             case .delivered:
-                guard queuedTurns.first?.id == id else { return false }
-                queuedTurns.removeFirst()
-                persistQueue()
-                error = nil
-                notice = "已确认这条消息此前送达；队列记录已清除，不会重复发送。"
+                // The common history settlement owns durable removal.
                 return false
             case .absent:
                 discardPending(restoreDraft: false)
@@ -328,8 +324,9 @@ extension NativeChatModel {
                 switch decision {
                 case .delivered:
                     guard queuedTurns.first?.id == id else { return false }
-                    queuedTurns.removeFirst()
-                    persistQueue()
+                    var next = queuedTurns
+                    next.removeFirst()
+                    guard commitQueueMutation(next) else { uncertain = true; return false }
                     uncertain = false
                     error = nil
                     notice = "已确认这条消息此前送达；队列记录已清除，不会重复发送。"
@@ -359,13 +356,35 @@ extension NativeChatModel {
     /// A normal history refresh can prove a failed queued POST was accepted.
     /// Remove its durable queue record at the same moment the local pending
     /// bubble is settled, so a later "retry" cannot replay the same turn.
-    func acknowledgeDeliveredQueuedTurn(matching pending: PendingSend) {
-        guard let first = queuedTurns.first,
-              first.delivery == .uncertain,
-              first.text == pending.text,
-              first.attachments == pending.attachments else { return }
-        queuedTurns.removeFirst()
-        persistQueue()
+    @discardableResult
+    func acknowledgeDeliveredQueuedTurn(matching pending: PendingSend) -> Bool {
+        guard let id = pending.queuedTurnID,
+              let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
+        guard queuedTurns[index].needsReconcile else { return false }
+        var next = queuedTurns
+        next.remove(at: index)
+        return commitQueueMutation(next)
+    }
+
+    /// Publish a queue mutation only after the new complete snapshot is durable.
+    /// Enqueue keeps its explicit in-memory fallback; destructive edits do not.
+    @discardableResult
+    private func commitQueueMutation(_ next: [ChatQueuedTurn]) -> Bool {
+        guard !runtimeRetired else { return false }
+        guard let data = ChatSendQueueCodec.encode(next) else {
+            recordLocalWrite(.failed(.encoding), kind: .queue)
+            return false
+        }
+        let result = draftStore?.saveQueued(next.isEmpty ? nil : data) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .queue)
+            pauseQueueForRecovery()
+            error = "无法保存队列变更，原记录已保留；请检查本地存储。"
+            return false
+        }
+        queuedTurns = next
+        queueSaveFailed = false
+        return true
     }
 
     func beginQueuedTurnEdit(id: String) -> ChatQueuedTurn? {
@@ -428,9 +447,7 @@ extension NativeChatModel {
         next[index].historyEnd = nil
         next[index].knownIDs = []
         next[index].submittedAt = nil
-        queuedTurns = next
-        persistQueue()
-        return true
+        return commitQueueMutation(next)
     }
 
     /// Recovery only inspects user rows newer than the saved boundary, so IDs
@@ -450,8 +467,7 @@ extension NativeChatModel {
         let turn = next.remove(at: source)
         let insertion = source < target ? target - 1 : target
         next.insert(turn, at: insertion)
-        queuedTurns = ChatQueueOrdering.prioritize(next)
-        persistQueue()
+        commitQueueMutation(ChatQueueOrdering.prioritize(next))
     }
 
     func setQueuedTurns(_ turns: [ChatQueuedTurn]) {
@@ -470,9 +486,11 @@ extension NativeChatModel {
             queueClearRefusal = "有 \(inFlight.count) 条消息正在发送，无法清除；请等结果出来再试。"
             return
         }
-        queueClearRefusal = nil
-        queuedTurns = ChatQueueOrdering.prioritize(turns)
-        persistQueue()
+        if commitQueueMutation(ChatQueueOrdering.prioritize(turns)) {
+            queueClearRefusal = nil
+        } else {
+            queueClearRefusal = "无法保存队列变更，原记录已保留。"
+        }
     }
 
     func setQueueAutomaticDispatchPaused(_ paused: Bool) {
@@ -597,16 +615,16 @@ extension NativeChatModel {
     /// Boolean result avoids turning an ambiguous transport error into success.
     private func submitQueued(text: String, attachments: [ChatAttachmentPayload],
                               composerText: String, origin: ChatSendOrigin,
-                              slashCommand: ChatSlashCommand.Match?) async -> SubmitResult {
+                              slashCommand: ChatSlashCommand.Match?, queuedTurnID: String) async -> SubmitResult {
         await performSubmit(text: text, attachments: attachments, composerText: composerText,
                             consumeDraft: false, origin: origin,
-                            slashCommand: slashCommand)
+                            slashCommand: slashCommand, queuedTurnID: queuedTurnID)
     }
 
     private func performSubmit(text: String, attachments: [ChatAttachmentPayload],
                                composerText: String, consumeDraft: Bool,
                                origin: ChatSendOrigin,
-                               slashCommand: ChatSlashCommand.Match?) async -> SubmitResult {
+                               slashCommand: ChatSlashCommand.Match?, queuedTurnID: String? = nil) async -> SubmitResult {
         guard !runtimeRetired, !recoveryOnly else { return SubmitResult(accepted: false, completed: false) }
         let originalDraft: String? = consumeDraft ? draft : nil
         publishTask?.cancel()
@@ -643,7 +661,8 @@ extension NativeChatModel {
         activeTurnHistoryBoundary = confirmedHistoryEnd
         pendingSend = PendingSend(id:pendingID, text:text, attachments:attachments,
                                   composerText:composerText, historyEnd:confirmedHistoryEnd,
-                                  knownIDs:knownIDs, createdAt:startedAt, origin:origin)
+                                  knownIDs:knownIDs, createdAt:startedAt, origin:origin,
+                                  queuedTurnID: queuedTurnID)
         guard persistPendingSend().succeeded else {
             transition(to: .idle)
             uncertain = true
@@ -848,11 +867,14 @@ extension NativeChatModel {
             return .failed
         }
         if decision == .delivered {
+            guard acknowledgeDeliveredQueuedTurn(matching: pending) else {
+                uncertain = true
+                return .failed
+            }
             buffer.messages.removeAll { $0.id == pending.id }
             pendingSend = nil
-            acknowledgeDeliveredQueuedTurn(matching: pending)
             settleAcceptedAttachments(pending.attachments.map(\.path))
-            clearOriginalDraft(pending.composerText)
+            if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             notice = "已从完整历史确认消息送达；没有重新提交。"
             uncertain = false
             pendingAbsent = false
@@ -869,6 +891,13 @@ extension NativeChatModel {
     /// 仅在核对确认后台不存在（`.absent`）后重发，附件原样带回（服务端引用，不重新上传）。
     func resendPending() async -> Bool {
         guard canResendPending, let pending = pendingSend else { return false }
+        if let id = pending.queuedTurnID {
+            guard queuedTurns.contains(where: { $0.id == id }) else {
+                error = "原队列记录已变化，请在恢复中心核对后处理。"
+                return false
+            }
+            return await dispatchSelectedQueuedTurn(id: id)
+        }
         buffer.messages.removeAll { $0.id == pending.id }
         uncertain = false
         pendingAbsent = false
@@ -903,7 +932,7 @@ extension NativeChatModel {
             pendingSend = nil
         }
         // 原文回填只填空输入框，不覆盖等待期间的新输入；附件占位不是用户文本。
-        if restoreDraft,
+        if restoreDraft, pending.queuedTurnID == nil,
            draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            !pending.composerText.isEmpty {
             draft = pending.composerText
