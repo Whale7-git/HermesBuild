@@ -355,8 +355,10 @@ extension NativeChatView {
 
     /// An explicit command is the only action allowed to interrupt user scrolling.
     func goToLatest(animated: Bool) {
+        cancelAutomaticTurnFocus()
         restoreCancelled = true
         scroll.jumpToLatest()
+        scrollCommand.focusTurn = false
         scrollCommand.targetID = nil
         scrollCommand.offsetInRow = 0
         scrollCommand.findOrdinal = nil
@@ -374,7 +376,17 @@ extension NativeChatView {
             }
         }
     }
-    func navigate(to id: String, offset: Double = 0, findOrdinal: Int? = nil) {
+    func cancelAutomaticTurnFocus() {
+        pendingUserTurnFocus = false
+        focusedUserTurnID = nil
+        focusedUserTurnText = nil
+    }
+
+    func navigate(to id: String, offset: Double = 0, findOrdinal: Int? = nil,
+                  restoring: Bool = false) {
+        if !restoring { restoreCancelled = true; restoringReading = false }
+        cancelAutomaticTurnFocus()
+        scrollCommand.focusTurn = false
         scroll.update(distanceFromBottom: ChatScrollState.detachThreshold + 1)
         scrollCommand.targetID = id
         scrollCommand.offsetInRow = offset
@@ -402,7 +414,7 @@ extension NativeChatView {
             // 分页会在 `loadOlder()` 里刷新 transcript，`items` 随之更新，
             // 所以下一轮看到的仍是当前真实行集合，不需要自己重建。
             if items.contains(where: { $0.id == position.rowID }) {
-                navigate(to: position.rowID, offset: position.offsetInRow)
+                navigate(to: position.rowID, offset: position.offsetInRow, restoring: true)
                 return
             }
             guard page < 12, model.canLoadOlderHistory else { break }

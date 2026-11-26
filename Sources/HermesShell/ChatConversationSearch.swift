@@ -30,6 +30,11 @@ enum ChatConversationSearch {
     /// Search the loaded message window, not unpaged server history.
     /// UTF-16 offsets stay inside NSString; snippets preserve grapheme boundaries.
     static func findDetailed(_ query: String, in documents: [Document], limit: Int = 300) -> Result {
+        scan(query, in: documents, limit: limit, prepare: searchableText)
+    }
+
+    static func scan(_ query: String, in documents: [Document], limit: Int = 300,
+                     prepare: (Document) -> String) -> Result {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty, limit > 0 else {
             return Result(hits: [], hasMoreMatches: false, queryTooLong: false)
@@ -42,7 +47,7 @@ enum ChatConversationSearch {
             if Task.isCancelled {
                 return Result(hits: [], hasMoreMatches: false, queryTooLong: false)
             }
-            let source = searchableText(document) as NSString
+            let source = prepare(document) as NSString
             var start = 0
             while start < source.length {
                 if Task.isCancelled {
@@ -150,10 +155,7 @@ actor ChatFindWorker {
         for id in Array(cache.keys) where !currentIDs.contains(id) {
             if let old = cache.removeValue(forKey: id) { bytes -= old.cost }
         }
-        var prepared: [ChatConversationSearch.Document] = []
-        prepared.reserveCapacity(documents.count)
-        for document in documents {
-            if Task.isCancelled { return .init(hits: [], hasMoreMatches: false, queryTooLong: false) }
+        return ChatConversationSearch.scan(term, in: documents) { document in
             let plain: String
             if let entry = cache[document.id], entry.document.text == document.text,
                entry.document.markdown == document.markdown {
@@ -171,9 +173,8 @@ actor ChatFindWorker {
                     bytes += cost
                 }
             }
-            prepared.append(.init(id: document.id, text: plain))
+            return plain
         }
-        return ChatConversationSearch.findDetailed(term, in: prepared)
     }
 }
 
