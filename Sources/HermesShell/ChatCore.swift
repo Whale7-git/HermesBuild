@@ -835,6 +835,28 @@ struct ChatTranscript: Codable {
     private var approvalRequestID: String?
     private var updatingStreamingTail = false
 
+    /// A lower bound on the encoded payload: JSON cannot encode these string
+    /// bodies in fewer UTF-8 bytes. Bail out before allocating an already
+    /// oversized full checkpoint; the exact encoded size remains authoritative.
+    func exceedsCheckpointPayloadBudget(_ limit: Int) -> Bool {
+        guard limit >= 0 else { return true }
+        var remaining = limit
+        func consume(_ value: String) -> Bool {
+            let count = value.utf8.count
+            guard count <= remaining else { return false }
+            remaining -= count
+            return true
+        }
+        guard consume(reasoning) else { return true }
+        for message in messages {
+            guard consume(message.content) else { return true }
+        }
+        for tool in tools {
+            guard consume(tool.args), consume(tool.result) else { return true }
+        }
+        return false
+    }
+
     /// A cursor is resumable only when the projection includes that event
     /// and the exact deduplication and streaming-tail state.
     func canResume(at cursor: String) -> Bool {

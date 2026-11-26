@@ -153,6 +153,26 @@ import Foundation
         precondition(LocalDataFileStore.recoverySessions(instanceID: "discover",
             accountScope: "two", rootDirectory: root) == ["s"])
 
+        // Discovery must distinguish an empty first launch, an invalid
+        // root, and a damaged marker without hiding other valid receipts.
+        let missingDiscovery = LocalDataFileStore.inspectRecoverySessions(instanceID: "discover",
+            accountScope: "one", rootDirectory: root.appendingPathComponent("missing-index-root"))
+        precondition(missingDiscovery.isHealthy && missingDiscovery.sessions.isEmpty)
+        let brokenDiscovery = LocalDataFileStore(instanceID: "discover", accountScope: "two",
+            sessionID: "broken", rootDirectory: root)
+        precondition(brokenDiscovery.savePending(Data([4])).succeeded)
+        try Data("invalid marker".utf8).write(to: brokenDiscovery.recoveryIndexURL)
+        let partialDiscovery = LocalDataFileStore.inspectRecoverySessions(instanceID: "discover",
+            accountScope: "two", rootDirectory: root)
+        precondition(!partialDiscovery.isHealthy && partialDiscovery.corruptMarkers == 1)
+        precondition(partialDiscovery.sessions == ["s"])
+        precondition(FileManager.default.fileExists(atPath: brokenDiscovery.pendingURL.path))
+        let indexRootFile = root.appendingPathComponent("index-root-file")
+        try Data([1]).write(to: indexRootFile)
+        let unreadableDiscovery = LocalDataFileStore.inspectRecoverySessions(instanceID: "discover",
+            accountScope: "two", rootDirectory: indexRootFile)
+        precondition(unreadableDiscovery.directoryUnreadable && !unreadableDiscovery.isHealthy)
+
         let stats = LocalDataFileStore.statistics(instanceID: "instance", accountScope: "acct-1",
                                                   rootDirectory: root)
         precondition(stats.files >= 3 && stats.payloadBytes > 0 && stats.isHealthy)

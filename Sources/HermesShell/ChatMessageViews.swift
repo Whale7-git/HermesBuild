@@ -892,14 +892,14 @@ struct ChatToolDetail: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("复制工具结果")
+                        .accessibilityLabel(tool.uncachedResultBytes == nil ? "复制工具结果" : "复制已缓存工具结果")
                     }
                     Text(String(tool.result.prefix(16000)))
                         .font(.system(.caption, design: .monospaced))
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .lineLimit(20)
-                    Button("分页查看完整结果") {
+                    Button(tool.uncachedResultBytes == nil ? "分页查看完整结果" : "查看已缓存结果") {
                         resultPage = 0
                         showFullResult = true
                     }
@@ -920,13 +920,14 @@ struct ChatToolDetail: View {
                 // A multi-megabyte result must not be rendered in one
                 // SwiftUI Text layout. Only the current page is instantiated.
                 let pageCount = max(1, (tool.result.count + resultPageSize - 1) / resultPageSize)
-                ReadOnlyResultView(text: String(tool.result.dropFirst(resultPage * resultPageSize)
+                let visiblePage = min(resultPage, pageCount - 1)
+                ReadOnlyResultView(text: String(tool.result.dropFirst(visiblePage * resultPageSize)
                     .prefix(resultPageSize)))
                     .navigationTitle(tool.name)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
-                            Button("复制") { copied(tool.result) }
+                            Button(tool.uncachedResultBytes == nil ? "复制" : "复制已缓存内容") { copied(tool.result) }
                         }
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("完成") { showFullResult = false }
@@ -934,15 +935,15 @@ struct ChatToolDetail: View {
                     }
                     .safeAreaInset(edge: .bottom) {
                         HStack {
-                            Button("上一页") { resultPage = max(0, resultPage - 1) }
-                                .disabled(resultPage == 0)
+                            Button("上一页") { resultPage = max(0, visiblePage - 1) }
+                                .disabled(visiblePage == 0)
                             Spacer()
-                            Text("\(resultPage + 1) / \(pageCount)")
+                            Text("\(visiblePage + 1) / \(pageCount)")
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("下一页") { resultPage = min(pageCount - 1, resultPage + 1) }
-                                .disabled(resultPage >= pageCount - 1)
+                            Button("下一页") { resultPage = min(pageCount - 1, visiblePage + 1) }
+                                .disabled(visiblePage >= pageCount - 1)
                         }
                         .padding(.horizontal, 20)
                         .padding(.vertical, 8)

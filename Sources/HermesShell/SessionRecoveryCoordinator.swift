@@ -61,17 +61,21 @@ final class SessionRecoveryCoordinator {
     /// No history, status or receipt retirement occurs in this discovery layer.
     func schedule(candidates: [Candidate],
                   isEligible: (Key, SessionTaskSignal, Double) -> Bool,
-                  onRestore: (Candidate) -> Void) {
+                  onRestore: (Candidate) -> Bool) {
         let indexed = Dictionary(candidates.map { ($0.key, $0) },
                                  uniquingKeysWith: { first, _ in first })
         let now = ProcessInfo.processInfo.systemUptime
         attempted = attempted.filter { now - $0.value < 3600 }
-        for key in Self.eligibleKeys(Array(indexed.keys), attempted: attempted, now: now) {
+        // Eligibility failures must not consume a batch slot. A rejected
+        // admission must not start a cooldown for a runtime that never existed.
+        let eligible = indexed.keys.filter { key in
             guard let candidate = indexed[key],
-                  let signal = Self.recoverySignal(for: candidate.observation),
-                  isEligible(key, signal, candidate.observation.version(for: signal)) else { continue }
-            attempted[key] = now
-            onRestore(candidate)
+                  let signal = Self.recoverySignal(for: candidate.observation) else { return false }
+            return isEligible(key, signal, candidate.observation.version(for: signal))
+        }
+        for key in Self.eligibleKeys(Array(eligible), attempted: attempted, now: now) {
+            guard let candidate = indexed[key] else { continue }
+            if onRestore(candidate) { attempted[key] = now }
         }
     }
 }

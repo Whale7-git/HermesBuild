@@ -133,6 +133,10 @@ extension ModelTests {
         let checkpoint = RunRecoveryCheckpoint(version: 1, scope: "checkpoint|account",
             sessionID: "test", receipt: checkpointReceipt, historyEnd: 0, olderOffset: 0,
             cursor: "cursor-1", projection: checkpointProjection, approvals: [], clarifies: [])
+        precondition(!checkpointProjection.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes))
+        var oversizedProjection = checkpointProjection
+        oversizedProjection.reasoning = String(repeating: "a", count: LocalDataFileStore.maxCheckpointBytes + 1)
+        precondition(oversizedProjection.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes))
         let checkpointData = try JSONEncoder().encode(checkpoint)
         let checkpointReceiptData = try JSONEncoder().encode(checkpointReceipt)
         precondition(checkpointStore.saveActiveRun(checkpointReceiptData).succeeded)

@@ -139,27 +139,60 @@ struct LocalDataFileStore: Sendable {
         }
     }
 
+    struct RecoveryIndexInspection: Equatable, Sendable {
+        var sessions: Set<String> = []
+        var directoryUnreadable = false
+        var corruptMarkers = 0
+        var isHealthy: Bool { !directoryUnreadable && corruptMarkers == 0 }
+    }
+
     static func recoverySessions(instanceID: String, accountScope: String,
                                  rootDirectory: URL = defaultRoot) -> Set<String> {
+        inspectRecoverySessions(instanceID: instanceID, accountScope: accountScope,
+                                rootDirectory: rootDirectory).sessions
+    }
+
+    /// Missing storage on first launch is normal; an unreadable directory or
+    /// invalid marker is not an authoritative empty recovery set.
+    static func inspectRecoverySessions(instanceID: String, accountScope: String,
+                                        rootDirectory: URL = defaultRoot) -> RecoveryIndexInspection {
         let namespace = digest([instanceID, accountScope])
         let prefix = "recovery-index-\(namespace)-"
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: rootDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
-        var sessions: Set<String> = []
-        for url in urls where url.lastPathComponent.hasPrefix(prefix) {
+        var result = RecoveryIndexInspection()
+        let names: [String]
+        do {
+            names = try FileManager.default.contentsOfDirectory(atPath: rootDirectory.path)
+        } catch {
+            let error = error as NSError
+            if error.domain == NSCocoaErrorDomain &&
+                (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) &&
+                !FileManager.default.fileExists(atPath: rootDirectory.path) {
+                return result
+            }
+            result.directoryUnreadable = true
+            return result
+        }
+        for name in names where name.hasPrefix(prefix) && name.hasSuffix(".json") {
+            let url = rootDirectory.appendingPathComponent(name)
             guard let envelope = readEnvelope(url, maxBytes: 16 * 1024),
                   envelope.version == version, envelope.namespaceHash == namespace,
-                  let session = String(data: envelope.payload, encoding: .utf8), !session.isEmpty else { continue }
+                  let session = String(data: envelope.payload, encoding: .utf8), !session.isEmpty else {
+                result.corruptMarkers += 1
+                continue
+            }
             let store = LocalDataFileStore(instanceID: instanceID, accountScope: accountScope,
                 sessionID: session, rootDirectory: rootDirectory)
-            guard url.lastPathComponent == store.recoveryIndexURL.lastPathComponent,
-                  envelope.scopeHash == store.scopeHash else { continue }
+            guard name == store.recoveryIndexURL.lastPathComponent,
+                  envelope.scopeHash == store.scopeHash else {
+                result.corruptMarkers += 1
+                continue
+            }
             if FileManager.default.fileExists(atPath: store.pendingURL.path) ||
                 FileManager.default.fileExists(atPath: store.activeRunURL.path) {
-                sessions.insert(session)
+                result.sessions.insert(session)
             }
         }
-        return sessions
+        return result
     }
 
     var outcomeURL: URL {

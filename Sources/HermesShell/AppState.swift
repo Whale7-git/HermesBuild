@@ -288,13 +288,13 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func restoreDormantRuntime(_ candidate: SessionRecoveryCoordinator.Candidate) {
+    private func restoreDormantRuntime(_ candidate: SessionRecoveryCoordinator.Candidate) -> Bool {
         let key = ConversationRuntimeRegistry.Key(instanceID: candidate.key.instanceID,
             accountScope: candidate.key.accountScope, sessionID: candidate.key.sessionID)
         guard appIsActive, !clearingHistory,
               !(historyInstanceID == key.instanceID && historyAccountScope == key.accountScope &&
                 currentSessionID == key.sessionID),
-              ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope else { return }
+              ChatHistoryIdentity.accountScope(instanceID: key.instanceID) == key.accountScope else { return false }
         // A permanently unresolved offscreen receipt may not occupy a
         // recovery slot forever. Rotate only durable, evictable owners.
         if conversationRuntimes.detached.count >= 4 {
@@ -304,7 +304,7 @@ final class AppState: ObservableObject {
                 self?.recordRuntimeSignals(oldModel, key: oldKey, handoff: true)
             }
         }
-        guard conversationRuntimes.detached.count < 4 else { return }
+        guard conversationRuntimes.detached.count < 4 else { return false }
         guard let model = conversationRuntimes.restoreForRecovery(key, make: {
             let files = LocalDataFileStore(instanceID: key.instanceID,
                 accountScope: key.accountScope, sessionID: key.sessionID)
@@ -315,7 +315,7 @@ final class AppState: ObservableObject {
             return NativeChatModel(sessionID: key.sessionID, api: candidate.api,
                 draftStore: store, historyStore: history,
                 displayScope: key.instanceID + "|" + key.accountScope)
-        }) else { return }
+        }) else { return false }
         bindRuntime(model, key: key)
         Task { @MainActor [weak self, weak model] in
             guard let self, let model, self.appIsActive, !model.runtimeRetired,
@@ -323,6 +323,7 @@ final class AppState: ObservableObject {
             await model.load(silent: true)
             model.scheduleAutomaticReconciliation(immediate: true)
         }
+        return true
     }
 
     private func wakeDetachedRuntimes() {
@@ -692,7 +693,12 @@ final class AppState: ObservableObject {
         }
         // The protected receipt index is authoritative for task discovery even
         // when a UI observation was never published or the task store is damaged.
-        for sessionID in LocalDataFileStore.recoverySessions(instanceID: instanceID, accountScope: accountScope) {
+        let discovery = LocalDataFileStore.inspectRecoverySessions(instanceID: instanceID, accountScope: accountScope)
+        if !discovery.isHealthy {
+            RuntimeLogRecorder.shared.recordApp(.warning, "recovery-index",
+                "protected discovery incomplete; retained all existing observations")
+        }
+        for sessionID in discovery.sessions {
             if let previous = rows[sessionID] {
                 if !previous.signals.contains(.recoveryTracked) {
                     rows[sessionID] = SessionTaskObservation.updating(previous,
@@ -750,7 +756,9 @@ final class AppState: ObservableObject {
             return current.signals.contains(signal) && current.version(for: signal) == version
         }, onRestore: { [weak self] candidate in
             #if canImport(UIKit)
-            self?.restoreDormantRuntime(candidate)
+            return self?.restoreDormantRuntime(candidate) ?? false
+            #else
+            return false
             #endif
         })
     }

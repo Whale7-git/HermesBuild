@@ -311,6 +311,7 @@ final class NativeChatModel: ObservableObject {
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastCheckpointWrite >= 2 else { return }
         lastCheckpointWrite = now
+        guard !buffer.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes) else { return }
         let checkpoint = RunRecoveryCheckpoint(version: 1, scope: displayScope,
             sessionID: sessionID, receipt: receipt, historyEnd: historyEnd,
             olderOffset: olderOffset, cursor: cursor, projection: buffer,
