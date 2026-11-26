@@ -954,6 +954,32 @@ import Foundation
         restored.disconnect()
     }
 
+    // Explicit manual queue actions must never dispatch a stale row's sibling.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "queue-exact-selection", api: service)
+        await model.load()
+        let first = ChatQueuedTurn(id: "first", text: "first", attachments: [],
+            composerText: "first", origin: .userInput, automaticAfterStreamID: nil)
+        let second = ChatQueuedTurn(id: "second", text: "second", attachments: [],
+            composerText: "second", origin: .userInput, automaticAfterStreamID: nil)
+        model.setQueuedTurns([first, second])
+        let stale = await model.dispatchSelectedQueuedTurn(id: "removed")
+        let wrongFirst = await model.flushQueuedIfNeeded(expectedTurnID: "second")
+        precondition(!stale && !wrongFirst && service.startCalls == 0)
+        var unresolved = first
+        unresolved.delivery = .uncertain
+        model.setQueuedTurns([unresolved, second])
+        let blocked = await model.dispatchSelectedQueuedTurn(id: "second")
+        precondition(!blocked && model.queuedTurns.first?.id == "first" && service.startCalls == 0,
+                     "a waiting row cannot leapfrog unresolved original delivery")
+        model.setQueuedTurns([first, second])
+        let dispatched = await model.dispatchSelectedQueuedTurn(id: "second")
+        precondition(dispatched && service.sent.last?.0 == "second" &&
+                     model.queuedTurns.map(\.id) == ["first"])
+        model.disconnect()
+    }
+
     // An acknowledgement for an old approval must not dismiss its replacement.
     do {
         let service = SendSafetyService()

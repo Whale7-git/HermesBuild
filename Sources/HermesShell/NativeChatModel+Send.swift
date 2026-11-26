@@ -160,8 +160,9 @@ extension NativeChatModel {
     /// Dispatch the oldest eligible turn. The rest remain queued; each later
     /// completion can dispatch the next turn in order.
     @discardableResult
-    func flushQueuedIfNeeded(completedStreamID: String? = nil) async -> Bool {
-        guard !recoveryOnly, !running, !stopping, !suspended, !stopAcknowledged else { return false }
+    func flushQueuedIfNeeded(completedStreamID: String? = nil, expectedTurnID: String? = nil) async -> Bool {
+        guard !runtimeRetired, !recoveryOnly, !running, !stopping, !suspended, !stopAcknowledged,
+              expectedTurnID == nil || queuedTurns.first?.id == expectedTurnID else { return false }
         // Removing a submitting entry is owned by the completion path. It
         // must never be dispatched again from a foreground/load callback.
         switch ChatQueueDispatchPlan.make(
@@ -229,7 +230,7 @@ extension NativeChatModel {
     }
 
     func removeQueuedTurn(id: String) {
-        guard queueEditingTurnID == nil else { return }
+        guard queueEditingTurnID == nil, !reconciling else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery != .submitting else { return }
         queuedTurns.remove(at: index)
@@ -291,7 +292,9 @@ extension NativeChatModel {
             do {
                 let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
-                switch queuedTurns[0].resolution(in: snapshot) {
+                guard let current = queuedTurns.first, current.id == id,
+                      current.delivery == .uncertain else { return false }
+                switch current.resolution(in: snapshot) {
                 case .delivered:
                     guard queuedTurns.first?.id == id else { return false }
                     queuedTurns.removeFirst()
@@ -407,19 +410,20 @@ extension NativeChatModel {
     }
 
     func moveQueuedTurn(id: String, before targetID: String) {
-        guard queueEditingTurnID == nil, id != targetID,
+        guard queueEditingTurnID == nil, !reconciling,
+              !queuedTurns.contains(where: { $0.delivery == .submitting }), id != targetID,
               let source = queuedTurns.firstIndex(where: { $0.id == id }),
               let target = queuedTurns.firstIndex(where: { $0.id == targetID }) else { return }
         var next = queuedTurns
         let turn = next.remove(at: source)
         let insertion = source < target ? target - 1 : target
         next.insert(turn, at: insertion)
-        queuedTurns = next
+        queuedTurns = ChatQueueOrdering.prioritize(next)
         persistQueue()
     }
 
     func setQueuedTurns(_ turns: [ChatQueuedTurn]) {
-        guard queueEditingTurnID == nil else { return }
+        guard queueEditingTurnID == nil, !reconciling else { return }
         guard turns.count <= ChatQueuedTurn.maximumCount,
               Set(turns.map(\.id)).count == turns.count,
               !turns.contains(where: { $0.delivery == .submitting }) else { return }
@@ -474,6 +478,27 @@ extension NativeChatModel {
         }
         recordRuntimeLog(.info, "send",
             paused ? "queue auto-dispatch paused" : "queue auto-dispatch resumed")
+    }
+
+    /// Both composer and queue manager must dispatch the exact selected ID.
+    /// Stale taps, refused reorder and asynchronous reconciliation never
+    /// fall back to a different first item.
+    @discardableResult
+    func dispatchSelectedQueuedTurn(id: String) async -> Bool {
+        guard !runtimeRetired, !reconciling, queueEditingTurnID == nil,
+              !running, !submitting, !loading, !syncing, !stopping,
+              let selected = queuedTurns.first(where: { $0.id == id }),
+              selected.delivery != .submitting else { return false }
+        if let first = queuedTurns.first, first.id != id {
+            moveQueuedTurn(id: id, before: first.id)
+        }
+        guard queuedTurns.first?.id == id else { return false }
+        if selected.delivery == .uncertain {
+            guard await prepareQueuedTurnForRetry(id: id) else { return false }
+        } else {
+            markQueuedTurnForManualDispatch(id: id)
+        }
+        return await flushQueuedIfNeeded(expectedTurnID: id)
     }
 
     func markQueuedTurnForManualDispatch(id: String) {

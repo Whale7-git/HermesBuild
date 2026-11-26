@@ -215,25 +215,10 @@ struct ChatQueueManager: View {
                     : (turn.delivery == .submitting ? "正在提交，暂时不能编辑" : ""))
                 Spacer()
                 Button {
-                    if model.queuedTurns.first?.id != turn.id {
-                        model.setQueuedTurns(ChatQueueOrdering.move(
-                            model.queuedTurns, fromOffsets: IndexSet(integer: index),
-                            toOffset: 0))
-                    }
-                    if turn.delivery == .submitting {
-                        return
-                    }
                     recoveringID = turn.id
                     Task {
-                        let ready: Bool
-                        if turn.delivery == .uncertain {
-                            ready = await model.prepareQueuedTurnForRetry(id: turn.id)
-                        } else {
-                            model.markQueuedTurnForManualDispatch(id: turn.id)
-                            ready = true
-                        }
-                        if ready { await model.flushQueuedIfNeeded() }
-                        recoveringID = nil
+                        defer { recoveringID = nil }
+                        await model.dispatchSelectedQueuedTurn(id: turn.id)
                     }
                 } label: {
                     Label(recoveringID == turn.id

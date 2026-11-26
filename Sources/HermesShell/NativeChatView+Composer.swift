@@ -114,21 +114,7 @@ extension NativeChatView {
             queuedTurns: model.queuedTurns,
             onSendQueuedTurn: { id in
                 Task {
-                    // Only the first eligible turn can be sent through the
-                    // normal dispatcher. Selecting a later row first brings it
-                    // to the front without bypassing uncertainty checks.
-                    if let first = model.queuedTurns.first, first.id != id {
-                        model.moveQueuedTurn(id: id, before: first.id)
-                    }
-                    guard let next = model.queuedTurns.first else { return }
-                    let ready: Bool
-                    if next.delivery == .uncertain {
-                        ready = await model.prepareQueuedTurnForRetry(id: next.id)
-                    } else {
-                        model.markQueuedTurnForManualDispatch(id: next.id)
-                        ready = true
-                    }
-                    if ready { await model.flushQueuedIfNeeded() }
+                    await model.dispatchSelectedQueuedTurn(id: id)
                 }
             },
             onEditQueuedTurn: { _ in
