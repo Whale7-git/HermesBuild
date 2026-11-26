@@ -483,7 +483,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         let now = Date().timeIntervalSince1970
         if allowBackoff, let retryAt = nextRunProbeAt[runID], now < retryAt {
             throw GatewayDecodeError.malformed(
-                "后台任务状态仍待核对；已暂停频繁重试，不会清除运行记录或自动重发。")
+                "暂时无法确认回复状态，已暂停频繁同步。不会重复发送。")
         }
         let data: Data
         do {
@@ -507,7 +507,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return try unresolvedRun(runID: runID)
         }
         guard runStore.runID(for: sessionID) == runID else {
-            throw GatewayDecodeError.malformed("任务状态已变化，请刷新核对")
+            throw GatewayDecodeError.malformed("任务状态已变化，请重新同步")
         }
         switch status {
         case "queued", "running", "waiting_for_approval", "waiting_for_clarification", "stopping":
@@ -652,7 +652,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         nextRunProbeAt[runID] = Date().timeIntervalSince1970
             + Double(min(60, 2 << exponent))
         throw GatewayDecodeError.malformed(
-            "后台任务连续无法确认状态；运行记录已保留，请稍后核对，不会自动重发。")
+            "暂时无法确认回复状态。记录已保留，请稍后同步，不会重复发送。")
     }
 
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
