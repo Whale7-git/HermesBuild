@@ -1,5 +1,28 @@
 import Foundation
 
+// The optimistic-to-canonical visual handoff must never focus an unrelated
+// equal-text row. It is deliberately independent from send authority.
+do {
+    let proof = ChatTurnFocusProof(localID: "local-exact", historyEnd: 5,
+        knownIDs: ["old"], text: "same", attachmentPaths: ["/fixture/a"])
+    let original = ChatMessage(id: "local-exact", role: "user", content: "same",
+        attachmentPaths: ["/fixture/a"], delivery: .accepted)
+    let older = ChatMessage(id: "old", role: "user", content: "same",
+        sourceIndex: 4, attachmentPaths: ["/fixture/a"])
+    let real = ChatMessage(id: "canonical", role: "user", content: "same",
+        sourceIndex: 5, attachmentPaths: ["/fixture/a"])
+    let notice = ChatMessage(id: "notice", role: "user",
+        content: "[OUT-OF-BAND USER MESSAGE — notification]\nFixture\n[/OUT-OF-BAND USER MESSAGE]",
+        sourceIndex: 6, displayKind: "internal_notification")
+    let sibling = ChatMessage(id: "sibling", role: "user", content: "same",
+        sourceIndex: 7, attachmentPaths: ["/fixture/a"])
+    precondition(proof.targetID(in: [older, original], coveredFrom: 0) == "local-exact")
+    precondition(proof.targetID(in: [older, real, notice], coveredFrom: 0) == "canonical")
+    precondition(proof.targetID(in: [real, sibling], coveredFrom: 5) == nil)
+    precondition(proof.targetID(in: [real], coveredFrom: 6) == nil)
+    precondition(proof.targetID(in: [older], coveredFrom: 0) == nil)
+}
+
 var assertions = 0
 var failures = 0
 func expect(_ condition: @autoclosure () -> Bool, _ label: String) {

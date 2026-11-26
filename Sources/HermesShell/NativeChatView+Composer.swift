@@ -106,7 +106,7 @@ extension NativeChatView {
                         attachmentSendTask = nil
                         preparingAttachmentSend = false
                     }
-                    userIDBeforeSend = model.transcript.messages.last(where: { $0.role == "user" })?.id
+                    userIDBeforeSend = model.latestSubmissionFocus?.localID
                     pendingUserTurnFocus = !model.running
                     // A rejected/uncertain POST preserves the draft and ready
                     // attachment references. No automatic replay of the POST.

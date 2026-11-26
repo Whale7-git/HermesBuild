@@ -478,6 +478,8 @@ final class NativeChatModel: ObservableObject {
     /// ActiveTurnRecovery on relaunch; missing evidence remains inconclusive.
     var activeTurnHistoryBoundary: Int?
     var activeTurnRecovery: ActiveTurnRecovery?
+    /// Runtime-only proof for the current explicit send's visual anchor.
+    var latestSubmissionFocus: ChatTurnFocusProof?
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?

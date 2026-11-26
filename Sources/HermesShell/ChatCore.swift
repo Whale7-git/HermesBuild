@@ -157,6 +157,33 @@ enum ChatBackgroundEnvelope {
     }
 }
 
+/// Visual reading focus belongs to the explicit local submission, not the
+/// newest row that happens to contain identical text. This is presentation
+/// evidence only; it never grants permission to send or settle a receipt.
+struct ChatTurnFocusProof: Equatable, Sendable {
+    let localID: String
+    let historyEnd: Int?
+    let knownIDs: Set<String>
+    let text: String
+    let attachmentPaths: Set<String>
+
+    func targetID(in messages: [ChatMessage], coveredFrom: Int) -> String? {
+        if messages.contains(where: {
+            $0.id == localID && $0.role == "user" && $0.sourceIndex == nil
+                && $0.content == text && Set($0.attachmentPaths) == attachmentPaths
+        }) { return localID }
+        guard let historyEnd, coveredFrom <= historyEnd else { return nil }
+        let candidates = messages.filter { message in
+            guard let index = message.sourceIndex else { return false }
+            return index >= historyEnd && !knownIDs.contains(message.id)
+                && message.role == "user" && ChatBackgroundEnvelope.userBody(message) == nil
+        }
+        guard candidates.count == 1, let message = candidates.first,
+              message.content == text, Set(message.attachmentPaths) == attachmentPaths else { return nil }
+        return message.id
+    }
+}
+
 /// A message can arrive with zero-width characters, BOMs or control marks that
 /// survive a whitespace trim but render as an empty assistant block. Keep the
 /// original content byte-for-byte; only presentation and reply copying ask this

@@ -739,6 +739,8 @@ extension NativeChatModel {
                                                        attachmentPaths:attachments.map(\.path),
                                                        delivery:.submitting)]
         turn.tools = buffer.tools
+        latestSubmissionFocus = ChatTurnFocusProof(localID: pendingID, historyEnd: confirmedHistoryEnd,
+            knownIDs: knownIDs, text: text, attachmentPaths: Set(attachments.map(\.path)))
         buffer = turn
         flush()
         // 关键：**不在 POST 前清 draft**。draft 的 didSet 会落盘到 draftStore，
