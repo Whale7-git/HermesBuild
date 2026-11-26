@@ -78,9 +78,9 @@ struct ChatTaskPanel: View {
                               systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
                     Button(action: onRecovery) {
-                        Label("核对发送与本地数据", systemImage: "lifepreserver")
+                        Label("恢复发送与本地数据", systemImage: "lifepreserver")
                     }
-                    Text("断开连接不代表后台任务停止。发送结果不明确时先核对，不自动重发。")
+                    Text("断开连接不代表回复已停止。发送结果不明确时先同步，不会自动重发。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -94,7 +94,7 @@ struct ChatTaskPanel: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     if counts.active > 0 || counts.unresolved > 0 {
-                        Text("执行中 \(counts.active) · 状态待核对 \(counts.unresolved)")
+                        Text("执行中 \(counts.active) · 状态未确认 \(counts.unresolved)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Picker("工具状态", selection: $toolFilter) {
@@ -135,7 +135,7 @@ struct ChatTaskPanel: View {
                                         Text(tool.name).font(.subheadline).foregroundStyle(.primary)
                                         Text(tool.status == .failed ? "执行失败" :
                                              (tool.status == .finished ? "已完成" :
-                                              (tool.status == .active ? "执行中" : "状态待核对")))
+                                              (tool.status == .active ? "执行中" : "状态未确认")))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 4)
@@ -239,7 +239,7 @@ struct ChatConversationInfo: View {
                     Button { onExport(true) } label: { Label("获取完整历史后导出", systemImage: "clock.arrow.circlepath") }
                         .disabled(model.transcript.messages.isEmpty || !canExportFullHistory)
                     if !canExportFullHistory {
-                        Text("生成中、核对中或离线时仍可导出已加载内容。")
+                        Text("回复中、同步中或离线时仍可导出已加载内容。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 } header: { Text("导出") }

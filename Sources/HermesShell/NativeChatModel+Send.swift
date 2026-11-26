@@ -153,7 +153,7 @@ extension NativeChatModel {
         case "no_cached_agent": reason = "服务端没有活跃的 agent"
         case "agent_lacks_steer": reason = "服务端版本不支持引导"
         case "gateway_steer_queued": reason = "网关已改为排队处理"
-        default: reason = "服务端未受理"
+        default: reason = "服务端未接收消息"
         }
         return "\(reason)，已改为排队，本轮结束后自动发出。"
     }
@@ -783,7 +783,7 @@ extension NativeChatModel {
             } else {
                 uncertain = true
                 pauseQueueForRecovery()
-                notice = "消息已受理，但本地记录保存失败。请勿重发，稍后同步。"
+                notice = "服务端已接收消息，但本地记录未能保存。请勿重发，稍后同步。"
             }
             settleAcceptedAttachments(attachments.map(\.path))
             pendingAbsent = false

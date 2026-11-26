@@ -25,7 +25,7 @@ struct ChatRecoveryCenter: View {
             List {
                 if model.recoveryRecordsUnreadable {
                     Section("重新读取恢复记录") {
-                        Text("本地文件暂时不可读或损坏。优先重新读取原记录，而不是放弃发送证据；读取成功后仍需联网核对。")
+                        Text("本地记录暂不可读。请先尝试恢复，再同步会话；不要重复发送。")
                             .font(.subheadline).foregroundStyle(.secondary)
                         Button {
                             Task {
@@ -34,11 +34,11 @@ struct ChatRecoveryCenter: View {
                                     await model.refresh(silent: true, preserveLoadedOlder: true)
                                 }
                                 resultText = restored
-                                    ? "本地记录已重新读取，请查看联网核对结果。"
+                                    ? "已重新读取本地记录，请查看同步结果。"
                                     : "仍有恢复记录不可读；原文件与安全锁已保留。"
                             }
                         } label: {
-                            Label("重新读取并核对", systemImage: "arrow.clockwise")
+                            Label("重新读取并同步", systemImage: "arrow.clockwise")
                                 .frame(minHeight: 44)
                         }
                         .disabled(model.running || model.loading || model.syncing || model.reconciling)
@@ -52,24 +52,24 @@ struct ChatRecoveryCenter: View {
                     Section("发送恢复记录不可读") {
                         Text("为避免重复发送，当前暂停提交。请先查看服务端历史；放弃记录不会停止或撤销服务端任务。")
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Button("已核对历史，放弃损坏记录", role: .destructive) {
+                        Button("已确认消息状态，放弃本地记录", role: .destructive) {
                             confirmAbandonUnreadable = true
                         }
                     }
                 }
-                Section("发送核对") {
+                Section("发送状态") {
                     statusRow(icon: model.hasPendingSend ? "paperplane.badge.clock" : "checkmark.circle",
                               color: model.hasPendingSend ? AppTheme.warning : AppTheme.success,
-                              title: model.hasPendingSend ? "有一笔发送等待核对" : "没有待核对发送",
+                              title: model.hasPendingSend ? "上一条消息的发送结果尚未确认" : "没有待确认的消息",
                               detail: model.hasPendingSend
-                                ? "核对只读取服务端历史；确认不存在前不会自动重发。"
+                                ? "同步仅查看历史；在确认之前不会重复发送。"
                                 : "普通发送没有留下未决记录。")
                     if model.hasPendingSend {
                         Button {
                             reconcile()
                         } label: {
                             HStack {
-                                Label(reconciling ? "正在核对…" : "核对发送状态",
+                                Label(reconciling ? "正在同步…" : "同步发送状态",
                                       systemImage: "checkmark.shield")
                                 Spacer()
                                 if reconciling { ProgressView().controlSize(.small) }
@@ -90,18 +90,18 @@ struct ChatRecoveryCenter: View {
                               detail: model.queueRecoveryUnreadable
                                 ? "已保留原队列文件；重新读取成功前不能修改。"
                                 : model.queuePersistenceFailed
-                                ? "队列本次未通过磁盘回读验证；当前进程内仍可继续操作。"
+                                ? "排队消息尚未确认保存；当前打开的会话仍保留它们。"
                                 : (model.queuedTurns.isEmpty
                                    ? "没有跨会话遗留的排队消息。"
                                    : (queueStatus.needsAttention
-                                      ? "待核对消息已固定到队首；确认不存在前不会自动重发。"
-                                      : "重试首条前会先核对是否已送达，避免重复执行。")))
+                                      ? "队首消息尚未确认送达；不会自动重发。"
+                                      : "重试前会先确认是否已送达，避免重复发送。")))
                     if let turn = model.queuedTurns.first {
                         Button {
                             recoverQueue(turn)
                         } label: {
                             HStack {
-                                Label(queueRecoveryID == turn.id ? "正在核对…"
+                                Label(queueRecoveryID == turn.id ? "正在同步…"
                                       : (turn.delivery == .uncertain ? "确认后重试首条" : "发送首条"),
                                       systemImage: "arrow.clockwise")
                                 Spacer()
@@ -140,7 +140,7 @@ struct ChatRecoveryCenter: View {
                     Section("运行恢复记录不可读") {
                         Text("服务端任务可能仍在执行。请先通过服务端历史确认，再决定是否放弃这份本地记录。")
                             .font(.subheadline).foregroundStyle(.secondary)
-                        Button("已核对，放弃损坏的运行记录", role: .destructive) {
+                        Button("已确认任务状态，放弃本地记录", role: .destructive) {
                             confirmAbandonCorruptActive = true
                         }
                     }
@@ -149,10 +149,10 @@ struct ChatRecoveryCenter: View {
                     if model.activeTurnRecovery != nil {
                         statusRow(icon: model.running ? "waveform" : "questionmark.circle",
                                   color: AppTheme.warning,
-                                  title: model.running ? "已记录后台运行" : "已受理的运行仍待确认",
+                                  title: model.running ? "服务端任务仍在运行" : "上一条回复是否结束尚未确认",
                                   detail: "运行标识已保存；状态查询不会重复提交消息。")
                         if !model.running {
-                            Button("已核对服务端，放弃本地运行标记", role: .destructive) {
+                            Button("已确认任务状态，放弃本地记录", role: .destructive) {
                                 confirmAbandonActive = true
                             }
                             .disabled(model.loading || model.syncing || model.reconciling)
@@ -164,14 +164,14 @@ struct ChatRecoveryCenter: View {
                               title: model.runRecoveryNoticeShown
                                 ? "后台恢复记录降级" : "后台运行恢复可用",
                               detail: model.runRecoveryNoticeShown
-                                ? "当前页面不会因此重复发送；重启 App 后可能需要重新核对。"
+                                ? "不会因此重复发送；重启 App 后可能需要重新同步。"
                                 : "本轮运行标识已写入本机。")
                     statusRow(icon: model.cachedHistoryDate == nil ? "internaldrive" : "wifi.exclamationmark",
                               color: model.cachedHistoryDate == nil ? AppTheme.success : AppTheme.warning,
                               title: model.cachedHistoryDate == nil ? "历史缓存正常" : "正在使用本地历史",
                               detail: model.cachedHistoryDate == nil
-                                ? "打开会话时会先显示本机副本，再联网核对。"
-                                : "联网核对完成后可继续发送。")
+                                ? "打开会话时先显示本地历史，再同步最新内容。"
+                                : "正在同步最新内容，完成后可继续发送。")
                     if model.unknownResolutionRunID != nil {
                         Button("检查能否恢复原会话") {
                             Task {
@@ -200,7 +200,7 @@ struct ChatRecoveryCenter: View {
                         Button {
                             Task { await model.refresh(silent: true, preserveLoadedOlder: true) }
                         } label: {
-                            Label("重新联网核对", systemImage: "arrow.clockwise")
+                            Label("重新同步", systemImage: "arrow.clockwise")
                                 .frame(minHeight: 44)
                         }
                         .disabled(model.loading || model.syncing || model.submitting)
@@ -215,7 +215,7 @@ struct ChatRecoveryCenter: View {
                               title: model.localPersistenceIssue == nil && !model.queuePersistenceFailed
                                 ? "本地存储正常" : "本地存储需要处理",
                               detail: model.localPersistenceIssue == nil && !model.queuePersistenceFailed
-                                ? "草稿与队列最近一次写入已通过回读验证。"
+                                ? "草稿与排队消息已保存。"
                                 : "当前内存内容仍可用；检查后可继续保存。")
                     ForEach(LocalDataRecord.allCases, id: \.self) { record in
                         if let issue = model.localRecordIssues[record] {
@@ -277,13 +277,13 @@ struct ChatRecoveryCenter: View {
             } message: {
                 Text("不会重发、停止或删除服务端消息。请先确认历史中是否已收到这条消息。")
             }
-            .confirmationDialog("放弃已受理的运行恢复标记？",
+            .confirmationDialog("放弃本地任务恢复记录？",
                                 isPresented: $confirmAbandonActive, titleVisibility: .visible) {
                 Button("仅放弃本地记录", role: .destructive) {
                     model.abandonAcceptedTurnRecovery()
                 }
             } message: {
-                Text("不会停止服务端任务或重发消息。请务必先核对服务端历史；队列会保持暂停。")
+                Text("不会停止服务端任务或重发消息。请务必先确认服务端任务状态；队列会保持暂停。")
             }
             .confirmationDialog("放弃损坏的运行恢复记录？",
                                 isPresented: $confirmAbandonCorruptActive, titleVisibility: .visible) {
@@ -291,7 +291,7 @@ struct ChatRecoveryCenter: View {
                     model.abandonUnreadableActiveRecovery()
                 }
             } message: {
-                Text("不会停止服务端任务或重发消息。确认前请先核对服务端历史。")
+                Text("不会停止服务端任务或重发消息。请先确认服务端任务状态。")
             }
             .confirmationDialog("结束已失联的任务？", isPresented: $confirmUnknownResolution, titleVisibility: .visible) {
                 Button("确认处理失联任务", role: .destructive) {
@@ -348,9 +348,9 @@ struct ChatRecoveryCenter: View {
             let result = await model.reconcilePending()
             reconciling = false
             switch result {
-            case .delivered: resultText = "服务端历史中已找到这条发送，本地待核对状态已解除。"
+            case .delivered: resultText = "已在历史中找到消息，不会重复发送。"
             case .absent: resultText = "服务端历史中没有找到这条发送；返回会话后可选择重发或放弃。"
-            case .failed: resultText = "这次核对没有完成，未自动重发。请稍后再试。"
+            case .failed: resultText = "暂时无法确认发送结果。未重复发送，请稍后再试。"
             }
         }
     }
@@ -361,7 +361,7 @@ struct ChatRecoveryCenter: View {
         Task {
             let accepted = await model.dispatchSelectedQueuedTurn(id: turn.id)
             if accepted {
-                resultText = "所选消息已受理，队列已同步更新。"
+                resultText = "服务端已接收所选消息，队列已更新。"
             } else {
                 resultText = model.queuedTurns.contains(where: { $0.id == turn.id })
                     ? "所选消息仍在队列中，未确认送达，也没有自动重复发送。"
@@ -372,14 +372,14 @@ struct ChatRecoveryCenter: View {
     }
 
     private func rewriteCurrentDraft() {
-        guard let draftStore = model.draftStore else {
+        guard !model.draftRecoveryUnreadable, let draftStore = model.draftStore else {
             resultText = "当前会话没有可写的草稿存储。"
             return
         }
         let result = draftStore.save(model.draft)
         if result.succeeded {
             model.recordSuccessfulLocalWrite(kind: .draft)
-            resultText = "当前草稿已重新写入并通过回读验证。"
+            resultText = "当前草稿已重新保存。"
         } else {
             model.recordLocalWrite(result, kind: .draft)
             resultText = "草稿仍在内存中，这次写入仍未通过验证。"
@@ -410,8 +410,8 @@ struct ChatRecoveryCenter: View {
         }
         if issue.failure == .corruptFile {
             return issue.kind == .runRecovery
-                ? reason + "先核对后台历史，再在恢复中心显式放弃；不会自动覆盖记录。"
-                : reason + "返回会话后继续输入并保存，会以通过回读验证的新内容替换损坏副本。"
+                ? reason + "请先同步并确认任务状态。不会自动覆盖原记录。"
+                : reason + "请先恢复原记录；需要放弃时请明确确认。"
         }
         return reason + "当前内存内容仍可用；编辑后再次保存会重新尝试。"
     }
