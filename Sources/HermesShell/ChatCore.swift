@@ -35,7 +35,7 @@ struct GatewayPendingControlSnapshot: Sendable {
 /// 定义在 `ChatCore.swift` 而不是 `NativeChatModel.swift`：它由 SSE 帧解析出来，
 /// 而 `gatewaybackend` 套件只编译本文件、不编译模型；放在模型里会让那个套件
 /// 「cannot find type 'ChatPendingClarify' in scope」。
-struct ChatPendingClarify: Identifiable, Codable, Equatable {
+struct ChatPendingClarify: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let runID: String
     /// 服务端的 `prompt_id`，答复时当 `request_id` 发回去。
@@ -635,7 +635,7 @@ enum RunFinalizer {
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
 /// Stored in a protected, per-account/session file. An active run ID is never
 /// evidence that its associated POST can be replayed.
-struct ActiveTurnRecovery: Codable, Equatable {
+struct ActiveTurnRecovery: Codable, Equatable, Sendable {
     let runID: String
     let historyEnd: Int?
     let knownIDs: Set<String>
@@ -720,7 +720,7 @@ private func streamErrorDescription(_ data: String) -> String {
 
 /// A value represents exactly one stream. Create a fresh value for a new turn;
 /// retain the same value when reconnecting to that stream.
-struct ChatTranscript: Codable {
+struct ChatTranscript: Codable, Sendable {
     /// Monotonic for this transcript value. Every array assignment or mutation
     /// advances it; a replacement transcript resets to zero, so callers must
     /// also require `next > previous`.
@@ -810,7 +810,7 @@ struct ChatTranscript: Codable {
         set { storage.lastEventID = newValue }
     }
 
-    private struct Storage: Codable {
+    private struct Storage: Codable, Sendable {
         var messages: [ChatMessage] = []
         var tools: [ChatTool] = []
         var notices: [ChatNotice] = []
@@ -834,6 +834,28 @@ struct ChatTranscript: Codable {
     private var seenEventIDs: Set<String> = []
     private var approvalRequestID: String?
     private var updatingStreamingTail = false
+
+    /// A lower bound on the encoded payload: JSON cannot encode these string
+    /// bodies in fewer UTF-8 bytes. Bail out before allocating an already
+    /// oversized full checkpoint; the exact encoded size remains authoritative.
+    func exceedsCheckpointPayloadBudget(_ limit: Int) -> Bool {
+        guard limit >= 0 else { return true }
+        var remaining = limit
+        func consume(_ value: String) -> Bool {
+            let count = value.utf8.count
+            guard count <= remaining else { return false }
+            remaining -= count
+            return true
+        }
+        guard consume(reasoning) else { return true }
+        for message in messages {
+            guard consume(message.content) else { return true }
+        }
+        for tool in tools {
+            guard consume(tool.args), consume(tool.result) else { return true }
+        }
+        return false
+    }
 
     /// A cursor is resumable only when the projection includes that event
     /// and the exact deduplication and streaming-tail state.

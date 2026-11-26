@@ -17,6 +17,7 @@ import Foundation
     var holdSteer = false
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
+    var holdApproval = true
     var approvalCalls: [(String, Int, String)] = []
     var clarifyCalls: [(String, Int, String)] = []
     var frames: [SSEFrame] = []
@@ -73,6 +74,7 @@ import Foundation
     func approveNativeTurn(runID: String, choice: String, requestID: String,
                            executionGeneration: Int) async throws -> String? {
         approvalCalls.append((requestID, executionGeneration, choice))
+        if !holdApproval { return nil }
         return try await withCheckedThrowingContinuation { pendingApproval = $0 }
     }
     func clarifyNativeTurn(runID: String, answer: String, requestID: String,
@@ -995,6 +997,10 @@ import Foundation
         try await ModelTests.eventually { model.transcript.lastEventID == "seen" }
         precondition(model.pendingApprovals.map(\.requestID) == ["a1", "a2"],
                      "duplicate approval frame must upsert, not duplicate")
+        service.holdApproval = false
+        await model.respondToApproval("once")
+        precondition(service.approvalCalls.isEmpty,
+                     "an implicit approval cannot pick between multiple requests")
         service.frames.append(SSEFrame(event: "approval_resolved",
                                        data: "{\"request_id\":\"a1\"}", id: "a1-resolved"))
         service.frames.append(SSEFrame(event: "token", data: "{\"text\":\"seen\"}", id: "a1-seen"))
@@ -1003,6 +1009,10 @@ import Foundation
                      "resolving one approval must preserve sibling requests")
         precondition(!model.canRespondToApproval(requestID: "missing", choice: "once"),
                      "a missing request ID must never fall back to another approval")
+        await model.respondToApproval("once", requestID: "a1")
+        precondition(service.approvalCalls.isEmpty &&
+                     model.pendingApprovals.map(\.id) == ["a2"],
+                     "a stale card tap must not approve its surviving sibling")
         let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
                                       executionGeneration: 3,
                                       detail: "", command: nil, choices: ["once"])
@@ -1080,12 +1090,21 @@ import Foundation
         try await ModelTests.eventually { model.transcript.lastEventID == "q-seen" }
         precondition(model.pendingClarifies.map(\.requestID) == ["q1", "q2"],
                      "duplicate clarify frame must upsert, not duplicate")
+        let callsBeforeAmbiguousAnswer = service.clarifyCalls.count
+        await model.respondToClarify("ambiguous")
+        precondition(service.clarifyCalls.count == callsBeforeAmbiguousAnswer,
+                     "an implicit clarification cannot pick between multiple requests")
         await model.respondToClarify("answer q1", requestID: "q1")
         precondition(service.clarifyCalls.last?.0 == "q1"
                      && model.pendingClarifies.map(\.requestID) == ["q2"],
                      "answering one clarify must remove only that request")
         precondition(!model.canRespondToClarify(requestID: "missing"),
                      "a missing request ID must never fall back to another clarify")
+        let callsBeforeStaleAnswer = service.clarifyCalls.count
+        await model.respondToClarify("stale answer", requestID: "q1")
+        precondition(service.clarifyCalls.count == callsBeforeStaleAnswer &&
+                     model.pendingClarifies.map(\.id) == ["q2"],
+                     "a stale card tap must not answer the surviving question")
         model.disconnect()
     }
 

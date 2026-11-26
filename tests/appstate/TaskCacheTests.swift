@@ -74,6 +74,26 @@ extension AppStateTests {
         precondition(Set(first + second + third) == Set(keys))
         precondition(SessionRecoveryCoordinator.eligibleKeys(first, attempted: attempted,
             now: 101).isEmpty)
+        let coordinator = SessionRecoveryCoordinator()
+        let backend = HermesAPI(baseURL: "https://recovery-admission.test")
+        let candidates = keys.map { SessionRecoveryCoordinator.Candidate(
+            key: $0, observation: tracked, api: backend) }
+        var rejected: [SessionRecoveryCoordinator.Key] = []
+        coordinator.schedule(candidates: candidates, limit: 1, now: 100,
+            isEligible: { key, _, _ in key != first[0] },
+            onRestore: { candidate in rejected.append(candidate.key); return false })
+        precondition(rejected == [first[1]], "ineligible work cannot consume the admission slot")
+        var admitted: [SessionRecoveryCoordinator.Key] = []
+        coordinator.schedule(candidates: candidates, limit: 1, now: 101,
+            isEligible: { key, _, _ in key != first[0] },
+            onRestore: { candidate in admitted.append(candidate.key); return true })
+        precondition(admitted == rejected, "a rejected admission must remain immediately eligible")
+        coordinator.schedule(candidates: candidates, limit: 1, now: 102,
+            isEligible: { key, _, _ in key != first[0] },
+            onRestore: { candidate in admitted.append(candidate.key); return true })
+        precondition(admitted == [first[1], first[2]], "successful admission alone starts cooldown")
+        print("RECOVERY_ADMISSION_PASS bounded batch, rejected admission retry and cooldown")
+
         precondition(SessionRecoveryCoordinator.canRetireAcceptedReceipt(
             from: absent, sessionID: "proof-session"), "verified absent allows read-only reconciliation")
         precondition(!SessionRecoveryCoordinator.canRetireAcceptedReceipt(

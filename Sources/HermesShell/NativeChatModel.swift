@@ -60,7 +60,7 @@ enum ChatSendMode: String, CaseIterable, Identifiable {
 /// 网关把 run 挂在 `waiting_for_approval` 上、SSE 不断开，所以这张卡片出现时
 /// 本轮并没有结束；不回答的话任务会一直停在这儿。可选项由服务端给（两项或四项），
 /// 客户端不猜——不同场景下 `session` / `always` 未必允许。
-struct ChatPendingApproval: Identifiable, Codable, Equatable {
+struct ChatPendingApproval: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let runID: String
     let requestID: String?
@@ -299,26 +299,65 @@ final class NativeChatModel: ObservableObject {
     var recoveryOnly = false
     var recoveryCheckpointRead = false
     var lastCheckpointWrite: TimeInterval = -.infinity
+    private var checkpointEncodingTask: Task<Data?, Never>?
+    private var checkpointEncodingTicket: UUID?
+
+    /// Invalidate a detached encoder before a new projection or durable
+    /// receipt can replace its original identity.
+    func cancelCheckpointEncoding() {
+        checkpointEncodingTicket = nil
+        checkpointEncodingTask?.cancel()
+        checkpointEncodingTask = nil
+    }
 
     /// A checkpoint is optimization/display state, never authority to send.
     /// Exact accepted receipt, session scope and full cursor projection are
     /// checked again against current server history before use.
     func persistRecoveryCheckpoint(force: Bool = false) {
-        guard !runtimeRetired, let store = draftStore, let receipt = activeTurnRecovery,
+        if force { cancelCheckpointEncoding() }
+        guard !runtimeRetired, checkpointEncodingTask == nil,
+              let store = draftStore, let receipt = activeTurnRecovery,
               receipt.terminalStatus == nil, pendingSend == nil,
               streamID == receipt.runID, let cursor = lastEventID,
               buffer.canResume(at: cursor), let historyEnd = confirmedHistoryEnd else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastCheckpointWrite >= 2 else { return }
         lastCheckpointWrite = now
+        guard !buffer.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes) else { return }
         let checkpoint = RunRecoveryCheckpoint(version: 1, scope: displayScope,
             sessionID: sessionID, receipt: receipt, historyEnd: historyEnd,
             olderOffset: olderOffset, cursor: cursor, projection: buffer,
             approvals: pendingApprovals, clarifies: pendingClarifies)
-        guard let encoded = try? JSONEncoder().encode(checkpoint) else { return }
-        // A failed/oversized checkpoint must not advance the durable cursor.
-        // The previous complete file remains a valid earlier replay point.
-        _ = store.saveCheckpoint(encoded)
+        // A forced background/approval boundary keeps the synchronous
+        // atomic write contract. Routine token events encode an immutable
+        // value off-main, with at most one outstanding encoder per owner.
+        if force {
+            guard let encoded = try? JSONEncoder().encode(checkpoint) else { return }
+            _ = store.saveCheckpoint(encoded)
+            return
+        }
+        let ticket = UUID()
+        let generation = revision
+        checkpointEncodingTicket = ticket
+        let encoder = Task.detached(priority: .utility) { () -> Data? in
+            guard !Task.isCancelled else { return nil }
+            return try? JSONEncoder().encode(checkpoint)
+        }
+        checkpointEncodingTask = encoder
+        Task { [weak self] in
+            let encoded = await encoder.value
+            guard let self, self.checkpointEncodingTicket == ticket else { return }
+            self.checkpointEncodingTask = nil
+            self.checkpointEncodingTicket = nil
+            guard !self.runtimeRetired, !self.suspended,
+                  self.revision == generation, self.activeTurnRecovery == receipt,
+                  self.pendingSend == nil, self.streamID == receipt.runID,
+                  self.lastEventID != nil, !self.buffer.terminal,
+                  let encoded else { return }
+            // Commit only on the model actor. A newer force-save, reset,
+            // receipt retirement or scope retirement cannot be overwritten.
+            _ = store.saveCheckpoint(encoded)
+        }
     }
 
     func restoreRecoveryCheckpoint(from snapshot: ChatSnapshot) {
@@ -402,6 +441,7 @@ final class NativeChatModel: ObservableObject {
     func retireRuntime() {
         guard !runtimeRetired else { return }
         runtimeRetired = true
+        cancelCheckpointEncoding()
         #if canImport(UIKit)
         runtimeObservation?.cancel()
         runtimeObservation = nil
@@ -684,6 +724,7 @@ final class NativeChatModel: ObservableObject {
     func clearAcceptedTurnRecovery() -> Bool {
         guard !runtimeRetired else { return false }
         guard activeTurnRecovery != nil else { return true }
+        cancelCheckpointEncoding()
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
         activeRunProbeRunID = nil
@@ -1131,7 +1172,7 @@ final class ConversationRuntimeRegistry {
 
 /// Protected, bounded snapshot. Cursor, exact deduplication set and all
 /// accumulator state are encoded in one atomic envelope, not separate files.
-struct RunRecoveryCheckpoint: Codable {
+struct RunRecoveryCheckpoint: Codable, Sendable {
     let version: Int
     let scope: String
     let sessionID: String

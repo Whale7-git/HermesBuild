@@ -133,6 +133,10 @@ extension ModelTests {
         let checkpoint = RunRecoveryCheckpoint(version: 1, scope: "checkpoint|account",
             sessionID: "test", receipt: checkpointReceipt, historyEnd: 0, olderOffset: 0,
             cursor: "cursor-1", projection: checkpointProjection, approvals: [], clarifies: [])
+        precondition(!checkpointProjection.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes))
+        var oversizedProjection = checkpointProjection
+        oversizedProjection.reasoning = String(repeating: "a", count: LocalDataFileStore.maxCheckpointBytes + 1)
+        precondition(oversizedProjection.exceedsCheckpointPayloadBudget(LocalDataFileStore.maxCheckpointBytes))
         let checkpointData = try JSONEncoder().encode(checkpoint)
         let checkpointReceiptData = try JSONEncoder().encode(checkpointReceipt)
         precondition(checkpointStore.saveActiveRun(checkpointReceiptData).succeeded)
@@ -168,8 +172,29 @@ extension ModelTests {
         precondition(checkpoint.resumeProjection(scope: "checkpoint|account", sessionID: "test",
             receipt: ActiveTurnRecovery(runID: "other-run", historyEnd: 0, knownIDs: [],
                 text: checkpointReceipt.text, attachmentPaths: []), snapshot: currentSnapshot) == nil)
+        // Routine encoding commits a complete immutable projection. A forced
+        // boundary then takes precedence over an older queued routine encode.
+        checkpointModel.persistRecoveryCheckpoint()
+        try await eventually {
+            guard let data = checkpointStore.loadCheckpoint().value,
+                  let saved = try? JSONDecoder().decode(RunRecoveryCheckpoint.self, from: data) else { return false }
+            return saved.cursor == "cursor-2"
+        }
+        checkpointModel.lastCheckpointWrite = -.infinity
+        checkpointModel.persistRecoveryCheckpoint()
+        try checkpointModel.buffer.apply(SSEFrame(event: "token", data: #"{"text":" final"}"#, id: "cursor-3"))
+        checkpointModel.lastEventID = "cursor-3"
+        checkpointModel.persistRecoveryCheckpoint(force: true)
+        guard let forcedData = checkpointStore.loadCheckpoint().value else {
+            preconditionFailure("forced checkpoint missing")
+        }
+        let forced = try JSONDecoder().decode(RunRecoveryCheckpoint.self, from: forcedData)
+        precondition(forced.cursor == "cursor-3" && forced.projection.canResume(at: "cursor-3"))
+        await Task.yield()
+        precondition(checkpointStore.loadCheckpoint().value == forcedData,
+                     "an older asynchronous projection cannot overwrite a forced checkpoint")
         checkpointModel.disconnect()
-        print("CHECKPOINT_PASS atomic scoped cold resume, replay deduplication, oversized fallback and live cursor fence")
+        print("CHECKPOINT_PASS atomic scoped cold resume, replay deduplication, oversized fallback, live cursor and encoder fences")
 
         let attachment = ChatAttachmentPayload(name: "scan.pdf", path: "/attachments/new.pdf",
                                              mime: "application/pdf", size: 48, isImage: false)
