@@ -193,7 +193,7 @@ import Foundation
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesQueueWriteFailure-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        try Data("not-a-directory".utf8).write(to: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let fileStore = LocalDataFileStore(instanceID: "queue-save-result",
                                            accountScope: "account", sessionID: "session",
                                            rootDirectory: root)
@@ -202,7 +202,13 @@ import Foundation
         let service = SendSafetyService()
         let model = NativeChatModel(sessionID: "queue-save-result", api: service,
                                     draftStore: store)
-        await model.load(); model.transition(to: .streaming(connected: true))
+        await model.load()
+        precondition(model.canSend && !model.pendingRecoveryUnreadable && !model.activeRecoveryUnreadable)
+        // Inject a write outage AFTER a healthy initialization. A cold unreadable
+        // root is a different safety case and must never permit a new send.
+        try FileManager.default.removeItem(at: root)
+        try Data("not-a-directory".utf8).write(to: root)
+        model.transition(to: .streaming(connected: true))
         model.sendMode = .queue; model.draft = "wait"; _ = await model.send()
         precondition(model.localPersistenceIssue?.kind == .queue)
         precondition(model.localPersistenceIssue?.failure == .diskWrite)
@@ -230,6 +236,37 @@ import Foundation
                      && model.localPersistenceIssue == nil,
                      "only a verified explicit retry clears the sticky queue failure")
         model.disconnect()
+    }
+
+    // An unavailable receipt directory at launch must fail closed even
+    // after a successful read-only history GET; an unsuccessful delete
+    // cannot be mistaken for the explicit retirement of a damaged receipt.
+    do {
+        let suite = "HermesColdUnreadableReceipts-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesColdUnreadable-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("not-a-directory".utf8).write(to: root)
+        let fileStore = LocalDataFileStore(instanceID: "cold", accountScope: "account",
+            sessionID: "session", rootDirectory: root)
+        let store = ChatDraftStore(instanceID: "cold", accountScope: "account",
+            sessionID: "session", defaults: defaults, fileStore: fileStore)
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "session", api: service, draftStore: store)
+        precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable)
+        await model.load()
+        precondition(!model.canSend && model.presentationState.needsVerification)
+        model.draft = "never replay"
+        let sent = await model.send()
+        precondition(!sent && service.startCalls == 0 && model.draft == "never replay")
+        model.abandonUnreadablePending()
+        model.abandonUnreadableActiveRecovery()
+        precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable && !model.canSend,
+                     "failed local deletion cannot unlock an unreadable receipt")
+        model.disconnect()
+        print("COLD_STORAGE_LOCK_PASS unavailable receipts block POST and cannot be cleared by failed deletion")
     }
 
     // Recovery and enqueue must never silently override a user's pause.

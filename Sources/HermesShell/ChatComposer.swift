@@ -486,7 +486,7 @@ struct ChatComposer: View {
                     // Keep the running-mode selector inside the existing 44pt
                     // action rail. Adding/removing an entire row at run start
                     // used to shift the editor and resize the transcript.
-                    if running { sendModePicker.disabled(preparingSubmission) }
+                    if running { sendModePicker }
                     Spacer(minLength: 0)
                     Button(action: onChooseModel) {
                         HStack(spacing: 4) {
@@ -637,6 +637,7 @@ struct ChatComposer: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .disabled(preparingSubmission)
         .accessibilityLabel("运行中发送方式，当前\(sendMode.label)")
         .accessibilityHint(sendMode.hint)
     }

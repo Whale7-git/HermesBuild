@@ -327,7 +327,7 @@ def violations(contents: dict[str, str]) -> list[str]:
             failures.append(f"Running Send/Stop geometry policy missing: {token}")
     for token in ("ChatComposerActionPolicy.reservesSendSlot(",
                   ".accessibilityHidden(true)", ".allowsHitTesting(false)",
-                  "if running { sendModePicker.disabled(preparingSubmission) }",
+                  "if running { sendModePicker }",
                   ".lineLimit(quoteExpanded ? 8 : 2)",
                   "AppTheme.radiusComposer"):
         if token not in composer:
@@ -337,7 +337,7 @@ def violations(contents: dict[str, str]) -> list[str]:
     # verifies the measured editor and first-responder behaviour.
     if "if !readOnly && running {" in composer:
         failures.append("Running-mode selector cannot add a variable-height composer row")
-    if composer.count("if running { sendModePicker.disabled(preparingSubmission) }") != 1:
+    if composer.count("if running { sendModePicker }") != 1:
         failures.append("Running-mode selector must occupy exactly one existing action slot")
     if "onMetricsChange: receiveMetrics" in composer:
         failures.append("Unused UIKit line metrics must not invalidate the composer state")

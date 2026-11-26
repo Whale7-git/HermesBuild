@@ -592,14 +592,25 @@ struct LocalDataFileStore: Sendable {
     }
 
     private func remove(_ url: URL) -> LocalStoreWriteResult {
+        let manager = FileManager.default
         do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            let attributes = try manager.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                return .failed(.diskWrite)
             }
-            return .ok
+            try manager.removeItem(at: url)
         } catch {
-            return .failed(.diskWrite)
+            guard Self.isMissingFile(error) else { return .failed(.diskWrite) }
+            // Missing an entry is harmless only in an accessible directory
+            // (or a genuinely absent root). A locked or invalid root cannot
+            // confirm that the receipt has been deleted.
+            do {
+                _ = try manager.contentsOfDirectory(atPath: root.path)
+            } catch {
+                guard Self.isMissingFile(error) else { return .failed(.diskWrite) }
+            }
         }
+        return .ok
     }
 
     private func loadString(_ url: URL, maxBytes: Int) -> Loaded<String> {

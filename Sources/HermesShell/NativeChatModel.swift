@@ -839,7 +839,8 @@ final class NativeChatModel: ObservableObject {
         if case .reconnecting = phase { return .reconnecting }
         if reconciling { return .verifying }
         if case .syncing = phase { return .syncing }
-        if uncertain || pendingSend != nil || (activeTurnRecovery != nil && !phase.isRunning) {
+        if uncertain || pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+            pendingSend != nil || (activeTurnRecovery != nil && !phase.isRunning) {
             return .needsVerification
         }
         if readOnly { return .readOnly }
