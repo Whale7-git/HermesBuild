@@ -697,7 +697,7 @@ final class NativeChatModel: ObservableObject {
         uncertain = true
         pauseQueueForRecovery()
         if !recoveryRecordsUnreadable {
-            notice = "本地恢复记录已重新读取；正在等待服务端历史核对，不会自动重发。"
+            notice = "已恢复本地记录，正在等待联网同步，不会自动重发。"
         }
         return !recoveryRecordsUnreadable
     }
@@ -720,7 +720,7 @@ final class NativeChatModel: ObservableObject {
         guard result.succeeded else { recordLocalWrite(result, kind: .queue); return }
         pendingRecoveryUnreadable = false
         uncertain = true // A subsequent GET is still required.
-        notice = "已放弃损坏的本地记录，请核对历史后再发送，避免重复提交。"
+        notice = "已放弃损坏的本地记录，请同步消息后再发送。"
     }
 
     var pendingSend: PendingSend? {
@@ -869,7 +869,7 @@ final class NativeChatModel: ObservableObject {
         guard clearAcceptedTurnRecovery() else { return }
         pauseQueueForRecovery()
         uncertain = true
-        notice = "已放弃本地运行恢复标记；没有重发消息。请重新核对服务端历史后再继续。"
+        notice = "已放弃本地任务记录，没有重发消息。请同步后再继续。"
     }
 
     func abandonUnreadableActiveRecovery() {
@@ -879,7 +879,7 @@ final class NativeChatModel: ObservableObject {
         activeRecoveryUnreadable = false
         pauseQueueForRecovery()
         uncertain = true
-        notice = "已放弃损坏的运行记录；请先核对历史，不会自动重发或继续队列。"
+        notice = "已放弃损坏的任务记录，请同步消息；不会自动重发或继续队列。"
     }
 
     // The start API returns a stream ID, not a canonical user-message receipt,
@@ -1014,7 +1014,7 @@ final class NativeChatModel: ObservableObject {
                         attachmentPaths: pending.attachments.map(\.path), delivery: .unconfirmed)]
                     transcript = buffer
                 }
-                notice = "上次发送结果待核对，核对前不会自动重发。"
+                notice = "上次消息尚未确认送达，不会自动重发。"
             } else {
                 uncertain = true
                 pendingRecoveryUnreadable = true
@@ -1032,7 +1032,7 @@ final class NativeChatModel: ObservableObject {
                 activeTurnHistoryBoundary = receipt.historyEnd
                 if pendingSend == nil {
                     uncertain = true
-                    notice = "上次已受理的后台任务正在核对；不会重复提交消息。"
+                    notice = "正在同步上次回复，不会重复发送消息。"
                 }
             } else {
                 activeRecoveryUnreadable = true
