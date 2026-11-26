@@ -439,6 +439,7 @@ extension NativeChatModel {
         // A history GET has no event cursor. Keep the in-memory accumulator
         // when it still describes the same live stream, including seen IDs.
         if wasCached || lastEventID == nil || snap.activeStreamID == nil || snap.activeStreamID != streamID || buffer.terminal {
+            cancelCheckpointEncoding()
             let previousUsage = wasCached ? nil : buffer.usage
             let wasTerminal = buffer.terminal
             buffer = ChatTranscript()
@@ -959,6 +960,7 @@ extension NativeChatModel {
                             // A stale Last-Event-ID would trigger the same gap
                             // on the next reconnect; start the next read-only
                             // recovery from the newest authoritative state.
+                            self.cancelCheckpointEncoding()
                             self.lastEventID = nil
                             self.buffer.lastEventID = nil
                             _ = self.draftStore?.saveCheckpoint(nil)
