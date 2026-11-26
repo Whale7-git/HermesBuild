@@ -856,7 +856,7 @@ struct ChatToolDetail: View {
                 .frame(minHeight: 44)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(tool.name)，\(tool.isError ? "执行失败" : (tool.done ? "已完成" : (allowsRunning ? "执行中" : "状态待核对")))。\(expanded ? "收起" : "展开")详情")
+            .accessibilityLabel("\(tool.name)，\(tool.isError ? "执行失败" : (tool.done ? "已完成" : (allowsRunning ? "执行中" : "状态未确认")))。\(expanded ? "收起" : "展开")详情")
 
             if expanded {
                 if let omitted = tool.uncachedArgsBytes {
