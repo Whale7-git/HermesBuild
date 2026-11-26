@@ -821,9 +821,7 @@ struct ChatToolDetail: View {
     var allowsRunning = false
     let copied: (String) -> Void
     @Binding var expanded: Bool
-    @State private var showFullResult = false
-    @State private var resultPage = 0
-    private let resultPageSize = 16_000
+    @State private var payload: ToolPayloadPresentation?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -867,13 +865,27 @@ struct ChatToolDetail: View {
                         .foregroundStyle(.secondary)
                 }
                 if !tool.args.isEmpty {
-                    sectionLabel("参数")
+                    HStack {
+                        sectionLabel("参数")
+                        Spacer()
+                        Button("复制") { copied(tool.args) }
+                            .font(.caption2)
+                            .buttonStyle(.plain)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .accessibilityLabel(tool.uncachedArgsBytes == nil ? "复制工具参数" : "复制已缓存工具参数")
+                    }
                     Text(String(tool.args.prefix(4000)))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .lineLimit(8)
+                    Button(tool.uncachedArgsBytes == nil ? "查看完整参数" : "查看已缓存参数") {
+                        payload = ToolPayloadPresentation(title: tool.name + " · 参数",
+                            text: tool.args, omittedBytes: tool.uncachedArgsBytes)
+                    }
+                    .font(.caption).buttonStyle(.plain).foregroundStyle(AppTheme.accent)
+                    .frame(minHeight: 44, alignment: .leading)
                 }
                 if let omitted = tool.uncachedResultBytes {
                     Text("本地没有完整缓存这项工具结果（原始约 \(omitted) 字节）。请联网刷新历史；服务端能否重取尚未核实。")
@@ -900,8 +912,8 @@ struct ChatToolDetail: View {
                         .textSelection(.enabled)
                         .lineLimit(20)
                     Button(tool.uncachedResultBytes == nil ? "查看完整结果" : "查看已缓存结果") {
-                        resultPage = 0
-                        showFullResult = true
+                        payload = ToolPayloadPresentation(title: tool.name + " · 结果",
+                            text: tool.result, omittedBytes: tool.uncachedResultBytes)
                     }
                         .font(.caption)
                         .buttonStyle(.plain)
@@ -915,40 +927,8 @@ struct ChatToolDetail: View {
             }
         }
         .padding(.vertical, 2)
-        .sheet(isPresented: $showFullResult) {
-            NavigationStack {
-                // A multi-megabyte result must not be rendered in one
-                // SwiftUI Text layout. Only the current page is instantiated.
-                let pageCount = max(1, (tool.result.count + resultPageSize - 1) / resultPageSize)
-                let visiblePage = min(resultPage, pageCount - 1)
-                ReadOnlyResultView(text: String(tool.result.dropFirst(visiblePage * resultPageSize)
-                    .prefix(resultPageSize)))
-                    .navigationTitle(tool.name)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button(tool.uncachedResultBytes == nil ? "复制" : "复制已缓存内容") { copied(tool.result) }
-                        }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("完成") { showFullResult = false }
-                        }
-                    }
-                    .safeAreaInset(edge: .bottom) {
-                        HStack {
-                            Button("上一页") { resultPage = max(0, visiblePage - 1) }
-                                .disabled(visiblePage == 0)
-                            Spacer()
-                            Text("\(visiblePage + 1) / \(pageCount)")
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("下一页") { resultPage = min(pageCount - 1, visiblePage + 1) }
-                                .disabled(visiblePage >= pageCount - 1)
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                    }
-            }
+        .sheet(item: $payload) { snapshot in
+            ToolPayloadReader(snapshot: snapshot, copied: copied)
         }
     }
 

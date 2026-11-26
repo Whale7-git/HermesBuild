@@ -77,3 +77,12 @@ _ = await all.find("needle", in: growing)
 let afterGrowth = await all.preparedDocumentCount
 expect(afterGrowth == firstCount + 1, "streaming tail re-prepares only the changed message")
 print("FINDWORK_PASS 200-document overflow reuses stable subset; unchanged history avoids repeated preparation")
+
+let early = ChatFindWorker()
+let dense = [ChatConversationSearch.Document(id: "dense", text: String(repeating: "needle ", count: 301))] + largeHistory
+let bounded = await early.findDetailed("needle", in: dense)
+let earlyCount = await early.preparedDocumentCount
+expect(bounded.hasMoreMatches && earlyCount == 1, "prepare only documents visited before truncation")
+let later = await early.findDetailed("needle 199", in: dense)
+expect(later.hits.map(\.rowID) == ["m-199"], "a later query still scans the complete loaded history")
+print("FINDWORK_PASS early truncation skips 200 unvisited documents")

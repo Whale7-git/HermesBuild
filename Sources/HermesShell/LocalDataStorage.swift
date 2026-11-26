@@ -51,8 +51,9 @@ struct LocalDataFileStore: Sendable {
         let files: Int
         let payloadBytes: Int64
         let corruptFiles: Int
+        var directoryUnreadable = false
 
-        var isHealthy: Bool { corruptFiles == 0 }
+        var isHealthy: Bool { corruptFiles == 0 && !directoryUnreadable }
     }
 
     private struct Envelope: Codable {
@@ -285,7 +286,6 @@ struct LocalDataFileStore: Sendable {
     }
 
     func loadDraft() -> (value: String?, result: LocalStoreWriteResult) {
-        if !FileManager.default.fileExists(atPath: draftURL.path) { return (nil, .ok) }
         switch loadString(draftURL, maxBytes: Self.maxDraftBytes) {
         case .missing:
             return (nil, .ok)
@@ -297,7 +297,6 @@ struct LocalDataFileStore: Sendable {
     }
 
     func loadQueue() -> (value: Data?, result: LocalStoreWriteResult) {
-        if !FileManager.default.fileExists(atPath: queueURL.path) { return (nil, .ok) }
         switch loadData(queueURL, maxBytes: Self.maxQueueBytes) {
         case .missing:
             return (nil, .ok)
@@ -382,17 +381,25 @@ struct LocalDataFileStore: Sendable {
                            rootDirectory: URL) -> Statistics {
         let target = digest([instanceID, accountScope])
         let manager = FileManager.default
-        guard FileManager.default.fileExists(atPath: rootDirectory.path),
-              let urls = try? manager.contentsOfDirectory(
-                at: rootDirectory, includingPropertiesForKeys: [.fileSizeKey],
-                options: [.skipsHiddenFiles]) else {
-            return Statistics(files: 0, payloadBytes: 0, corruptFiles: 0)
+        let names: [String]
+        do {
+            names = try manager.contentsOfDirectory(atPath: rootDirectory.path)
+        } catch {
+            return Statistics(files: 0, payloadBytes: 0, corruptFiles: 0,
+                              directoryUnreadable: !isMissingFile(error))
         }
         var files = 0
         var bytes: Int64 = 0
         var corrupt = 0
-        for url in urls where Self.belongs(url, to: target) {
-            guard let envelope = readEnvelope(url, maxBytes: Self.maxQueueBytes) else {
+        for name in names where name.hasSuffix(".json") {
+            let url = rootDirectory.appendingPathComponent(name)
+            guard Self.belongs(url, to: target) else { continue }
+            // Apply the same payload budget as the owning record type. A
+            // valid attachment draft can be larger than the queue limit.
+            guard let limit = statisticsLimit(name: name, namespace: target),
+                  let envelope = readEnvelope(url, maxBytes: limit),
+                  envelope.version == version, envelope.namespaceHash == target,
+                  name.hasSuffix("-" + envelope.scopeHash + ".json") else {
                 corrupt += 1
                 continue
             }
@@ -400,6 +407,22 @@ struct LocalDataFileStore: Sendable {
             bytes += Int64(envelope.payload.count)
         }
         return Statistics(files: files, payloadBytes: bytes, corruptFiles: corrupt)
+    }
+
+    private static func statisticsLimit(name: String, namespace: String) -> Int? {
+        let types: [(String, Int)] = [
+            ("draft", maxDraftBytes), ("queue", maxQueueBytes), ("pending", maxQueueBytes),
+            ("active-run", maxActiveRunBytes), ("attachments", maxAttachmentDraftBytes),
+            ("checkpoint", maxCheckpointBytes), ("recovery-index", 16 * 1024),
+            ("run-outcome", 128 * 1024)
+        ]
+        return types.first { name.hasPrefix($0.0 + "-" + namespace + "-") }?.1
+    }
+
+    private static func isMissingFile(_ error: Error) -> Bool {
+        let ns = error as NSError
+        return ns.domain == NSCocoaErrorDomain &&
+            (ns.code == NSFileNoSuchFileError || ns.code == NSFileReadNoSuchFileError)
     }
 
     private func save(_ payload: Data, to url: URL, maxBytes: Int) -> LocalStoreWriteResult {
@@ -569,14 +592,25 @@ struct LocalDataFileStore: Sendable {
     }
 
     private func remove(_ url: URL) -> LocalStoreWriteResult {
+        let manager = FileManager.default
         do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                try FileManager.default.removeItem(at: url)
+            let attributes = try manager.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                return .failed(.diskWrite)
             }
-            return .ok
+            try manager.removeItem(at: url)
         } catch {
-            return .failed(.diskWrite)
+            guard Self.isMissingFile(error) else { return .failed(.diskWrite) }
+            // Missing an entry is harmless only in an accessible directory
+            // (or a genuinely absent root). A locked or invalid root cannot
+            // confirm that the receipt has been deleted.
+            do {
+                _ = try manager.contentsOfDirectory(atPath: root.path)
+            } catch {
+                guard Self.isMissingFile(error) else { return .failed(.diskWrite) }
+            }
         }
+        return .ok
     }
 
     private func loadString(_ url: URL, maxBytes: Int) -> Loaded<String> {
@@ -590,7 +624,19 @@ struct LocalDataFileStore: Sendable {
     }
 
     private func loadData(_ url: URL, maxBytes: Int) -> Loaded<Data> {
-        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        do {
+            _ = try FileManager.default.attributesOfItem(atPath: url.path)
+        } catch {
+            // A locked/unreadable directory is not proof that an original
+            // POST record is missing. Only classify a real missing path.
+            guard Self.isMissingFile(error) else { return .invalid }
+            do {
+                _ = try FileManager.default.contentsOfDirectory(atPath: root.path)
+                return .missing
+            } catch {
+                return Self.isMissingFile(error) ? .missing : .invalid
+            }
+        }
         guard let envelope = Self.readEnvelope(url, maxBytes: maxBytes),
               envelope.version == Self.version,
               envelope.scopeHash == scopeHash,
@@ -599,7 +645,17 @@ struct LocalDataFileStore: Sendable {
     }
 
     private static func readEnvelope(_ url: URL, maxBytes: Int) -> Envelope? {
-        guard let data = try? Data(contentsOf: url),
+        // Base64 plus JSON escaping is bounded by three times payload size
+        // and fixed envelope metadata. Check before allocating or decoding.
+        let encodedLimit = maxBytes * 3 + 4096
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber,
+              size.int64Value > 0, size.int64Value <= Int64(encodedLimit),
+              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: encodedLimit + 1),
+              data.count <= encodedLimit,
               let value = try? JSONDecoder().decode(Envelope.self, from: data),
               value.payload.count <= maxBytes else { return nil }
         return value

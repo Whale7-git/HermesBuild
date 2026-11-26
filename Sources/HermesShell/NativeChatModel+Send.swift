@@ -160,8 +160,9 @@ extension NativeChatModel {
     /// Dispatch the oldest eligible turn. The rest remain queued; each later
     /// completion can dispatch the next turn in order.
     @discardableResult
-    func flushQueuedIfNeeded(completedStreamID: String? = nil) async -> Bool {
-        guard !recoveryOnly, !running, !stopping, !suspended, !stopAcknowledged else { return false }
+    func flushQueuedIfNeeded(completedStreamID: String? = nil, expectedTurnID: String? = nil) async -> Bool {
+        guard !runtimeRetired, !recoveryOnly, !running, !stopping, !suspended, !stopAcknowledged,
+              expectedTurnID == nil || queuedTurns.first?.id == expectedTurnID else { return false }
         // Removing a submitting entry is owned by the completion path. It
         // must never be dispatched again from a foreground/load callback.
         switch ChatQueueDispatchPlan.make(
@@ -229,7 +230,7 @@ extension NativeChatModel {
     }
 
     func removeQueuedTurn(id: String) {
-        guard queueEditingTurnID == nil else { return }
+        guard queueEditingTurnID == nil, !reconciling else { return }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return }
         guard queuedTurns[index].delivery != .submitting else { return }
         queuedTurns.remove(at: index)
@@ -281,17 +282,50 @@ extension NativeChatModel {
             error = "还有另一条发送结果待核对；请先处理会话里的待核对消息。"
             return false
         } else {
-            guard queuedTurns[0].hasRecoveryEvidence else {
+            let original = queuedTurns[0]
+            guard original.hasRecoveryEvidence, let historyEnd = original.historyEnd else {
                 error = "这条队列来自旧版本，未保存发送前的历史边界，无法安全确认是否已送达。请刷新核对后手动处理。"
                 return false
             }
             reconciling = true
             defer { reconciling = false }
             uncertain = true
+            let generation = revision
+            func stillOwnsProof() -> Bool {
+                generation == revision && !runtimeRetired && !suspended && !Task.isCancelled
+                    && queuedTurns.first == original && pendingSend == nil
+            }
             do {
                 let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
+                guard stillOwnsProof(), snapshot.sessionID == sessionID,
+                      !snapshot.readOnly, snapshot.activeRunEvidence == .absent else { return false }
+                var pages = [snapshot]
+                for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > historyEnd {
+                    guard stillOwnsProof(), let cursor = pages.last?.olderOffset else { return false }
+                    let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
+                    guard stillOwnsProof(), older.sessionID == sessionID, !older.readOnly,
+                          older.activeRunEvidence == .absent,
+                          older.rawMessageEndIndex == cursor, older.olderOffset < cursor else { return false }
+                    pages.append(older)
+                }
+                let decision = DeliveryReconciliationPolicy.resolve(text: original.text,
+                    attachments: original.attachments, historyEnd: historyEnd,
+                    knownIDs: original.knownIDs, pages: pages)
+                guard decision != .failed else {
+                    error = "历史证据不足，已保留队列记录；不会自动重发。"
+                    return false
+                }
+                if pages.count > 1 {
+                    let head = try await recoveryHistory(sessionID: sessionID, before: nil)
+                    guard stillOwnsProof(), head.sessionID == sessionID, !head.readOnly,
+                          head.activeRunEvidence == .absent,
+                          head.rawMessageEndIndex == snapshot.rawMessageEndIndex,
+                          head.messages.last?.id == snapshot.messages.last?.id else { return false }
+                }
+                guard stillOwnsProof() else { return false }
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
-                switch queuedTurns[0].resolution(in: snapshot) {
+                guard stillOwnsProof(), activeTurnRecovery == nil else { uncertain = true; return false }
+                switch decision {
                 case .delivered:
                     guard queuedTurns.first?.id == id else { return false }
                     queuedTurns.removeFirst()
@@ -308,6 +342,7 @@ extension NativeChatModel {
                     return false
                 }
             } catch {
+                guard stillOwnsProof() else { return false }
                 if handleAuthenticationFailure(error) { return false }
                 uncertain = true
                 self.error = "核对队列消息失败：\(error.localizedDescription)"
@@ -407,19 +442,20 @@ extension NativeChatModel {
     }
 
     func moveQueuedTurn(id: String, before targetID: String) {
-        guard queueEditingTurnID == nil, id != targetID,
+        guard queueEditingTurnID == nil, !reconciling,
+              !queuedTurns.contains(where: { $0.delivery == .submitting }), id != targetID,
               let source = queuedTurns.firstIndex(where: { $0.id == id }),
               let target = queuedTurns.firstIndex(where: { $0.id == targetID }) else { return }
         var next = queuedTurns
         let turn = next.remove(at: source)
         let insertion = source < target ? target - 1 : target
         next.insert(turn, at: insertion)
-        queuedTurns = next
+        queuedTurns = ChatQueueOrdering.prioritize(next)
         persistQueue()
     }
 
     func setQueuedTurns(_ turns: [ChatQueuedTurn]) {
-        guard queueEditingTurnID == nil else { return }
+        guard queueEditingTurnID == nil, !reconciling else { return }
         guard turns.count <= ChatQueuedTurn.maximumCount,
               Set(turns.map(\.id)).count == turns.count,
               !turns.contains(where: { $0.delivery == .submitting }) else { return }
@@ -474,6 +510,27 @@ extension NativeChatModel {
         }
         recordRuntimeLog(.info, "send",
             paused ? "queue auto-dispatch paused" : "queue auto-dispatch resumed")
+    }
+
+    /// Both composer and queue manager must dispatch the exact selected ID.
+    /// Stale taps, refused reorder and asynchronous reconciliation never
+    /// fall back to a different first item.
+    @discardableResult
+    func dispatchSelectedQueuedTurn(id: String) async -> Bool {
+        guard !runtimeRetired, !reconciling, queueEditingTurnID == nil,
+              !running, !submitting, !loading, !syncing, !stopping,
+              let selected = queuedTurns.first(where: { $0.id == id }),
+              selected.delivery != .submitting else { return false }
+        if let first = queuedTurns.first, first.id != id {
+            moveQueuedTurn(id: id, before: first.id)
+        }
+        guard queuedTurns.first?.id == id else { return false }
+        if selected.delivery == .uncertain {
+            guard await prepareQueuedTurnForRetry(id: id) else { return false }
+        } else {
+            markQueuedTurnForManualDispatch(id: id)
+        }
+        return await flushQueuedIfNeeded(expectedTurnID: id)
     }
 
     func markQueuedTurnForManualDispatch(id: String) {

@@ -176,6 +176,30 @@ import Foundation
         let stats = LocalDataFileStore.statistics(instanceID: "instance", accountScope: "acct-1",
                                                   rootDirectory: root)
         precondition(stats.files >= 3 && stats.payloadBytes > 0 && stats.isHealthy)
+        let unavailableStats = LocalDataFileStore.statistics(instanceID: "instance",
+            accountScope: "acct-1", rootDirectory: indexRootFile)
+        precondition(unavailableStats.directoryUnreadable && !unavailableStats.isHealthy,
+                     "invalid root is not healthy empty storage")
+        let missingStats = LocalDataFileStore.statistics(instanceID: "instance",
+            accountScope: "acct-1", rootDirectory: root.appendingPathComponent("not-created"))
+        precondition(missingStats.isHealthy && missingStats.files == 0)
+        let inaccessible = LocalDataFileStore(instanceID: "instance", accountScope: "acct-1",
+            sessionID: "unreadable", rootDirectory: indexRootFile)
+        precondition(!inaccessible.loadPending().result.succeeded,
+                     "an invalid receipt directory cannot prove the POST was absent")
+        precondition(!inaccessible.loadDraft().result.succeeded && !inaccessible.loadQueue().result.succeeded,
+                     "unavailable draft and queue files are not empty healthy records")
+        precondition(!inaccessible.savePending(nil).succeeded && !inaccessible.saveActiveRun(nil).succeeded,
+                     "unavailable receipt directory cannot acknowledge deletion")
+        let largeDraft = LocalDataFileStore(instanceID: "stats", accountScope: "account",
+            sessionID: "large", rootDirectory: root)
+        let largePayload = Data(repeating: 42, count: 16 * 1024 * 1024 + 1)
+        precondition(largeDraft.saveAttachmentDraft(largePayload).succeeded)
+        let largeStats = LocalDataFileStore.statistics(instanceID: "stats",
+            accountScope: "account", rootDirectory: root)
+        precondition(largeStats.isHealthy && largeStats.files == 1 &&
+                     largeStats.payloadBytes == Int64(largePayload.count),
+                     "attachment data uses its own size budget, not the queue limit")
 
         // A corrupt envelope is rejected and remains a visible failure; it is
         // never silently treated as an empty draft.

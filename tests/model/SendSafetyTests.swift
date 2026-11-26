@@ -14,6 +14,7 @@ import Foundation
     var stopCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
+    var historyPageSize: Int?
     var holdSteer = false
     var pendingSteer: CheckedContinuation<String?, Error>?
     var pendingApproval: CheckedContinuation<String?, Error>?
@@ -29,8 +30,11 @@ import Foundation
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         historyCalls += 1
         if failHistory { throw URLError(.notConnectedToInternet) }
-        var object: [String: Any] = ["session_id": sessionID, "messages": historyRows,
-                                     "read_only": false]
+        let end = min(max(0, before ?? historyRows.count), historyRows.count)
+        let offset = historyPageSize.map { max(0, end - $0) } ?? 0
+        var object: [String: Any] = ["session_id": sessionID,
+            "messages": historyPageSize == nil ? historyRows : Array(historyRows[offset..<end]),
+            "_messages_offset": offset, "_messages_truncated": offset > 0, "read_only": false]
         if let active { object["active_stream_id"] = active }
         return try ChatSnapshot(data: JSONSerialization.data(withJSONObject: object),
                                 gatewayPendingControls: pendingControlSnapshot)
@@ -189,7 +193,7 @@ import Foundation
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesQueueWriteFailure-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        try Data("not-a-directory".utf8).write(to: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let fileStore = LocalDataFileStore(instanceID: "queue-save-result",
                                            accountScope: "account", sessionID: "session",
                                            rootDirectory: root)
@@ -198,7 +202,13 @@ import Foundation
         let service = SendSafetyService()
         let model = NativeChatModel(sessionID: "queue-save-result", api: service,
                                     draftStore: store)
-        await model.load(); model.transition(to: .streaming(connected: true))
+        await model.load()
+        precondition(model.canSend && !model.pendingRecoveryUnreadable && !model.activeRecoveryUnreadable)
+        // Inject a write outage AFTER a healthy initialization. A cold unreadable
+        // root is a different safety case and must never permit a new send.
+        try FileManager.default.removeItem(at: root)
+        try Data("not-a-directory".utf8).write(to: root)
+        model.transition(to: .streaming(connected: true))
         model.sendMode = .queue; model.draft = "wait"; _ = await model.send()
         precondition(model.localPersistenceIssue?.kind == .queue)
         precondition(model.localPersistenceIssue?.failure == .diskWrite)
@@ -226,6 +236,37 @@ import Foundation
                      && model.localPersistenceIssue == nil,
                      "only a verified explicit retry clears the sticky queue failure")
         model.disconnect()
+    }
+
+    // An unavailable receipt directory at launch must fail closed even
+    // after a successful read-only history GET; an unsuccessful delete
+    // cannot be mistaken for the explicit retirement of a damaged receipt.
+    do {
+        let suite = "HermesColdUnreadableReceipts-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HermesColdUnreadable-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("not-a-directory".utf8).write(to: root)
+        let fileStore = LocalDataFileStore(instanceID: "cold", accountScope: "account",
+            sessionID: "session", rootDirectory: root)
+        let store = ChatDraftStore(instanceID: "cold", accountScope: "account",
+            sessionID: "session", defaults: defaults, fileStore: fileStore)
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "session", api: service, draftStore: store)
+        precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable)
+        await model.load()
+        precondition(!model.canSend && model.presentationState.needsVerification)
+        model.draft = "never replay"
+        let sent = await model.send()
+        precondition(!sent && service.startCalls == 0 && model.draft == "never replay")
+        model.abandonUnreadablePending()
+        model.abandonUnreadableActiveRecovery()
+        precondition(model.pendingRecoveryUnreadable && model.activeRecoveryUnreadable && !model.canSend,
+                     "failed local deletion cannot unlock an unreadable receipt")
+        model.disconnect()
+        print("COLD_STORAGE_LOCK_PASS unavailable receipts block POST and cannot be cleared by failed deletion")
     }
 
     // Recovery and enqueue must never silently override a user's pause.
@@ -793,6 +834,24 @@ import Foundation
         model.disconnect()
     }
 
+    // A delivered queue row can be older than the latest 60 raw records.
+    do {
+        let service = SendSafetyService()
+        service.historyPageSize = 60
+        service.historyRows = [["id": "older", "role": "user", "content": "previous"],
+            ["id": "accepted-older-page", "role": "user", "content": "queued long task"]]
+        service.historyRows += (0..<145).map { ["id": "assistant-\($0)", "role": "assistant", "content": "step \($0)"] }
+        let model = NativeChatModel(sessionID: "queue-long-proof", api: service)
+        let turn = ChatQueuedTurn(id: "long-queue", text: "queued long task", attachments: [],
+            composerText: "queued long task", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 1, knownIDs: ["older"], submittedAt: 1_700_000_000)
+        model.setQueuedTurns([turn])
+        let ready = await model.prepareQueuedTurnForRetry(id: turn.id)
+        precondition(!ready && model.queuedTurns.isEmpty && service.startCalls == 0 && service.historyCalls == 4,
+                     "three contiguous history pages plus head verification prove delivery without POST")
+        model.disconnect()
+    }
+
     do {
         let suite = "HermesQueueRestoreLegacy-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -954,6 +1013,32 @@ import Foundation
         restored.disconnect()
     }
 
+    // Explicit manual queue actions must never dispatch a stale row's sibling.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "queue-exact-selection", api: service)
+        await model.load()
+        let first = ChatQueuedTurn(id: "first", text: "first", attachments: [],
+            composerText: "first", origin: .userInput, automaticAfterStreamID: nil)
+        let second = ChatQueuedTurn(id: "second", text: "second", attachments: [],
+            composerText: "second", origin: .userInput, automaticAfterStreamID: nil)
+        model.setQueuedTurns([first, second])
+        let stale = await model.dispatchSelectedQueuedTurn(id: "removed")
+        let wrongFirst = await model.flushQueuedIfNeeded(expectedTurnID: "second")
+        precondition(!stale && !wrongFirst && service.startCalls == 0)
+        var unresolved = first
+        unresolved.delivery = .uncertain
+        model.setQueuedTurns([unresolved, second])
+        let blocked = await model.dispatchSelectedQueuedTurn(id: "second")
+        precondition(!blocked && model.queuedTurns.first?.id == "first" && service.startCalls == 0,
+                     "a waiting row cannot leapfrog unresolved original delivery")
+        model.setQueuedTurns([first, second])
+        let dispatched = await model.dispatchSelectedQueuedTurn(id: "second")
+        precondition(dispatched && service.sent.last?.0 == "second" &&
+                     model.queuedTurns.map(\.id) == ["first"])
+        model.disconnect()
+    }
+
     // An acknowledgement for an old approval must not dismiss its replacement.
     do {
         let service = SendSafetyService()
@@ -1013,6 +1098,14 @@ import Foundation
         precondition(service.approvalCalls.isEmpty &&
                      model.pendingApprovals.map(\.id) == ["a2"],
                      "a stale card tap must not approve its surviving sibling")
+        let staleApproval = model.pendingApprovals[0]
+        let replacementApproval = ChatPendingApproval(id: staleApproval.id, runID: staleApproval.runID,
+            requestID: staleApproval.requestID, executionGeneration: staleApproval.executionGeneration + 1,
+            detail: staleApproval.detail, command: staleApproval.command, choices: staleApproval.choices)
+        model.pendingApprovals = [replacementApproval]
+        await model.respondToApproval("once", requestID: staleApproval.id, expected: staleApproval)
+        precondition(service.approvalCalls.isEmpty && model.pendingApprovals == [replacementApproval],
+                     "same-ID newer approval cannot receive an old card's decision")
         let old = ChatPendingApproval(id: "old", runID: "old-run", requestID: "old",
                                       executionGeneration: 3,
                                       detail: "", command: nil, choices: ["once"])
@@ -1105,6 +1198,14 @@ import Foundation
         precondition(service.clarifyCalls.count == callsBeforeStaleAnswer &&
                      model.pendingClarifies.map(\.id) == ["q2"],
                      "a stale card tap must not answer the surviving question")
+        let oldQuestion = model.pendingClarifies[0]
+        let newQuestion = ChatPendingClarify(id: oldQuestion.id, runID: oldQuestion.runID,
+            requestID: oldQuestion.requestID, executionGeneration: 13,
+            question: oldQuestion.question, choices: oldQuestion.choices, multiSelect: oldQuestion.multiSelect)
+        model.pendingClarifies = [newQuestion]
+        await model.respondToClarify("stale answer", requestID: oldQuestion.id, expected: oldQuestion)
+        precondition(service.clarifyCalls.count == callsBeforeStaleAnswer && model.pendingClarify?.executionGeneration == 13,
+                     "same-ID newer clarification cannot receive an old card's answer")
         model.disconnect()
     }
 

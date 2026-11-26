@@ -44,6 +44,7 @@ final class ChatTimelineProjection: ObservableObject {
     /// mapping alongside the structural row index instead of rediscovering it
     /// by walking every visible row for every tool progress event.
     private var toolRowByID: [String: String] = [:]
+    private var toolIndicesByRowID: [String: [Int]] = [:]
     /// Turns that first appeared at the top edge of a history window are kept
     /// as normal rows permanently. If a later prepend reveals their original
     /// user row, regrouping that turn would replace a visible row id and defeat
@@ -126,6 +127,10 @@ final class ChatTimelineProjection: ObservableObject {
                     projected.enumerated().map { ($0.element.id, $0.offset) },
                     uniquingKeysWith: { first, _ in first })
                 var toolRows: [String: String] = [:]
+                var toolIndices: [String: [Int]] = [:]
+                let sourceIndices = Dictionary(source.tools.enumerated().map { ($0.element.id, $0.offset) },
+                    uniquingKeysWith: { first, _ in first })
+                var validOwnership = sourceIndices.count == source.tools.count
                 for item in projected {
                     let rowTools: [ChatTool]
                     switch item.row.kind {
@@ -133,11 +138,16 @@ final class ChatTimelineProjection: ObservableObject {
                     case .process(let group): rowTools = group.tools
                     default: continue
                     }
-                    for tool in rowTools where toolRows[tool.id] == nil {
+                    for tool in rowTools {
+                        guard toolRows[tool.id] == nil, let index = sourceIndices[tool.id] else {
+                            validOwnership = false; continue
+                        }
                         toolRows[tool.id] = item.id
+                        toolIndices[item.id, default: []].append(index)
                     }
                 }
-                self.toolRowByID = toolRows
+                self.toolRowByID = validOwnership ? toolRows : [:]
+                self.toolIndicesByRowID = validOwnership ? toolIndices : [:]
                 self.items = projected
             }
     }
@@ -176,34 +186,30 @@ final class ChatTimelineProjection: ObservableObject {
               previous.tools.count > 0 else { return nil }
         // Check structural identity and detect payload changes in one scan,
         // without allocating two ID and anchor arrays per tool event.
-        var changed: [Int] = []
+        var changedRows = Set<String>()
         for index in previous.tools.indices {
             let old = previous.tools[index], new = next.tools[index]
             guard old.id == new.id, old.afterMessageID == new.afterMessageID else {
                 return nil
             }
-            if old != new { changed.append(index) }
+            if old != new {
+                guard let rowID = toolRowByID[old.id] else { return nil }
+                changedRows.insert(rowID)
+            }
         }
-        guard !changed.isEmpty else { return nil }
+        guard !changedRows.isEmpty else { return nil }
         let activeTools = next.toolsAreLive
             ? ChatActivity.activeToolIDs(messages: next.messages, tools: next.tools) : []
-        var byRow: [String: [ChatTool]] = [:]
-        var changedByRow: [String: Bool] = [:]
-        // Reuse ownership and row indices built by the last structural
-        // projection. Both remain valid across tool payload-only updates.
-        for index in previous.tools.indices {
-            let old = previous.tools[index]
-            guard let rowID = toolRowByID[old.id] else { return nil }
-            byRow[rowID, default: []].append(next.tools[index])
-            changedByRow[rowID, default: false] =
-                changedByRow[rowID, default: false] || old != next.tools[index]
-        }
+        // Materialize only the changed groups, using the exact structural
+        // order. Unchanged groups no longer allocate and compare payload arrays.
         var updated = items
-        for (rowID, replacement) in byRow where changedByRow[rowID] == true {
+        for rowID in changedRows {
+            guard let indices = toolIndicesByRowID[rowID],
+                  indices.allSatisfy({ next.tools.indices.contains($0) }) else { return nil }
+            let replacement = indices.map { next.tools[$0] }
             guard let index = itemIndexByID[rowID],
                   let value = updated[index].replacingTools(
                     replacement,
-                    allTools: next.tools,
                     toolsAreLive: replacement.contains { activeTools.contains($0.id) })
             else { return nil }
             updated[index] = value

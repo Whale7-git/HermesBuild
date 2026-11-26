@@ -238,6 +238,13 @@ struct SettingsView: View {
     @State private var localDataFiles = 0
     @State private var localDataBytes: Int64 = 0
     @State private var localDataCorruptFiles = 0
+    @State private var localDataDirectoryUnreadable = false
+    @State private var localDataStatisticsReady = false
+    @State private var localDataStatisticsTicket = UUID()
+
+    private var localDataHealthy: Bool {
+        localDataStatisticsReady && !localDataDirectoryUnreadable && localDataCorruptFiles == 0
+    }
     @AppStorage("chatReturnSends") private var returnSends = true
     @State private var exportedLogText = ""
     /// 分享与日志预览合并成同一个 sheet：同一视图上挂两个 `.sheet` 时，
@@ -345,16 +352,19 @@ struct SettingsView: View {
     private var localSettings: some View {
                 Section {
                     HStack(spacing: 12) {
-                        Image(systemName: localDataCorruptFiles == 0
-                              ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(localDataCorruptFiles == 0
-                                             ? AppTheme.success : AppTheme.warning)
+                        Image(systemName: !localDataStatisticsReady ? "clock"
+                              : (localDataHealthy ? "checkmark.shield.fill" : "exclamationmark.triangle.fill"))
+                            .foregroundStyle(!localDataStatisticsReady ? Color.secondary
+                                             : (localDataHealthy ? AppTheme.success : AppTheme.warning))
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(localDataCorruptFiles == 0 ? "草稿与队列已保护" : "本地数据需要检查")
+                            Text(!localDataStatisticsReady ? "正在检查本地数据"
+                                 : (localDataHealthy ? "草稿与队列已保护" : "本地数据需要检查"))
                                 .font(.subheadline.weight(.medium))
-                            Text(localDataCorruptFiles == 0
-                                 ? "当前账号 \(localDataFiles) 个文件；写入后会回读验证。"
-                                 : "发现 \(localDataCorruptFiles) 个无法验证的文件。进入会话的恢复中心查看。")
+                            Text(!localDataStatisticsReady ? "正在读取当前账号的本地记录。"
+                                 : (localDataDirectoryUnreadable ? "存储目录暂不可读，不能确认记录完整性。"
+                                    : (localDataHealthy
+                                       ? "当前账号 \(localDataFiles) 个文件；写入后会回读验证。"
+                                       : "发现 \(localDataCorruptFiles) 个无法验证的文件。进入会话的恢复中心查看。")))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -628,7 +638,7 @@ struct SettingsView: View {
             .background(AppTheme.canvas)
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
-            .task { await updateHistoryStatistics() }
+            .task(id: [app.historyInstanceID, app.historyAccountScope]) { await updateHistoryStatistics() }
             // Returning from iOS Settings does not recreate this navigation view.
             // Re-read authorization so the status and recovery link are accurate.
             .onChange(of: scenePhase) { _, phase in
@@ -795,15 +805,26 @@ struct SettingsView: View {
     }
 
     private func updateHistoryStatistics() async {
-        let value = await ChatHistoryStore.statistics()
+        let ticket = UUID()
+        localDataStatisticsTicket = ticket
+        localDataStatisticsReady = false
+        let instance = app.historyInstanceID, account = app.historyAccountScope
+        let root = LocalDataFileStore.defaultRoot
+        async let history = ChatHistoryStore.statistics()
+        let local = await Task.detached(priority: .utility) {
+            LocalDataFileStore.statistics(instanceID: instance, accountScope: account,
+                                          rootDirectory: root)
+        }.value
+        let value = await history
+        guard !Task.isCancelled, localDataStatisticsTicket == ticket,
+              app.historyInstanceID == instance, app.historyAccountScope == account else { return }
         historyBytes = value.bytes
         historyEntries = value.entries
-        let local = LocalDataFileStore.statistics(
-            instanceID: app.historyInstanceID, accountScope: app.historyAccountScope,
-            rootDirectory: LocalDataFileStore.defaultRoot)
         localDataFiles = local.files
         localDataBytes = local.payloadBytes
         localDataCorruptFiles = local.corruptFiles
+        localDataDirectoryUnreadable = local.directoryUnreadable
+        localDataStatisticsReady = true
     }
 }
 

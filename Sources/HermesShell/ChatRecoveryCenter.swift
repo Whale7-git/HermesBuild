@@ -265,20 +265,13 @@ struct ChatRecoveryCenter: View {
         queueRecoveryID = turn.id
         resultText = nil
         Task {
-            let ready: Bool
-            if turn.delivery == .uncertain {
-                ready = await model.prepareQueuedTurnForRetry(id: turn.id)
+            let accepted = await model.dispatchSelectedQueuedTurn(id: turn.id)
+            if accepted {
+                resultText = "所选消息已受理，队列已同步更新。"
             } else {
-                model.markQueuedTurnForManualDispatch(id: turn.id)
-                ready = true
-            }
-            if ready {
-                _ = await model.flushQueuedIfNeeded()
                 resultText = model.queuedTurns.contains(where: { $0.id == turn.id })
-                    ? "首条消息仍在队列中，未确认送达，也没有自动重复发送。"
-                    : "首条消息已受理，队列已同步更新。"
-            } else {
-                resultText = "首条消息仍待核对或队列已变化，没有自动重发。"
+                    ? "所选消息仍在队列中，未确认送达，也没有自动重复发送。"
+                    : "所选消息记录已变化；未再次提交，请查看会话状态。"
             }
             queueRecoveryID = nil
         }

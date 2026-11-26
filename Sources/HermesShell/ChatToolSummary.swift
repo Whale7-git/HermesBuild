@@ -99,3 +99,78 @@ enum ChatExecutionPresentation {
         return messageCount > 0 ? "中间回复 · \(toolSummary)" : toolSummary
     }
 }
+
+ 
+/// Immutable, grapheme-safe page index for large tool parameters/results.
+/// Build once off-main when the reader opens. Search uses the complete source,
+/// not the preview or one visible page, and keeps UTF-16 coordinates for UIKit.
+struct ToolPayloadIndex: Sendable {
+    struct Page: Sendable {
+        let range: Range<String.Index>
+        let utf16Start: Int
+        let utf16Length: Int
+    }
+    struct Match: Sendable {
+        let page: Int
+        let location: Int
+        let length: Int
+        let nextOffset: Int
+        let spansPages: Bool
+    }
+
+    let text: String
+    let pages: [Page]
+    private let totalUTF16: Int
+
+    init(text: String, pageSize: Int = 16_000) {
+        self.text = text
+        let size = max(1, pageSize)
+        var start = text.startIndex
+        var offset = 0
+        var result: [Page] = []
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: size, limitedBy: text.endIndex) ?? text.endIndex
+            let length = text[start..<end].utf16.count
+            result.append(Page(range: start..<end, utf16Start: offset, utf16Length: length))
+            offset += length
+            start = end
+        }
+        if result.isEmpty {
+            result.append(Page(range: text.startIndex..<text.endIndex, utf16Start: 0, utf16Length: 0))
+        }
+        pages = result
+        totalUTF16 = offset
+    }
+
+    func pageText(_ index: Int) -> String {
+        let safe = min(max(0, index), pages.count - 1)
+        return String(text[pages[safe].range])
+    }
+
+    func find(_ query: String, after offset: Int = 0) -> Match? {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty, term.utf16.count <= 512, totalUTF16 > 0 else { return nil }
+        let source = text as NSString
+        let start = min(max(0, offset), totalUTF16)
+        let options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        var found = source.range(of: term, options: options,
+            range: NSRange(location: start, length: totalUTF16 - start))
+        if found.location == NSNotFound && start > 0 {
+            found = source.range(of: term, options: options,
+                range: NSRange(location: 0, length: totalUTF16))
+        }
+        guard found.location != NSNotFound, found.length > 0 else { return nil }
+        // Binary search the containing page using the indexed UTF-16 offsets.
+        var lo = 0, hi = pages.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if pages[mid].utf16Start <= found.location { lo = mid }
+            else { hi = mid - 1 }
+        }
+        let page = pages[lo]
+        let local = found.location - page.utf16Start
+        let length = min(found.length, page.utf16Length - local)
+        return Match(page: lo, location: local, length: length,
+            nextOffset: NSMaxRange(found), spansPages: length < found.length)
+    }
+}

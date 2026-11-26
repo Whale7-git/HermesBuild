@@ -38,6 +38,7 @@ struct ChatComposer: View {
     let stopping: Bool
     let canStop: Bool
     let canSend: Bool
+    let preparingSubmission: Bool
     var hasReadyAttachments = false
     var hasAttachmentItems = false
     /// 提交回调带上当前文本：文本不再存在模型里逐字同步。
@@ -92,6 +93,7 @@ struct ChatComposer: View {
          onChooseModel: @escaping () -> Void = {},
          readOnly: Bool, loading: Bool,
          running: Bool, stopping: Bool, canStop: Bool, canSend: Bool,
+         preparingSubmission: Bool = false,
          hasReadyAttachments: Bool = false, hasAttachmentItems: Bool = false,
          onSend: @escaping (String) -> Void, onStop: @escaping () -> Void,
          onAttach: @escaping () -> Void, attachments: AnyView? = nil, attachmentMenu: AnyView? = nil,
@@ -123,6 +125,7 @@ struct ChatComposer: View {
         self.stopping = stopping
         self.canStop = canStop
         self.canSend = canSend
+        self.preparingSubmission = preparingSubmission
         self.hasReadyAttachments = hasReadyAttachments
         self.hasAttachmentItems = hasAttachmentItems
         self.onSend = onSend
@@ -150,13 +153,13 @@ struct ChatComposer: View {
     }
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var sendEnabled: Bool { canSend && !composing && (!trimmed.isEmpty || hasReadyAttachments) }
+    private var sendEnabled: Bool { canSend && !preparingSubmission && !composing && (!trimmed.isEmpty || hasReadyAttachments) }
     /// Queue actions do not depend on the current attachment editor state.
     private var canDispatchQueued: Bool {
-        canSendQueued && !running && !loading && !readOnly && !stopping
+        canSendQueued && !preparingSubmission && !running && !loading && !readOnly && !stopping
     }
     private var showsAttachments: Bool { hasAttachmentItems }
-    private var editingEnabled: Bool { !loading && !readOnly }
+    private var editingEnabled: Bool { !loading && !readOnly && !preparingSubmission }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -288,7 +291,7 @@ struct ChatComposer: View {
     }
 
     private var commandSuggestions: [ChatSlashCommand.Suggestion] {
-        guard !readOnly, focused, !composing else { return [] }
+        guard !readOnly, !preparingSubmission, focused, !composing else { return [] }
         return ChatSlashCommand.menuSuggestions(for: text, caretUTF16Offset: caretOffset)
     }
 
@@ -431,6 +434,7 @@ struct ChatComposer: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
+                    .disabled(preparingSubmission)
                     .accessibilityLabel("移除引用")
                     .buttonStyle(.plain)
                 }
@@ -449,9 +453,7 @@ struct ChatComposer: View {
                                 onSubmit: submit,
                                 onComposition: { composing = $0 },
                                 onSelectionChange: { offset in
-                                    if caretOffset != offset {
-                                        DispatchQueue.main.async { caretOffset = offset }
-                                    }
+                                    if caretOffset != offset { caretOffset = offset }
                                 },
                                 commandInsertion: commandInsertion)
                     .opacity(readOnly ? 0.6 : 1)
@@ -502,27 +504,28 @@ struct ChatComposer: View {
                         .frame(maxWidth: 114, minHeight: 44)
                         .contentShape(Rectangle())
                     }
+                    .disabled(preparingSubmission)
                     .layoutPriority(-1)
                     .buttonStyle(.plain)
                     .accessibilityLabel("切换模型，当前\(modelLabel)")
                     .accessibilityHint("打开模型选择；长名称在按钮中可能显示省略号")
                     if ChatComposerActionPolicy.showsSend(
                         running: running, sendEnabled: sendEnabled,
-                        hasReadyAttachments: hasReadyAttachments) {
+                        hasReadyAttachments: hasReadyAttachments || preparingSubmission) {
                         actionButton(symbol: "arrow.up", enabled: sendEnabled,
-                                     label: running ? "发送（\(sendMode.label)）" : "发送消息",
-                                     hint: ChatComposerFeedbackPolicy.sendHint(
+                                     label: preparingSubmission ? "正在准备发送" : (running ? "发送（\(sendMode.label)）" : "发送消息"),
+                                     hint: preparingSubmission ? "尚未提交消息，请等待附件准备完成" : ChatComposerFeedbackPolicy.sendHint(
                                         readOnly: readOnly, loading: loading,
                                         stopping: stopping, composing: composing,
                                         canSend: canSend,
                                         hasContent: !trimmed.isEmpty || hasReadyAttachments),
-                                     action: submit)
+                                     busy: preparingSubmission, action: submit)
                     }
                     // Running without a draft: keep the inert 44pt send slot
                     // so Stop stays at the same x-position once typing begins.
                     if ChatComposerActionPolicy.reservesSendSlot(
                         running: running, sendEnabled: sendEnabled,
-                        hasReadyAttachments: hasReadyAttachments) {
+                        hasReadyAttachments: hasReadyAttachments || preparingSubmission) {
                         Color.clear.frame(width: AppTheme.minimumTouchSize,
                                           height: AppTheme.minimumTouchSize)
                             .accessibilityHidden(true)
@@ -634,6 +637,7 @@ struct ChatComposer: View {
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
+        .disabled(preparingSubmission)
         .accessibilityLabel("运行中发送方式，当前\(sendMode.label)")
         .accessibilityHint(sendMode.hint)
     }

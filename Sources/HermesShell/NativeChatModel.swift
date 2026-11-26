@@ -807,15 +807,18 @@ final class NativeChatModel: ObservableObject {
     var presentationState: SessionPresentationState {
         let persistence = localPersistenceIssue != nil || queuePersistenceFailed
         let requiresAction = authenticationRequired || pendingAbsent ||
+            !pendingApprovals.isEmpty || !pendingClarifies.isEmpty ||
             pendingRecoveryUnreadable || activeRecoveryUnreadable ||
             persistence || runRecoveryNoticeShown ||
             (hasPendingSend && !submitting && activeTurnRecovery == nil)
+        let currentActivity = activity
         let verification = uncertain || (hasPendingSend && !submitting) ||
+            currentActivity == .needsVerification || pendingRecoveryUnreadable || activeRecoveryUnreadable ||
             runRecoveryNoticeShown
         let recovery = hidesRoutineRecoveryNotice ||
             (automaticReconciliationTask != nil &&
              (historyLoadFailurePending || activeTurnRecovery != nil || reapedTransportRunID != nil))
-        return SessionPresentationState(activity: activity,
+        return SessionPresentationState(activity: currentActivity,
             transcriptAvailable: !transcript.messages.isEmpty,
             routineRecovery: recovery, requiresAction: requiresAction,
             verificationPending: verification, errorPresent: error != nil,
@@ -836,7 +839,8 @@ final class NativeChatModel: ObservableObject {
         if case .reconnecting = phase { return .reconnecting }
         if reconciling { return .verifying }
         if case .syncing = phase { return .syncing }
-        if uncertain || pendingSend != nil || (activeTurnRecovery != nil && !phase.isRunning) {
+        if uncertain || pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+            pendingSend != nil || (activeTurnRecovery != nil && !phase.isRunning) {
             return .needsVerification
         }
         if readOnly { return .readOnly }
@@ -844,6 +848,10 @@ final class NativeChatModel: ObservableObject {
             // A live turn outranks a leftover error string: the stream may still
             // recover, and "操作未完成" would contradict the running spinner.
             if !connected { return .connecting }
+            if let runID = streamID {
+                if pendingApprovals.contains(where: { $0.runID == runID }) { return .waitingForApproval }
+                if pendingClarifies.contains(where: { $0.runID == runID }) { return .waitingForClarify }
+            }
             let active = ChatActivity.activeToolIDs(messages: buffer.messages, tools: buffer.tools)
             if let tool = buffer.tools.last(where: { active.contains($0.id) }) { return .tool(tool.name) }
             return .replying

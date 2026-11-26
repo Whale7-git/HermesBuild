@@ -708,3 +708,33 @@ print(String(format: "LONG_CHAT_PROJECTION_BASELINE rows=%d messages=%d tools=%d
              stressRows.count, stressMessages.count, stressTools.count, stressElapsed))
 
 print("TIMELINE_PASS \(checks) assertions (data invariants only, not UIKit scrolling)")
+
+
+// Every tool in a long run remains discoverable, including records outside
+// the initial newest-40 presentation window.
+let inspectorTools = (0..<180).map { i in
+    ChatTool(id: "tool-\(i)", name: i == 3 ? "Unique Café" : "read_file",
+             args: "", result: "", done: true, isError: false)
+}
+check(ChatTaskToolInspector.visibleNewest(inspectorTools, limit: 40).count == 40,
+      "bounded initial inspector page")
+check(ChatTaskToolInspector.visibleNewest(inspectorTools, limit: 200).map(\.id)
+      == inspectorTools.reversed().map(\.id), "all older tools remain available")
+check(ChatTaskToolInspector.matching(inspectorTools, query: "cafe").map(\.id) == ["tool-3"],
+      "name search reaches older tools beyond the first page")
+check(ChatTaskToolInspector.matching(inspectorTools, query: "tool-179").count == 1,
+      "tool ID search")
+let payloadFixture = "👨‍👩‍👧‍👦ABneedleZcafé🧪needle"
+let payloadIndex = ToolPayloadIndex(text: payloadFixture, pageSize: 5)
+check(payloadIndex.pages.indices.map { payloadIndex.pageText($0) }.joined() == payloadFixture,
+      "payload pages reconstruct the exact original including Unicode graphemes")
+let payloadFirst = payloadIndex.find("needle")!
+let payloadNext = payloadIndex.find("needle", after: payloadFirst.nextOffset)!
+check(payloadFirst.page != payloadNext.page && payloadFirst.spansPages,
+      "search includes matches crossing page boundaries and subsequent pages")
+check(payloadIndex.find("CAFE") != nil && payloadIndex.find("not found") == nil,
+      "case and diacritic insensitive payload search")
+check(payloadIndex.find("needle", after: payloadNext.nextOffset)?.nextOffset == payloadFirst.nextOffset,
+      "next search wraps without losing the first match")
+check(ToolPayloadIndex(text: "").pageText(0).isEmpty, "empty result still has safe page")
+print("TOOL_INSPECTOR_PASS 180 records and full grapheme-safe payload search")

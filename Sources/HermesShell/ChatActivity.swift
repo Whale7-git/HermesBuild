@@ -4,6 +4,7 @@ import Foundation
 enum ChatActivity: Equatable {
     case ready, loading, syncing, sending, connecting, replying, stopping
     case reconnecting, verifying, suspended, needsVerification, needsLogin, readOnly
+    case waitingForApproval, waitingForClarify
     case cached(syncing: Bool)
     case tool(String)
     case failed
@@ -23,6 +24,8 @@ enum ChatActivity: Equatable {
         case .needsVerification: return "后台状态待核对"
         case .needsLogin: return "登录已失效 · 请重新登录"
         case .readOnly: return "只读会话"
+        case .waitingForApproval: return "等待你确认"
+        case .waitingForClarify: return "等待你补充信息"
         case .cached(let syncing): return syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 待联网核对"
         case .tool(let name): return "正在执行 \(name)…"
         case .failed: return "操作未完成 · 请查看提示"
@@ -93,6 +96,8 @@ struct SessionPresentationState: Equatable {
          warningPresent: Bool, notice: String?) {
         let compactRecovery = transcriptAvailable && routineRecovery && !requiresAction
             && activity != .stopping && activity != .needsLogin
+            && activity != .waitingForApproval && activity != .waitingForClarify
+            && activity != .suspended && activity != .sending
         if compactRecovery {
             title = "正在同步…"
             showsProgress = true

@@ -14,6 +14,7 @@ final class SessionRecoveryCoordinator {
         let api: HermesBackend
     }
     private var attempted: [Key: TimeInterval] = [:]
+    private var admissionOrder: [Key: TimeInterval] = [:]
 
     static func recoverySignal(for observation: SessionTaskObservation) -> SessionTaskSignal? {
         if observation.signals.contains(.needsVerification) { return .needsVerification }
@@ -24,12 +25,12 @@ final class SessionRecoveryCoordinator {
 
     static func eligibleKeys(_ keys: [Key], attempted: [Key: TimeInterval],
                              now: TimeInterval, cooldown: TimeInterval = 30,
-                             limit: Int = 5) -> [Key] {
+                             limit: Int = 5, admissionOrder: [Key: TimeInterval] = [:]) -> [Key] {
         keys.filter { key in
             attempted[key].map { now - $0 >= cooldown } ?? true
         }.sorted { lhs, rhs in
-            let l = attempted[lhs] ?? -Double.infinity
-            let r = attempted[rhs] ?? -Double.infinity
+            let l = max(attempted[lhs] ?? -.infinity, admissionOrder[lhs] ?? -.infinity)
+            let r = max(attempted[rhs] ?? -.infinity, admissionOrder[rhs] ?? -.infinity)
             if l != r { return l < r }
             if lhs.instanceID != rhs.instanceID { return lhs.instanceID < rhs.instanceID }
             if lhs.accountScope != rhs.accountScope { return lhs.accountScope < rhs.accountScope }
@@ -67,17 +68,21 @@ final class SessionRecoveryCoordinator {
                                  uniquingKeysWith: { first, _ in first })
         guard limit > 0 else { return }
         attempted = attempted.filter { now - $0.value < 3600 }
+        admissionOrder = admissionOrder.filter { now - $0.value < 3600 }
         // Revalidate lazily: eligibility can read protected storage. Do not
         // scan every session on every wake when only a few can be admitted.
         // Rejected admission does not start a recovery cooldown.
         var admissionAttempts = 0
         for key in Self.eligibleKeys(Array(indexed.keys), attempted: attempted, now: now,
-                                     limit: indexed.count) {
+                                     limit: indexed.count, admissionOrder: admissionOrder) {
             guard admissionAttempts < limit else { break }
             guard let candidate = indexed[key],
                   let signal = Self.recoverySignal(for: candidate.observation),
                   isEligible(key, signal, candidate.observation.version(for: signal)) else { continue }
             admissionAttempts += 1
+            // Refusal does not impose a cooldown, but rotate it behind
+            // untried work so a full instance cannot starve another.
+            admissionOrder[key] = now
             if onRestore(candidate) { attempted[key] = now }
         }
     }

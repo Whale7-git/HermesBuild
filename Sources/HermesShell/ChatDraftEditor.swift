@@ -81,6 +81,8 @@ struct ChatDraftEditor: UIViewRepresentable {
         var active = true
         var applying = false
         private var lastComposing = false
+        private var selectionScheduled = false
+        private var lastSelectionOffset: Int?
         private var focusScheduled = false
         private var returnScheduled = false
         private var appliedCommandToken: Int?
@@ -150,7 +152,7 @@ struct ChatDraftEditor: UIViewRepresentable {
             view.selectedRange = NSRange(location: end, length: 0)
             view.refresh()
             publish(view)
-            parent.onSelectionChange?(end)
+            publishSelection(view)
         }
 
         private func publish(_ view: UITextView) {
@@ -161,7 +163,23 @@ struct ChatDraftEditor: UIViewRepresentable {
                 parent.onComposition(composing)
             }
             if !composing, parent.text != view.text { parent.text = view.text ?? "" }
-            parent.onSelectionChange?(view.selectedRange.location)
+            publishSelection(view)
+        }
+
+        /// Coalesce UIKit's overlapping selection callbacks; read the latest
+        /// caret at delivery, never enqueue an obsolete offset.
+        private func publishSelection(_ view: UITextView) {
+            guard active, !selectionScheduled else { return }
+            selectionScheduled = true
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self else { return }
+                self.selectionScheduled = false
+                guard self.active, let view else { return }
+                let offset = view.selectedRange.location
+                guard self.lastSelectionOffset != offset else { return }
+                self.lastSelectionOffset = offset
+                self.parent.onSelectionChange?(offset)
+            }
         }
 
         func returnRequested() {

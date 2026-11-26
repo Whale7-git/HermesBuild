@@ -130,19 +130,19 @@ extension NativeChatModel {
     /// User answers may complete out of order. While one POST is in flight the
     /// UI disables every request, so selecting another card must not silently
     /// fall back to the newest slot and answer the wrong server prompt.
-    func canRespondToApproval(requestID: String, choice: String) -> Bool {
+    func canRespondToApproval(requestID: String, choice: String, expected: ChatPendingApproval? = nil) -> Bool {
         guard let pending = pendingApprovals.first(where: { $0.id == requestID }) else {
             return false
         }
-        return !approving && !suspended && pending.choices.contains(choice)
+        return (expected == nil || expected == pending) && !approving && !suspended && pending.choices.contains(choice)
             && streamID == pending.runID && !pending.runID.isEmpty
     }
 
-    func canRespondToClarify(requestID: String) -> Bool {
+    func canRespondToClarify(requestID: String, expected: ChatPendingClarify? = nil) -> Bool {
         guard let pending = pendingClarifies.first(where: { $0.id == requestID }) else {
             return false
         }
-        return !clarifying && !suspended && streamID == pending.runID
+        return (expected == nil || expected == pending) && !clarifying && !suspended && streamID == pending.runID
             && !pending.runID.isEmpty
     }
 
@@ -151,7 +151,7 @@ extension NativeChatModel {
     /// 成功就撤卡片，让流继续往下跑——网关在收到答复前不会推进本轮。
     /// 失败分三类处理：服务端说这张票已失效（not_pending）就撤掉并说明；
     /// 说选项不合法（rejected）说明是版本不匹配；网络错误保留卡片让用户重试。
-    func respondToApproval(_ choice: String, requestID: String? = nil) async {
+    func respondToApproval(_ choice: String, requestID: String? = nil, expected: ChatPendingApproval? = nil) async {
         // An explicitly selected card may disappear before its tap is
         // handled. Never substitute a different request in that case.
         let target: ChatPendingApproval?
@@ -160,7 +160,7 @@ extension NativeChatModel {
         } else {
             target = pendingApprovals.count == 1 ? pendingApproval : nil
         }
-        guard let pending = target, !approving, !suspended,
+        guard let pending = target, expected == nil || expected == pending, !approving, !suspended,
               pending.choices.contains(choice), streamID == pending.runID else { return }
         // runID 必须已知：没有它连往哪儿发都不知道，宁可不发也不猜。
         guard !pending.runID.isEmpty else {
@@ -222,14 +222,14 @@ extension NativeChatModel {
     ///
     /// 失败分类与审批一致：`not_pending` 撤卡片并说明；`rejected` 说明合同不匹配
     /// （多半是 generation 过期）；网络错误保留卡片让用户重试。
-    func respondToClarify(_ answer: String, requestID: String? = nil) async {
+    func respondToClarify(_ answer: String, requestID: String? = nil, expected: ChatPendingClarify? = nil) async {
         let target: ChatPendingClarify?
         if let requestID {
             target = pendingClarifies.first { $0.id == requestID }
         } else {
             target = pendingClarifies.count == 1 ? pendingClarify : nil
         }
-        guard let pending = target, !clarifying, !suspended,
+        guard let pending = target, expected == nil || expected == pending, !clarifying, !suspended,
               streamID == pending.runID else { return }
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         // 开放式提问允许任意文本，但空串没有意义：服务端会当成空答案。
