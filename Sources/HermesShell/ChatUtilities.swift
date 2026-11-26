@@ -32,6 +32,8 @@ struct ReadOnlyResultView: UIViewRepresentable {
             if let selection, NSMaxRange(selection) <= (text as NSString).length {
                 view.selectedRange = selection
                 view.scrollRangeToVisible(selection)
+            } else {
+                view.selectedRange = NSRange(location: 0, length: 0)
             }
         }
     }

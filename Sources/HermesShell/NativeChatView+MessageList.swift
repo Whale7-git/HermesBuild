@@ -357,6 +357,7 @@ extension NativeChatView {
     func goToLatest(animated: Bool) {
         cancelAutomaticTurnFocus()
         restoreCancelled = true
+        restoringReading = false
         scroll.jumpToLatest()
         scrollCommand.focusTurn = false
         scrollCommand.targetID = nil

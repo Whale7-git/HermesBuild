@@ -286,7 +286,6 @@ struct LocalDataFileStore: Sendable {
     }
 
     func loadDraft() -> (value: String?, result: LocalStoreWriteResult) {
-        if !FileManager.default.fileExists(atPath: draftURL.path) { return (nil, .ok) }
         switch loadString(draftURL, maxBytes: Self.maxDraftBytes) {
         case .missing:
             return (nil, .ok)
@@ -298,7 +297,6 @@ struct LocalDataFileStore: Sendable {
     }
 
     func loadQueue() -> (value: Data?, result: LocalStoreWriteResult) {
-        if !FileManager.default.fileExists(atPath: queueURL.path) { return (nil, .ok) }
         switch loadData(queueURL, maxBytes: Self.maxQueueBytes) {
         case .missing:
             return (nil, .ok)

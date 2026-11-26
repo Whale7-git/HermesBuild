@@ -17,6 +17,7 @@ extension NativeChatView {
             focused: $composerFocused,
             modelLabel: modelLabel,
             onChooseModel: {
+                guard !preparingAttachmentSend else { return }
                 composerFocused = false
                 showModelPicker = true
             },

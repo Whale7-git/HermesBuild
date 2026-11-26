@@ -187,6 +187,8 @@ import Foundation
             sessionID: "unreadable", rootDirectory: indexRootFile)
         precondition(!inaccessible.loadPending().result.succeeded,
                      "an invalid receipt directory cannot prove the POST was absent")
+        precondition(!inaccessible.loadDraft().result.succeeded && !inaccessible.loadQueue().result.succeeded,
+                     "unavailable draft and queue files are not empty healthy records")
         let largeDraft = LocalDataFileStore(instanceID: "stats", accountScope: "account",
             sessionID: "large", rootDirectory: root)
         let largePayload = Data(repeating: 42, count: 16 * 1024 * 1024 + 1)
