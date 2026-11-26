@@ -178,18 +178,10 @@ extension ChatScrollController {
         // A focused turn can reserve space below the last measured row to keep
         // the user's question stable. Do not clamp a manual reading offset to
         // row-only height after streamed reply growth or the offset snaps.
-        let maximum = ChatViewportLayout.maximumOffset(
+        return ChatViewportLayout.readingOffset(anchors: anchors, previous: previous,
             contentHeight: Double(scrollView.contentSize.height),
-            viewport: Double(scrollView.bounds.height))
-        if following { return maximum }
-        for anchor in anchors {
-            if let frame = frame(for: anchor.id) {
-                // 折叠后旧阅读点可能已不在这一行内，保留它剩下能显示的位置。
-                let within = min(anchor.offsetInRow, max(0, frame.height - 1))
-                return min(maximum, max(0, frame.top + within))
-            }
-        }
-        return min(maximum, max(0, previous))
+            viewport: Double(scrollView.bounds.height), following: following,
+            frameForID: { self.frame(for: $0) })
     }
 
     func position(_ id: String) {

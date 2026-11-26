@@ -113,17 +113,27 @@ enum ChatViewportLayout {
     /// over the frames, instead of O(anchors × rows).
     static func offset(after frames: [Frame], frameByID: [String: Frame], anchors: [Anchor],
                        previous: Double, viewport: Double, following: Bool) -> Double {
-        let maximum = max(0, (frames.last?.bottom ?? 0) - viewport)
+        readingOffset(anchors: anchors, previous: previous,
+                      contentHeight: frames.last?.bottom ?? 0, viewport: viewport,
+                      following: following, frameForID: { frameByID[$0] })
+    }
+
+    /// Shared with UIKit's actual scroll content, including the turn reserve.
+    /// The fallback neighbour may have a negative offset: preserve its screen
+    /// position when the original top row disappears.
+    static func readingOffset(anchors: [Anchor], previous: Double,
+                              contentHeight: Double, viewport: Double,
+                              following: Bool, frameForID: (String) -> Frame?) -> Double {
+        let maximum = maximumOffset(contentHeight: contentHeight, viewport: viewport)
         if following { return maximum }
         for anchor in anchors {
-            if let frame = frameByID[anchor.id] {
-                // A collapsed row may no longer contain the old reading point.
-                // Keep its last remaining point visible instead of skipping it.
+            if let frame = frameForID(anchor.id),
+               frame.top.isFinite, frame.height.isFinite, anchor.offsetInRow.isFinite {
                 let within = min(anchor.offsetInRow, max(0, frame.height - 1))
                 return min(maximum, max(0, frame.top + within))
             }
         }
-        return min(maximum, max(0, previous))
+        return previous.isFinite ? min(maximum, max(0, previous)) : 0
     }
 
     /// Legacy signature kept for the geometry tests: builds the index once and

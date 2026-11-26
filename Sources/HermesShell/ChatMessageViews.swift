@@ -899,7 +899,7 @@ struct ChatToolDetail: View {
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .lineLimit(20)
-                    Button(tool.uncachedResultBytes == nil ? "分页查看完整结果" : "查看已缓存结果") {
+                    Button(tool.uncachedResultBytes == nil ? "查看完整结果" : "查看已缓存结果") {
                         resultPage = 0
                         showFullResult = true
                     }

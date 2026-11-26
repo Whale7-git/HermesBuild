@@ -152,8 +152,14 @@ extension NativeChatModel {
     /// 失败分三类处理：服务端说这张票已失效（not_pending）就撤掉并说明；
     /// 说选项不合法（rejected）说明是版本不匹配；网络错误保留卡片让用户重试。
     func respondToApproval(_ choice: String, requestID: String? = nil) async {
-        let target = requestID.flatMap { id in pendingApprovals.first { $0.id == id } }
-            ?? pendingApproval
+        // An explicitly selected card may disappear before its tap is
+        // handled. Never substitute a different request in that case.
+        let target: ChatPendingApproval?
+        if let requestID {
+            target = pendingApprovals.first { $0.id == requestID }
+        } else {
+            target = pendingApprovals.count == 1 ? pendingApproval : nil
+        }
         guard let pending = target, !approving, !suspended,
               pending.choices.contains(choice), streamID == pending.runID else { return }
         // runID 必须已知：没有它连往哪儿发都不知道，宁可不发也不猜。
@@ -217,8 +223,12 @@ extension NativeChatModel {
     /// 失败分类与审批一致：`not_pending` 撤卡片并说明；`rejected` 说明合同不匹配
     /// （多半是 generation 过期）；网络错误保留卡片让用户重试。
     func respondToClarify(_ answer: String, requestID: String? = nil) async {
-        let target = requestID.flatMap { id in pendingClarifies.first { $0.id == id } }
-            ?? pendingClarify
+        let target: ChatPendingClarify?
+        if let requestID {
+            target = pendingClarifies.first { $0.id == requestID }
+        } else {
+            target = pendingClarifies.count == 1 ? pendingClarify : nil
+        }
         guard let pending = target, !clarifying, !suspended,
               streamID == pending.runID else { return }
         let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)

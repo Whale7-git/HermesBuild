@@ -303,4 +303,16 @@ expect(Layout.maximumOffset(contentHeight: 0, viewport: 700) == 0,
 expect(Layout.maximumOffset(contentHeight: .nan, viewport: 700) == 0,
        "invalid geometry cannot move a reading anchor")
 
+let reserveIndex = Layout.index(for: briefStream)
+expect(Layout.readingOffset(anchors: [], previous: 250, contentHeight: 1_000,
+    viewport: 700, following: false, frameForID: { reserveIndex[$0] }) == 250,
+    "production reading resolver retains an unanchored offset inside the reserve")
+expect(Layout.readingOffset(anchors: [.init(id: "deleted", offsetInRow: 1),
+    .init(id: "reply", offsetInRow: -40)], previous: 250, contentHeight: 1_000,
+    viewport: 700, following: false, frameForID: { reserveIndex[$0] }) == 80,
+    "surviving neighbour retains its screen coordinate after row removal")
+expect(Layout.readingOffset(anchors: [.init(id: "reply", offsetInRow: .nan)],
+    previous: 250, contentHeight: 1_000, viewport: 700, following: false,
+    frameForID: { reserveIndex[$0] }) == 250,
+    "invalid anchor does not replace a finite manual reading offset")
 print("SCROLL_GEOMETRY_PASS \(checks) assertions (pure geometry; device UX untested)")
