@@ -21,6 +21,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var appendHeadOnOlderPage = false
     var active: String?
     var statusUnknown = false
+    var unavailableRunID: String?
     var readOnly = false
     var failHistory = false
     var failHistoryAfterProbe = false
@@ -55,7 +56,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
         let snapshot = try ChatSnapshot(data: JSONSerialization.data(withJSONObject: [
             "session_id": sessionID, "messages": visibleRows, "_messages_offset": pageOffset,
             "read_only": readOnly, "active_stream_id": active as Any? ?? NSNull()
-        ]), runStatusUnknown: statusUnknown)
+        ]), runStatusUnknown: statusUnknown, unavailableRunID: unavailableRunID)
         if holdHistory { return try await withCheckedThrowingContinuation { historyWait = $0 } }
         return snapshot
     }
@@ -507,6 +508,7 @@ extension ModelTests {
         do {
             let service = PendingRecoveryService()
             service.statusUnknown = true
+            service.unavailableRunID = "expired-run"
             service.rows = [
                 ["id": "sent", "role": "user", "content": "original"],
                 ["id": "reply", "role": "assistant", "content": "already stored"]
@@ -515,9 +517,20 @@ extension ModelTests {
             await model.load()
             precondition(model.transcript.messages.map(\.id) == ["sent", "reply"])
             precondition(model.uncertain && !model.canSend && service.startCalls == 0)
+            precondition(model.latestRecoverySnapshot == nil, "unknown status cannot authorize history proof")
+            model.scheduleAutomaticReconciliation()
+            precondition(model.unavailableRunStatusID == "expired-run" &&
+                         model.automaticReconciliationTask == nil &&
+                         model.presentationState.showsNotice,
+                         "a known missing run stops futile background polling without unlocking")
             model.draft = "must not send"
             let sent = await model.send()
             precondition(!sent && service.startCalls == 0)
+            service.statusUnknown = false
+            service.unavailableRunID = nil
+            await model.refresh()
+            precondition(model.unavailableRunStatusID == nil && model.canSend && service.startCalls == 0,
+                         "an explicit authoritative refresh can restore sending without replay")
             model.disconnect()
         }
 
@@ -674,6 +687,10 @@ extension ModelTests {
         let checking = Task { await busy.reconcilePending() }
         try await eventually { busyService.historyWait != nil }
         precondition(!busy.canResendPending && !busy.canSend)
+        let inFlightGeneration = busy.revision
+        await busy.refresh(silent: true)
+        precondition(busy.reconciling && busy.revision == inFlightGeneration,
+                     "ordinary refresh cannot revoke the pending reconciliation owner")
         busy.discardPending()
         precondition(busy.transcript.messages.last?.delivery == .unconfirmed,
                      "discard must not race an in-flight reconciliation")

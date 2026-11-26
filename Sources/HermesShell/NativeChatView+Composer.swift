@@ -6,6 +6,9 @@ extension NativeChatView {
         if preparingAttachmentSend { return "正在上传附件，尚未发送消息…" }
         if model.authenticationRequired { return "登录后即可继续发送。" }
         if model.stopping { return "正在确认是否停止，暂不能发送。" }
+        if model.unavailableRunStatusID != nil {
+            return "原任务状态暂不可用，可同步重试或新建会话。"
+        }
         if model.uncertain || model.recoveryRecordsUnreadable {
             if model.syncing || model.loading || model.reconciling {
                 return "正在同步消息，暂不能发送。"

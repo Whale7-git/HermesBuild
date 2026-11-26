@@ -476,6 +476,9 @@ final class NativeChatModel: ObservableObject {
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?
+    /// Known missing status record; the user may retry an explicit GET or
+    /// open another chat, but this is never permission to replay a POST.
+    @Published var unavailableRunStatusID: String?
     @Published var activeRecoveryUnreadable = false
     var authenticationReported = false
     var streamTask: Task<Void,Never>?
@@ -496,7 +499,7 @@ final class NativeChatModel: ObservableObject {
     // Transport evidence only, not delivery or terminal evidence.
     var reapedTransportRunID: String?
     var hidesRoutineRecoveryNotice: Bool {
-        automaticRecoveryQuiet && !pendingAbsent && !authenticationRequired &&
+        automaticRecoveryQuiet && unavailableRunStatusID == nil && !pendingAbsent && !authenticationRequired &&
             !recoveryRecordsUnreadable &&
             localPersistenceIssue == nil && !queuePersistenceFailed && !runRecoveryNoticeShown &&
             (error == nil || historyLoadFailurePending)
@@ -920,7 +923,7 @@ final class NativeChatModel: ObservableObject {
     /// always stays visible when user action may be needed.
     var presentationState: SessionPresentationState {
         let persistence = localPersistenceIssue != nil || queuePersistenceFailed
-        let requiresAction = authenticationRequired || pendingAbsent ||
+        let requiresAction = authenticationRequired || pendingAbsent || unavailableRunStatusID != nil ||
             !pendingApprovals.isEmpty || !pendingClarifies.isEmpty ||
             recoveryRecordsUnreadable ||
             persistence || runRecoveryNoticeShown ||

@@ -209,7 +209,8 @@ extension NativeChatView {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         case .recovery:
-            ChatRecoveryCenter(model: model) { showPanel(.queue) }
+            ChatRecoveryCenter(model: model, onManageQueue: { showPanel(.queue) },
+                onNewConversation: { dismissPanel(then: .newSession) })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         case .navigation:

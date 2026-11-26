@@ -44,6 +44,8 @@ extension NativeChatModel {
         guard allowWhileReconciling || !reconciling else { return }
         if running && streamTask != nil { return }
         restoreUnreadableRecoveryRecords()
+        // A previous idle snapshot must never serve as proof for this GET.
+        latestRecoverySnapshot = nil
         publishTask?.cancel()
         publishTask = nil
         activeRunProbeTask?.cancel()
@@ -395,9 +397,16 @@ extension NativeChatModel {
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.
         if snap.activeRunEvidence == .unknown {
+            latestRecoverySnapshot = nil
             uncertain = true
             pauseQueueForRecovery()
-            notice = "回复状态暂时无法确认，已保留消息，不会重复发送。"
+            if let unavailable = snap.unavailableRunID {
+                unavailableRunStatusID = unavailable
+                automaticRecoveryQuiet = false
+            }
+            notice = unavailableRunStatusID == nil
+                ? "回复状态暂时无法确认，已保留消息，不会重复发送。"
+                : "服务暂时找不到原任务。消息已保留，可重新同步或新建会话。"
             // Reading the transcript and authorizing another POST are different
             // operations. On a cold open with no local content to protect,
             // show returned history even while Run status is unavailable.
@@ -442,6 +451,7 @@ extension NativeChatModel {
             }
         }
         latestRecoverySnapshot = snap
+        unavailableRunStatusID = nil
         let wasCached = cachedHistoryDate != nil
         let previousOffset = olderOffset
         var windowTrimmed = false
@@ -690,7 +700,7 @@ extension NativeChatModel {
     /// Single foreground GET-only owner. Time controls rate, not safety.
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
-        guard !runtimeRetired else { return }
+        guard !runtimeRetired, unavailableRunStatusID == nil else { return }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
@@ -735,7 +745,8 @@ extension NativeChatModel {
                 }
                 self.automaticReconciliationWaiting = true
                 do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket else { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      self.unavailableRunStatusID == nil else { return }
                 self.automaticReconciliationWaiting = false
                 if DispatchTime.now().uptimeNanoseconds - began >= 20_000_000_000 {
                     self.automaticRecoveryQuiet = false
@@ -767,7 +778,8 @@ extension NativeChatModel {
                       (self.pendingSend?.id == pendingID ||
                        (pendingID != nil && self.pendingSend == nil)) else { return }
                 if let probe = self.activeRunProbeTask { await probe.value }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                guard self.unavailableRunStatusID == nil,
+                      !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.stopping, !self.authenticationRequired else { return }
                 // Bound expensive history crawls. A changed head is new evidence.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
@@ -870,6 +882,8 @@ extension NativeChatModel {
                     // indicator, not the accepted POST receipt. Discard any
                     // retired SSE callback without touching a newer stream.
                     guard self.streamID == nil || self.streamID == receipt.runID else { return }
+                    self.unavailableRunStatusID = receipt.runID
+                    self.automaticRecoveryQuiet = false
                     self.uncertain = true
                     self.pauseQueueForRecovery()
                     self.revision &+= 1
@@ -877,7 +891,7 @@ extension NativeChatModel {
                     self.streamTask = nil
                     self.streamID = nil
                     self.transition(to: .idle)
-                    self.notice = "服务端连续未找到原 Run；本地运行标记已收敛，消息仍待核对。"
+                    self.notice = "服务暂时找不到原任务，消息已保留。可重新同步或新建会话。"
                 case .unknown:
                     self.uncertain = true
                     self.pauseQueueForRecovery()
@@ -1365,7 +1379,11 @@ extension NativeChatModel {
                 } else {
                     lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 }
-            case .unknown, .unresolved:
+            case .unresolved:
+                unavailableRunStatusID = active
+                automaticRecoveryQuiet = false
+                lockDownRunStatus("服务暂时找不到原任务，消息已保留。可重新同步或新建会话。")
+            case .unknown:
                 lockDownRunStatus(unconfirmed)
             }
         } catch {
@@ -1401,12 +1419,11 @@ extension NativeChatModel {
         noteRunRecoveryState()
     }
 
-    /// A-07：`resetReconciling` 默认 true，保留「普通刷新会清掉忙碌标志」的既有语义。
-    /// `reconcilePending()` 必须传 false —— 它自己持有 `reconciling` 并在 defer 里清，
-    /// 否则这里一进来就把标志抹掉，连点「核对」会并发发起多个 GET 互相打断。
+    /// Only the pending reconciliation owner may refresh while holding the
+    /// reconciliation lock. An ordinary refresh cannot revoke that ownership.
     func refresh(silent: Bool = false, preserveLoadedOlder: Bool = false,
                  resetReconciling: Bool = true) async {
-        guard !runtimeRetired else { return }
+        guard !runtimeRetired, !resetReconciling || !reconciling else { return }
         if stopping {
             // A manual status check must not convert STOP into an ordinary
             // history load or accidentally reopen ordinary sending.
@@ -1426,9 +1443,6 @@ extension NativeChatModel {
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
-        // A-07：只有普通刷新才清标志；核对流程自己管理这个生命周期。
-        // 相位上：清掉「核对中」就退回 idle（接着 load 会再置 loading/syncing）。
-        if resetReconciling { reconciling = false }
         if case .reconnecting = phase { transition(to: .idle) }
         await load(silent: silent, preserveLoadedOlder: preserveLoadedOlder,
                    allowWhileReconciling: !resetReconciling)

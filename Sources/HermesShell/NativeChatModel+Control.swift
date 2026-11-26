@@ -371,6 +371,8 @@ extension NativeChatModel {
                     notice = "停止请求结果未知，暂时无法确认回复是否结束。"
                 }
             case .unresolved:
+                unavailableRunStatusID = active
+                automaticRecoveryQuiet = false
                 uncertain = true
                 pauseQueueForRecovery()
                 streamID = nil

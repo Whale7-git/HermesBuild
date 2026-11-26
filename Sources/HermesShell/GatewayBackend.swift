@@ -9,6 +9,7 @@ import FoundationNetworking
 private struct GatewayActiveRunHistory {
     let evidence: ActiveRunEvidence
     let pendingControls: GatewayPendingControlSnapshot?
+    var unavailableRunID: String? = nil
 }
 
 /// 直连 Hermes 网关的后端。
@@ -326,7 +327,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         return try GatewayDecode.snapshot(window.data, offset: window.offset,
                                           activeRunID: active, requestedSessionID: sessionID,
                                           runStatusUnknown: runSnapshot.evidence == .unknown,
-                                          pendingControls: runSnapshot.pendingControls)
+                                          pendingControls: runSnapshot.pendingControls,
+                                          unavailableRunID: runSnapshot.unavailableRunID)
     }
 
     /// An unresolved tombstone is sticky until the exact same Run reports a
@@ -473,7 +475,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
             }
             if let retryAt = nextRunProbeAt[unresolvedID], Date().timeIntervalSince1970 < retryAt {
-                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                    unavailableRunID: unresolvedID)
             }
             let proof = try await verifyUnresolvedRun(sessionID: sessionID, runID: unresolvedID)
             if case .terminal = proof, runStore.runID(for: sessionID) == nil,
@@ -482,7 +485,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
             }
             nextRunProbeAt[unresolvedID] = Date().timeIntervalSince1970 + 30
-            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                unavailableRunID: runStore.unresolvedRunID(for: sessionID))
         }
         if let retryAt = nextRunProbeAt[runID],
            Date().timeIntervalSince1970 < retryAt {
@@ -496,7 +500,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 if code == 401 || code == 403 { throw error }
                 if code == 404 {
                     _ = recordRunNotFound(runID: runID, sessionID: sessionID)
-                    return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+                    return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                        unavailableRunID: runStore.unresolvedRunID(for: sessionID))
                 }
             }
             _ = recordProbeFailure(runID: runID)
