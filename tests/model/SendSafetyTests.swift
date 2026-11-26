@@ -1320,6 +1320,27 @@ import Foundation
                      "read-only history is not authoritative delivery evidence")
     }
 
+    // Identical payloads do not imply identical local send transactions.
+    do {
+        let model = NativeChatModel(sessionID: "queue-transaction-id", api: SendSafetyService())
+        let turn = ChatQueuedTurn(id: "queue-id", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 1, knownIDs: ["old"], submittedAt: 1)
+        model.setQueuedTurns([turn])
+        var manual = NativeChatModel.PendingSend(id: "local-manual", text: "same",
+            attachments: [], composerText: "same", historyEnd: 1, knownIDs: ["old"],
+            createdAt: 1, origin: .userInput)
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: manual))
+        precondition(model.queuedTurns == [turn], "manual receipt cannot consume an identical queue row")
+        manual.queuedTurnID = "another-queue"
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: manual) && model.queuedTurns == [turn])
+        manual.queuedTurnID = turn.id
+        let decoded = try JSONDecoder().decode(NativeChatModel.PendingSend.self, from: JSONEncoder().encode(manual))
+        precondition(decoded.queuedTurnID == turn.id)
+        precondition(model.acknowledgeDeliveredQueuedTurn(matching: decoded) && model.queuedTurns.isEmpty)
+        model.disconnect()
+    }
+
     // Q205-01/02 and build206: refusing an in-flight clear must preserve
     // recovery evidence; the warning expires on a successful mutation.
     do {

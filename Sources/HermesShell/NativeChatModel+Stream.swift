@@ -478,13 +478,18 @@ extension NativeChatModel {
         if let pending = pendingSend, !submitting {
             switch pending.resolution(in: snap) {
             case .delivered:
+                guard acknowledgeDeliveredQueuedTurn(matching: pending) else {
+                    uncertain = true
+                    pendingAbsent = false
+                    pauseQueueForRecovery()
+                    break
+                }
                 buffer.messages.removeAll { $0.id == pending.id }
                 pendingSend = nil
                 pendingAbsent = false
-                acknowledgeDeliveredQueuedTurn(matching: pending)
                 settleAcceptedAttachments(pending.attachments.map(\.path))
-                // Clear only the restored original; preserve a newer draft.
-                clearOriginalDraft(pending.composerText)
+                // A queue transaction does not own the composer draft.
+                if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             case .absent, .failed:
                 let provenAbsent = pending.resolution(in: snap) == .absent
                 if provenAbsent && pending.hiddenFromTranscript == true {
