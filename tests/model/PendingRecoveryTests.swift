@@ -31,6 +31,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var sent: [(String, [ChatAttachmentPayload])] = []
     var probeResults: [ActiveRunProbe] = [.unknown]
     var probeCalls = 0
+    var streamCursors: [String?] = []
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         if failHistory { throw URLError(.notConnectedToInternet) }
@@ -74,6 +75,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
         return "accepted"
     }
     func streamNativeTurn(streamID: String, lastEventID: String?, onFrame: (SSEFrame) async throws -> Bool) async throws {
+        streamCursors.append(lastEventID)
         try await Task.sleep(nanoseconds: 30_000_000_000)
     }
     func stopNativeTurn(streamID: String) async throws { active = nil }
@@ -115,6 +117,58 @@ extension ModelTests {
         precondition(rollbackStore.loadPending().value == first,
                      "failed post-replacement read-back must roll back the old durable value")
         print("LOCAL_STORE_ROLLBACK_PASS")
+
+        // Cold-process recovery must restore a cursor AND its matching
+        // accumulator, then attach the same Run without creating another POST.
+        let checkpointFiles = LocalDataFileStore(instanceID: "checkpoint", accountScope: "account",
+            sessionID: "test", rootDirectory: probeRoot)
+        let checkpointStore = ChatDraftStore(instanceID: "checkpoint", accountScope: "account",
+            sessionID: "test", fileStore: checkpointFiles)
+        let checkpointReceipt = ActiveTurnRecovery(runID: "checkpoint-run", historyEnd: 0,
+            knownIDs: [], text: "accepted question", attachmentPaths: [])
+        var checkpointProjection = ChatTranscript()
+        checkpointProjection.messages = [ChatMessage(id: "local-user", role: "user",
+            content: checkpointReceipt.text, delivery: .accepted)]
+        try checkpointProjection.apply(SSEFrame(event: "token", data: #"{"text":"partial answer"}"#, id: "cursor-1"))
+        let checkpoint = RunRecoveryCheckpoint(version: 1, scope: "checkpoint|account",
+            sessionID: "test", receipt: checkpointReceipt, historyEnd: 0, olderOffset: 0,
+            cursor: "cursor-1", projection: checkpointProjection, approvals: [], clarifies: [])
+        let checkpointData = try JSONEncoder().encode(checkpoint)
+        precondition(checkpointStore.saveActiveRun(try JSONEncoder().encode(checkpointReceipt)).succeeded)
+        precondition(checkpointStore.saveCheckpoint(checkpointData).succeeded)
+        precondition(checkpointStore.saveCheckpoint(Data(repeating: 1,
+            count: LocalDataFileStore.maxCheckpointBytes + 1)).failure == .payloadTooLarge)
+        precondition(checkpointStore.loadCheckpoint().value == checkpointData,
+            "an oversized update cannot destroy the previous complete replay point")
+        let checkpointService = PendingRecoveryService()
+        checkpointService.rows = [["id": "canonical-user", "role": "user", "content": checkpointReceipt.text]]
+        checkpointService.active = checkpointReceipt.runID
+        let checkpointModel = NativeChatModel(sessionID: "test", api: checkpointService,
+            draftStore: checkpointStore, displayScope: "checkpoint|account")
+        await checkpointModel.load()
+        try await eventually { !checkpointService.streamCursors.isEmpty }
+        precondition(checkpointService.streamCursors == ["cursor-1"] && checkpointService.startCalls == 0)
+        precondition(checkpointModel.buffer.messages.map(\.id).first == "canonical-user")
+        precondition(checkpointModel.buffer.messages.last?.content == "partial answer")
+        precondition(!checkpointModel.canSend)
+        // Replayed event is ignored; a fresh event extends exactly one bubble.
+        try checkpointModel.buffer.apply(SSEFrame(event: "token", data: #"{"text":"partial answer"}"#, id: "cursor-1"))
+        try checkpointModel.buffer.apply(SSEFrame(event: "token", data: #"{"text":" continued"}"#, id: "cursor-2"))
+        precondition(checkpointModel.buffer.messages.last?.content == "partial answer continued")
+        checkpointModel.lastEventID = "cursor-2"
+        checkpointModel.recoveryCheckpointRead = false
+        let currentSnapshot = try await checkpointService.history(sessionID: "test", before: nil)
+        checkpointModel.restoreRecoveryCheckpoint(from: currentSnapshot)
+        precondition(checkpointModel.lastEventID == "cursor-2" &&
+            checkpointModel.buffer.messages.last?.content == "partial answer continued",
+            "disk restore must not regress a live in-memory cursor")
+        precondition(checkpoint.resumeProjection(scope: "other|account", sessionID: "test",
+            receipt: checkpointReceipt, snapshot: currentSnapshot) == nil)
+        precondition(checkpoint.resumeProjection(scope: "checkpoint|account", sessionID: "test",
+            receipt: ActiveTurnRecovery(runID: "other-run", historyEnd: 0, knownIDs: [],
+                text: checkpointReceipt.text, attachmentPaths: []), snapshot: currentSnapshot) == nil)
+        checkpointModel.disconnect()
+        print("CHECKPOINT_PASS atomic scoped cold resume, replay deduplication, oversized fallback and live cursor fence")
 
         let attachment = ChatAttachmentPayload(name: "scan.pdf", path: "/attachments/new.pdf",
                                              mime: "application/pdf", size: 48, isImage: false)

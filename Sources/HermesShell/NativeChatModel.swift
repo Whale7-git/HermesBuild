@@ -324,7 +324,9 @@ final class NativeChatModel: ObservableObject {
     func restoreRecoveryCheckpoint(from snapshot: ChatSnapshot) {
         guard !recoveryCheckpointRead, snapshot.activeRunEvidence != .unknown else { return }
         recoveryCheckpointRead = true
-        guard let store = draftStore, let receipt = activeTurnRecovery,
+        // A delayed authoritative GET must never replace a newer in-memory
+        // stream accumulator with an older disk replay point.
+        guard lastEventID == nil, let store = draftStore, let receipt = activeTurnRecovery,
               receipt.terminalStatus == nil, pendingSend == nil,
               let data = store.loadCheckpoint().value,
               let saved = try? JSONDecoder().decode(RunRecoveryCheckpoint.self, from: data),
