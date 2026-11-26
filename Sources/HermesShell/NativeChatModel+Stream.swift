@@ -485,9 +485,11 @@ extension NativeChatModel {
                     pauseQueueForRecovery()
                     break
                 }
+                guard clearPendingSend(expectedID: pending.id) else {
+                    uncertain = true
+                    break
+                }
                 buffer.messages.removeAll { $0.id == pending.id }
-                pendingSend = nil
-                pendingAbsent = false
                 settleAcceptedAttachments(pending.attachments.map(\.path))
                 // A queue transaction does not own the composer draft.
                 if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
@@ -496,8 +498,10 @@ extension NativeChatModel {
                 if provenAbsent && pending.hiddenFromTranscript == true {
                     // An explicitly dismissed placeholder can be retired only
                     // after authoritative proof of absence.
-                    pendingSend = nil
-                    pendingAbsent = false
+                    guard clearPendingSend(expectedID: pending.id) else {
+                        uncertain = true
+                        break
+                    }
                     uncertain = false
                     notice = nil
                     break
@@ -523,7 +527,9 @@ extension NativeChatModel {
                     // A lagging history response cannot resurrect a proven terminal Run.
                     uncertain = true
                     pauseQueueForRecovery()
-                } else if pendingSend == nil { uncertain = false }
+                } else if settleAcceptedReceipt(receipt), pendingSend == nil {
+                    uncertain = recoveryRecordsUnreadable
+                }
             } else if receipt.terminalStatus == nil && receipt.confirmsCompletion(in: snap) {
                 if clearAcceptedTurnRecovery(), pendingSend == nil {
                     uncertain = false
@@ -806,15 +812,13 @@ extension NativeChatModel {
                         return
                     }
                     self.streamID = receipt.runID
-                    // The receipt proves the POST was accepted, so an older
-                    // pre-POST PendingSend is now resolved as delivered.
-                    if self.pendingSend != nil {
-                        self.pendingSend = nil
-                        self.pendingAbsent = false
-                    }
-                    self.uncertain = false
-                    self.resumeQueueAfterRecovery()
-                    self.notice = nil
+                    // Acceptance cannot resolve an unrelated pending transaction.
+                    let settled = self.settleAcceptedReceipt(receipt)
+                    self.uncertain = !settled || self.pendingSend != nil || self.recoveryRecordsUnreadable
+                    if !self.uncertain {
+                        self.resumeQueueAfterRecovery()
+                        self.notice = nil
+                    } else { self.pauseQueueForRecovery() }
                     self.attach(streamID: receipt.runID)
                 case .terminal(let outcome):
                     guard self.streamID == nil, !self.running else { return }

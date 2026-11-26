@@ -190,16 +190,13 @@ extension NativeChatModel {
         // in-flight state. If the process dies at any point after this line,
         // relaunch can prove delivery/absence instead of trusting the tap that
         // asked to retry.
-        queuedTurns[0].historyEnd = confirmedHistoryEnd
-        queuedTurns[0].knownIDs = Self.recoveryKnownIDs(in: buffer.messages)
-        queuedTurns[0].submittedAt = Date().timeIntervalSince1970
-        queuedTurns[0].delivery = .submitting
+        var submittingQueue = queuedTurns
+        submittingQueue[0].historyEnd = confirmedHistoryEnd
+        submittingQueue[0].knownIDs = Self.recoveryKnownIDs(in: buffer.messages)
+        submittingQueue[0].submittedAt = Date().timeIntervalSince1970
+        submittingQueue[0].delivery = .submitting
         // Do not send without a durable pre-POST boundary and delivery state.
-        guard persistQueue() else {
-            if queuedTurns.first?.id == queued.id {
-                queuedTurns[0].delivery = .waiting
-                queuedTurns[0].submittedAt = nil
-            }
+        guard commitQueueMutation(submittingQueue) else {
             error = "无法安全保存待发送状态，未向服务器提交。请修复本地存储后重试。"
             return false
         }
@@ -212,14 +209,19 @@ extension NativeChatModel {
                                         slashCommand: slashCommand, queuedTurnID: queued.id)
         guard !runtimeRetired else { return false }
         if result.accepted {
-            if queuedTurns.first?.id == queued.id {
-                queuedTurns.removeFirst()
-                if !queuedTurns.isEmpty, running, let active = streamID {
-                    // Chain the next turn to this new stream so completion of
-                    // this reply dispatches exactly one following turn.
-                    queuedTurns[0].automaticAfterStreamID = active
+            // The exact accepted receipt owns removal. If its persistence
+            // failed, retain the original queued and pending evidence.
+            if activeTurnRecovery?.queuedTurnID == queued.id {
+                if let receipt = activeTurnRecovery, !settleAcceptedReceipt(receipt) {
+                    uncertain = true
+                    pauseQueueForRecovery()
                 }
+            }
+            if let index = queuedTurns.firstIndex(where: { $0.id == queued.id }) {
+                queuedTurns[index].delivery = .uncertain
+                queuedTurns[index].automaticAfterStreamID = nil
                 persistQueue()
+                pauseQueueForRecovery()
             }
         } else if let index = queuedTurns.firstIndex(where: { $0.id == queued.id }) {
             queuedTurns[index].delivery = .uncertain
@@ -267,6 +269,7 @@ extension NativeChatModel {
                 return false
             case .absent:
                 discardPending(restoreDraft: false)
+                guard pendingSend == nil else { return false }
             case .failed:
                 error = "仍无法确认队列首条消息是否已送达；发送保持锁定，请稍后核对。"
                 return false
@@ -358,11 +361,26 @@ extension NativeChatModel {
     /// bubble is settled, so a later "retry" cannot replay the same turn.
     @discardableResult
     func acknowledgeDeliveredQueuedTurn(matching pending: PendingSend) -> Bool {
-        guard let id = pending.queuedTurnID,
-              let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
+        guard let id = pending.queuedTurnID else { return true }
+        guard !queueRecoveryUnreadable else { return false }
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
         guard queuedTurns[index].needsReconcile else { return false }
         var next = queuedTurns
         next.remove(at: index)
+        return commitQueueMutation(next)
+    }
+
+    /// The accepted receipt survives a failed queue write or process death.
+    /// Remove exactly its in-flight row, never a waiting sibling.
+    @discardableResult
+    func retireAcceptedQueueTurn(id: String, nextRunID: String) -> Bool {
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return !queueRecoveryUnreadable }
+        guard queuedTurns[index].needsReconcile else { return false }
+        var next = queuedTurns
+        next.remove(at: index)
+        if index == 0, !next.isEmpty, next[0].delivery == .waiting {
+            next[0].automaticAfterStreamID = nextRunID
+        }
         return commitQueueMutation(next)
     }
 
@@ -724,8 +742,9 @@ extension NativeChatModel {
             setDelivery(.accepted, for: pendingID)
             // Keep the original PendingSend when persisting its replacement
             // failed: this POST was accepted, so an automatic retry is unsafe.
-            if acceptedRecoverySaved {
-                pendingSend = nil
+            if acceptedRecoverySaved, let receipt = activeTurnRecovery,
+               settleAcceptedReceipt(receipt) {
+                // Durable queue removal (if any) and pending retirement succeeded.
             } else {
                 uncertain = true
                 pauseQueueForRecovery()
@@ -873,8 +892,8 @@ extension NativeChatModel {
                 uncertain = true
                 return .failed
             }
+            guard clearPendingSend(expectedID: pending.id) else { return .failed }
             buffer.messages.removeAll { $0.id == pending.id }
-            pendingSend = nil
             settleAcceptedAttachments(pending.attachments.map(\.path))
             if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             notice = "已从完整历史确认消息送达；没有重新提交。"
@@ -900,10 +919,9 @@ extension NativeChatModel {
             }
             return await dispatchSelectedQueuedTurn(id: id)
         }
+        guard clearPendingSend(expectedID: pending.id) else { return false }
         buffer.messages.removeAll { $0.id == pending.id }
         uncertain = false
-        pendingAbsent = false
-        pendingSend = nil
         // A new draft typed while the first POST waited belongs to the next
         // turn. Retrying the original payload must not overwrite or send it.
         let consumeDraft = draft == pending.composerText
@@ -920,18 +938,19 @@ extension NativeChatModel {
     func discardPending(restoreDraft: Bool = true) {
         // 提交中不收尾：此时 pendingSend 已是新一次发送的快照。
         guard !submitting, !loading, !syncing, !reconciling, let pending = pendingSend else { return }
+        let stillUncertain = !pendingAbsent
+        if !stillUncertain {
+            guard clearPendingSend(expectedID: pending.id) else { return }
+        }
         ChatAttachmentPlaceholderStore.shared.forgetLocal(
             scope: displayScope, sessionID: sessionID, id: pending.id)
         buffer.messages.removeAll { $0.id == pending.id }
-        let stillUncertain = !pendingAbsent
         uncertain = stillUncertain
         pendingAbsent = false
         if stillUncertain {
             var retained = pending
             retained.hiddenFromTranscript = true
             pendingSend = retained
-        } else {
-            pendingSend = nil
         }
         // 原文回填只填空输入框，不覆盖等待期间的新输入；附件占位不是用户文本。
         if restoreDraft, pending.queuedTurnID == nil,

@@ -1368,6 +1368,27 @@ import Foundation
         model.disconnect()
     }
 
+    // An accepted Run only owns the pending and queue transaction named in
+    // its persisted receipt, never another identical user message.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "receipt-ownership", api: service)
+        let queued = ChatQueuedTurn(id: "receipt-queue", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 0, knownIDs: [], submittedAt: 1)
+        model.setQueuedTurns([queued])
+        model.pendingSend = NativeChatModel.PendingSend(id: "unrelated", text: "same",
+            attachments: [], composerText: "same", historyEnd: 0, knownIDs: [],
+            createdAt: 1, origin: .userInput)
+        let receipt = ActiveTurnRecovery(runID: "accepted", historyEnd: 0, knownIDs: [],
+            text: "same", attachmentPaths: [], pendingSendID: "earlier", queuedTurnID: queued.id)
+        model.activeTurnRecovery = receipt
+        precondition(model.settleAcceptedReceipt(receipt))
+        precondition(model.pendingSend?.id == "unrelated" && model.queuedTurns.isEmpty)
+        precondition(model.clearPendingSend(expectedID: "earlier") == false)
+        model.disconnect()
+    }
+
     // Q205-01/02 and build206: refusing an in-flight clear must preserve
     // recovery evidence; the warning expires on a successful mutation.
     do {

@@ -736,6 +736,39 @@ final class NativeChatModel: ObservableObject {
         return draftStore.savePending(data)
     }
 
+    /// Retire pending evidence only after durable removal succeeds. No
+    /// in-memory success is published if a protected file is inaccessible.
+    @discardableResult
+    func clearPendingSend(expectedID: String) -> Bool {
+        guard !runtimeRetired, !pendingRecoveryUnreadable,
+              pendingSend?.id == expectedID else { return false }
+        let result = draftStore?.savePending(nil) ?? .ok
+        guard result.succeeded else {
+            recordLocalWrite(result, kind: .queue)
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
+        restoringRecoveryRecords = true
+        pendingSend = nil
+        restoringRecoveryRecords = false
+        pendingAbsent = false
+        return true
+    }
+
+    /// A persisted accepted receipt owns only its own queue and pending
+    /// transaction. Retirement order preserves evidence across interruption.
+    @discardableResult
+    func settleAcceptedReceipt(_ receipt: ActiveTurnRecovery) -> Bool {
+        guard !runtimeRetired, activeTurnRecovery == receipt else { return false }
+        if let id = receipt.queuedTurnID,
+           !retireAcceptedQueueTurn(id: id, nextRunID: receipt.runID) { return false }
+        if let pending = pendingSend, pending.id == receipt.pendingSendID {
+            guard clearPendingSend(expectedID: pending.id) else { return false }
+        }
+        return true
+    }
+
     /// Write the accepted-run receipt BEFORE deleting the pre-POST PendingSend.
     /// On failure keep PendingSend durable and suppress automatic queue dispatch.
     @discardableResult
@@ -746,7 +779,8 @@ final class NativeChatModel: ObservableObject {
         var receipt = ActiveTurnRecovery(
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
-            attachmentPaths: Set(attachments.map(\.path)))
+            attachmentPaths: Set(attachments.map(\.path)),
+            pendingSendID: pendingSend?.id, queuedTurnID: pendingSend?.queuedTurnID)
         if let command = pendingSlashCommand, attachments.isEmpty {
             switch command.kind {
             case .compress, .reset: receipt.commandAllowsEmptyReply = true
@@ -798,7 +832,12 @@ final class NativeChatModel: ObservableObject {
     @discardableResult
     func clearAcceptedTurnRecovery() -> Bool {
         guard !runtimeRetired else { return false }
-        guard activeTurnRecovery != nil else { return true }
+        guard let receipt = activeTurnRecovery else { return true }
+        guard settleAcceptedReceipt(receipt) else {
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
         cancelCheckpointEncoding()
         activeRunProbeTask?.cancel()
         activeRunProbeTask = nil
