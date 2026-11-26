@@ -164,7 +164,7 @@ import Foundation
         defer { defaults.removePersistentDomain(forName: suite) }
         let failingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("HermesDraftFailureRoot-" + UUID().uuidString)
-        try Data("not-a-directory".utf8).write(to: failingRoot)
+        try FileManager.default.createDirectory(at: failingRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: failingRoot) }
         let failingStore = ChatDraftStore(
             instanceID: "draft-failure", accountScope: "account", sessionID: "session",
@@ -173,6 +173,10 @@ import Foundation
                                           sessionID: "session", rootDirectory: failingRoot))
         let failingModel = NativeChatModel(sessionID: "draft-failure", api: SendSafetyService(),
                                            draftStore: failingStore)
+        // Isolate a runtime draft-write outage from a cold unreadable store.
+        precondition(!failingModel.recoveryRecordsUnreadable && failingModel.localPersistenceIssues.isEmpty)
+        try FileManager.default.removeItem(at: failingRoot)
+        try Data("not-a-directory".utf8).write(to: failingRoot)
         failingModel.draft = "must stay in memory"
         failingModel.recordLocalWrite(.failed(.diskWrite), kind: .draft)
         precondition(failingModel.localPersistenceIssue?.kind == .draft)
