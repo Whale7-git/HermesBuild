@@ -35,18 +35,24 @@ struct ChatTaskPanel: View {
     let onRecovery: () -> Void
     let onLocateTool: (String) -> Void
     @State private var toolFilter: ChatTaskToolFilter = .all
+    @State private var toolQuery = ""
+    @State private var visibleToolLimit = 40
     @Environment(\.dismiss) private var dismiss
     private var queue: ChatQueueStatus { ChatQueueStatus(turns: model.queuedTurns) }
 
     var body: some View {
-        let liveIDs = ChatActivity.activeToolIDs(
-            messages: model.transcript.messages, tools: model.transcript.tools)
+        let live = model.running && model.streamConnected && !model.uncertain &&
+            !model.suspended && !model.transcript.terminal
+        let liveIDs = live ? ChatActivity.activeToolIDs(
+            messages: model.transcript.messages, tools: model.transcript.tools) : []
         let tools = ChatTaskToolInspector.currentTurn(
             messages: model.transcript.messages, tools: model.transcript.tools)
         let counts = ChatTaskToolInspector.counts(
-            tools, activeIDs: liveIDs, running: model.running)
-        let matching = ChatTaskToolInspector.filtered(
-            tools, by: toolFilter, activeIDs: liveIDs, running: model.running)
+            tools, activeIDs: liveIDs, running: live)
+        let matching = ChatTaskToolInspector.matching(
+            ChatTaskToolInspector.filtered(tools, by: toolFilter,
+                activeIDs: liveIDs, running: live), query: toolQuery)
+        let visible = ChatTaskToolInspector.visibleNewest(matching, limit: visibleToolLimit)
         NavigationStack {
             List {
                 Section("当前会话") {
@@ -101,11 +107,27 @@ struct ChatTaskPanel: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("搜索工具名称或 ID", text: $toolQuery)
+                            .font(.subheadline)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        if !toolQuery.isEmpty {
+                            Button { toolQuery = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("清除工具搜索")
+                        }
+                    }
                     if matching.isEmpty {
                         Text(tools.isEmpty ? "当前没有可关联的工具记录" : "没有符合筛选条件的工具")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(matching.suffix(40))) { tool in
+                        Text("显示 \(visible.count) / \(matching.count) 条 · 最新在前")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(visible) { tool in
                             Button { onLocateTool(tool.id) } label: {
                                 HStack(alignment: .top, spacing: 10) {
                                     Image(systemName: tool.isError ? "exclamationmark.circle"
@@ -115,7 +137,7 @@ struct ChatTaskPanel: View {
                                         Text(tool.name).font(.subheadline).foregroundStyle(.primary)
                                         Text(tool.isError ? "执行失败" :
                                              (tool.done ? "已完成" :
-                                              (model.running && liveIDs.contains(tool.id)
+                                              (live && liveIDs.contains(tool.id)
                                                ? "执行中" : "状态待核对")))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
@@ -128,14 +150,21 @@ struct ChatTaskPanel: View {
                             .buttonStyle(.plain)
                             .accessibilityHint("跳转到聊天中对应的工具过程并展开")
                         }
+                        if visible.count < matching.count {
+                            Button("显示更早的 \(min(40, matching.count - visible.count)) 条") {
+                                visibleToolLimit += 40
+                            }
+                            .frame(minHeight: 44)
+                        }
                     }
                 } header: { Text("本轮工具") }
                   footer: {
-                    Text("展示符合筛选条件的最近 40 条；点击可定位到聊天中的原始工具记录。"
-                         + " 未完成且服务端未确认时不推断为成功。")
+                    Text("搜索覆盖当前已加载的本轮工具。点击可定位原始工具记录；完整参数和结果可在详情内搜索。")
                 }
             }
             .scrollContentBackground(.hidden).background(AppTheme.canvas)
+            .onChange(of: toolFilter) { _, _ in visibleToolLimit = 40 }
+            .onChange(of: toolQuery) { _, _ in visibleToolLimit = 40 }
             .navigationTitle("任务与消息队列").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
                 Button("完成") { dismiss() }

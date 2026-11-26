@@ -309,6 +309,24 @@ enum ChatTaskToolInspector {
         }
     }
 
+    /// Name/ID search spans the complete loaded current-turn tool list.
+    /// Large result bodies are searched only in the dedicated payload reader.
+    static func matching(_ tools: [ChatTool], query: String) -> [ChatTool] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return tools }
+        guard term.utf16.count <= 512 else { return [] }
+        return tools.filter {
+            $0.name.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil ||
+            $0.id.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
+    }
+
+    /// Newest first, with an expandable prefix; never silently discard records
+    /// older than the initial presentation window.
+    static func visibleNewest(_ tools: [ChatTool], limit: Int) -> [ChatTool] {
+        Array(tools.reversed().prefix(max(0, limit)))
+    }
+
     /// Resolve against the ACTUAL visible projection, never synthesize a row
     /// identifier from a tool id: collapsed process rows own multiple tools.
     static func rowID(for toolID: String, in items: [ChatRowItem]) -> String? {
