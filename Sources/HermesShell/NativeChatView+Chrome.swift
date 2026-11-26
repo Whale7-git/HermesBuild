@@ -226,13 +226,13 @@ extension NativeChatView {
                         .fill(model.activity == .ready ? AppTheme.success : Color.secondary)
                         .frame(width: 5, height: 5)
                 }
-                Text(statusLine)
-                    // The smallest caption style remained only partially
-                    // scalable in the simulated accessibility size sweep.
-                    .font(.footnote)
-                    .foregroundStyle(model.activity == .ready ? .secondary : .primary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                    .fixedSize(horizontal: false, vertical: true)
+                if model.activity != .ready || model.presentationState.showsWarning {
+                    Text(statusLine)
+                        .font(.footnote)
+                        .foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.tertiary)

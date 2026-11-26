@@ -2,6 +2,22 @@ import SwiftUI
 import UIKit
 
 extension NativeChatView {
+    private var composerStatusMessage: String? {
+        if preparingAttachmentSend { return "正在上传附件，尚未发送消息…" }
+        if model.authenticationRequired { return "登录后即可继续发送。" }
+        if model.stopping { return "正在确认是否停止，暂不能发送。" }
+        if model.uncertain || model.recoveryRecordsUnreadable {
+            if model.syncing || model.loading || model.reconciling {
+                return "正在同步消息，暂不能发送。"
+            }
+            return "上一条消息状态尚未确认，暂不能发送。"
+        }
+        if model.cachedHistoryDate != nil {
+            return model.syncing ? "正在同步最新消息…" : "正在显示本地历史，联网后可发送。"
+        }
+        return nil
+    }
+
     var composerSection: some View {
         ChatComposer(
             // 输入文本由输入框自己持有（见 ChatComposer）：一次按键只失效输入框子树，
@@ -98,10 +114,7 @@ extension NativeChatView {
                     isLocked: model.submitting || model.reconciling || !model.canSend || preparingAttachmentSend,
                     showsItems: false, launchPicker: attachmentPickerTrigger)
             ),
-            readOnlyMessage: preparingAttachmentSend
-                ? "正在上传附件，尚未提交消息…"
-                : (model.cachedHistoryDate != nil
-                    ? (model.syncing ? "本地历史 · 正在联网核对…" : "本地历史 · 联网核对后可继续发送") : nil),
+            readOnlyMessage: composerStatusMessage,
             // Silent verified cache warmup; the editor still stays read-only
             // until the server GET establishes authority. Keep all problems
             // visible as actionable, persistent UI states.

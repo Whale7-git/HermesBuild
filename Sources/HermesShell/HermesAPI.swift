@@ -380,9 +380,20 @@ enum APIError: LocalizedError, HTTPStatusProviding {
         switch self {
         case .badResponse:
             return "服务器响应异常"
-        case let .http(code, body):
-            if code == 401 { return "登录已失效，请重新登录" }
-            return "HTTP \(code)\n\(body.prefix(200))"
+        case let .http(code, _):
+            // Keep protocol details in the typed error, never render an
+            // arbitrary server body (which may contain sensitive data).
+            switch code {
+            case 401: return "登录已失效，请重新登录"
+            case 403: return "当前账号没有此操作的权限"
+            case 404: return "找不到请求的内容"
+            case 408: return "请求超时，请稍后重试"
+            case 409: return "服务端状态已变化，请重新同步"
+            case 413: return "发送的内容过大，请缩减后重试"
+            case 429: return "请求过于频繁，请稍后重试"
+            case 500...599: return "服务暂时不可用，请稍后重试"
+            default: return "服务未能处理这次请求，请稍后重试"
+            }
         }
     }
 }

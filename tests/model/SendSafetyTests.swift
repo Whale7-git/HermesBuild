@@ -362,7 +362,7 @@ import Foundation
         precondition(service.active == "run-1" && service.startCalls == 1
                      && service.stopCalls == 1,
                      "rejected STOP preserves the live Run and never repeats either POST")
-        precondition(model.notice?.contains("HTTP \(code)") == true,
+        precondition(model.notice?.contains("停止请求未被接受") == true,
                      "rejected STOP status is shown distinctly from an accepted STOP")
         model.disconnect()
     }
@@ -400,7 +400,7 @@ import Foundation
         precondition(model.stopping && !model.canSend && service.startCalls == 1
                      && service.stopCalls == 1,
                      "exhausted polling must not unlock, dispatch or issue another STOP")
-        precondition(model.notice?.contains("返回会话时将自动继续核对") == true,
+        precondition(model.notice?.contains("返回会话时将自动继续同步") == true,
                      "poll budget exhaustion preserves lock and clearly explains safe foreground follow-up")
         model.disconnect()
     }
@@ -1538,7 +1538,7 @@ import Foundation
         try model.applySnapshot(try snapshot(GatewayPendingControlSnapshot(
             frames: [], hasIncompleteControl: true)))
         precondition(model.uncertain && model.queueRecoveryPaused
-                     && model.notice?.contains("快照数据不完整") == true,
+                     && model.notice?.contains("暂时未能完整加载") == true,
                      "incomplete control data fails closed and preserves the send lock")
         model.disconnect()
     }
