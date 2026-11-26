@@ -370,7 +370,7 @@ extension NativeChatModel {
     /// Enqueue keeps its explicit in-memory fallback; destructive edits do not.
     @discardableResult
     private func commitQueueMutation(_ next: [ChatQueuedTurn]) -> Bool {
-        guard !runtimeRetired else { return false }
+        guard !runtimeRetired, !queueRecoveryUnreadable else { return false }
         guard let data = ChatSendQueueCodec.encode(next) else {
             recordLocalWrite(.failed(.encoding), kind: .queue)
             return false
@@ -494,6 +494,7 @@ extension NativeChatModel {
     }
 
     func setQueueAutomaticDispatchPaused(_ paused: Bool) {
+        guard paused || !recoveryRecordsUnreadable else { return }
         // Persist intent before enabling automatic POST dispatch. A failed
         // write must fail closed, not forget the user's pause on restart.
         let saved = draftStore?.saveQueueUserPaused(paused) ?? .ok
@@ -561,7 +562,7 @@ extension NativeChatModel {
 
     @discardableResult
     private func persistQueue() -> Bool {
-        guard !runtimeRetired else { return false }
+        guard !runtimeRetired, !queueRecoveryUnreadable else { return false }
         guard let data = ChatSendQueueCodec.encode(queuedTurns) else {
             queueSaveFailed = true
             recordLocalWrite(.failed(.encoding), kind: .queue)
@@ -581,6 +582,7 @@ extension NativeChatModel {
     /// text, attachment references or delivery state.
     @discardableResult
     func retryQueuePersistence() -> LocalStoreWriteResult {
+        guard !queueRecoveryUnreadable else { return .failed(.corruptFile) }
         let pendingResult = persistPendingSend()
         guard pendingResult.succeeded else { return pendingResult }
         guard let data = ChatSendQueueCodec.encode(queuedTurns) else {

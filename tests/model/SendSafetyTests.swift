@@ -269,6 +269,33 @@ import Foundation
         print("COLD_STORAGE_LOCK_PASS unavailable receipts block POST and cannot be cleared by failed deletion")
     }
 
+    // A corrupt queue must not be interpreted as an empty, writable queue.
+    do {
+        let suite = "HermesQueueReadRepair-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = ChatDraftStore(instanceID: "repair", accountScope: "account",
+            sessionID: "repair", defaults: defaults)
+        let invalid = Data("bad queue".utf8)
+        precondition(store.saveQueued(invalid).succeeded)
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "repair", api: service, draftStore: store)
+        await model.load()
+        precondition(model.queueRecoveryUnreadable && !model.canSend)
+        model.setQueuedTurns([])
+        precondition(store.loadQueued() == invalid)
+        precondition(!model.retryQueuePersistence().succeeded)
+        let recovered = ChatQueuedTurn(id: "repair-original", text: "original", attachments: [],
+            composerText: "original", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .submitting, historyEnd: 0, knownIDs: [], submittedAt: 1)
+        precondition(store.saveQueued(ChatSendQueueCodec.encode([recovered])).succeeded)
+        precondition(model.restoreUnreadableRecoveryRecords())
+        precondition(!model.queueRecoveryUnreadable && model.queuedTurns.first?.id == recovered.id)
+        precondition(model.queuedTurns.first?.delivery == .uncertain && model.queueRecoveryPaused)
+        precondition(!model.canSend && service.startCalls == 0)
+        model.disconnect()
+    }
+
     // Recovery and enqueue must never silently override a user's pause.
     do {
         let service = SendSafetyService()

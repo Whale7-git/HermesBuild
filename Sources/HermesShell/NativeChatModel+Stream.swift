@@ -43,6 +43,7 @@ extension NativeChatModel {
         // A-07：核对流程自己持有 `reconciling`，只有它能带 allowWhileReconciling 进来。
         guard allowWhileReconciling || !reconciling else { return }
         if running && streamTask != nil { return }
+        restoreUnreadableRecoveryRecords()
         publishTask?.cancel()
         publishTask = nil
         activeRunProbeTask?.cancel()
@@ -372,7 +373,7 @@ extension NativeChatModel {
             pauseQueueForRecovery()
             return false
         }
-        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
+        uncertain = pendingSend != nil || recoveryRecordsUnreadable
         if restoreAutomaticQueue && outcome == .completed && !uncertain {
             // Recovery cannot change the separately persisted user pause.
             queueUserPaused = previousUserPause

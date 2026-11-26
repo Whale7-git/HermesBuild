@@ -18,6 +18,31 @@ struct ChatRecoveryCenter: View {
     var body: some View {
         NavigationStack {
             List {
+                if model.recoveryRecordsUnreadable {
+                    Section("重新读取恢复记录") {
+                        Text("本地文件暂时不可读或损坏。优先重新读取原记录，而不是放弃发送证据；读取成功后仍需联网核对。")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Button {
+                            Task {
+                                let restored = model.restoreUnreadableRecoveryRecords()
+                                if restored {
+                                    await model.refresh(silent: true, preserveLoadedOlder: true)
+                                }
+                                resultText = restored
+                                    ? "本地记录已重新读取，请查看联网核对结果。"
+                                    : "仍有恢复记录不可读；原文件与安全锁已保留。"
+                            }
+                        } label: {
+                            Label("重新读取并核对", systemImage: "arrow.clockwise")
+                                .frame(minHeight: 44)
+                        }
+                        .disabled(model.running || model.loading || model.syncing || model.reconciling)
+                        if model.queueRecoveryUnreadable {
+                            Text("队列记录不可读，暂不能编辑、清空或发送；原文件保留。")
+                                .font(.caption).foregroundStyle(AppTheme.warning)
+                        }
+                    }
+                }
                 if model.pendingRecoveryUnreadable {
                     Section("发送恢复记录不可读") {
                         Text("为避免重复发送，当前暂停提交。请先查看服务端历史；放弃记录不会停止或撤销服务端任务。")
@@ -55,9 +80,11 @@ struct ChatRecoveryCenter: View {
                     statusRow(icon: model.queuedTurns.isEmpty ? "tray" : "text.line.first.and.arrowtriangle.forward",
                               color: model.queuePersistenceFailed || queueStatus.needsAttention
                                 ? AppTheme.warning : AppTheme.accent,
-                              title: model.queuedTurns.isEmpty
-                                ? "消息队列为空" : queueStatus.summary,
-                              detail: model.queuePersistenceFailed
+                              title: model.queueRecoveryUnreadable ? "队列记录不可读" :
+                                (model.queuedTurns.isEmpty ? "消息队列为空" : queueStatus.summary),
+                              detail: model.queueRecoveryUnreadable
+                                ? "已保留原队列文件；重新读取成功前不能修改。"
+                                : model.queuePersistenceFailed
                                 ? "队列本次未通过磁盘回读验证；当前进程内仍可继续操作。"
                                 : (model.queuedTurns.isEmpty
                                    ? "没有跨会话遗留的排队消息。"
@@ -89,7 +116,7 @@ struct ChatRecoveryCenter: View {
                         Label("打开消息队列", systemImage: "list.bullet.rectangle")
                             .frame(minHeight: 44)
                     }
-                    if model.queuePersistenceFailed {
+                    if model.queuePersistenceFailed && !model.queueRecoveryUnreadable {
                         Button {
                             Task {
                                 let result = model.retryQueuePersistence()

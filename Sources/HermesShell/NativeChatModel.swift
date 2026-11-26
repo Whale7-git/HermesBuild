@@ -160,7 +160,7 @@ final class NativeChatModel: ObservableObject {
 
     /// 正交事实的打包视图，供 `ChatPhase` 的谓词统一消费。
     var facts: ChatFacts {
-        ChatFacts(readOnly: readOnly, uncertain: uncertain || pendingRecoveryUnreadable || activeRecoveryUnreadable
+        ChatFacts(readOnly: readOnly, uncertain: uncertain || recoveryRecordsUnreadable
                   || (activeTurnRecovery != nil && !phase.isRunning), suspended: suspended || runtimeRetired,
                   reconciling: reconciling, hasPendingSend: pendingSend != nil,
                   pendingAbsent: pendingAbsent, sendingWhileRunning: sendingWhileRunning)
@@ -497,7 +497,7 @@ final class NativeChatModel: ObservableObject {
     var reapedTransportRunID: String?
     var hidesRoutineRecoveryNotice: Bool {
         automaticRecoveryQuiet && !pendingAbsent && !authenticationRequired &&
-            !pendingRecoveryUnreadable && !activeRecoveryUnreadable &&
+            !recoveryRecordsUnreadable &&
             localPersistenceIssue == nil && !queuePersistenceFailed && !runRecoveryNoticeShown &&
             (error == nil || historyLoadFailurePending)
     }
@@ -585,7 +585,7 @@ final class NativeChatModel: ObservableObject {
     /// Keep that derived mirror in sync so every entry point shows the same
     /// sticky state, including the composer and queue manager.
     var queuePersistenceFailed: Bool {
-        queueSaveFailed || localPersistenceIssue?.kind == .queue
+        queueRecoveryUnreadable || queueSaveFailed || localPersistenceIssue?.kind == .queue
     }
     @Published var sendingWhileRunning = false
     /// Data window for paged history. Kept independent from the mounted-host
@@ -636,6 +636,76 @@ final class NativeChatModel: ObservableObject {
         }
     }
     @Published var pendingRecoveryUnreadable = false
+    @Published private(set) var queueRecoveryUnreadable = false
+    private var restoringRecoveryRecords = false
+
+    var recoveryRecordsUnreadable: Bool {
+        pendingRecoveryUnreadable || activeRecoveryUnreadable || queueRecoveryUnreadable
+    }
+
+    /// Retry only the records that could not be read. Never overwrite a live
+    /// in-memory receipt or treat undecodable bytes as an empty queue.
+    @discardableResult
+    func restoreUnreadableRecoveryRecords() -> Bool {
+        guard recoveryRecordsUnreadable else { return true }
+        guard !runtimeRetired, !submitting, !loading, !syncing, !running,
+              !reconciling, let store = draftStore else { return false }
+        restoringRecoveryRecords = true
+        defer { restoringRecoveryRecords = false }
+        if pendingRecoveryUnreadable, pendingSend == nil {
+            let result = store.loadPending()
+            if result.result.succeeded {
+                if let data = result.value {
+                    if let record = try? JSONDecoder().decode(PendingSend.self, from: data) {
+                        pendingRecoveryUnreadable = false
+                        pendingSend = record
+                    }
+                } else { pendingRecoveryUnreadable = false }
+            }
+        }
+        if activeRecoveryUnreadable, activeTurnRecovery == nil {
+            let result = store.loadActiveRun()
+            if result.result.succeeded {
+                if let data = result.value {
+                    if let record = try? JSONDecoder().decode(ActiveTurnRecovery.self, from: data) {
+                        activeRecoveryUnreadable = false
+                        activeTurnRecovery = record
+                        activeTurnHistoryBoundary = record.historyEnd
+                    }
+                } else { activeRecoveryUnreadable = false }
+            }
+        }
+        if queueRecoveryUnreadable, queuedTurns.isEmpty {
+            let result = store.loadQueuedResult()
+            if result.result.succeeded {
+                if let data = result.value {
+                    if let restored = ChatSendQueueCodec.decode(data) {
+                        restoreQueueSnapshot(restored)
+                        queueRecoveryUnreadable = false
+                    }
+                } else { queueRecoveryUnreadable = false }
+            }
+        }
+        // An accessible file is not proof of remote absence or completion.
+        uncertain = true
+        pauseQueueForRecovery()
+        if !recoveryRecordsUnreadable {
+            notice = "本地恢复记录已重新读取；正在等待服务端历史核对，不会自动重发。"
+        }
+        return !recoveryRecordsUnreadable
+    }
+
+    private func restoreQueueSnapshot(_ turns: [ChatQueuedTurn]) {
+        queuedTurns = ChatQueueOrdering.prioritize(turns.map { original in
+            var turn = original
+            if turn.delivery == .submitting {
+                turn.delivery = .uncertain
+                turn.automaticAfterStreamID = nil
+            }
+            return turn
+        })
+        if !queuedTurns.isEmpty { pauseQueueForRecovery() }
+    }
 
     func abandonUnreadablePending() {
         guard !submitting, !syncing, !loading else { return }
@@ -649,8 +719,10 @@ final class NativeChatModel: ObservableObject {
     var pendingSend: PendingSend? {
         didSet {
             // Persist before POST and clear only when resolved or explicitly abandoned.
-            let result = persistPendingSend()
-            recordLocalWrite(result, kind: .queue)
+            if !restoringRecoveryRecords {
+                let result = persistPendingSend()
+                recordLocalWrite(result, kind: .queue)
+            }
         }
     }
 
@@ -811,12 +883,12 @@ final class NativeChatModel: ObservableObject {
         let persistence = localPersistenceIssue != nil || queuePersistenceFailed
         let requiresAction = authenticationRequired || pendingAbsent ||
             !pendingApprovals.isEmpty || !pendingClarifies.isEmpty ||
-            pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+            recoveryRecordsUnreadable ||
             persistence || runRecoveryNoticeShown ||
             (hasPendingSend && !submitting && activeTurnRecovery == nil)
         let currentActivity = activity
         let verification = uncertain || (hasPendingSend && !submitting) ||
-            currentActivity == .needsVerification || pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+            currentActivity == .needsVerification || recoveryRecordsUnreadable ||
             runRecoveryNoticeShown
         let recovery = hidesRoutineRecoveryNotice ||
             (automaticReconciliationTask != nil &&
@@ -842,7 +914,7 @@ final class NativeChatModel: ObservableObject {
         if case .reconnecting = phase { return .reconnecting }
         if reconciling { return .verifying }
         if case .syncing = phase { return .syncing }
-        if uncertain || pendingRecoveryUnreadable || activeRecoveryUnreadable ||
+        if uncertain || recoveryRecordsUnreadable ||
             pendingSend != nil || (activeTurnRecovery != nil && !phase.isRunning) {
             return .needsVerification
         }
@@ -937,24 +1009,13 @@ final class NativeChatModel: ObservableObject {
         queueUserPaused = draftStore?.loadQueueUserPaused() ?? false
         updateQueuePause()
         let loadedQueue = draftStore?.loadQueuedResult()
-        if let data = loadedQueue?.value {
-            queuedTurns = ChatQueueOrdering.prioritize(ChatSendQueueCodec.decode(data) ?? [])
-            // A process can die while a queue POST is in flight. Do not retry
-            // it on relaunch; surface it as uncertain until the user acts.
-            for index in queuedTurns.indices
-            where queuedTurns[index].delivery == .submitting {
-                queuedTurns[index].delivery = .uncertain
-                queuedTurns[index].automaticAfterStreamID = nil
-            }
-            queueRecoveryPaused = !queuedTurns.isEmpty
-            updateQueuePause()
-        }
-        if let issue = loadedQueue?.result.failure {
-            if localPersistenceIssue == nil {
-                localPersistenceIssue = LocalDataIssue(kind: .queue, failure: issue, observedAt: Date())
-            }
-            recordRuntimeLog(.warning, "local-store",
-                "persistence degraded kind=queue reason=\(issue.rawValue)")
+        if let data = loadedQueue?.value, let restored = ChatSendQueueCodec.decode(data) {
+            restoreQueueSnapshot(restored)
+        } else if loadedQueue?.value != nil || loadedQueue?.result.failure != nil {
+            queueRecoveryUnreadable = true
+            uncertain = true
+            pauseQueueForRecovery()
+            recordLocalWrite(.failed(loadedQueue?.result.failure ?? .corruptFile), kind: .queue)
         }
     }
 
@@ -999,7 +1060,7 @@ final class NativeChatModel: ObservableObject {
     /// draft or queue. A successful verified migration clears its category.
     @discardableResult
     func retryLocalMigration() -> LocalStoreWriteResult {
-        guard !pendingRecoveryUnreadable else { return .failed(.corruptFile) }
+        guard !recoveryRecordsUnreadable else { return .failed(.corruptFile) }
         guard let draftStore else { return .ok }
         let results = draftStore.retryMigration()
         if results.draft.succeeded {
@@ -1017,7 +1078,7 @@ final class NativeChatModel: ObservableObject {
 
     @discardableResult
     func validateLocalData() -> LocalStoreWriteResult {
-        guard !pendingRecoveryUnreadable && !activeRecoveryUnreadable else {
+        guard restoreUnreadableRecoveryRecords() else {
             return .failed(.corruptFile)
         }
         guard let draftStore else { return .ok }
