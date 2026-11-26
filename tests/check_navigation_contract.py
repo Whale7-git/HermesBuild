@@ -483,7 +483,7 @@ def main() -> int:
         "NativeChatModel+Stream.swift", "NativeChatView+Composer.swift",
         "NativeChatView+Notices.swift", "NativeChatView+Chrome.swift",
         "NativeChatView+MessageList.swift", "ChatQueueManager.swift",
-        "ChatRecoveryCenter.swift", "ChatWorkspacePanels.swift",
+        "ChatRecoveryCenter.swift", "ChatWorkspacePanels.swift", "SessionTaskCenter.swift",
     )
     import re
     def recovery_copy_violations(filename: str, source: str) -> list[str]:
