@@ -680,16 +680,15 @@ extension NativeChatModel {
         let ticket = UUID()
         automaticReconciliationTicket = ticket
         automaticRecoveryQuiet = true
-        automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket) { [weak self] in
+        automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket,
+            onFinish: { [weak self] in
+                guard let self, self.automaticReconciliationTicket == ticket else { return }
+                self.automaticReconciliationTask = nil
+                self.automaticReconciliationTicket = nil
+                self.automaticReconciliationWaiting = false
+                self.automaticRecoveryQuiet = false
+            }) { [weak self] in
             guard let self else { return }
-            defer {
-                if self.automaticReconciliationTicket == ticket {
-                    self.automaticReconciliationTask = nil
-                    self.automaticReconciliationTicket = nil
-                    self.automaticReconciliationWaiting = false
-                    self.automaticRecoveryQuiet = false
-                }
-            }
             let began = DispatchTime.now().uptimeNanoseconds
             var attempt = 0
             var lastDeepHistoryEnd: Int?

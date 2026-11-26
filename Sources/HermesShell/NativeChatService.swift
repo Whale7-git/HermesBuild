@@ -121,11 +121,15 @@ final class RecoveryScheduler {
     /// a timer cancels the old owner; GET admission retains in-flight permits
     /// until the underlying operation actually returns.
     func startOwner(key: OwnerKey, ticket: UUID,
+                    onFinish: @escaping @MainActor () -> Void = {},
                     operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
         owners[key]?.task.cancel()
         let task = Task { [weak self] in
             defer {
                 if self?.owners[key]?.ticket == ticket { self?.owners.removeValue(forKey: key) }
+                // Cleanup must run even if a replacement cancelled this
+                // owner before its operation ever started.
+                onFinish()
             }
             guard !Task.isCancelled else { return }
             await operation()

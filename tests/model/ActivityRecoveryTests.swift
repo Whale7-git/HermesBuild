@@ -99,6 +99,24 @@ extension ModelTests {
         try restoredProjection.apply(SSEFrame(event: "token", data: #"{"text":" world"}"#, id: "2"))
         expect(restoredProjection.messages.last?.content == "hello world",
             "replayed cursor does not duplicate text; next event extends same bubble")
+        // Replacing a scheduled owner in the same MainActor turn cancels
+        // it before execution. Its published ticket still needs cleanup.
+        let scheduler = RecoveryScheduler()
+        let key = RecoveryScheduler.OwnerKey(scope: "owner-test", session: "s")
+        var retiredRan = false
+        var retiredFinished = false
+        var replacementRan = false
+        let retiredOwner = scheduler.startOwner(key: key, ticket: UUID(),
+            onFinish: { retiredFinished = true }) { retiredRan = true }
+        let replacement = scheduler.startOwner(key: key, ticket: UUID()) {
+            replacementRan = true
+        }
+        await retiredOwner.value
+        await replacement.value
+        expect(!retiredRan && retiredFinished && replacementRan,
+            "cancel-before-start clears the retired recovery ticket without running its operation")
+        print("RECOVERY_OWNER_PASS cancelled-before-start cleanup and replacement")
+
         let service = ActivityRecoveryService()
         let model = NativeChatModel(sessionID: "activity", api: service)
         await model.load()
