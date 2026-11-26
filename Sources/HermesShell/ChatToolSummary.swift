@@ -123,12 +123,23 @@ struct ToolPayloadIndex: Sendable {
     private let totalUTF16: Int
 
     init(text: String, pageSize: Int = 16_000) {
+        self = Self.build(text: text, pageSize: pageSize, isCancelled: { false })!
+    }
+
+    private init(text: String, pages: [Page], totalUTF16: Int) {
         self.text = text
+        self.pages = pages
+        self.totalUTF16 = totalUTF16
+    }
+
+    static func build(text: String, pageSize: Int = 16_000,
+                      isCancelled: () -> Bool) -> Self? {
         let size = max(1, pageSize)
         var start = text.startIndex
         var offset = 0
         var result: [Page] = []
         while start < text.endIndex {
+            guard !isCancelled() else { return nil }
             let end = text.index(start, offsetBy: size, limitedBy: text.endIndex) ?? text.endIndex
             let length = text[start..<end].utf16.count
             result.append(Page(range: start..<end, utf16Start: offset, utf16Length: length))
@@ -138,8 +149,8 @@ struct ToolPayloadIndex: Sendable {
         if result.isEmpty {
             result.append(Page(range: text.startIndex..<text.endIndex, utf16Start: 0, utf16Length: 0))
         }
-        pages = result
-        totalUTF16 = offset
+        guard !isCancelled() else { return nil }
+        return Self(text: text, pages: result, totalUTF16: offset)
     }
 
     func pageText(_ index: Int) -> String {
@@ -147,7 +158,9 @@ struct ToolPayloadIndex: Sendable {
         return String(text[pages[safe].range])
     }
 
-    func find(_ query: String, after offset: Int = 0) -> Match? {
+    func find(_ query: String, after offset: Int = 0,
+              isCancelled: () -> Bool = { false }) -> Match? {
+        guard !isCancelled() else { return nil }
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty, term.utf16.count <= 512, totalUTF16 > 0 else { return nil }
         let source = text as NSString
@@ -155,11 +168,12 @@ struct ToolPayloadIndex: Sendable {
         let options: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
         var found = source.range(of: term, options: options,
             range: NSRange(location: start, length: totalUTF16 - start))
+        guard !isCancelled() else { return nil }
         if found.location == NSNotFound && start > 0 {
             found = source.range(of: term, options: options,
                 range: NSRange(location: 0, length: totalUTF16))
         }
-        guard found.location != NSNotFound, found.length > 0 else { return nil }
+        guard !isCancelled(), found.location != NSNotFound, found.length > 0 else { return nil }
         // Binary search the containing page using the indexed UTF-16 offsets.
         var lo = 0, hi = pages.count - 1
         while lo < hi {

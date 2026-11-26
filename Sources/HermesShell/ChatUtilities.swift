@@ -121,10 +121,13 @@ struct ToolPayloadReader: View {
             }
             .task {
                 let text = snapshot.text
-                let result = await Task.detached(priority: .userInitiated) {
-                    ToolPayloadIndex(text: text)
-                }.value
-                if !Task.isCancelled { index = result }
+                let worker = Task.detached(priority: .userInitiated) {
+                    ToolPayloadIndex.build(text: text, isCancelled: { Task.isCancelled })
+                }
+                let result = await withTaskCancellationHandler {
+                    await worker.value
+                } onCancel: { worker.cancel() }
+                if !Task.isCancelled, let result { index = result }
             }
             .onChange(of: query) { _, _ in
                 cancelSearch()
@@ -166,9 +169,12 @@ struct ToolPayloadReader: View {
         let offset = nextOffset
         searching = true
         searchTask = Task { @MainActor in
-            let match = await Task.detached(priority: .userInitiated) {
-                index.find(term, after: offset)
-            }.value
+            let worker = Task.detached(priority: .userInitiated) {
+                index.find(term, after: offset, isCancelled: { Task.isCancelled })
+            }
+            let match = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: { worker.cancel() }
             guard !Task.isCancelled, searchTicket == ticket else { return }
             searching = false
             searchTask = nil

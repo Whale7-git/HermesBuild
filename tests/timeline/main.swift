@@ -737,4 +737,7 @@ check(payloadIndex.find("CAFE") != nil && payloadIndex.find("not found") == nil,
 check(payloadIndex.find("needle", after: payloadNext.nextOffset)?.nextOffset == payloadFirst.nextOffset,
       "next search wraps without losing the first match")
 check(ToolPayloadIndex(text: "").pageText(0).isEmpty, "empty result still has safe page")
-print("TOOL_INSPECTOR_PASS 180 records and full grapheme-safe payload search")
+check(ToolPayloadIndex.build(text: payloadFixture, isCancelled: { true }) == nil &&
+      payloadIndex.find("needle", isCancelled: { true }) == nil,
+      "cancelled indexing and searching return no stale result")
+print("TOOL_INSPECTOR_PASS 180 records, cancellation and full grapheme-safe payload search")

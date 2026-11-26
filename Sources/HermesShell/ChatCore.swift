@@ -217,6 +217,7 @@ struct ChatStreamingTailSnapshot: Equatable {
     let toolsAreLive: Bool
     let transcriptRevision: UInt64
     let transcriptStructureRevision: UInt64
+    var transcriptStructureID: UUID? = nil
 }
 
 enum ChatStreamingTailProof {
@@ -225,10 +226,10 @@ enum ChatStreamingTailProof {
     /// without rebuilding the full timeline.
     static func canReplaceTail(from previous: ChatStreamingTailSnapshot,
                                to next: ChatStreamingTailSnapshot) -> Bool {
-        guard next.transcriptRevision > previous.transcriptRevision,
+        guard let structureID = previous.transcriptStructureID,
+              next.transcriptStructureID == structureID,
+              next.transcriptRevision > previous.transcriptRevision,
               next.transcriptStructureRevision == previous.transcriptStructureRevision,
-              previous.tools == next.tools,
-              previous.notices == next.notices,
               previous.running == next.running,
               previous.toolsAreLive == next.toolsAreLive,
               previous.messages.count == next.messages.count,
@@ -732,6 +733,10 @@ struct ChatTranscript: Codable, Sendable {
     /// Changes whenever message/tool/notice structure changes. Tail content
     /// updates deliberately do not advance it.
     private(set) var transcriptStructureRevision: UInt64 = 0
+    /// Numeric revisions may collide after replacing a transcript. Rotate
+    /// this token on every structural mutation, including diverging copies.
+    /// Optional preserves decoding of older durable checkpoints.
+    private(set) var transcriptStructureID: UUID? = UUID()
     var messages: [ChatMessage] {
         get { storage.messages }
         set {
@@ -739,6 +744,7 @@ struct ChatTranscript: Codable, Sendable {
             if !updatingStreamingTail {
                 transcriptRevision &+= 1
                 transcriptStructureRevision &+= 1
+                transcriptStructureID = UUID()
             }
         }
         _modify {
@@ -749,6 +755,7 @@ struct ChatTranscript: Codable, Sendable {
             if !updatingStreamingTail {
                 transcriptRevision &+= 1
                 transcriptStructureRevision &+= 1
+                transcriptStructureID = UUID()
             }
         }
     }
@@ -758,6 +765,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.tools = newValue
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
         _modify {
             var value = storage.tools
@@ -766,6 +774,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.tools = value
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
     }
     /// 本轮收尾产生的通知行；`var` + 默认值不破坏既有 memberwise 调用。
@@ -775,6 +784,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.notices = newValue
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
         _modify {
             var value = storage.notices
@@ -783,6 +793,7 @@ struct ChatTranscript: Codable, Sendable {
             storage.notices = value
             transcriptRevision &+= 1
             transcriptStructureRevision &+= 1
+            transcriptStructureID = UUID()
         }
     }
     var usage: ChatUsage? {
