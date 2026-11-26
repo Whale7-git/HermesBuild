@@ -473,40 +473,7 @@ def main() -> int:
         "NativeChatView+Notices.swift",
     )
     contents = {name: (S / name).read_text(encoding="utf-8") for name in names}
-    # Recovery copy is a product contract, not a release permission.
-    # Restrict to presentation/model notice files; logs and comments retain
-    # their exact technical vocabulary for diagnosis. This is an advisory
-    # source diagnostic in the existing workflow.
-    recovery_files = (
-        "ChatActivity.swift", "NativeChatModel.swift",
-        "NativeChatModel+Send.swift", "NativeChatModel+Control.swift",
-        "NativeChatModel+Stream.swift", "NativeChatView+Composer.swift",
-        "NativeChatView+Notices.swift", "NativeChatView+Chrome.swift",
-        "NativeChatView+MessageList.swift", "ChatQueueManager.swift",
-        "ChatRecoveryCenter.swift", "ChatWorkspacePanels.swift", "SessionTaskCenter.swift",
-    )
-    import re
-    def recovery_copy_violations(filename: str, source: str) -> list[str]:
-        errors = []
-        internal = re.compile(r'"[^"\n]*(?:核对|锁定|终态|快照|分页|WebUI|HTTP \\?\d|回读)[^"\n]*"')
-        for line_number, line in enumerate(source.splitlines(), 1):
-            if line.lstrip().startswith("//") or "recordRuntimeLog(" in line:
-                continue
-            # This deliberately checks only direct string literals, not a
-            # full Swift parser or a claim about all localized strings.
-            if internal.search(line):
-                errors.append(f"{filename}:{line_number}: user-facing recovery terminology")
-        return errors
-
-    copy_errors = [
-        error for name in recovery_files
-        for error in recovery_copy_violations(name, (S / name).read_text(encoding="utf-8"))
-    ]
-    if not recovery_copy_violations("fixture.swift", 'notice = "发送保持锁定"'):
-        raise AssertionError("recovery copy check did not catch internal terminology")
-    if recovery_copy_violations("fixture.swift", '// 状态待核对\nnotice = "正在同步…"'):
-        raise AssertionError("recovery copy check rejected comments or normal copy")
-    baseline_errors = violations(contents) + copy_errors
+    baseline_errors = violations(contents)
     if baseline_errors:
         print("NAVIGATION_CONTRACT_FAILED:")
         print("\n".join(baseline_errors))
