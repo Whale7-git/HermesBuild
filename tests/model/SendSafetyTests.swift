@@ -200,6 +200,26 @@ import Foundation
                      "one repaired category cannot hide another unsaved record")
         failingModel.recordSuccessfulLocalWrite(kind: .draft)
         precondition(failingModel.localPersistenceIssue == nil)
+
+        // Two files in the same category cannot acknowledge each other.
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .pendingSend)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .queuedTurns)
+        failingModel.recordSuccessfulLocalWrite(record: .queuedTurns)
+        precondition(failingModel.queuePersistenceFailed &&
+                     failingModel.localRecordIssues[.pendingSend] != nil)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .queuePause)
+        failingModel.resumeQueueAfterRecovery()
+        precondition(failingModel.queueAutomaticDispatchPaused,
+                     "automatic recovery cannot bypass an unsaved pause")
+        failingModel.recordSuccessfulLocalWrite(record: .pendingSend)
+        precondition(failingModel.queuePersistenceFailed)
+        failingModel.recordSuccessfulLocalWrite(record: .queuePause)
+        precondition(!failingModel.queuePersistenceFailed)
+        failingModel.recordLocalWrite(.failed(.diskWrite), record: .attachmentDraft)
+        failingModel.recordSuccessfulLocalWrite(kind: .draft)
+        precondition(failingModel.localRecordIssues[.attachmentDraft] != nil)
+        failingModel.recordSuccessfulLocalWrite(record: .attachmentDraft)
+        precondition(failingModel.localPersistenceIssue == nil)
     }
 
     // Queue persistence now consumes the actual storage result instead of
@@ -255,9 +275,14 @@ import Foundation
                      "no-op migration cannot acknowledge the current queue")
         let repaired = model.retryQueuePersistence()
         model.recordVerifiedLocalRetry(repaired, kind: .queue)
-        precondition(repaired.succeeded && !model.queueSaveFailed
-                     && model.localPersistenceIssue == nil,
-                     "only a verified explicit retry clears the sticky queue failure")
+        precondition(repaired.succeeded && !model.queueSaveFailed &&
+                     !model.queuePersistenceFailed &&
+                     model.localPersistenceIssue?.kind == .draft,
+                     "queue retry must not erase the independent draft write failure")
+        let draftRetry = store.save(model.draft)
+        model.recordVerifiedLocalRetry(draftRetry, kind: .draft)
+        precondition(draftRetry.succeeded && model.localPersistenceIssue == nil,
+                     "each failed record clears only after its own verified repair")
         model.disconnect()
     }
 

@@ -122,9 +122,8 @@ struct ChatRecoveryCenter: View {
                         Button {
                             Task {
                                 let result = model.retryQueuePersistence()
-                                model.recordVerifiedLocalRetry(result, kind: .queue)
                                 resultText = result.succeeded
-                                    ? "队列已重新写入并通过回读验证。"
+                                    ? "队列和相关发送记录已重新保存。"
                                     : "这次写入仍未通过验证；队列继续保留在当前进程内。"
                             }
                         } label: {
@@ -198,11 +197,13 @@ struct ChatRecoveryCenter: View {
                               detail: model.localPersistenceIssue == nil && !model.queuePersistenceFailed
                                 ? "草稿与队列最近一次写入已通过回读验证。"
                                 : "当前内存内容仍可用；检查后可继续保存。")
-                    if let issue = model.localPersistenceIssue {
-                        statusRow(icon: "exclamationmark.triangle.fill", color: AppTheme.warning,
-                                  title: localIssueTitle(issue), detail: localIssueDetail(issue))
+                    ForEach(LocalDataRecord.allCases, id: \.self) { record in
+                        if let issue = model.localRecordIssues[record] {
+                            statusRow(icon: "exclamationmark.triangle.fill", color: AppTheme.warning,
+                                      title: localIssueTitle(record), detail: localIssueDetail(issue))
+                        }
                     }
-                    if model.localPersistenceIssue?.kind == .draft {
+                    if model.localRecordIssues[.draft] != nil {
                         Button(action: rewriteCurrentDraft) {
                             Label("重新验证当前草稿", systemImage: "doc.badge.arrow.up")
                                 .frame(minHeight: 44)
@@ -336,12 +337,16 @@ struct ChatRecoveryCenter: View {
         }
     }
 
-    private func localIssueTitle(_ issue: LocalDataIssue) -> String {
-        switch issue.kind {
-        case .draft: return "草稿保存降级"
-        case .queue: return "队列保存降级"
-        case .historyCache: return "历史缓存降级"
-        case .runRecovery: return "运行恢复记录降级"
+    private func localIssueTitle(_ record: LocalDataRecord) -> String {
+        switch record {
+        case .draft: return "文字草稿保存异常"
+        case .attachmentDraft: return "附件草稿保存异常"
+        case .queuedTurns: return "队列保存异常"
+        case .pendingSend: return "待确认消息记录异常"
+        case .queuePause: return "队列暂停设置保存异常"
+        case .historyCache: return "历史缓存异常"
+        case .activeRun: return "任务恢复记录异常"
+        case .runOutcome: return "任务结果记录异常"
         }
     }
 

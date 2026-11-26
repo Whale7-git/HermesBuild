@@ -529,12 +529,16 @@ extension NativeChatModel {
         // write must fail closed, not forget the user's pause on restart.
         let saved = draftStore?.saveQueueUserPaused(paused) ?? .ok
         guard saved.succeeded else {
-            recordLocalWrite(saved, kind: .queue)
+            // A failed pause write must not let a later network recovery
+            // override the user's explicit wish to stop automatic dispatch.
+            if paused { queueUserPaused = true }
+            recordLocalWrite(saved, record: .queuePause)
             pauseQueueForRecovery()
             notice = "队列暂停设置保存失败，自动发送仍已暂停。"
             return
         }
         queueUserPaused = paused
+        recordSuccessfulLocalWrite(record: .queuePause)
         if !paused && !uncertain && activeTurnRecovery == nil {
             queueRecoveryPaused = false
         }
@@ -616,21 +620,29 @@ extension NativeChatModel {
             return .failed(.corruptFile)
         }
         let pendingResult = persistPendingSend()
-        guard pendingResult.succeeded else {
-            recordLocalWrite(pendingResult, kind: .queue)
-            return pendingResult
-        }
+        guard pendingResult.succeeded else { return pendingResult }
         guard let data = ChatSendQueueCodec.encode(queuedTurns) else {
             queueSaveFailed = true
             recordLocalWrite(.failed(.encoding), kind: .queue)
             return .failed(.encoding)
         }
         let result = draftStore?.saveQueued(queuedTurns.isEmpty ? nil : data) ?? .ok
-        if !result.succeeded {
-            queueSaveFailed = true
-            recordLocalWrite(result, kind: .queue)
+        guard result.succeeded else {
+            recordLocalWrite(result, record: .queuedTurns)
+            return result
         }
-        return result
+        recordSuccessfulLocalWrite(record: .queuedTurns)
+        // Retry the actual current pause intent, never enable dispatch as a
+        // side effect of fixing persistence. A failed unpause stays paused.
+        if localRecordIssues[.queuePause] != nil {
+            let saved = draftStore?.saveQueueUserPaused(queueUserPaused) ?? .ok
+            guard saved.succeeded else {
+                recordLocalWrite(saved, record: .queuePause)
+                return saved
+            }
+            recordSuccessfulLocalWrite(record: .queuePause)
+        }
+        return .ok
     }
 
     private struct SubmitResult {
@@ -673,7 +685,10 @@ extension NativeChatModel {
         // 这正是「18 个布尔能组合出非法状态」的典型例子。
         transition(to: .submitting)
         lastFinalizedRecord = nil
-        _ = draftStore?.saveRunOutcome(nil)
+        if let cleared = draftStore?.saveRunOutcome(nil) {
+            if cleared.succeeded { recordSuccessfulLocalWrite(record: .runOutcome) }
+            else { recordLocalWrite(cleared, record: .runOutcome) }
+        }
         error = nil
         // 斜杠命令：立刻给出「已提交，等待服务端处理」的可见反馈。
         //
