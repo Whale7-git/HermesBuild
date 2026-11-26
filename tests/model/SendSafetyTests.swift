@@ -89,6 +89,15 @@ import Foundation
             } else { try await Task.sleep(nanoseconds: 1_000_000) }
         }
     }
+    func completeCurrentTurn(id: String) {
+        guard let (text, attachments) = sent.last else { preconditionFailure("no accepted turn") }
+        historyRows.append(["id": "completed-user-" + id, "role": "user", "content": text,
+                            "attachments": attachments.map { ["path": $0.path] }])
+        historyRows.append(["id": "completed-answer-" + id, "role": "assistant", "content": "final answer"])
+        active = nil
+        frames.append(SSEFrame(event: "stream_end", data: #"{"status":"completed"}"#, id: id))
+    }
+
     func approval(_ id: String) {
         let payload: [String: Any] = [
             "request_id": id, "execution_generation": 7,
@@ -557,12 +566,25 @@ import Foundation
         await model.load(); model.draft = "first"; _ = await model.send()
         model.sendMode = .queue; model.draft = "wait"; _ = await model.send()
         model.setQueueAutomaticDispatchPaused(true)
-        service.active = nil
-        service.frames.append(SSEFrame(event: "stream_end", data: "{}", id: "paused-end"))
+        service.completeCurrentTurn(id: "paused-end")
         try await ModelTests.eventually { !model.running && model.streamID == nil }
         precondition(model.queueAutomaticDispatchPaused && model.queuedTurns.count == 1
                      && service.startCalls == 1,
                      "terminal evidence cannot override an existing queue pause")
+        model.disconnect()
+    }
+
+    // Unknown stream termination must not be counted as success or allow
+    // automatic dispatch, even when the status endpoint is unavailable.
+    do {
+        let service = SendSafetyService()
+        let model = NativeChatModel(sessionID: "unknown-terminal", api: service)
+        await model.load(); model.draft = "first"; _ = await model.send()
+        model.sendMode = .queue; model.draft = "next"; _ = await model.send()
+        service.frames.append(SSEFrame(event: "stream_end", data: #"{"status":"unknown"}"#, id: "unknown"))
+        try await ModelTests.eventually { model.uncertain && !model.running }
+        precondition(model.completedReplies == 0 && service.startCalls == 1 &&
+            model.queuedText == "next" && !model.canSend)
         model.disconnect()
     }
 
@@ -574,12 +596,10 @@ import Foundation
         model.sendMode = .queue
         model.draft = "second"; _ = await model.send()
         model.draft = "third"; _ = await model.send()
-        service.active = nil
-        service.frames.append(SSEFrame(event: "stream_end", data: "{}", id: "run-1-end"))
+        service.completeCurrentTurn(id: "run-1-end")
         try await ModelTests.eventually { service.startCalls == 2 }
         precondition(model.queuedTurns.count == 1 && model.queuedTurns[0].text == "third")
-        service.active = nil
-        service.frames.append(SSEFrame(event: "stream_end", data: "{}", id: "run-2-end"))
+        service.completeCurrentTurn(id: "run-2-end")
         try await ModelTests.eventually { service.startCalls == 3 }
         precondition(model.queuedTurns.isEmpty && service.sent.map(\.0) == ["first", "second", "third"])
         model.disconnect()
@@ -899,8 +919,7 @@ import Foundation
         try await ModelTests.eventually { !model.running && !model.reconciling }
         precondition(service.startCalls == 1 && model.queuedText == "wait")
         model.draft = "a new explicit turn"; _ = await model.send()
-        service.active = nil
-        service.frames.append(SSEFrame(event: "stream_end", data: "{}", id: "new-turn-end"))
+        service.completeCurrentTurn(id: "new-turn-end")
         try await ModelTests.eventually { !model.running && !model.reconciling }
         precondition(service.startCalls == 2 && model.queuedText == "wait",
                      "a later unrelated completion cannot dispatch a queue held after cancellation")

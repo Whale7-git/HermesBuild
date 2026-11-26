@@ -56,6 +56,13 @@ extension AppStateTests {
         precondition(SessionRecoveryCoordinator.recoverySignal(for: cancelled) == nil)
         precondition(SessionTaskCenter.summary(sessionID: "cancelled", serverStreaming: false,
             observation: cancelled)?.title == "任务已取消")
+        let occupied = [(instance: "one", session: "a"), (instance: "one", session: "b")]
+        precondition(!RecoveryScheduler.mayAdmit(instance: "one", session: "c", active: occupied,
+            globalLimit: 4, instanceLimit: 2))
+        precondition(RecoveryScheduler.mayAdmit(instance: "two", session: "a", active: occupied,
+            globalLimit: 4, instanceLimit: 2))
+        precondition(!RecoveryScheduler.mayAdmit(instance: "one", session: "a", active: occupied,
+            globalLimit: 4, instanceLimit: 3))
         let first = SessionRecoveryCoordinator.eligibleKeys(keys, attempted: [:], now: 100)
         precondition(first.count == 5)
         let attempted = Dictionary(uniqueKeysWithValues: first.map { ($0, 100.0) })

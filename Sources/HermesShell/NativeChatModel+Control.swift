@@ -332,7 +332,7 @@ extension NativeChatModel {
             let result: ActiveRunProbe
             if let receipt = activeTurnRecovery, receipt.runID == active,
                let terminal = receipt.terminalStatus { result = .terminal(terminal) }
-            else { result = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
+            else { result = try await recoveryProbe(sessionID: sessionID, runID: active) }
             guard accepts(context), stopping, !Task.isCancelled else { return }
             switch result {
             case .alive:
@@ -364,7 +364,7 @@ extension NativeChatModel {
                     pauseQueueForRecovery()
                     return
                 }
-                let finalHistory = try await api.history(sessionID: sessionID, before: nil)
+                let finalHistory = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID,
                       finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
@@ -387,21 +387,10 @@ extension NativeChatModel {
                 if outcome == .cancelled || outcome == .interrupted {
                     buffer.appendStopNotice()
                 }
-                try applySnapshot(finalHistory, preserveLoadedOlder: true)
-                if let receipt = activeTurnRecovery, receipt.runID == active {
-                    if outcome == .completed && !receipt.confirmsCompletion(in: finalHistory) {
-                        uncertain = true
-                        pauseQueueForRecovery()
-                        notice = "任务已结束，最终回复仍在同步。"
-                        scheduleAutomaticReconciliation()
-                        return
-                    }
-                    guard clearAcceptedTurnRecovery() else { return }
-                    uncertain = pendingSend != nil || pendingRecoveryUnreadable
-                        || activeRecoveryUnreadable
+                transition(to: .idle)
+                if try !finalizeVerifiedRun(finalHistory, runID: active, outcome: outcome) {
+                    scheduleAutomaticReconciliation()
                 }
-                pauseQueueForRecovery()
-                notice = outcome.notice
             }
         } catch {
             guard accepts(context), stopping else { return }
@@ -423,14 +412,13 @@ extension NativeChatModel {
         let ticket = UUID()
         stopStatusPollTicket = ticket
         let delays = stopStatusPollDelaysNanoseconds
-        stopStatusPollTask = Task { [weak self] in
+        stopStatusPollTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket,
+            onFinish: { [weak self] in
+                guard let self, self.stopStatusPollTicket == ticket else { return }
+                self.stopStatusPollTask = nil
+                self.stopStatusPollTicket = nil
+            }) { [weak self] in
             guard let self else { return }
-            defer {
-                if self.stopStatusPollTicket == ticket {
-                    self.stopStatusPollTask = nil
-                    self.stopStatusPollTicket = nil
-                }
-            }
             for delay in delays {
                 do { try await Task.sleep(nanoseconds: delay) }
                 catch { return }
@@ -476,19 +464,11 @@ extension NativeChatModel {
         transition(to: .needsLogin)
         readOnly = true
         uncertain = true
-        // 换账号后既不能保留上一账号的待核对正文，也不能凭它的附件引用重发。
-        pendingSend = nil
-        queuedTurns = []
-        queueUserPaused = false
-        queueRecoveryPaused = false
-        updateQueuePause()
-        queueSaveFailed = false
-        let clearResult = draftStore?.saveQueued(nil)
-        if let clearResult, !clearResult.succeeded {
-            recordLocalWrite(clearResult, kind: .queue)
-        } else if localPersistenceIssue?.kind == .queue {
-            localPersistenceIssue = nil
-        }
+        // Hide the transcript and disable every mutation while unauthenticated.
+        // A 401 alone does not prove the account or accepted POST disappeared.
+        // AppState's explicit account retirement performs scoped deletion.
+        pauseQueueForRecovery()
+        lastFinalizedRecord = nil
         clearApproval()
         clearClarify()
         pendingAbsent = false

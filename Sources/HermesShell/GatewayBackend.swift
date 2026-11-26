@@ -285,6 +285,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
 
     func deleteSession(sessionID: String) async throws {
         _ = try await perform(try requests.deleteSession(sessionID: sessionID))
+        runStore.discardTerminal(sessionID: sessionID)
         if let runID = runStore.runID(for: sessionID) {
             runStore.finish(runID: runID)
             clearFailedRunProbes(runID: runID)
@@ -338,7 +339,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                   root["session_id"] as? String == sessionID,
                   let status = root["status"] as? String,
                   let terminal = RunTerminalStatus(rawValue: status) else { return .unresolved }
-            return runStore.clearUnresolved(runID: runID, sessionID: sessionID)
+            return runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal)
                 ? .terminal(terminal) : .unknown
         } catch let error as APIError {
             if case .http(let code, _) = error, code == 401 || code == 403 { throw error }
@@ -351,6 +352,9 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
+            return .terminal(terminal)
+        }
         if runStore.unresolvedRunID(for: sessionID) == runID {
             return try await verifyUnresolvedRun(sessionID: sessionID, runID: runID)
         }
@@ -395,10 +399,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            if runStore.runID(for: sessionID) == runID {
-                runStore.finish(runID: runID)
-            }
-            guard let terminal = RunTerminalStatus(rawValue: status) else { return .unknown }
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else { return .unknown }
             return .terminal(terminal)
         default:
             return recordProbeFailure(runID: runID)
@@ -443,7 +445,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         case "completed", "failed", "cancelled", "interrupted":
             // Only an explicit terminal status can retire the recovery record.
             clearFailedRunProbes(runID: runID)
-            runStore.finish(runID: runID)
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else {
+                return try unresolvedRun(runID: runID)
+            }
             return nil
         default:
             return try unresolvedRun(runID: runID)
@@ -506,7 +511,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return GatewayActiveRunHistory(evidence: .active(runID), pendingControls: controls)
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
-            runStore.finish(runID: runID)
+            guard let terminal = RunTerminalStatus(rawValue: status),
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else {
+                return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
+            }
             return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
         default:
             _ = recordProbeFailure(runID: runID)
@@ -677,26 +685,27 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         // 终态判定必须在 map 循环**之外**独立执行：map 对无法解析的帧返回空数组，
         // 若把 finish 嵌在循环里，坏帧会让 run 永远悬挂（下次启动锁发送）。
         let terminalRawNames: Set<String> = [
-            "run.completed", "run.cancelled", "run.interrupted", "run.failed",
-            "error"
+            "run.completed", "run.cancelled", "run.interrupted", "run.failed"
         ]
         try await transport.events(for: request) { frame in
             let rawName = GatewayEventMap.rawEventName(of: frame)
             let mapped = GatewayEventMap.map(frame)
-            // 收尾只看原始事件名：即使这一帧 map 失败（空数组），也要清 run。
-            if terminalRawNames.contains(rawName) {
-                self.runStore.finish(runID: streamID)
-                self.clearFailedRunProbes(runID: streamID)
-            }
+            // Deliver the exact typed terminal evidence to the owner first.
+            // A malformed event or transport-level error never proves absence.
             for item in mapped {
-                if try await onFrame(item) { return true }
+                let ended = try await onFrame(item)
+                if terminalRawNames.contains(rawName),
+                   let outcome = RunTerminalEvidence.outcome(of: item),
+                   let sessionID = self.runStore.sessionID(owning: streamID),
+                   self.runStore.recordTerminal(runID: streamID, sessionID: sessionID, outcome: outcome) {
+                    self.clearFailedRunProbes(runID: streamID)
+                }
+                if ended { return true }
             }
-            // map 空但原帧是终态时，仍然要把「结束」信号交给上层，否则流不会收尾。
-            if mapped.isEmpty, terminalRawNames.contains(rawName) {
-                let synthetic = SSEFrame(
-                    event: rawName == "replay.truncated" || rawName == "error" ? "apperror" : "stream_end",
-                    data: "{\"status\":\"\(rawName == "run.completed" ? "completed" : rawName)\"}",
-                    id: frame.id)
+            if mapped.isEmpty, terminalRawNames.contains(rawName) || rawName == "error" {
+                let synthetic = SSEFrame(event: "apperror",
+                    data: #"{"message":"Invalid terminal event; status requires verification"}"#,
+                    id: nil)
                 if try await onFrame(synthetic) { return true }
             }
             return false

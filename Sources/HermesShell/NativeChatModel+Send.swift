@@ -289,7 +289,7 @@ extension NativeChatModel {
             defer { reconciling = false }
             uncertain = true
             do {
-                let snapshot = try await api.history(sessionID: sessionID, before: nil)
+                let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
                 switch queuedTurns[0].resolution(in: snapshot) {
                 case .delivered:
@@ -560,6 +560,8 @@ extension NativeChatModel {
         // POST 在途 + 本轮已开始：`.submitting` 同时表达这两件事，
         // 这正是「18 个布尔能组合出非法状态」的典型例子。
         transition(to: .submitting)
+        lastFinalizedRecord = nil
+        _ = draftStore?.saveRunOutcome(nil)
         error = nil
         // 斜杠命令：立刻给出「已提交，等待服务端处理」的可见反馈。
         //
@@ -757,7 +759,7 @@ extension NativeChatModel {
                   pendingSend?.id == pending.id, !suspended else { return .failed }
             let cursor = pages[pages.count - 1].olderOffset
             do {
-                let older = try await api.history(sessionID: sessionID, before: cursor)
+                let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
                 guard generation == revision, pendingSend?.id == pending.id,
                       !Task.isCancelled, !suspended,
                       older.sessionID == sessionID, !older.readOnly,
@@ -777,7 +779,7 @@ extension NativeChatModel {
             historyEnd: historyEnd, knownIDs: pending.knownIDs, pages: pages)
         guard decision != .failed else { return .failed }
         do {
-            let current = try await api.history(sessionID: sessionID, before: nil)
+            let current = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard generation == revision, pendingSend?.id == pending.id,
                   !Task.isCancelled, !suspended,
                   current.sessionID == sessionID, !current.readOnly,

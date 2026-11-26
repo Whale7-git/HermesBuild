@@ -7,6 +7,12 @@ final class GatewayRunStore {
     private let key: String
     private let generationKey: String
     private let unresolvedKey: String
+    private let terminalKey: String
+    private struct TerminalReceipt: Codable, Equatable {
+        let runID: String
+        let outcome: RunTerminalStatus
+    }
+    private var terminalReceipts: [String: TerminalReceipt] = [:]
     private var unresolved: [String: String]
     private let generation: String
     private var values: [String: String]
@@ -27,6 +33,7 @@ final class GatewayRunStore {
         key = "HermesNative.gatewayRuns.v1." + (scope ?? "ephemeral")
         generationKey = "HermesNative.gatewayRunGeneration.v1." + (scope ?? "ephemeral")
         unresolvedKey = key + ".unresolved"
+        terminalKey = key + ".terminals"
         generation = defaults.string(forKey: generationKey) ?? UUID().uuidString
         if scope != nil { defaults.set(generation, forKey: generationKey) }
         values = scope == nil ? [:] : (defaults.dictionary(forKey: key) as? [String: String] ?? [:])
@@ -90,6 +97,56 @@ final class GatewayRunStore {
 
     func runID(for sessionID: String) -> String? { current()[sessionID] }
 
+    private func currentTerminals() -> [String: TerminalReceipt] {
+        guard isValid else { return [:] }
+        guard let defaults else { return terminalReceipts }
+        guard let data = defaults.data(forKey: terminalKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: TerminalReceipt].self, from: data)) ?? [:]
+    }
+
+    private func persistTerminals(_ records: [String: TerminalReceipt]) -> Bool {
+        guard isValid else { return false }
+        guard let defaults else { terminalReceipts = records; return true }
+        guard let data = try? JSONEncoder().encode(records) else { return false }
+        defaults.set(data, forKey: terminalKey)
+        return defaults.data(forKey: terminalKey) == data
+    }
+
+    func terminalOutcome(sessionID: String, runID: String) -> RunTerminalStatus? {
+        guard isValid, runID == current()[sessionID] || current()[sessionID] == nil,
+              unresolvedRunID(for: sessionID).map({ $0 == runID }) ?? true,
+              let receipt = currentTerminals()[sessionID], receipt.runID == runID else { return nil }
+        return receipt.outcome
+    }
+
+    func sessionID(owning runID: String) -> String? {
+        let matches = current().filter { $0.value == runID }.keys
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    /// Preserve exact server evidence before retiring the active index.
+    /// This is only a handoff to the protected model receipt, never proof
+    /// of final transcript delivery or permission to send again.
+    @discardableResult
+    func recordTerminal(runID: String, sessionID: String, outcome: RunTerminalStatus) -> Bool {
+        guard isValid, current()[sessionID].map({ $0 == runID }) ?? true,
+              unresolvedRunID(for: sessionID).map({ $0 == runID }) ?? true else { return false }
+        var records = currentTerminals()
+        if let old = records[sessionID], old.runID == runID, old.outcome != outcome { return false }
+        records[sessionID] = TerminalReceipt(runID: runID, outcome: outcome)
+        guard persistTerminals(records) else { persistenceFailed = true; return false }
+        if unresolvedRunID(for: sessionID) == runID,
+           !clearUnresolved(runID: runID, sessionID: sessionID) { return false }
+        finish(runID: runID)
+        return !persistenceFailed
+    }
+
+    func discardTerminal(sessionID: String) {
+        var records = currentTerminals()
+        guard records.removeValue(forKey: sessionID) != nil else { return }
+        if !persistTerminals(records) { persistenceFailed = true }
+    }
+
     /// An unresolved 404 is a durable diagnostic, not verified absence.
     func unresolvedRunID(for sessionID: String) -> String? {
         guard isValid else { return nil }
@@ -150,6 +207,7 @@ final class GatewayRunStore {
         guard isValid else { noteRetired(); return }
         // A delayed status response must not resurrect a 404-retired Run.
         if unresolvedRunID(for: sessionID) == runID { return }
+        discardTerminal(sessionID: sessionID)
         values = current()
         values[sessionID] = runID
         // Active records are intentionally not expired by time: elapsed time cannot prove a run ended.
@@ -183,6 +241,7 @@ final class GatewayRunStore {
         if let accountScope {
             defaults.removeObject(forKey: prefix + accountScope)
             defaults.removeObject(forKey: prefix + accountScope + ".unresolved")
+            defaults.removeObject(forKey: prefix + accountScope + ".terminals")
             defaults.set(UUID().uuidString, forKey: generationPrefix + accountScope)
         } else {
             let keys = defaults.dictionaryRepresentation().keys
@@ -193,6 +252,8 @@ final class GatewayRunStore {
             })
             for account in accounts {
                 defaults.removeObject(forKey: prefix + account)
+                defaults.removeObject(forKey: prefix + account + ".unresolved")
+                defaults.removeObject(forKey: prefix + account + ".terminals")
                 defaults.set(UUID().uuidString, forKey: generationPrefix + account)
             }
         }

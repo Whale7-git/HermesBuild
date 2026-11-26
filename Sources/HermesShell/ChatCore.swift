@@ -35,7 +35,7 @@ struct GatewayPendingControlSnapshot: Sendable {
 /// 定义在 `ChatCore.swift` 而不是 `NativeChatModel.swift`：它由 SSE 帧解析出来，
 /// 而 `gatewaybackend` 套件只编译本文件、不编译模型；放在模型里会让那个套件
 /// 「cannot find type 'ChatPendingClarify' in scope」。
-struct ChatPendingClarify: Identifiable, Equatable {
+struct ChatPendingClarify: Identifiable, Codable, Equatable {
     let id: String
     let runID: String
     /// 服务端的 `prompt_id`，答复时当 `request_id` 发回去。
@@ -106,14 +106,14 @@ struct SSEParser {
 
 /// 本地气泡的投递三态。服务端历史（以及任何持久化快照）恒为 `confirmed`，
 /// 只有「先出气泡再请求」的本地行才会经历 submitting / accepted / unconfirmed。
-enum ChatDeliveryState: String, Equatable, Sendable {
+enum ChatDeliveryState: String, Codable, Equatable, Sendable {
     case confirmed
     case submitting
     case accepted
     case unconfirmed
 }
 
-struct ChatMessage: Identifiable, Equatable, Sendable {
+struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var role: String
     var content: String
@@ -179,7 +179,7 @@ enum ChatRenderableText {
 /// —— 被取消 / 失败 / 被中断 / 预算耗尽。它作为稳定的行渲染进消息流，而不是藏进
 /// 顶部那条易失的 notice/error 字符串里。`failure`/`notice` 仍驱动状态栏，这里只负责
 /// 「这条回复到底怎么结束的」在对话里留一条可见的、可回看的记录。
-enum ChatNoticeKind: String, Equatable, Sendable {
+enum ChatNoticeKind: String, Codable, Equatable, Sendable {
     case cancelled
     case failed
     case interrupted
@@ -187,14 +187,14 @@ enum ChatNoticeKind: String, Equatable, Sendable {
     case stopped
 }
 
-struct ChatNotice: Identifiable, Equatable, Sendable {
+struct ChatNotice: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var kind: ChatNoticeKind
     var message: String
     var timestamp: Double? = nil
 }
 
-struct ChatTool: Identifiable, Equatable, Sendable {
+struct ChatTool: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var name: String
     var args: String
@@ -322,7 +322,7 @@ private func mergeTool(_ incoming: ChatTool, into tools: inout [ChatTool]) {
 }
 
 /// 服务端计数；nil 表示未报告，0 不冒充“上下文用了 0%”。
-struct ChatUsage: Equatable, Sendable {
+struct ChatUsage: Codable, Equatable, Sendable {
     var inputTokens: Int?
     var outputTokens: Int?
     var promptTokens: Int?
@@ -581,6 +581,57 @@ enum RunTerminalStatus: String, Codable, Equatable, Sendable {
     }
 }
 
+/// Protocol evidence is distinct from transport termination. In particular,
+/// an untyped error or explicit unknown status cannot authorize retirement.
+enum RunTerminalEvidence {
+    static func explicitlyEmptyReply(_ frame: SSEFrame) -> Bool {
+        guard outcome(of: frame) == .completed,
+              let body = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any] else { return false }
+        return body["empty_output"] as? Bool == true
+    }
+
+    static func outcome(of frame: SSEFrame) -> RunTerminalStatus? {
+        let body = (try? JSONSerialization.jsonObject(with: Data(frame.data.utf8))) as? [String: Any]
+        let status = (body?["status"] as? String)?.lowercased()
+        switch frame.event {
+        case "done": return .completed // caller validates the snapshot identity first
+        case "cancel":
+            let message = body?["message"] as? String
+            return status == "interrupted" || message == "interrupted" || message == "partial"
+                ? .interrupted : .cancelled
+        case "stream_end":
+            if status == "work_limit" { return .interrupted }
+            if let status { return RunTerminalStatus(rawValue: status) }
+            // Legacy WebUI stream_end has no status. It can end the transport
+            // but cannot prove a successful Run or authorize queued dispatch.
+            return nil
+        case "apperror", "error":
+            return status == "failed" ? .failed : nil
+        default: return nil
+        }
+    }
+}
+
+/// One final-history evidence policy used by all transport/status owners.
+/// The exact receipt cannot be replaced by another Run's evidence.
+enum RunFinalizer {
+    static func canSettle(_ pages: [ChatSnapshot], sessionID: String,
+                          runID: String, receipt: ActiveTurnRecovery?,
+                          outcome: RunTerminalStatus,
+                          requireReply: Bool) -> Bool {
+        guard let newest = pages.first, newest.sessionID == sessionID,
+              newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
+        if let receipt, receipt.runID != runID { return false }
+        if outcome != .completed { return true }
+        if let receipt {
+            return receipt.confirmsCompletion(in: pages,
+                allowEmptyReply: !requireReply &&
+                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true))
+        }
+        return !requireReply
+    }
+}
+
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
 /// Stored in a protected, per-account/session file. An active run ID is never
 /// evidence that its associated POST can be replayed.
@@ -593,6 +644,8 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// Exact Run/Session terminal evidence survives a failed final GET and
     /// server-side status expiry. Optional for pre-build232 receipts.
     var terminalStatus: RunTerminalStatus? = nil
+    var terminalAllowsEmptyReply: Bool? = nil
+    var commandAllowsEmptyReply: Bool? = nil
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.
@@ -603,7 +656,7 @@ struct ActiveTurnRecovery: Codable, Equatable {
     /// Read-only proof from a contiguous suffix, newest page first. Tool rows
     /// occupy raw indexes but aren't rendered; never treat a gap as proof that
     /// there was only one user submission after the accepted POST.
-    func confirmsCompletion(in pages: [ChatSnapshot]) -> Bool {
+    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
               let historyEnd, newest.activeRunEvidence == .absent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
@@ -626,6 +679,7 @@ struct ActiveTurnRecovery: Codable, Equatable {
         guard newUsers.count == 1, let sent = newUsers.first,
               sent.content == text, Set(sent.attachmentPaths) == attachmentPaths,
               let sentIndex = sent.sourceIndex else { return false }
+        if allowEmptyReply && fresh.last?.id == sent.id { return true }
         guard let last = fresh.last, last.role == "assistant",
               let replyIndex = last.sourceIndex, replyIndex > sentIndex else { return false }
         return true
@@ -666,7 +720,7 @@ private func streamErrorDescription(_ data: String) -> String {
 
 /// A value represents exactly one stream. Create a fresh value for a new turn;
 /// retain the same value when reconnecting to that stream.
-struct ChatTranscript {
+struct ChatTranscript: Codable {
     /// Monotonic for this transcript value. Every array assignment or mutation
     /// advances it; a replacement transcript resets to zero, so callers must
     /// also require `next > previous`.
@@ -756,7 +810,7 @@ struct ChatTranscript {
         set { storage.lastEventID = newValue }
     }
 
-    private struct Storage {
+    private struct Storage: Codable {
         var messages: [ChatMessage] = []
         var tools: [ChatTool] = []
         var notices: [ChatNotice] = []
@@ -780,6 +834,13 @@ struct ChatTranscript {
     private var seenEventIDs: Set<String> = []
     private var approvalRequestID: String?
     private var updatingStreamingTail = false
+
+    /// A cursor is resumable only when the projection includes that event
+    /// and the exact deduplication and streaming-tail state.
+    func canResume(at cursor: String) -> Bool {
+        !terminal && !cursor.isEmpty && lastEventID == cursor && seenEventIDs.contains(cursor) &&
+            (streamingMessageID == nil || messages.contains { $0.id == streamingMessageID })
+    }
 
     mutating func apply(_ frame: SSEFrame) throws {
         defer { transcriptRevision &+= 1 }
@@ -807,7 +868,7 @@ struct ChatTranscript {
             } else if !text.isEmpty {
                 if let id = streamingMessageID {
                     // 优先用缓存下标；下标失效（数组被重建）时才回退线性查找。
-                    if let cached = streamingMessageIndex, cached < messages.count,
+                    if let cached = streamingMessageIndex, cached >= 0, cached < messages.count,
                        messages[cached].id == id {
                         appendStreamingText(text, at: cached)
                     } else if let index = messages.firstIndex(where: { $0.id == id }) {

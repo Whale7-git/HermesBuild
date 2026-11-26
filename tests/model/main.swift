@@ -18,6 +18,7 @@ var transcriptPublications = 0
     var failStart = false
     var delayStart = false
     var emitDone = false
+    var acceptedText = ""
     var terminalHistoryEntered = false
     var deferTerminalHistory = false
     var active:String?
@@ -49,6 +50,7 @@ var transcriptPublications = 0
         startCalls += 1
         if delayStart { try await Task.sleep(nanoseconds:100_000_000) }
         if failStart { throw URLError(.timedOut) }
+        acceptedText = text
         active = "test-stream"
         return active!
     }
@@ -56,6 +58,9 @@ var transcriptPublications = 0
     func streamNativeTurn(streamID:String,lastEventID:String?,onFrame:(SSEFrame) async throws -> Bool) async throws {
         if emitDone {
             active = nil
+            // A completed turn must be visible in the authoritative GET.
+            historyRows.append(["id": "accepted-user-\(startCalls)", "role": "user", "content": acceptedText])
+            historyRows.append(["id": "accepted-answer-\(startCalls)", "role": "assistant", "content": "completed"])
             deferTerminalHistory = true
             _ = try await onFrame(SSEFrame(event:"done",data:"{\"session\":{\"session_id\":\"test\",\"messages\":[]}}",id:"test:1"))
             return
@@ -306,7 +311,7 @@ var transcriptPublications = 0
             ["id": "recovered-answer", "role": "assistant", "content": "completed"]
         ]
         await failedModel.refresh()
-        precondition(failedModel.canSend && !failedModel.uncertain)
+        try await eventually { failedModel.canSend && !failedModel.uncertain }
         failedModel.disconnect()
         print("MODEL_PASS failed terminal history locks until verified refresh")
         for throwsOnDisconnect in [false,true] {
@@ -320,7 +325,7 @@ var transcriptPublications = 0
             await recovering.load()
             recovering.draft = "one POST"
             await recovering.send()
-            try await eventually { recovery.streamCalls >= 2 && !recovering.running }
+            try await eventually { recovery.streamCalls >= 2 && recovering.canSend }
             precondition(recovery.startCalls == 1 && recovery.cursors[1] == "s:1")
             precondition(recovering.transcript.messages.last?.content == "AB","same stream must retain cursor and deduplication")
             precondition(recovering.canSend && recovery.historyCalls >= 2)
@@ -405,9 +410,20 @@ var transcriptPublications = 0
         revised.disconnect()
         stale.holdHistory = false
         stale.active = nil
-        await revised.load()
+        // The global admission scheduler intentionally retains the physical
+        // GET slot until a non-cooperative transport actually returns.
+        // Start the new load concurrently, then release the old mock GET;
+        // awaiting the new load first creates a circular wait in this fixture.
+        let previousCalls = stale.historyCalls
+        let freshLoad = Task { await revised.load() }
+        try await eventually { revised.loading || revised.syncing }
+        precondition(stale.historyCalls == previousCalls,
+                     "same-session GET must wait for the physical old request")
         stale.pendingHistory?.resume(returning:try ChatSnapshot(data:Data("{\"session_id\":\"test\",\"messages\":[],\"active_stream_id\":\"obsolete\",\"read_only\":true}".utf8)))
         stale.pendingHistory = nil
+        await freshLoad.value
+        precondition(stale.historyCalls == previousCalls + 1,
+                     "waiting GET must acquire the released physical slot")
         try await Task.sleep(nanoseconds:80_000_000)
         precondition(revised.streamID == nil && !revised.running && !revised.readOnly && revised.transcript.messages.last?.content == "AB")
         revised.disconnect()
@@ -864,7 +880,7 @@ enum CacheTestError: Error { case unauthorized }
             precondition(inspect().messages.last?.content == "AB","replayed frames must not duplicate in-memory text before history reconciliation")
         }
         active = nil
-        _ = try await onFrame(SSEFrame(event:"stream_end",data:"{}",id:"s:3"))
+        _ = try await onFrame(SSEFrame(event:"stream_end",data:"{\"status\":\"completed\"}",id:"s:3"))
     }
 }
 

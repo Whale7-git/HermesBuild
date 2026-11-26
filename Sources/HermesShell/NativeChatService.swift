@@ -102,3 +102,97 @@ extension ChatAttachmentPayload {
         self.init(name: name, path: historyPath, mime: mime, size: 0, isImage: isImage)
     }
 }
+
+
+/// Application-wide admission for read-only recovery requests. FIFO among
+/// eligible scopes; a saturated instance cannot block another instance.
+/// The permit is released only when the actual operation returns, even if
+/// its caller was cancelled. SSE and mutating requests never use these slots.
+@MainActor
+final class RecoveryScheduler {
+    static let shared = RecoveryScheduler()
+    struct OwnerKey: Hashable {
+        let scope: String
+        let session: String
+    }
+    private var owners: [OwnerKey: (ticket: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Ordinary recovery and STOP use one owner per exact session. Replacing
+    /// a timer cancels the old owner; GET admission retains in-flight permits
+    /// until the underlying operation actually returns.
+    func startOwner(key: OwnerKey, ticket: UUID,
+                    onFinish: @escaping @MainActor () -> Void = {},
+                    operation: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        owners[key]?.task.cancel()
+        let task = Task { [weak self] in
+            defer {
+                if self?.owners[key]?.ticket == ticket { self?.owners.removeValue(forKey: key) }
+                // Cleanup must run even if a replacement cancelled this
+                // owner before its operation ever started.
+                onFinish()
+            }
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+        owners[key] = (ticket, task)
+        return task
+    }
+    private struct Waiter {
+        let id: UUID
+        let instance: String
+        let session: String
+        let continuation: CheckedContinuation<Void, Error>
+    }
+    private let globalLimit: Int
+    private let instanceLimit: Int
+    private var waiting: [Waiter] = []
+    private var running: [UUID: (instance: String, session: String)] = [:]
+
+    init(globalLimit: Int = 4, instanceLimit: Int = 2) {
+        self.globalLimit = max(1, globalLimit)
+        self.instanceLimit = max(1, instanceLimit)
+    }
+
+    static func mayAdmit(instance: String, session: String,
+                         active: [(instance: String, session: String)],
+                         globalLimit: Int, instanceLimit: Int) -> Bool {
+        active.count < globalLimit &&
+            active.filter { $0.instance == instance }.count < instanceLimit &&
+            !active.contains { $0.instance == instance && $0.session == session }
+    }
+
+    private func drain() {
+        while let index = waiting.firstIndex(where: { waiter in
+            Self.mayAdmit(instance: waiter.instance, session: waiter.session,
+                active: Array(running.values), globalLimit: globalLimit, instanceLimit: instanceLimit)
+        }) {
+            let waiter = waiting.remove(at: index)
+            running[waiter.id] = (waiter.instance, waiter.session)
+            waiter.continuation.resume()
+        }
+    }
+
+    private func cancelWaiting(_ id: UUID) {
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        waiting.remove(at: index).continuation.resume(throwing: CancellationError())
+        drain()
+    }
+
+    func perform<T>(instance: String, session: String,
+                    operation: () async throws -> T) async throws -> T {
+        let id = UUID()
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { continuation.resume(throwing: CancellationError()); return }
+                waiting.append(Waiter(id: id, instance: instance, session: session, continuation: continuation))
+                drain()
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in self?.cancelWaiting(id) }
+        })
+        defer { running.removeValue(forKey: id); drain() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+}

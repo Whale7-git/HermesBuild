@@ -72,15 +72,18 @@ extension NativeChatModel {
         await warmupCachedHistory()
         guard generation == revision, !Task.isCancelled else { return }
         do {
-            let snap = try await api.history(sessionID:sessionID,before:nil)
+            let snap = try await recoveryHistory(sessionID:sessionID,before:nil)
             guard generation == revision, !Task.isCancelled else { return }
             self.recordRuntimeLog(.info, "history",
                 "load ok messages=\(snap.messages.count) tools=\(snap.tools.count) active=\(snap.activeStreamID != nil)")
             try applySnapshot(snap, preserveLoadedOlder: preserveLoadedOlder)
+            restoreRecoveryCheckpoint(from: snap)
             // 权威历史已经读到：之前的暂时性失败不再成立，停掉退避重试。
             historyLoadFailurePending = false
             // Do not erase the unresolved accepted-run status after history GET.
-            if pendingSend == nil && !uncertain { notice = nil }
+            if pendingSend == nil && !uncertain {
+                notice = lastFinalizedOutcome == .completed ? nil : lastFinalizedOutcome?.notice
+            }
             // 相位已由 applySnapshot 按 active_stream_id 落定；attach 会再确认一次。
             if case .active(let active) = snap.activeRunEvidence {
                 if reapedTransportRunID == active ||
@@ -142,7 +145,7 @@ extension NativeChatModel {
         loadingOlder = true
         defer { loadingOlder = false }
         do {
-            let snap = try await api.history(sessionID:sessionID,before:requestedOffset)
+            let snap = try await recoveryHistory(sessionID:sessionID,before:requestedOffset)
             guard generation == revision, olderOffset == requestedOffset,
                   !Task.isCancelled, !suspended else { return }
             guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
@@ -339,7 +342,54 @@ extension NativeChatModel {
         placeholderCandidates = remaining
     }
 
-    func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false) throws {
+    func finalizeVerifiedRun(_ snap: ChatSnapshot, runID: String,
+                             outcome: RunTerminalStatus,
+                             proofPages: [ChatSnapshot]? = nil,
+                             restoreAutomaticQueue: Bool = false) throws -> Bool {
+        guard !runtimeRetired, !suspended,
+              activeTurnRecovery?.runID == runID || activeTurnRecovery == nil else { return false }
+        let streamedReply = buffer.messages.contains { $0.role == "assistant" && $0.id.hasPrefix("streaming:") }
+        let receipt = activeTurnRecovery
+        let pages = proofPages ?? [snap]
+        guard RunFinalizer.canSettle(pages, sessionID: sessionID, runID: runID,
+            receipt: receipt, outcome: outcome, requireReply: streamedReply) else {
+            latestRecoverySnapshot = snap
+            uncertain = true
+            pauseQueueForRecovery()
+            notice = "任务已结束，最终回复仍在同步。"
+            return false
+        }
+        let previousUserPause = queueUserPaused
+        let previousRecoveryPause = queueRecoveryPaused
+        guard saveFinalizedOutcome(runID: runID, outcome: outcome, history: snap) else {
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
+        try applySnapshot(snap, preserveLoadedOlder: true, verifiedTerminalRunID: runID)
+        guard clearAcceptedTurnRecovery() else {
+            uncertain = true
+            pauseQueueForRecovery()
+            return false
+        }
+        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
+        if restoreAutomaticQueue && outcome == .completed && !uncertain {
+            // Recovery cannot change the separately persisted user pause.
+            queueUserPaused = previousUserPause
+            queueRecoveryPaused = previousRecoveryPause
+            updateQueuePause()
+        } else {
+            pauseQueueForRecovery()
+        }
+        reapedTransportRunID = nil
+        if !uncertain {
+            notice = outcome.notice
+        }
+        return !uncertain
+    }
+
+    func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false,
+                       verifiedTerminalRunID: String? = nil) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.
@@ -361,11 +411,18 @@ extension NativeChatModel {
         let streamedAssistantPresent = buffer.messages.contains {
             $0.role == "assistant" && $0.id.hasPrefix("streaming:")
         }
-        if buffer.terminal && buffer.failure == nil && streamedAssistantPresent &&
+        if verifiedTerminalRunID == nil && buffer.terminal && buffer.failure == nil && streamedAssistantPresent &&
            !ChatFinalHistoryGate.canReplace(
                snap, sessionID: sessionID, receipt: activeTurnRecovery,
                streamedAssistantPresent: true, expectedRunID: streamID) {
             throw ChatCoreError.server("最终历史尚未确认本轮回复，流式内容已保留")
+        }
+        if verifiedTerminalRunID == nil, let record = lastFinalizedRecord {
+            if snap.activeRunEvidence != .absent || record.historyEnd != snap.rawMessageEndIndex ||
+                record.headID != snap.messages.last?.id {
+                lastFinalizedRecord = nil
+                _ = draftStore?.saveRunOutcome(nil)
+            }
         }
         latestRecoverySnapshot = snap
         let wasCached = cachedHistoryDate != nil
@@ -453,7 +510,7 @@ extension NativeChatModel {
         // A restored accepted turn is independent from PendingSend. Even if
         // the backend temporarily omits active_stream_id, do not turn an old
         // assistant answer into permission to send another POST.
-        if let receipt = activeTurnRecovery, !submitting {
+        if let receipt = activeTurnRecovery, !submitting, verifiedTerminalRunID != receipt.runID {
             if snap.activeStreamID == receipt.runID {
                 if receipt.terminalStatus != nil {
                     // A lagging history response cannot resurrect a proven terminal Run.
@@ -534,7 +591,7 @@ extension NativeChatModel {
                   !Task.isCancelled, !suspended else { return false }
             let cursor = pages[pages.count - 1].olderOffset
             do {
-                let older = try await api.history(sessionID: sessionID, before: cursor)
+                let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
                 guard generation == revision, activeTurnRecovery == receipt,
                       !Task.isCancelled, !suspended else { return false }
                 guard older.sessionID == sessionID, !older.readOnly,
@@ -565,23 +622,33 @@ extension NativeChatModel {
             notice = "本轮历史超过本次核对上限，无法安全确认；未重新发送消息。"
             return false
         }
-        guard receipt.confirmsCompletion(in: pages) else {
+        guard RunFinalizer.canSettle(pages, sessionID: sessionID, runID: receipt.runID,
+            receipt: receipt, outcome: .completed, requireReply: true) else {
             notice = "已回溯本轮历史，但缺少唯一的原始提问与后续回复证据；发送仍保持锁定。"
             return false
         }
         // Re-check the live tail after pagination: another client may have
         // appended rows or restarted execution while we were reading pages.
         do {
-            let current = try await api.history(sessionID: sessionID, before: nil)
+            let current = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard generation == revision, activeTurnRecovery == receipt,
                   !Task.isCancelled, !suspended else { return false }
             guard current.sessionID == sessionID, current.activeRunEvidence == .absent,
                   !current.readOnly,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
-                  current.messages.last?.id == latest.messages.last?.id else {
+                  current.messages == latest.messages else {
                 notice = "核对期间服务端历史或运行状态发生变化，请重新核对；未解除发送锁定。"
                 return false
             }
+            let finalized = try finalizeVerifiedRun(current, runID: receipt.runID,
+                outcome: receipt.terminalStatus ?? .completed,
+                proofPages: [current] + pages.dropFirst())
+            if finalized {
+                error = nil
+                self.recordRuntimeLog(.info, "recovery",
+                    "long-run history verified pages=\(pages.count) without POST")
+            }
+            return finalized
         } catch {
             guard generation == revision, !Task.isCancelled else { return false }
             if handleAuthenticationFailure(error) { return false }
@@ -589,13 +656,6 @@ extension NativeChatModel {
             notice = "核对最终状态失败；发送仍保持锁定。"
             return false
         }
-        guard clearAcceptedTurnRecovery() else { return false }
-        uncertain = pendingSend != nil || pendingRecoveryUnreadable || activeRecoveryUnreadable
-        if !uncertain { notice = receipt.terminalStatus?.notice }
-        error = nil
-        self.recordRuntimeLog(.info, "recovery",
-            "long-run history verified pages=\(pages.count) without POST")
-        return !uncertain
     }
 
     /// Single foreground GET-only owner. Time controls rate, not safety.
@@ -620,16 +680,15 @@ extension NativeChatModel {
         let ticket = UUID()
         automaticReconciliationTicket = ticket
         automaticRecoveryQuiet = true
-        automaticReconciliationTask = Task { [weak self] in
+        automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket,
+            onFinish: { [weak self] in
+                guard let self, self.automaticReconciliationTicket == ticket else { return }
+                self.automaticReconciliationTask = nil
+                self.automaticReconciliationTicket = nil
+                self.automaticReconciliationWaiting = false
+                self.automaticRecoveryQuiet = false
+            }) { [weak self] in
             guard let self else { return }
-            defer {
-                if self.automaticReconciliationTicket == ticket {
-                    self.automaticReconciliationTask = nil
-                    self.automaticReconciliationTicket = nil
-                    self.automaticReconciliationWaiting = false
-                    self.automaticRecoveryQuiet = false
-                }
-            }
             let began = DispatchTime.now().uptimeNanoseconds
             var attempt = 0
             var lastDeepHistoryEnd: Int?
@@ -727,7 +786,7 @@ extension NativeChatModel {
                 let result: ActiveRunProbe
                 if let terminal = receipt.terminalStatus { result = .terminal(terminal) }
                 else {
-                    result = try await self.api.probeActiveRun(
+                    result = try await self.recoveryProbe(
                         sessionID: self.sessionID, runID: receipt.runID)
                 }
                 guard generation == self.revision, !Task.isCancelled,
@@ -761,7 +820,7 @@ extension NativeChatModel {
                         return
                     }
                     do {
-                        let finalHistory = try await self.api.history(sessionID: self.sessionID, before: nil)
+                        let finalHistory = try await self.recoveryHistory(sessionID: self.sessionID, before: nil)
                         guard generation == self.revision, !Task.isCancelled, !self.suspended,
                               self.activeTurnRecovery == terminalReceipt else { return }
                         guard finalHistory.sessionID == self.sessionID,
@@ -770,16 +829,8 @@ extension NativeChatModel {
                             self.notice = "任务已结束，但服务端历史仍无法安全确认；稍后再核对。"
                             return
                         }
-                        try self.applySnapshot(finalHistory, preserveLoadedOlder: true)
-                        if outcome == .completed && !terminalReceipt.confirmsCompletion(in: finalHistory) {
-                            self.uncertain = true
-                            self.notice = "任务已结束，最终回复仍在同步。"
-                            return
-                        }
-                        guard self.clearAcceptedTurnRecovery() else { return }
-                        self.uncertain = self.pendingSend != nil || self.pendingRecoveryUnreadable
-                            || self.activeRecoveryUnreadable
-                        self.notice = outcome.notice
+                        _ = try self.finalizeVerifiedRun(finalHistory, runID: receipt.runID,
+                            outcome: outcome)
                     } catch {
                         guard generation == self.revision, !Task.isCancelled,
                               self.activeTurnRecovery == terminalReceipt else { return }
@@ -864,7 +915,8 @@ extension NativeChatModel {
             var active = streamID
             var retries = 0
             var resubscribed = 0
-            var terminalEvent: String?
+            var terminalOutcome: RunTerminalStatus?
+            var terminalEvidenceSaved = false
             while generation == revision && !Task.isCancelled {
                 do {
                     try await api.streamNativeTurn(streamID:active,lastEventID:lastEventID) { frame in
@@ -909,6 +961,7 @@ extension NativeChatModel {
                             // recovery from the newest authoritative state.
                             self.lastEventID = nil
                             self.buffer.lastEventID = nil
+                            _ = self.draftStore?.saveCheckpoint(nil)
                             self.uncertain = true
                             self.pauseQueueForRecovery()
                             self.notice = "续传记录已过期，已保留消息和待处理卡片；后台状态待核对，发送保持锁定。"
@@ -960,9 +1013,16 @@ extension NativeChatModel {
                         if frame.event == "approval_resolved" {
                             self.noteRunRecoveryState()
                         }
+                        if frame.id != nil && !self.buffer.terminal {
+                            self.persistRecoveryCheckpoint(force: ["approval", "approval_resolved", "clarify", "clarify_resolved"].contains(frame.event))
+                        }
                         if self.buffer.terminal {
-                            self.clearApproval()
-                            terminalEvent = frame.event
+                            terminalOutcome = RunTerminalEvidence.outcome(of: frame)
+                            if let outcome = terminalOutcome {
+                                terminalEvidenceSaved = self.rememberTerminalStatus(runID: active,
+                                    outcome: outcome, explicitlyEmptyReply: RunTerminalEvidence.explicitlyEmptyReply(frame))
+                                self.clearApproval()
+                            }
                             let failure = self.buffer.failure
                             self.recordRuntimeLog(
                                 failure == nil ? .info : .error, "stream",
@@ -1006,6 +1066,12 @@ extension NativeChatModel {
                         }
                         return
                     }
+                    guard let outcome = terminalOutcome, terminalEvidenceSaved else {
+                        // EOF, malformed status and generic stream errors cannot
+                        // retire the accepted receipt or dispatch the queue.
+                        await settleReapedRunTransport(active: active, generation: generation)
+                        return
+                    }
                     let terminalFailure = buffer.failure
                     // 只有「干净收尾」才允许放行排队的那条：中断、核对失败、
                     // 结果不确定都必须把队列留着，让用户看见它还没发出去。
@@ -1019,14 +1085,13 @@ extension NativeChatModel {
                             $0.role == "assistant" && $0.id.hasPrefix("streaming:")
                         }
                         let receipt = activeTurnRecovery
-                        var snap = try await api.history(sessionID:sessionID,before:nil)
+                        var snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         for attempt in 0..<3 {
                             guard accepts(runContext(for: active, generation: generation)),
                                   !Task.isCancelled else { return }
-                            if ChatFinalHistoryGate.canReplace(
-                                snap, sessionID: sessionID, receipt: receipt,
-                                streamedAssistantPresent: streamedAssistantPresent,
-                                expectedRunID: active) { break }
+                            if RunFinalizer.canSettle([snap], sessionID: sessionID,
+                                runID: active, receipt: receipt, outcome: outcome,
+                                requireReply: streamedAssistantPresent) { break }
                             if attempt == 2 {
                                 uncertain = true
                                 pauseQueueForRecovery()
@@ -1039,53 +1104,18 @@ extension NativeChatModel {
                                 return
                             }
                             try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 200_000_000)
-                            snap = try await api.history(sessionID:sessionID,before:nil)
+                            snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         }
                         guard accepts(runContext(for: active, generation: generation)),
                               !Task.isCancelled else { return }
-                        let userPauseWasActive = queueUserPaused
-                        let recoveryPauseWasActive = queueRecoveryPaused
-                        try applySnapshot(snap, preserveLoadedOlder: true)
+                        let finalized = try finalizeVerifiedRun(snap, runID: active,
+                            outcome: outcome, restoreAutomaticQueue: true)
                         error = terminalFailure
-                        if pendingSend == nil {
-                            notice = terminalFailure != nil ? "回复已中断，历史已同步。"
-                                : (terminalEvent == "cancel" ? "回复已取消，历史已同步。" : nil)
-                        }
-                        // An explicit terminal frame plus a matching accepted
-                        // run ID is stronger evidence than a possibly incomplete
-                        // history window (slash commands may have no assistant row).
-                        if snap.activeStreamID == nil,
-                           activeTurnRecovery?.runID == active,
-                           terminalEvent != nil {
-                            if clearAcceptedTurnRecovery(), pendingSend == nil {
-                                uncertain = false
-                                // The matching terminal frame resolves the temporary
-                                // pause introduced by an incomplete history window.
-                                // Preserve any pause that existed before this GET.
-                                queueUserPaused = userPauseWasActive
-                                queueRecoveryPaused = recoveryPauseWasActive
-                                updateQueuePause()
-                            }
-                        }
-                        if snap.activeStreamID == nil && terminalFailure == nil,
-                           terminalEvent == "done" || terminalEvent == "stream_end" {
-                            completedReplies &+= 1
-                        }
-                        // 核对完成，撤掉「核对中」。相位在这里显式落定：
-                        // 有活跃流就接上（尚未收到帧），否则回到静止态。
+                        if finalized && outcome == .completed { completedReplies &+= 1 }
                         reconciling = false
-                        if snap.activeStreamID == nil {
-                            transition(to: .idle)
-                        } else {
-                            transition(to: .streaming(connected: false))
-                        }
-                        if let next = snap.activeStreamID { attach(streamID:next) }
-                        // An explicit failed/cancelled terminal can safely
-                        // unlock a manual send after a consistent history GET,
-                        // but it must NEVER authorize automatic queued dispatch.
-                        finalHistoryConfirmed = snap.activeStreamID == nil
-                        settled = finalHistoryConfirmed && terminalFailure == nil
-                            && (terminalEvent == "done" || terminalEvent == "stream_end")
+                        transition(to: .idle)
+                        finalHistoryConfirmed = finalized
+                        settled = finalized && outcome == .completed
                     } catch {
                         guard generation == revision, !Task.isCancelled else { return }
                         if handleAuthenticationFailure(error) { return }
@@ -1099,7 +1129,7 @@ extension NativeChatModel {
                     let decision = ChatRuntimeCoordinator.terminalAction(
                         stopPending: stopping || stopAcknowledged,
                         sameRun: activeTurnRecovery == nil,
-                        terminalFrame: terminalEvent != nil,
+                        terminalFrame: terminalOutcome != nil,
                         finalHistoryConfirmed: finalHistoryConfirmed && self.streamID == nil,
                         successful: settled, uncertain: uncertain,
                         userPaused: queueUserPaused, recoveryPaused: queueRecoveryPaused)
@@ -1145,7 +1175,7 @@ extension NativeChatModel {
                     do {
                         try await Task.sleep(nanoseconds:UInt64(retries) * 100_000_000)
                         guard generation == revision, !Task.isCancelled else { return }
-                        let snap = try await api.history(sessionID:sessionID,before:nil)
+                        let snap = try await recoveryHistory(sessionID:sessionID,before:nil)
                         guard generation == revision, !Task.isCancelled else { return }
                         let trackingAccepted = activeTurnRecovery != nil
                         try applySnapshot(snap, preserveLoadedOlder: true)
@@ -1279,7 +1309,7 @@ extension NativeChatModel {
             let probe: ActiveRunProbe
             if let receipt = activeTurnRecovery, receipt.runID == active,
                let terminal = receipt.terminalStatus { probe = .terminal(terminal) }
-            else { probe = try await api.probeActiveRun(sessionID: sessionID, runID: active) }
+            else { probe = try await recoveryProbe(sessionID: sessionID, runID: active) }
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             switch probe {
             case .alive:
@@ -1292,21 +1322,18 @@ extension NativeChatModel {
                     lockDownRunStatus(unconfirmed)
                     return
                 }
-                let snap = try await api.history(sessionID: sessionID, before: nil)
+                let snap = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
                 guard !stopping, snap.sessionID == sessionID, !snap.readOnly,
                       snap.activeRunEvidence == .absent else {
                     lockDownRunStatus(unconfirmed)
                     return
                 }
-                try applySnapshot(snap, preserveLoadedOlder: true)
-                self.error = nil
-                transition(to: .idle)
-                if uncertain || activeTurnRecovery != nil {
-                    lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
+                if try finalizeVerifiedRun(snap, runID: active, outcome: outcome) {
+                    self.error = nil
+                    transition(to: .idle)
                 } else {
-                    reapedTransportRunID = nil
-                    notice = outcome.notice
+                    lockDownRunStatus("最终内容仍在同步，确认前不会重新发送。")
                 }
             case .unknown, .unresolved:
                 lockDownRunStatus(unconfirmed)
@@ -1378,6 +1405,7 @@ extension NativeChatModel {
     }
 
     func disconnect() {
+        persistRecoveryCheckpoint(force: true)
         automaticReconciliationTask?.cancel()
         automaticReconciliationTask = nil
         automaticReconciliationTicket = nil
