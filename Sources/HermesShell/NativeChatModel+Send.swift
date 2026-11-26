@@ -296,15 +296,23 @@ extension NativeChatModel {
             }
             do {
                 let snapshot = try await recoveryHistory(sessionID: sessionID, before: nil)
-                guard stillOwnsProof(), snapshot.sessionID == sessionID,
-                      !snapshot.readOnly, snapshot.activeRunEvidence == .absent else { return false }
+                guard stillOwnsProof() else { return false }
+                guard snapshot.sessionID == sessionID,
+                      !snapshot.readOnly, snapshot.activeRunEvidence == .absent else {
+                    error = "暂时无法确认上一条消息是否已结束。队列已保留，不会重复发送。"
+                    return false
+                }
                 var pages = [snapshot]
                 for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > historyEnd {
                     guard stillOwnsProof(), let cursor = pages.last?.olderOffset else { return false }
                     let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
-                    guard stillOwnsProof(), older.sessionID == sessionID, !older.readOnly,
+                    guard stillOwnsProof() else { return false }
+                    guard older.sessionID == sessionID, !older.readOnly,
                           older.activeRunEvidence == .absent,
-                          older.rawMessageEndIndex == cursor, older.olderOffset < cursor else { return false }
+                          older.rawMessageEndIndex == cursor, older.olderOffset < cursor else {
+                        error = "较早的消息暂时无法完整读取，原消息仍保留，请稍后重试。"
+                        return false
+                    }
                     pages.append(older)
                 }
                 let decision = DeliveryReconciliationPolicy.resolve(text: original.text,
@@ -316,10 +324,14 @@ extension NativeChatModel {
                 }
                 if pages.count > 1 {
                     let head = try await recoveryHistory(sessionID: sessionID, before: nil)
-                    guard stillOwnsProof(), head.sessionID == sessionID, !head.readOnly,
+                    guard stillOwnsProof() else { return false }
+                    guard head.sessionID == sessionID, !head.readOnly,
                           head.activeRunEvidence == .absent,
                           head.rawMessageEndIndex == snapshot.rawMessageEndIndex,
-                          head.messages.last?.id == snapshot.messages.last?.id else { return false }
+                          head.messages == snapshot.messages else {
+                        error = "同步期间消息发生变化，请重新同步后再发送。"
+                        return false
+                    }
                 }
                 guard stillOwnsProof() else { return false }
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
@@ -600,9 +612,14 @@ extension NativeChatModel {
     /// text, attachment references or delivery state.
     @discardableResult
     func retryQueuePersistence() -> LocalStoreWriteResult {
-        guard !queueRecoveryUnreadable else { return .failed(.corruptFile) }
+        guard !runtimeRetired, !queueRecoveryUnreadable, !pendingRecoveryUnreadable else {
+            return .failed(.corruptFile)
+        }
         let pendingResult = persistPendingSend()
-        guard pendingResult.succeeded else { return pendingResult }
+        guard pendingResult.succeeded else {
+            recordLocalWrite(pendingResult, kind: .queue)
+            return pendingResult
+        }
         guard let data = ChatSendQueueCodec.encode(queuedTurns) else {
             queueSaveFailed = true
             recordLocalWrite(.failed(.encoding), kind: .queue)

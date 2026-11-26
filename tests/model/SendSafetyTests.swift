@@ -232,6 +232,11 @@ import Foundation
                      "an explicit retry reports the same verified failure")
         try FileManager.default.removeItem(at: root)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        precondition(model.validateLocalData().succeeded)
+        precondition(model.queueSaveFailed && model.localPersistenceIssue?.kind == .queue,
+                     "reading accessible old or absent files cannot acknowledge a failed newer write")
+        precondition(model.retryLocalMigration().succeeded && model.queueSaveFailed,
+                     "no-op migration cannot acknowledge the current queue")
         let repaired = model.retryQueuePersistence()
         model.recordVerifiedLocalRetry(repaired, kind: .queue)
         precondition(repaired.succeeded && !model.queueSaveFailed

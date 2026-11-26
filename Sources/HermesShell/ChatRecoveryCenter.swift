@@ -203,7 +203,9 @@ struct ChatRecoveryCenter: View {
                         Button {
                             let result = model.validateLocalData()
                             resultText = result.succeeded
-                                ? "草稿与队列已通过磁盘回读验证。"
+                                ? (model.localPersistenceIssue != nil || model.queuePersistenceFailed
+                                    ? "原有文件可以读取，但最新内容仍需重新保存。"
+                                    : "本地文件可以读取。")
                                 : "本地文件仍未通过验证；旧数据与当前内存内容都保留。"
                         } label: {
                             Label("重新检查本地数据", systemImage: "checkmark.shield")
