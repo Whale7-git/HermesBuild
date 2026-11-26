@@ -410,9 +410,20 @@ var transcriptPublications = 0
         revised.disconnect()
         stale.holdHistory = false
         stale.active = nil
-        await revised.load()
+        // The global admission scheduler intentionally retains the physical
+        // GET slot until a non-cooperative transport actually returns.
+        // Start the new load concurrently, then release the old mock GET;
+        // awaiting the new load first creates a circular wait in this fixture.
+        let previousCalls = stale.historyCalls
+        let freshLoad = Task { await revised.load() }
+        try await eventually { revised.loading || revised.syncing }
+        precondition(stale.historyCalls == previousCalls,
+                     "same-session GET must wait for the physical old request")
         stale.pendingHistory?.resume(returning:try ChatSnapshot(data:Data("{\"session_id\":\"test\",\"messages\":[],\"active_stream_id\":\"obsolete\",\"read_only\":true}".utf8)))
         stale.pendingHistory = nil
+        await freshLoad.value
+        precondition(stale.historyCalls == previousCalls + 1,
+                     "waiting GET must acquire the released physical slot")
         try await Task.sleep(nanoseconds:80_000_000)
         precondition(revised.streamID == nil && !revised.running && !revised.readOnly && revised.transcript.messages.last?.content == "AB")
         revised.disconnect()
