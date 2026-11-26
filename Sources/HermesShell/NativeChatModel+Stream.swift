@@ -44,6 +44,8 @@ extension NativeChatModel {
         guard allowWhileReconciling || !reconciling else { return }
         if running && streamTask != nil { return }
         restoreUnreadableRecoveryRecords()
+        // A previous idle snapshot must never serve as proof for this GET.
+        latestRecoverySnapshot = nil
         publishTask?.cancel()
         publishTask = nil
         activeRunProbeTask?.cancel()
@@ -395,6 +397,7 @@ extension NativeChatModel {
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.
         if snap.activeRunEvidence == .unknown {
+            latestRecoverySnapshot = nil
             uncertain = true
             pauseQueueForRecovery()
             notice = "回复状态暂时无法确认，已保留消息，不会重复发送。"
@@ -1401,12 +1404,11 @@ extension NativeChatModel {
         noteRunRecoveryState()
     }
 
-    /// A-07：`resetReconciling` 默认 true，保留「普通刷新会清掉忙碌标志」的既有语义。
-    /// `reconcilePending()` 必须传 false —— 它自己持有 `reconciling` 并在 defer 里清，
-    /// 否则这里一进来就把标志抹掉，连点「核对」会并发发起多个 GET 互相打断。
+    /// Only the pending reconciliation owner may refresh while holding the
+    /// reconciliation lock. An ordinary refresh cannot revoke that ownership.
     func refresh(silent: Bool = false, preserveLoadedOlder: Bool = false,
                  resetReconciling: Bool = true) async {
-        guard !runtimeRetired else { return }
+        guard !runtimeRetired, !resetReconciling || !reconciling else { return }
         if stopping {
             // A manual status check must not convert STOP into an ordinary
             // history load or accidentally reopen ordinary sending.
@@ -1426,9 +1428,6 @@ extension NativeChatModel {
         revision &+= 1
         streamTask?.cancel()
         streamTask = nil
-        // A-07：只有普通刷新才清标志；核对流程自己管理这个生命周期。
-        // 相位上：清掉「核对中」就退回 idle（接着 load 会再置 loading/syncing）。
-        if resetReconciling { reconciling = false }
         if case .reconnecting = phase { transition(to: .idle) }
         await load(silent: silent, preserveLoadedOlder: preserveLoadedOlder,
                    allowWhileReconciling: !resetReconciling)

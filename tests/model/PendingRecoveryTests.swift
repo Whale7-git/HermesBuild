@@ -515,6 +515,7 @@ extension ModelTests {
             await model.load()
             precondition(model.transcript.messages.map(\.id) == ["sent", "reply"])
             precondition(model.uncertain && !model.canSend && service.startCalls == 0)
+            precondition(model.latestRecoverySnapshot == nil, "unknown status cannot authorize history proof")
             model.draft = "must not send"
             let sent = await model.send()
             precondition(!sent && service.startCalls == 0)
@@ -674,6 +675,10 @@ extension ModelTests {
         let checking = Task { await busy.reconcilePending() }
         try await eventually { busyService.historyWait != nil }
         precondition(!busy.canResendPending && !busy.canSend)
+        let inFlightGeneration = busy.revision
+        await busy.refresh(silent: true)
+        precondition(busy.reconciling && busy.revision == inFlightGeneration,
+                     "ordinary refresh cannot revoke the pending reconciliation owner")
         busy.discardPending()
         precondition(busy.transcript.messages.last?.delivery == .unconfirmed,
                      "discard must not race an in-flight reconciliation")

@@ -6,6 +6,8 @@ import SwiftUI
 struct ChatRecoveryCenter: View {
     @ObservedObject var model: NativeChatModel
     var onManageQueue: () -> Void
+    var onNewConversation: (() -> Void)? = nil
+    @State private var confirmNewConversation = false
     @Environment(\.dismiss) private var dismiss
     @State private var confirmAbandonUnreadable = false
     @State private var confirmAbandonActive = false
@@ -168,7 +170,14 @@ struct ChatRecoveryCenter: View {
                               detail: model.cachedHistoryDate == nil
                                 ? "打开会话时会先显示本机副本，再联网核对。"
                                 : "联网核对完成后可继续发送。")
-                    if model.error != nil || model.cachedHistoryDate != nil {
+                    if model.uncertain && !model.running && !model.stopping,
+                       onNewConversation != nil {
+                        Button("新建会话继续聊天") { confirmNewConversation = true }
+                            .frame(minHeight: 44)
+                        Text("旧会话的消息和恢复记录会保留；不会重新发送或停止旧任务。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if model.error != nil || model.cachedHistoryDate != nil || model.uncertain {
                         Button {
                             Task { await model.refresh(silent: true, preserveLoadedOlder: true) }
                         } label: {
@@ -247,6 +256,12 @@ struct ChatRecoveryCenter: View {
                 }
             } message: {
                 Text("不会停止服务端任务或重发消息。确认前请先核对服务端历史。")
+            }
+            .confirmationDialog("新建一个独立会话？", isPresented: $confirmNewConversation, titleVisibility: .visible) {
+                Button("新建会话") { onNewConversation?() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("旧任务是否结束仍不确定。新会话不会重发旧消息，也不会清除旧会话的记录。")
             }
             .navigationTitle("恢复中心")
             .navigationBarTitleDisplayMode(.inline)

@@ -841,7 +841,7 @@ extension NativeChatModel {
     /// attachment refs. It never sends a POST and never matches an older echo.
     func reconcilePending() async -> PendingReconcileResult {
         guard let pending = pendingSend else { return .failed }
-        guard !loading, !syncing, !reconciling, !submitting else { return .failed }
+        guard !runtimeRetired, !stopping, !loading, !syncing, !reconciling, !submitting else { return .failed }
         // 核对期间必须置位：视图的 pendingBusy 读它来禁用「核对/重发/放弃」。
         // silent 刷新不会设 loading，不置这个标志时三个按钮看起来都可用，
         // 连点会并发发起多个 GET。
@@ -851,6 +851,7 @@ extension NativeChatModel {
         defer { reconciling = false }
         pendingAbsent = false
         uncertain = true
+        latestRecoverySnapshot = nil
         // A-07：这个 GET 归核对流程所有，必须允许在 reconciling 置位期间执行，
         // 且不能再让 refresh() 把标志抹掉（resetReconciling: false）。
         await refresh(silent: true, preserveLoadedOlder: true, resetReconciling: false)
@@ -899,7 +900,10 @@ extension NativeChatModel {
                   current.sessionID == sessionID, !current.readOnly,
                   current.activeRunEvidence == .absent,
                   current.rawMessageEndIndex == latest.rawMessageEndIndex,
-                  current.messages.last?.id == latest.messages.last?.id else { return .failed }
+                  current.messages == latest.messages else {
+                notice = "同步期间消息发生变化，已保留原消息，请稍后重试。"
+                return .failed
+            }
         } catch {
             if handleAuthenticationFailure(error) { return .failed }
             return .failed
