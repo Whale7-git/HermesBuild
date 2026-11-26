@@ -405,11 +405,18 @@ private struct AttachmentPickerFile: Transferable {
     }
 
     func beginEditing(_ id: UUID) async -> AttachmentEditSelection? {
-        guard !isEditing, !isImporting,
+        guard !isEditing, !isImporting, !draftRecoveryUnreadable, mayPersistDraft(),
               let draft = batch.items.first(where: { $0.id == id }),
               AttachmentPreviewPolicy.rasterMIMEs.contains(draft.mime.lowercased()) else { return nil }
         editingID = id
-        defer { editingID = nil }
+        let generation = importGeneration
+        let sessionID = batch.sessionID
+        var openedEditor = false
+        defer {
+            if !openedEditor, editingID == id, importGeneration == generation {
+                editingID = nil
+            }
+        }
 
         var data = draft.data
         if data.isEmpty {
@@ -419,13 +426,16 @@ private struct AttachmentPickerFile: Transferable {
                 return nil
             }
             do {
-                data = try await previewLoader.imageData(sessionID: batch.sessionID,
+                data = try await previewLoader.imageData(sessionID: sessionID,
                                                          attachment: uploaded)
             } catch {
+                guard editingID == id, importGeneration == generation, mayPersistDraft() else { return nil }
                 errorMessage = "读取原图失败：\(error.localizedDescription)"
                 return nil
             }
         }
+        guard !Task.isCancelled, editingID == id, importGeneration == generation,
+              batch.sessionID == sessionID, mayPersistDraft() else { return nil }
         guard !data.isEmpty else {
             errorMessage = "原图暂时不可用，无法继续编辑。"
             return nil
@@ -434,13 +444,15 @@ private struct AttachmentPickerFile: Transferable {
             errorMessage = AttachmentPhotoImportError.dimensionsTooLarge.localizedDescription
             return nil
         }
-        return AttachmentEditSelection(id: id, sessionID: batch.sessionID,
-            generation: importGeneration, name: draft.name, data: data)
+        openedEditor = true
+        return AttachmentEditSelection(id: id, sessionID: sessionID,
+            generation: generation, name: draft.name, data: data)
     }
 
     func saveEdit(_ selection: AttachmentEditSelection, data: Data) throws {
         guard editingID == selection.id, importGeneration == selection.generation,
-              batch.sessionID == selection.sessionID else { throw AttachmentError.invalidMetadata }
+              batch.sessionID == selection.sessionID, !draftRecoveryUnreadable,
+              mayPersistDraft() else { throw AttachmentError.invalidMetadata }
         let stem = String((selection.name as NSString).deletingPathExtension.prefix(80))
         let name = (stem.isEmpty ? "image" : stem) + "-edited-" + UUID().uuidString.prefix(8) + ".jpg"
         try coordinator.replace(selection.id, name: name, mime: "image/jpeg", data: data)
