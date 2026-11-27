@@ -354,6 +354,35 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String) {
+        runStore.restoreAcceptedRunIdentity(sessionID: sessionID, runID: runID)
+    }
+
+    func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool {
+        guard runStore.canReleaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+        do {
+            // Bypass cooldown. Never release a live or canonical unknown
+            // Run on user confirmation alone. Exact terminal evidence can
+            // also finish a previously interrupted local release.
+            let data = try await perform(requests.runStatus(runID: runID))
+            try Task.checkCancellation()
+            guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  root["run_id"] as? String == runID,
+                  root["session_id"] as? String == sessionID,
+                  let status = root["status"] as? String,
+                  RunTerminalStatus(rawValue: status) != nil,
+                  runStore.releaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+            clearFailedRunProbes(runID: runID)
+            return true
+        } catch let error as APIError {
+            guard case .http(let code, _) = error, code == 404 else { throw error }
+            try Task.checkCancellation()
+            guard runStore.releaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+            clearFailedRunProbes(runID: runID)
+            return true
+        }
+    }
+
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus) {
         guard runStore.runID(for: sessionID) == runID ||
               runStore.unresolvedRunID(for: sessionID) == runID else { return }
@@ -363,6 +392,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if runStore.wasUserReleased(sessionID: sessionID, runID: runID) { return .unknown }
         if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
             return .terminal(terminal)
         }
@@ -404,6 +434,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
               returnedSessionID == sessionID else {
             return recordProbeFailure(runID: runID)
         }
+        guard !runStore.wasUserReleased(sessionID: sessionID, runID: runID) else { return .unknown }
         switch status {
         case "unknown" where Self.canonicalUnknown(root):
             // A canonical lost execution is a real state, not a transport

@@ -8,6 +8,8 @@ final class GatewayRunStore {
     private let generationKey: String
     private let unresolvedKey: String
     private let terminalKey: String
+    private let userReleasedKey: String
+    private var userReleased: [String: [String]] = [:]
     private struct TerminalReceipt: Codable, Equatable {
         let runID: String
         let outcome: RunTerminalStatus
@@ -34,6 +36,7 @@ final class GatewayRunStore {
         generationKey = "HermesNative.gatewayRunGeneration.v1." + (scope ?? "ephemeral")
         unresolvedKey = key + ".unresolved"
         terminalKey = key + ".terminals"
+        userReleasedKey = key + ".userReleased"
         generation = defaults.string(forKey: generationKey) ?? UUID().uuidString
         if scope != nil { defaults.set(generation, forKey: generationKey) }
         values = scope == nil ? [:] : (defaults.dictionary(forKey: key) as? [String: String] ?? [:])
@@ -133,12 +136,52 @@ final class GatewayRunStore {
         return matches.count == 1 ? matches.first : nil
     }
 
+    // Distinct from a terminal receipt. A person confirmed the old task
+    // ended externally; the service still has no execution record.
+    private func currentUserReleased() -> [String: [String]] {
+        guard isValid else { return [:] }
+        if let defaults { return defaults.dictionary(forKey: userReleasedKey) as? [String: [String]] ?? [:] }
+        return userReleased
+    }
+
+    func wasUserReleased(sessionID: String, runID: String) -> Bool {
+        currentUserReleased()[sessionID]?.contains(runID) == true
+    }
+
+    func canReleaseMissingRun(sessionID: String, runID: String) -> Bool {
+        guard isValid, !persistenceFailed, !runID.isEmpty,
+              self.runID(for: sessionID).map({ $0 == runID }) ?? true else { return false }
+        let missing = unresolvedRunID(for: sessionID)
+        guard missing == nil || missing == runID else { return false }
+        return missing == runID || wasUserReleased(sessionID: sessionID, runID: runID)
+    }
+
+    @discardableResult
+    func releaseMissingRun(sessionID: String, runID: String) -> Bool {
+        guard canReleaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+        var records = currentUserReleased()
+        var released = records[sessionID] ?? []
+        if !released.contains(runID) { released.append(runID) }
+        // Per-session bounded local diagnostic fence, not a terminal status.
+        records[sessionID] = Array(released.suffix(32))
+        if let defaults {
+            defaults.set(records, forKey: userReleasedKey)
+            guard (defaults.dictionary(forKey: userReleasedKey) as? [String: [String]] ?? [:]) == records
+            else { return false }
+        } else { userReleased = records }
+        if unresolvedRunID(for: sessionID) == runID,
+           !clearUnresolved(runID: runID, sessionID: sessionID) { return false }
+        if self.runID(for: sessionID) == runID { finish(runID: runID) }
+        return !persistenceFailed
+    }
+
     /// Preserve exact server evidence before retiring the active index.
     /// This is only a handoff to the protected model receipt, never proof
     /// of final transcript delivery or permission to send again.
     @discardableResult
     func recordTerminal(runID: String, sessionID: String, outcome: RunTerminalStatus) -> Bool {
-        guard isValid, current()[sessionID].map({ $0 == runID }) ?? true,
+        guard isValid, !wasUserReleased(sessionID: sessionID, runID: runID),
+              current()[sessionID].map({ $0 == runID }) ?? true,
               unresolvedRunID(for: sessionID).map({ $0 == runID }) ?? true else { return false }
         var records = currentTerminals()
         if let old = records[sessionID], old.runID == runID, old.outcome != outcome { return false }
@@ -212,10 +255,21 @@ final class GatewayRunStore {
         return found
     }
 
+    /// A durable model receipt can repair a lost local index after restart.
+    /// Never overwrite a different Run, terminal, tombstone or user release.
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String) {
+        guard isValid, !persistenceFailed, !runID.isEmpty,
+              current()[sessionID] == nil, unresolvedRunID(for: sessionID) == nil,
+              currentTerminals()[sessionID] == nil,
+              !wasUserReleased(sessionID: sessionID, runID: runID) else { return }
+        remember(runID: runID, sessionID: sessionID)
+    }
+
     func remember(runID: String, sessionID: String) {
         guard isValid else { noteRetired(); return }
         // A delayed status response must not resurrect a 404-retired Run.
-        if unresolvedRunID(for: sessionID) == runID { return }
+        if unresolvedRunID(for: sessionID) == runID ||
+            wasUserReleased(sessionID: sessionID, runID: runID) { return }
         discardTerminal(sessionID: sessionID)
         values = current()
         values[sessionID] = runID
@@ -251,6 +305,7 @@ final class GatewayRunStore {
             defaults.removeObject(forKey: prefix + accountScope)
             defaults.removeObject(forKey: prefix + accountScope + ".unresolved")
             defaults.removeObject(forKey: prefix + accountScope + ".terminals")
+            defaults.removeObject(forKey: prefix + accountScope + ".userReleased")
             defaults.set(UUID().uuidString, forKey: generationPrefix + accountScope)
         } else {
             let keys = defaults.dictionaryRepresentation().keys
@@ -263,6 +318,7 @@ final class GatewayRunStore {
                 defaults.removeObject(forKey: prefix + account)
                 defaults.removeObject(forKey: prefix + account + ".unresolved")
                 defaults.removeObject(forKey: prefix + account + ".terminals")
+                defaults.removeObject(forKey: prefix + account + ".userReleased")
                 defaults.set(UUID().uuidString, forKey: generationPrefix + account)
             }
         }

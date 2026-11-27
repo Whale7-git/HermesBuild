@@ -650,7 +650,7 @@ enum RunFinalizer {
     static func canSettle(_ pages: [ChatSnapshot], sessionID: String,
                           runID: String, receipt: ActiveTurnRecovery?,
                           outcome: RunTerminalStatus,
-                          requireReply: Bool) -> Bool {
+                          requireReply: Bool, allowAdditionalUsers: Bool = false) -> Bool {
         guard let newest = pages.first, newest.sessionID == sessionID,
               newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
         if let receipt, receipt.runID != runID { return false }
@@ -658,10 +658,107 @@ enum RunFinalizer {
         if let receipt {
             return receipt.confirmsCompletion(in: pages,
                 allowEmptyReply: !requireReply &&
-                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true))
+                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true),
+                allowAdditionalUsers: allowAdditionalUsers)
         }
         return !requireReply
     }
+}
+
+/// Compact, resumable proof of one contiguous canonical suffix. Retains only
+/// the head page and a few facts, never all tool payloads or all older rows.
+/// A changed head or transaction invalidates the walk; a transient page
+/// failure leaves the last verified cursor available for the next pass.
+struct RecoveryHistoryWalk {
+    let ownerID: String
+    let boundary: Int
+    let knownIDs: Set<String>
+    let text: String
+    let attachmentPaths: Set<String>
+    let head: ChatSnapshot
+    private(set) var cursor: Int
+    private(set) var userCount = 0
+    private(set) var matchingAcceptedUsers = 0
+    private(set) var matchingPendingUsers = 0
+    private var newestFresh: ChatMessage?
+    // Walking backwards: the next relevant row after a candidate user
+    // determines whether its answer appears before another user's turn.
+    private(set) var matchingAnsweredUsers = 0
+    private var assistantSinceNextUser = false
+
+    init?(ownerID: String, boundary: Int, knownIDs: Set<String>, text: String,
+          attachmentPaths: Set<String>, head: ChatSnapshot) {
+        guard boundary >= 0, head.rawMessageEndIndex >= boundary,
+              head.activeRunEvidence == .absent, !head.readOnly else { return nil }
+        self.ownerID = ownerID
+        self.boundary = boundary
+        self.knownIDs = knownIDs
+        self.text = text
+        self.attachmentPaths = attachmentPaths
+        self.head = head
+        self.cursor = head.rawMessageEndIndex
+        guard append(head) else { return nil }
+    }
+
+    func matchesHead(_ snapshot: ChatSnapshot) -> Bool {
+        snapshot.sessionID == head.sessionID && !snapshot.readOnly &&
+            snapshot.activeRunEvidence == .absent &&
+            snapshot.olderOffset == head.olderOffset &&
+            snapshot.rawMessageEndIndex == head.rawMessageEndIndex &&
+            snapshot.messages == head.messages && snapshot.tools == head.tools
+    }
+
+    @discardableResult
+    mutating func append(_ page: ChatSnapshot) -> Bool {
+        guard page.sessionID == head.sessionID, !page.readOnly,
+              page.activeRunEvidence == .absent,
+              page.rawMessageEndIndex == cursor, page.olderOffset < cursor else { return false }
+        for row in page.messages.reversed() {
+            guard let index = row.sourceIndex, index >= boundary,
+                  !knownIDs.contains(row.id), ChatBackgroundEnvelope.userBody(row) == nil else { continue }
+            if newestFresh == nil { newestFresh = row }
+            if row.role == "assistant" { assistantSinceNextUser = true }
+            if row.role == "user" {
+                userCount = min(2, userCount + 1)
+                let paths = Set(row.attachmentPaths)
+                if row.content == text && paths == attachmentPaths {
+                    matchingAcceptedUsers = min(2, matchingAcceptedUsers + 1)
+                    if assistantSinceNextUser {
+                        matchingAnsweredUsers = min(2, matchingAnsweredUsers + 1)
+                    }
+                }
+                if row.content.trimmingCharacters(in: .whitespacesAndNewlines) == text &&
+                    attachmentPaths.isSubset(of: paths) {
+                    matchingPendingUsers = min(2, matchingPendingUsers + 1)
+                }
+                assistantSinceNextUser = false
+            }
+        }
+        cursor = page.olderOffset
+        return true
+    }
+
+    var complete: Bool { cursor <= boundary }
+
+    func provesAccepted(_ receipt: ActiveTurnRecovery, requireReply: Bool,
+                        allowAdditionalUsers: Bool = false) -> Bool {
+        guard complete, ownerID == receipt.runID, boundary == receipt.historyEnd,
+              knownIDs == receipt.knownIDs, text == receipt.text,
+              attachmentPaths == receipt.attachmentPaths else { return false }
+        // An exact saved terminal result proves execution ended independently
+        // of another device's later user message. Require one unambiguous
+        // matching accepted row and its own following assistant response.
+        if allowAdditionalUsers && receipt.terminalStatus == .completed {
+            if matchingAcceptedUsers == 1 && matchingAnsweredUsers == 1 { return true }
+        }
+        guard userCount == 1, matchingAcceptedUsers == 1 else { return false }
+        if newestFresh?.role == "assistant" { return true }
+        return !requireReply && newestFresh?.role == "user" &&
+            (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true)
+    }
+
+    var provesPendingDelivery: Bool { complete && userCount == 1 && matchingPendingUsers == 1 }
+    var provesPendingAbsence: Bool { complete && userCount == 0 }
 }
 
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
@@ -693,7 +790,8 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
     /// Read-only proof from a contiguous suffix, newest page first. Tool rows
     /// occupy raw indexes but aren't rendered; never treat a gap as proof that
     /// there was only one user submission after the accepted POST.
-    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false) -> Bool {
+    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false,
+                            allowAdditionalUsers: Bool = false) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
               let historyEnd, newest.activeRunEvidence == .absent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
@@ -713,6 +811,18 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
                 && ChatBackgroundEnvelope.userBody($0) == nil
         }
         let newUsers = fresh.filter { $0.role == "user" }
+        // Only exact terminal evidence permits an unambiguous earlier turn
+        // to settle when another user message arrived later.
+        if allowAdditionalUsers && terminalStatus == .completed {
+            let matches = newUsers.filter {
+                $0.content == text && Set($0.attachmentPaths) == attachmentPaths
+            }
+            if matches.count == 1, let sent = matches.first,
+               let start = fresh.firstIndex(where: { $0.id == sent.id }) {
+                let ownReply = fresh.dropFirst(start + 1).prefix { $0.role != "user" }
+                if ownReply.contains(where: { $0.role == "assistant" }) { return true }
+            }
+        }
         guard newUsers.count == 1, let sent = newUsers.first,
               sent.content == text, Set(sent.attachmentPaths) == attachmentPaths,
               let sentIndex = sent.sourceIndex else { return false }

@@ -13,7 +13,10 @@ extension NativeChatView {
             return "回复已结束，正在补齐历史消息。"
         }
         if model.unavailableRunStatusID != nil {
-            return "任务状态暂不可用，正在自动同步；仍可阅读消息。"
+            return "任务状态暂不可用。可在恢复中心检查原会话。"
+        }
+        if model.pendingDeliveryIsVerified {
+            return "消息已送达，任务状态待确认。可在恢复中心处理。"
         }
         if model.uncertain || model.recoveryRecordsUnreadable {
             if model.syncing || model.loading || model.reconciling {
