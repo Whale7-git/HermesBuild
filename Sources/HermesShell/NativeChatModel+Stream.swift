@@ -38,6 +38,15 @@ extension NativeChatModel {
     func load(silent: Bool = false, preserveLoadedOlder: Bool = false,
               allowWhileReconciling: Bool = false) async {
         guard !runtimeRetired else { return }
+        // A detached presentation may reopen while STOP is waiting for its
+        // exact Run even after SSE was torn down. Loading ordinary history
+        // must never replace that STOP-owned phase.
+        if stopping {
+            suspended = false
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
+            return
+        }
         if submitting { resumeRequested = true; return }
         guard !syncing, !loading else { return }
         // A-07：核对流程自己持有 `reconciling`，只有它能带 allowWhileReconciling 进来。

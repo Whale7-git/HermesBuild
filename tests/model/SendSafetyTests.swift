@@ -392,6 +392,15 @@ import Foundation
         await model.verifyPendingStop()
         precondition(model.stopping && service.startCalls == 1,
                      "a still-running run cannot be marked stopped")
+        // Simulate reopening an offscreen STOP runtime after SSE disappeared.
+        model.streamTask?.cancel()
+        model.streamTask = nil
+        let previousProbes = service.stopProbeCalls
+        await model.load()
+        precondition(model.stopping && !model.canSend &&
+                     service.stopProbeCalls > previousProbes &&
+                     service.stopCalls == 1 && service.startCalls == 1,
+                     "reopening must verify the exact STOP instead of replacing its phase")
         service.active = nil
         try await ModelTests.eventually { !model.stopping }
         precondition(model.canSend && service.startCalls == 1 && service.stopCalls == 1,

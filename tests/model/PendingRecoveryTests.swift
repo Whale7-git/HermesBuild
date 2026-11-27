@@ -558,6 +558,43 @@ extension ModelTests {
                          "disconnect stops sparse recovery")
         }
 
+        // Status uncertainty may disable sending, not reading an adjacent
+        // canonical history page. Periodic recovery cannot interrupt it.
+        do {
+            let service = PendingRecoveryService()
+            service.statusUnknown = true
+            service.unavailableRunID = "expired-paged"
+            service.historyPageLimit = 2
+            service.rows = (0..<6).map { ["id": "m\($0)", "role": "user", "content": "row \($0)"] }
+            let model = NativeChatModel(sessionID: "test", api: service)
+            model.automaticReconciliationUnavailableNanoseconds = 5_000_000
+            model.automaticReconciliationSteadyNanoseconds = 3_000_000
+            await model.load()
+            precondition(model.transcript.messages.map(\.id) == ["m4", "m5"])
+            precondition(model.canLoadOlderHistory && !model.canSend)
+            service.holdHistory = true
+            let paging = Task { await model.loadOlder() }
+            try await eventually { service.historyWait != nil }
+            let calls = service.historyCalls
+            try await Task.sleep(nanoseconds: 25_000_000)
+            precondition(service.historyCalls == calls && model.loadingOlder,
+                         "automatic reconciliation must yield to a reader-owned page")
+            service.holdHistory = false
+            let page = try ChatSnapshot(data: JSONSerialization.data(withJSONObject: [
+                "session_id": "test", "messages": Array(service.rows[2..<4]),
+                "_messages_offset": 2, "read_only": false
+            ]), runStatusUnknown: true, unavailableRunID: "expired-paged")
+            service.historyWait?.resume(returning: page)
+            service.historyWait = nil
+            await paging.value
+            precondition(model.transcript.messages.map(\.id) == ["m2", "m3", "m4", "m5"])
+            precondition(model.olderOffset == 2 && model.confirmedHistoryEnd == nil &&
+                         model.latestRecoverySnapshot == nil && model.uncertain && !model.canSend &&
+                         service.startCalls == 0,
+                         "unverified reading must not create sending or settlement authority")
+            model.disconnect()
+        }
+
         // A confirmed terminal status must survive an unreachable final GET,
         // relaunch, and status expiry. Old receipts decode with nil evidence.
         do {
