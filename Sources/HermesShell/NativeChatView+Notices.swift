@@ -387,7 +387,7 @@ extension NativeChatView {
                 switch result {
                 case .delivered: showToast("消息已送达，没有重复发送")
                 case .absent: showToast("未找到这条消息，可以选择重试或放弃")
-                case .failed: showToast("暂时无法确认是否送达，请稍后重试")
+                case .failed: showToast("尚未确认送达，正在自动同步")
                 }
             case .verifyStatus, .retry:
                 if model.stopping {

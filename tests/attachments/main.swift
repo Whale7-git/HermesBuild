@@ -181,6 +181,30 @@ do {
     check(uploaded == [attachment] && durableChanges > durableDuringUpload,
           "completed server reference still invokes durable mutation callback")
 }
+// Explicit cancellation invalidates the preparation immediately, not
+// after the full upload timeout. A non-cooperative completion cannot write.
+do {
+    var continuation: CheckedContinuation<UploadedAttachment, Never>?
+    var durableChanges = 0
+    let coordinator = AttachmentUploadCoordinator(sessionID: "cancel-fixture") { _, _, _ in
+        await withCheckedContinuation { continuation = $0 }
+    }
+    coordinator.onChange = { _ in durableChanges += 1 }
+    _ = try coordinator.add(name: attachment.name, mime: attachment.mime, data: Data([1, 2, 3]))
+    let preparing = Task { try await coordinator.prepareForSend(sessionID: "cancel-fixture") }
+    while continuation == nil { await Task.yield() }
+    coordinator.cancelUploads()
+    do {
+        _ = try await preparing.value
+        fatalError("cancelled preparation returned a payload")
+    } catch is CancellationError {}
+    let beforeLate = durableChanges
+    continuation?.resume(returning: attachment)
+    continuation = nil
+    try await Task.sleep(nanoseconds: 20_000_000)
+    check(durableChanges == beforeLate && !coordinator.batch.canSend,
+          "late cancelled upload does not publish or persist another draft state")
+}
 check(batch.items[0].state == .uploading(0.5), "real byte progress exposed")
 batch.complete(fileID, attempt:UUID(), attachment:attachment)
 check(!batch.canSend, "stale attempt cannot complete upload")

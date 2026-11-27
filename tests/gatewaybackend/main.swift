@@ -22,6 +22,8 @@ actor ConcurrencyProbe {
     var statusSessionID = "s"
     var statusCode = 200
     var unknownResolutionSupported = false
+    var advertisedIdempotency: [String: Any]?
+    var capabilityCode = 200
     var unknownAdmission: String?
     var unknownGeneration: Int?
     var resolutionResponseCode = 200
@@ -41,10 +43,17 @@ actor ConcurrencyProbe {
         var body: [String: Any] = [:]
         var code = 200
         if url.path == "/v1/capabilities" {
-            body = ["features": ["run_unknown_resolution": unknownResolutionSupported],
-                    "endpoints": unknownResolutionSupported
-                        ? ["run_unknown_resolution": ["method": "POST", "path": "/v1/runs/{run_id}/resolve-unknown"]]
-                        : [:]]
+            var features: [String: Any] = ["run_unknown_resolution": unknownResolutionSupported]
+            var endpoints: [String: Any] = [
+                "runs": ["method": "POST", "path": "/v1/runs"],
+                "run_status": ["method": "GET", "path": "/v1/runs/{run_id}"]
+            ]
+            if let advertisedIdempotency { features["runs_idempotency"] = advertisedIdempotency }
+            if unknownResolutionSupported {
+                endpoints["run_unknown_resolution"] = ["method": "POST", "path": "/v1/runs/{run_id}/resolve-unknown"]
+            }
+            body = ["features": features, "endpoints": endpoints]
+            code = capabilityCode
         } else if url.path == "/v1/runs/run-fixture/resolve-unknown", request.httpMethod == "POST" {
             code = resolutionResponseCode
             if code == 200 { status = resolutionTerminalStatus }
@@ -138,6 +147,38 @@ actor ConcurrencyProbe {
                            runStore: GatewayRunStore(scope: scope, defaults: defaults))
         }
         let first = backend()
+        // Capability detection does not guess durability from the backend kind.
+        transport.advertisedIdempotency = ["supported": true, "durable": true, "retention_seconds": 86400]
+        let caps = try await first.runRecoveryCapabilities()
+        check(caps?.idempotencySupported == true && caps?.durableStatusRetentionSeconds == 86400,
+              "deployed durable capability and exact routes are decoded")
+        transport.advertisedIdempotency = ["supported": true, "durable": false, "retention_seconds": 86400]
+        let memoryOnly = try await first.runRecoveryCapabilities()
+        check(memoryOnly?.idempotencySupported == true && memoryOnly?.durableStatusRetentionSeconds == nil,
+              "memory-only idempotency is not durable recovery")
+        transport.capabilityCode = 404
+        let old = try await first.runRecoveryCapabilities()
+        check(old == nil, "legacy capability endpoint is optional")
+        transport.capabilityCode = 200
+        transport.advertisedIdempotency = nil
+        let keyedBackend: any NativeChatService = backend(scope: "keyed|account")
+        let beforeKeyed = transport.requests.count
+        let keyedRun = try await keyedBackend.startNativeTurn(sessionID: "s", text: "test",
+            attachments: [], reasoningEffort: nil, submissionKey: "fixture-key")
+        check(keyedRun == "run-fixture" && transport.requests.count == beforeKeyed + 1 &&
+              transport.requests.last?.value(forHTTPHeaderField: "Idempotency-Key") == "fixture-key",
+              "actual protocol witness transmits exactly one keyed POST even on legacy Gateway")
+        transport.failure = URLError(.networkConnectionLost)
+        let beforeFailure = transport.requests.count
+        do {
+            _ = try await keyedBackend.startNativeTurn(sessionID: "s", text: "test",
+                attachments: [], reasoningEffort: nil, submissionKey: "another-key")
+            preconditionFailure("transport failure accepted")
+        } catch {
+            check(transport.requests.count == beforeFailure + 1,
+                  "lost response never repeats a keyed or unkeyed POST")
+        }
+        transport.failure = nil
         var uploadRequest = URLRequest(url: URL(string: "https://fixture.invalid/v1/files")!)
         uploadRequest.httpMethod = "POST"
         uploadRequest.httpBody = Data("test".utf8)
@@ -365,6 +406,10 @@ actor ConcurrencyProbe {
         let missingOffer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run)
         check(missingOffer == nil, "404 is not an eligible unknown execution")
         transport.statusCode = 200
+        let canonicalUnknown = try await resolver.history(sessionID: "s", before: nil)
+        check(canonicalUnknown.activeRunEvidence == .unknown &&
+              canonicalUnknown.unavailableRunID == run,
+              "canonical unknown retains a visible, exact recovery identity even without a model receipt")
         guard let offer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
             preconditionFailure("exact advertised unknown admission should be offered")
         }

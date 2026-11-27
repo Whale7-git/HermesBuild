@@ -27,6 +27,21 @@ func gatewayReasoningRequestTests() throws {
            "non-default effort is nested in model_options for this Run only")
     expect(selectedBody["input"] as? String == "hi" && selectedBody["session_id"] as? String == "s",
            "reasoning override cannot affect Session identity or input")
+    let keyed = try requests.startRun(sessionID: "s", text: "hi",
+        model: nil, provider: nil, reasoningEffort: "high", submissionKey: "fixture-123")
+    expect(keyed.value(forHTTPHeaderField: "Idempotency-Key") == "fixture-123",
+           "key belongs to the header, not message body")
+    let keyedBody = try JSONSerialization.jsonObject(with: keyed.httpBody!) as! [String: Any]
+    expect(NSDictionary(dictionary: keyedBody).isEqual(to: selectedBody),
+           "idempotency header preserves exact payload")
+    expect(standard.value(forHTTPHeaderField: "Idempotency-Key") == nil,
+           "legacy request builder remains compatible")
+    for key in ["", "space key", "line\nfeed", String(repeating: "x", count: 256), "中文"] {
+        expectThrows("invalid key rejected before POST") {
+            _ = try requests.startRun(sessionID: "s", text: "hi", model: nil,
+                                       provider: nil, submissionKey: key)
+        }
+    }
     expectThrows("invalid effort fails before POST") {
         _ = try requests.startRun(sessionID: "s", text: "hi", model: nil,
                                    provider: nil, reasoningEffort: "maximum")

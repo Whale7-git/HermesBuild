@@ -692,11 +692,22 @@ final class NativeChatModel: ObservableObject {
         // Optional for backward compatibility. Text and attachment equality
         // never grants ownership of another queued transaction.
         var queuedTurnID: String? = nil
+        /// Optional so old protected records never falsely claim a keyed POST.
+        var submissionKey: String? = nil
+        var reasoningEffort: String? = nil
 
         func resolution(in snapshot: ChatSnapshot) -> PendingReconcileResult {
-            DeliveryReconciliationPolicy.resolve(
+            resolution(in: [snapshot])
+        }
+
+        func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+            let result = DeliveryReconciliationPolicy.resolve(
                 text: text, attachments: attachments, historyEnd: historyEnd,
-                knownIDs: knownIDs, snapshot: snapshot)
+                knownIDs: knownIDs, pages: pages)
+            // Without a returned Run ID, a Gateway's local empty run index
+            // cannot prove that a keyed request was never admitted. A queued
+            // admission may not have produced any visible history yet.
+            return submissionKey != nil && result == .absent ? .failed : result
         }
     }
     @Published var pendingRecoveryUnreadable = false
@@ -790,6 +801,16 @@ final class NativeChatModel: ObservableObject {
         }
     }
 
+    /// Submission has a single verified commit boundary, rather than a
+    /// property observer write followed by a second identical disk write.
+    @discardableResult
+    func preparePendingSubmission(_ pending: PendingSend) -> LocalStoreWriteResult {
+        restoringRecoveryRecords = true
+        pendingSend = pending
+        restoringRecoveryRecords = false
+        return persistPendingSend()
+    }
+
     @discardableResult
     func persistPendingSend() -> LocalStoreWriteResult {
         guard !runtimeRetired else { return .failed(.diskWrite) }
@@ -832,8 +853,13 @@ final class NativeChatModel: ObservableObject {
     @discardableResult
     func settleAcceptedReceipt(_ receipt: ActiveTurnRecovery) -> Bool {
         guard !runtimeRetired, activeTurnRecovery == receipt else { return false }
+        // Validate both identities before mutating either record. A stale
+        // accepted receipt must not consume another attempt of the same row.
+        if let pending = pendingSend, pending.id == receipt.pendingSendID,
+           pending.submissionKey != receipt.submissionKey { return false }
         if let id = receipt.queuedTurnID,
-           !retireAcceptedQueueTurn(id: id, nextRunID: receipt.runID) { return false }
+           !retireAcceptedQueueTurn(id: id, nextRunID: receipt.runID,
+                                    submissionKey: receipt.submissionKey) { return false }
         if let pending = pendingSend, pending.id == receipt.pendingSendID {
             guard clearPendingSend(expectedID: pending.id) else { return false }
         }
@@ -851,7 +877,8 @@ final class NativeChatModel: ObservableObject {
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
             attachmentPaths: Set(attachments.map(\.path)),
-            pendingSendID: pendingSend?.id, queuedTurnID: pendingSend?.queuedTurnID)
+            pendingSendID: pendingSend?.id, queuedTurnID: pendingSend?.queuedTurnID,
+            submissionKey: pendingSend?.submissionKey)
         if let command = pendingSlashCommand, attachments.isEmpty {
             switch command.kind {
             case .compress, .reset: receipt.commandAllowsEmptyReply = true

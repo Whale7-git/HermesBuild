@@ -8,7 +8,7 @@ import FoundationNetworking
 /// 与 `ChatRequests` 的差别只在认证与路由：网关没有 WebUI 的登录 cookie，
 /// 每条请求都必须带 API key；会话/运行因此走另一套 `/api/sessions`、`/v1/runs`。
 enum GatewayRequestError: LocalizedError {
-    case invalidBaseURL, invalidID, invalidReasoningEffort, invalidApprovalRequest
+    case invalidBaseURL, invalidID, invalidReasoningEffort, invalidApprovalRequest, invalidSubmissionKey
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +16,7 @@ enum GatewayRequestError: LocalizedError {
         case .invalidID: return "会话或运行标识无效"
         case .invalidReasoningEffort: return "无效的推理强度，消息未提交"
         case .invalidApprovalRequest: return "审批缺少服务端请求标识或执行代次，未发送"
+        case .invalidSubmissionKey: return "发送标识无效，消息未提交"
         }
     }
 }
@@ -94,7 +95,7 @@ struct GatewayRequests {
     }
 
     func startRun(sessionID: String, text: String, model: String?, provider: String?,
-                  reasoningEffort: String? = nil) throws -> URLRequest {
+                  reasoningEffort: String? = nil, submissionKey: String? = nil) throws -> URLRequest {
         let id = try Self.validatedID(sessionID)
         var body: [String: Any] = ["input": text, "session_id": id]
         if let model, !model.isEmpty { body["model"] = model }
@@ -105,7 +106,17 @@ struct GatewayRequests {
             }
             body["model_options"] = ["reasoning_effort": reasoningEffort]
         }
-        return try make("v1/runs", body: body)
+        var request = try make("v1/runs", body: body)
+        if let submissionKey {
+            // Hermes' documented optional Idempotency-Key header: 1–255
+            // visible ASCII bytes. Never put it in a URL or the message.
+            guard !submissionKey.isEmpty, submissionKey.utf8.count <= 255,
+                  submissionKey.utf8.allSatisfy({ (33...126).contains($0) }) else {
+                throw GatewayRequestError.invalidSubmissionKey
+            }
+            request.setValue(submissionKey, forHTTPHeaderField: "Idempotency-Key")
+        }
+        return request
     }
 
     /// 事件流：长连接按 600 秒超时，且必须显式声明 `text/event-stream`。

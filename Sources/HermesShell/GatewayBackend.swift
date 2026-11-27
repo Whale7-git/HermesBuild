@@ -36,6 +36,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     private let fallback: HermesAPI?
 
     var supportsReasoningEffort: Bool { true }
+    var carriesRunSubmissionIdentity: Bool { true }
 
     /// 网关容器里对应 WebUI `~/.hermes` 的路径，用于把上传返回的绝对路径
     /// 换成 agent 容器里真实存在的位置。空串表示不做映射。
@@ -396,6 +397,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return recordProbeFailure(runID: runID)
         }
         switch status {
+        case "unknown" where Self.canonicalUnknown(root):
+            // A canonical lost execution is a real state, not a transport
+            // failure or a terminal result. Keep its exact identity available.
+            clearFailedRunProbes(runID: runID)
+            return .unknown
         case "queued", "running", "waiting_for_approval", "waiting_for_clarification", "stopping":
             clearFailedRunProbes(runID: runID)
             // The receipt can outlive a local run-store cleanup after a crash or
@@ -417,19 +423,61 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    /// Decode independent capabilities conservatively. A malformed optional
+    /// feature cannot disable another correctly advertised contract.
+    func runRecoveryCapabilities() async throws -> RunRecoveryCapabilities? {
+        struct Endpoint: Decodable {
+            let method: String
+            let path: String
+        }
+        struct Idempotency: Decodable {
+            let supported: Bool
+            let durable: Bool
+            let retention_seconds: Int
+        }
+        struct Features: Decodable {
+            let runs_idempotency: Idempotency?
+            let run_unknown_resolution: Bool?
+            enum CodingKeys: String, CodingKey { case runs_idempotency, run_unknown_resolution }
+            init(from decoder: Decoder) throws {
+                let fields = try decoder.container(keyedBy: CodingKeys.self)
+                runs_idempotency = try? fields.decode(Idempotency.self, forKey: .runs_idempotency)
+                run_unknown_resolution = try? fields.decode(Bool.self, forKey: .run_unknown_resolution)
+            }
+        }
+        struct Document: Decodable {
+            let features: Features
+            let endpoints: [String: Endpoint]
+        }
+        do {
+            let data = try await perform(requests.advertisedCapabilities())
+            try Task.checkCancellation()
+            guard let doc = try? JSONDecoder().decode(Document.self, from: data) else { return nil }
+            func route(_ name: String, _ method: String, _ path: String) -> Bool {
+                doc.endpoints[name]?.method == method && doc.endpoints[name]?.path == path
+            }
+            let feature = doc.features.runs_idempotency
+            let supported = feature?.supported == true &&
+                route("runs", "POST", "/v1/runs") &&
+                route("run_status", "GET", "/v1/runs/{run_id}")
+            let retention = supported && feature?.durable == true &&
+                (feature?.retention_seconds ?? 0) > 0 ? feature?.retention_seconds : nil
+            return RunRecoveryCapabilities(idempotencySupported: supported,
+                durableStatusRetentionSeconds: retention,
+                unknownResolutionSupported: doc.features.run_unknown_resolution == true &&
+                    route("run_unknown_resolution", "POST", "/v1/runs/{run_id}/resolve-unknown"))
+        } catch let error as APIError {
+            if case .http(let code, _) = error, code == 404 || code == 501 { return nil }
+            throw error
+        }
+    }
+
     // Upstream canonical admission contract (api_server_authority_runs.py):
     // only an owned status=unknown with exact admission/generation is eligible.
     // Capabilities are fetched from the current deployment, never inferred
     // from a backend kind, a missing Run, or a previous successful request.
     func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer? {
         guard runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
-        struct Capabilities: Decodable {
-            struct Features: Decodable { let run_unknown_resolution: Bool? }
-            struct Endpoint: Decodable { let method: String; let path: String }
-            struct Endpoints: Decodable { let run_unknown_resolution: Endpoint? }
-            let features: Features
-            let endpoints: Endpoints
-        }
         struct Status: Decodable {
             let run_id: String
             let session_id: String
@@ -438,11 +486,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             let execution_generation: Int?
         }
         do {
-            let capabilityData = try await perform(requests.advertisedCapabilities())
-            guard let caps = try? JSONDecoder().decode(Capabilities.self, from: capabilityData),
-                  caps.features.run_unknown_resolution == true,
-                  let route = caps.endpoints.run_unknown_resolution,
-                  route.method == "POST", route.path == "/v1/runs/{run_id}/resolve-unknown",
+            guard try await runRecoveryCapabilities()?.unknownResolutionSupported == true,
                   runStore.ownsUnknownResolutionCandidate(sessionID: sessionID, runID: runID) else { return nil }
             try Task.checkCancellation()
             let statusData = try await perform(requests.runStatus(runID: runID))
@@ -601,6 +645,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
         let pendingControls = GatewayDecode.pendingControlSnapshot(from: root)
         switch status {
+        case "unknown" where Self.canonicalUnknown(root):
+            clearFailedRunProbes(runID: runID)
+            return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
+                unavailableRunID: runID)
         case "queued", "running", "waiting_for_approval",
              "waiting_for_clarification", "stopping":
             clearFailedRunProbes(runID: runID)
@@ -620,6 +668,13 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             _ = recordProbeFailure(runID: runID)
             return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil)
         }
+    }
+
+    private static func canonicalUnknown(_ root: [String: Any]) -> Bool {
+        guard let admission = root["admission_id"] as? String,
+              !admission.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let generation = root["execution_generation"] as? Int, generation >= 0 else { return false }
+        return true
     }
 
     private func clearFailedRunProbes(runID: String) {
@@ -667,8 +722,8 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         try await startNativeTurn(sessionID: sessionID, text: text, attachments: [])
     }
 
-    /// 附件：网关没有上传端点，附件必须在 WebUI 侧先换成服务端引用（path）。
-    /// 这里只负责把它们拼进文本——网关的 `input` 是纯文本字段。
+    /// Files API returns server references; the existing input adapter passes
+    /// these references to the agent without a second upload.
     func startNativeTurn(sessionID: String, text: String,
                          attachments: [ChatAttachmentPayload]) async throws -> String {
         try await startNativeTurn(sessionID: sessionID, text: text,
@@ -678,12 +733,22 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     func startNativeTurn(sessionID: String, text: String,
                          attachments: [ChatAttachmentPayload],
                          reasoningEffort: String?) async throws -> String {
+        try await startNativeTurn(sessionID: sessionID, text: text, attachments: attachments,
+                                  reasoningEffort: reasoningEffort, submissionKey: RunSubmissionIdentity.make())
+    }
+
+    func startNativeTurn(sessionID: String, text: String,
+                         attachments: [ChatAttachmentPayload], reasoningEffort: String?,
+                         submissionKey: String?) async throws -> String {
         let body = inputText(text: text, attachments: attachments)
+        // Send exactly once. An old server may ignore this optional header.
+        // Never retry a failed keyed request or fall back to an unkeyed POST.
         let data = try await perform(try requests.startRun(
             sessionID: sessionID, text: body, model: nil, provider: nil,
-            reasoningEffort: reasoningEffort))
+            reasoningEffort: reasoningEffort, submissionKey: submissionKey ?? RunSubmissionIdentity.make()))
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let runID = root["run_id"] as? String, !runID.isEmpty else {
+              let runID = root["run_id"] as? String, !runID.isEmpty,
+              root["session_id"].map({ ($0 as? String) == sessionID }) ?? true else {
             throw APIError.badResponse
         }
         runStore.remember(runID: runID, sessionID: sessionID)

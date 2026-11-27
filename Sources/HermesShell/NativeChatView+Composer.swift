@@ -16,7 +16,7 @@ extension NativeChatView {
             if model.syncing || model.loading || model.reconciling {
                 return "正在同步消息，暂不能发送。"
             }
-            return "上一条消息状态尚未确认，暂不能发送。"
+            return "上一条消息尚未确认送达，正在自动同步。"
         }
         if model.cachedHistoryDate != nil {
             return model.syncing ? "正在同步最新消息…" : "正在显示本地历史，联网后可发送。"

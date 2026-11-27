@@ -28,6 +28,9 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var failHistoryAfterProbe = false
     var rowsAfterProbe: [[String: Any]]?
     var failStart = true
+    var carriesRunSubmissionIdentity = false
+    var receivedKeys: [String?] = []
+    var beforeStart: (() -> Void)?
     var historyWait: CheckedContinuation<ChatSnapshot, Error>?
     var holdHistory = false
     var startCalls = 0
@@ -77,6 +80,12 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
         if failStart { throw URLError(.networkConnectionLost) }
         active = "accepted"
         return "accepted"
+    }
+    func startNativeTurn(sessionID: String, text: String, attachments: [ChatAttachmentPayload],
+                         reasoningEffort: String?, submissionKey: String?) async throws -> String {
+        receivedKeys.append(submissionKey)
+        beforeStart?()
+        return try await startNativeTurn(sessionID: sessionID, text: text, attachments: attachments)
     }
     func streamNativeTurn(streamID: String, lastEventID: String?, onFrame: (SSEFrame) async throws -> Bool) async throws {
         streamCursors.append(lastEventID)
@@ -227,6 +236,136 @@ extension ModelTests {
         precondition(resolvedResult == .delivered && durable.loadPending().value == nil)
         restored.disconnect()
         print("PENDING_PASS durable direct POST survives restart and resolves without replay")
+
+        // Keyed admission can be accepted before a user row is written.
+        // A lost response plus empty history is not authority to retry.
+        do {
+            let keyedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: keyedRoot) }
+            let keyedFiles = LocalDataFileStore(instanceID: "keyed", accountScope: "account",
+                sessionID: "test", rootDirectory: keyedRoot)
+            let keyedStore = ChatDraftStore(instanceID: "keyed", accountScope: "account",
+                sessionID: "test", fileStore: keyedFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: keyedStore)
+            await model.load()
+            service.beforeStart = {
+                let stored = try! JSONDecoder().decode(NativeChatModel.PendingSend.self,
+                    from: keyedStore.loadPending().value!)
+                precondition(stored.submissionKey == service.receivedKeys.last! &&
+                             RunSubmissionIdentity.valid(stored.submissionKey!),
+                             "the same key must be on disk before network transport")
+            }
+            model.draft = "keyed submission"
+            _ = await model.send()
+            precondition(service.startCalls == 1 && model.pendingSend?.submissionKey != nil)
+            let key = model.pendingSend?.submissionKey
+            model.disconnect()
+            service.beforeStart = nil
+            let restored = NativeChatModel(sessionID: "test", api: service, draftStore: keyedStore)
+            precondition(restored.pendingSend?.submissionKey == key)
+            let missing = await restored.reconcilePending()
+            precondition(missing == .failed && !restored.canSend && !restored.canResendPending &&
+                         service.startCalls == 1,
+                         "missing history cannot authorize replay of a keyed admission")
+            let retried = await restored.resendPending()
+            precondition(!retried && service.startCalls == 1)
+            restored.disconnect()
+        }
+        print("PENDING_PASS durable submission key before transport, restart, no replay on absence")
+
+        // Targeted failure injection at both sides of the admission boundary.
+        // Reject the protected file read-back, not the whole storage root.
+        for failingPrefix in ["pending-", "active-run-"] {
+            let faultRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: faultRoot) }
+            let faultFiles = LocalDataFileStore(instanceID: "keyed-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: faultRoot,
+                destinationReadBackVerifier: { url, data in
+                    !url.lastPathComponent.hasPrefix(failingPrefix) &&
+                        (try? Data(contentsOf: url)) == data
+                })
+            let faultStore = ChatDraftStore(instanceID: "keyed-fault", accountScope: "account",
+                sessionID: "test", fileStore: faultFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            service.failStart = false
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: faultStore)
+            await model.load()
+            model.draft = "keep this draft"
+            _ = await model.send()
+            if failingPrefix == "pending-" {
+                precondition(service.startCalls == 0 && model.pendingSend != nil &&
+                             model.draft == "keep this draft" && !model.canSend,
+                             "failed pre-POST commit cannot send")
+            } else {
+                precondition(service.startCalls == 1 && faultStore.loadPending().value != nil &&
+                             model.activeTurnRecovery == nil && !model.canSend,
+                             "failed post-acceptance receipt must preserve the original pending proof")
+                let saved = try JSONDecoder().decode(NativeChatModel.PendingSend.self,
+                    from: faultStore.loadPending().value!)
+                precondition(saved.submissionKey == service.receivedKeys.last!)
+                model.disconnect()
+                let reopened = NativeChatModel(sessionID: "test", api: service, draftStore: faultStore)
+                precondition(reopened.pendingSend?.submissionKey == saved.submissionKey && !reopened.canSend)
+                precondition(service.startCalls == 1)
+                reopened.disconnect()
+            }
+            model.disconnect()
+        }
+        print("PENDING_PASS pre-POST write and post-acceptance receipt fault injection")
+
+        // Fail queue retirement after the accepted Run has committed.
+        // The original durable queue and pending identities must survive.
+        do {
+            let queueRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: queueRoot) }
+            let writes = AtomicReadBackCounter()
+            let queueFiles = LocalDataFileStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: queueRoot,
+                destinationReadBackVerifier: { url, data in
+                    if url.lastPathComponent.hasPrefix("queue-"), writes.next() >= 3 { return false }
+                    return (try? Data(contentsOf: url)) == data
+                })
+            let queueStore = ChatDraftStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", fileStore: queueFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            service.failStart = false
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: queueStore)
+            await model.load()
+            // Keep a sibling so retirement requires an atomic replacement
+            // instead of a deletion, which uses a different storage path.
+            model.setQueuedTurns([
+                ChatQueuedTurn(id: "first", text: "first", attachments: [], composerText: "first",
+                    origin: .userInput, automaticAfterStreamID: nil),
+                ChatQueuedTurn(id: "sibling", text: "sibling", attachments: [], composerText: "sibling",
+                    origin: .userInput, automaticAfterStreamID: nil)
+            ])
+            _ = await model.flushQueuedIfNeeded()
+            precondition(service.startCalls == 1 && model.queuedTurns.count == 2 &&
+                         model.pendingSend != nil && model.activeTurnRecovery != nil &&
+                         model.queueAutomaticDispatchPaused,
+                         "failed queue retirement preserves all protected transaction evidence")
+            let durableQueue = ChatSendQueueCodec.decode(queueStore.loadQueuedResult().value!)!
+            let pending = try JSONDecoder().decode(NativeChatModel.PendingSend.self, from: queueStore.loadPending().value!)
+            let receipt = try JSONDecoder().decode(ActiveTurnRecovery.self, from: queueStore.loadActiveRun().value!)
+            precondition(durableQueue.first?.submissionKey == pending.submissionKey &&
+                         receipt.submissionKey == pending.submissionKey)
+            model.disconnect()
+            let repairedFiles = LocalDataFileStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: queueRoot)
+            let repairedStore = ChatDraftStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", fileStore: repairedFiles)
+            let restored = NativeChatModel(sessionID: "test", api: service, draftStore: repairedStore)
+            await restored.load()
+            precondition(restored.queuedTurns.map(\.id) == ["sibling"] &&
+                         restored.pendingSend == nil && service.startCalls == 1,
+                         "relaunch retires only the original accepted row, without sending the sibling")
+            restored.disconnect()
+        }
+        print("PENDING_PASS queue retirement fault and restart settlement without replay")
         // Corrupt pending data must not become sendable after a successful history GET.
         _ = durable.savePending(Data("invalid pending".utf8))
         let corrupt = NativeChatModel(sessionID: "test", api: PendingRecoveryService(), draftStore: durable)

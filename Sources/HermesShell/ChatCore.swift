@@ -682,6 +682,7 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
     /// gain permission to retire another pending send by payload equality.
     var pendingSendID: String? = nil
     var queuedTurnID: String? = nil
+    var submissionKey: String? = nil
 
     /// A single GET can cover the entire turn, or only the newest 60 raw
     /// records. Keep identical evidence rules for both cases.

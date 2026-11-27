@@ -795,6 +795,9 @@ import Foundation
         let uncertainData = ChatSendQueueCodec.encode(uncertain)!
         precondition(ChatSendQueueCodec.decode(uncertainData) == uncertain,
                      "version 3 preserves an uncertain delivery state")
+        uncertain[0].submissionKey = RunSubmissionIdentity.make()
+        precondition(ChatSendQueueCodec.decode(ChatSendQueueCodec.encode(uncertain)!) == uncertain,
+                     "keyed queue recovery preserves its exact submission key")
         let version2 = try JSONSerialization.data(withJSONObject: [
             "version": 2,
             "items": [[
@@ -1490,6 +1493,62 @@ import Foundation
         precondition(model.settleAcceptedReceipt(receipt))
         precondition(model.pendingSend?.id == "unrelated" && model.queuedTurns.isEmpty)
         precondition(model.clearPendingSend(expectedID: "earlier") == false)
+        model.disconnect()
+    }
+
+    // Actual queue dispatch persists one key in both protected records.
+    do {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = LocalDataFileStore(instanceID: "queue-key", accountScope: "account",
+            sessionID: "test", rootDirectory: root)
+        let store = ChatDraftStore(instanceID: "queue-key", accountScope: "account",
+            sessionID: "test", fileStore: files)
+        let service = PendingRecoveryService()
+        service.carriesRunSubmissionIdentity = true
+        service.failStart = false
+        let model = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+        await model.load()
+        model.setQueuedTurns([ChatQueuedTurn(id: "keyed-queue", text: "queued", attachments: [],
+            composerText: "queued", origin: .userInput, automaticAfterStreamID: nil)])
+        service.beforeStart = {
+            let pending = try! JSONDecoder().decode(NativeChatModel.PendingSend.self, from: store.loadPending().value!)
+            let queue = ChatSendQueueCodec.decode(store.loadQueuedResult().value!)!
+            precondition(queue.first?.submissionKey == pending.submissionKey &&
+                         pending.submissionKey == service.receivedKeys.last!)
+        }
+        let accepted = await model.flushQueuedIfNeeded()
+        precondition(accepted && model.queuedTurns.isEmpty && model.pendingSend == nil)
+        let receipt = try JSONDecoder().decode(ActiveTurnRecovery.self, from: store.loadActiveRun().value!)
+        precondition(receipt.submissionKey == service.receivedKeys.last! && service.startCalls == 1)
+        service.beforeStart = nil
+        model.disconnect()
+    }
+    print("SEND_SAFETY_KEYED_QUEUE_PASS durable queue, pending and accepted receipt use one submission key")
+
+    // A stale accepted receipt with the same queue identity but another
+    // dispatch key must not remove a newer attempt or its pending record.
+    do {
+        let model = NativeChatModel(sessionID: "keyed-ownership", api: SendSafetyService())
+        let key = RunSubmissionIdentity.make()
+        let other = RunSubmissionIdentity.make()
+        let queued = ChatQueuedTurn(id: "same-queue", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 0, knownIDs: [], submittedAt: 1,
+            submissionKey: key)
+        model.setQueuedTurns([queued])
+        model.pendingSend = NativeChatModel.PendingSend(id: "same-pending", text: "same",
+            attachments: [], composerText: "same", historyEnd: 0, knownIDs: [],
+            createdAt: 1, origin: .userInput, queuedTurnID: queued.id, submissionKey: key)
+        var receipt = ActiveTurnRecovery(runID: "run", historyEnd: 0, knownIDs: [],
+            text: "same", attachmentPaths: [], pendingSendID: "same-pending",
+            queuedTurnID: queued.id, submissionKey: other)
+        model.activeTurnRecovery = receipt
+        precondition(!model.settleAcceptedReceipt(receipt) && model.queuedTurns == [queued] &&
+                     model.pendingSend?.submissionKey == key)
+        receipt.submissionKey = key
+        model.activeTurnRecovery = receipt
+        precondition(model.settleAcceptedReceipt(receipt) && model.queuedTurns.isEmpty && model.pendingSend == nil)
         model.disconnect()
     }
 

@@ -195,6 +195,7 @@ extension NativeChatModel {
         submittingQueue[0].historyEnd = confirmedHistoryEnd
         submittingQueue[0].knownIDs = Self.recoveryKnownIDs(in: buffer.messages)
         submittingQueue[0].submittedAt = Date().timeIntervalSince1970
+        submittingQueue[0].submissionKey = api.carriesRunSubmissionIdentity ? RunSubmissionIdentity.make() : nil
         submittingQueue[0].delivery = .submitting
         // Do not send without a durable pre-POST boundary and delivery state.
         guard commitQueueMutation(submittingQueue) else {
@@ -250,6 +251,7 @@ extension NativeChatModel {
         var next = queuedTurns
         next[index].delivery = .waiting
         next[index].automaticAfterStreamID = nil
+        next[index].submissionKey = nil
         return commitQueueMutation(next)
     }
 
@@ -316,9 +318,7 @@ extension NativeChatModel {
                     }
                     pages.append(older)
                 }
-                let decision = DeliveryReconciliationPolicy.resolve(text: original.text,
-                    attachments: original.attachments, historyEnd: historyEnd,
-                    knownIDs: original.knownIDs, pages: pages)
+                let decision = original.resolution(in: pages)
                 guard decision != .failed else {
                     error = "历史证据不足，已保留队列记录；不会自动重发。"
                     return false
@@ -377,7 +377,8 @@ extension NativeChatModel {
         guard let id = pending.queuedTurnID else { return true }
         guard !queueRecoveryUnreadable else { return false }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
-        guard queuedTurns[index].needsReconcile else { return false }
+        guard queuedTurns[index].needsReconcile,
+              queuedTurns[index].submissionKey == pending.submissionKey else { return false }
         var next = queuedTurns
         next.remove(at: index)
         return commitQueueMutation(next)
@@ -386,9 +387,11 @@ extension NativeChatModel {
     /// The accepted receipt survives a failed queue write or process death.
     /// Remove exactly its in-flight row, never a waiting sibling.
     @discardableResult
-    func retireAcceptedQueueTurn(id: String, nextRunID: String) -> Bool {
-        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return !queueRecoveryUnreadable }
-        guard queuedTurns[index].needsReconcile else { return false }
+    func retireAcceptedQueueTurn(id: String, nextRunID: String, submissionKey: String? = nil) -> Bool {
+        guard !queueRecoveryUnreadable else { return false }
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
+        guard queuedTurns[index].needsReconcile,
+              queuedTurns[index].submissionKey == submissionKey else { return false }
         var next = queuedTurns
         next.remove(at: index)
         if index == 0, !next.isEmpty, next[0].delivery == .waiting {
@@ -478,6 +481,7 @@ extension NativeChatModel {
         next[index].historyEnd = nil
         next[index].knownIDs = []
         next[index].submittedAt = nil
+        next[index].submissionKey = nil
         return commitQueueMutation(next)
     }
 
@@ -706,17 +710,33 @@ extension NativeChatModel {
         // 新建 ChatTranscript 保持原有「新回合从干净累加器开始」的语义
         // （terminal/seenEventIDs 必须归零，否则新流的帧会被 terminal 吞掉）。
         let pendingID = "local-" + UUID().uuidString
+        let submissionKey: String?
+        if api.carriesRunSubmissionIdentity {
+            if let queuedTurnID {
+                guard let key = queuedTurns.first(where: { $0.id == queuedTurnID })?.submissionKey,
+                      RunSubmissionIdentity.valid(key) else {
+                    transition(to: .idle)
+                    uncertain = true
+                    pauseQueueForRecovery()
+                    error = "发送记录不完整，本次未发送。"
+                    return SubmitResult(accepted: false, completed: false)
+                }
+                submissionKey = key
+            } else { submissionKey = RunSubmissionIdentity.make() }
+        } else { submissionKey = nil }
+        let effort = api.supportsReasoningEffort ? requestedReasoningEffort : nil
         // 记下这次 POST 的完整快照：失败后视图才有东西可核对、可重发、可放弃。
         settledAttachmentPaths = []
         let knownIDs = Set(buffer.messages.map(\.id))
         // A disconnected stream may be declared finished only if a new user
         // row AND an assistant answer appear after this immutable boundary.
         activeTurnHistoryBoundary = confirmedHistoryEnd
-        pendingSend = PendingSend(id:pendingID, text:text, attachments:attachments,
+        let pending = PendingSend(id:pendingID, text:text, attachments:attachments,
                                   composerText:composerText, historyEnd:confirmedHistoryEnd,
                                   knownIDs:knownIDs, createdAt:startedAt, origin:origin,
-                                  queuedTurnID: queuedTurnID)
-        guard persistPendingSend().succeeded else {
+                                  queuedTurnID: queuedTurnID, submissionKey: submissionKey,
+                                  reasoningEffort: effort)
+        guard preparePendingSubmission(pending).succeeded else {
             transition(to: .idle)
             uncertain = true
             error = "发送记录保存失败，本次未发送。请检查本地存储后重试。"
@@ -752,7 +772,7 @@ extension NativeChatModel {
         do {
             let active = try await api.startNativeTurn(sessionID:sessionID, text:text,
                 attachments:attachments,
-                reasoningEffort:api.supportsReasoningEffort ? requestedReasoningEffort : nil)
+                reasoningEffort:effort, submissionKey:submissionKey)
             // A non-cooperative HTTP completion can arrive after a different
             // session/authentication phase has taken ownership. Never publish
             // its bubble, draft, stream ID or terminal phase into that newer UI.
@@ -834,7 +854,8 @@ extension NativeChatModel {
             if handleAuthenticationFailure(error) {
                 return SubmitResult(accepted: false, completed: true)
             }
-            notice = "暂时无法确认消息是否送达，已保留草稿和附件，请同步状态。"
+            notice = "暂时无法确认消息是否送达，草稿和附件已保留，正在自动同步。"
+            scheduleAutomaticReconciliation()
             if resumeRequested { resumeRequested = false; await load(silent: true, preserveLoadedOlder: true) }
         }
         return SubmitResult(accepted: false, completed: true)
@@ -907,9 +928,7 @@ extension NativeChatModel {
             }
         }
         guard (pages.last?.olderOffset ?? Int.max) <= historyEnd else { return .failed }
-        let decision = DeliveryReconciliationPolicy.resolve(
-            text: pending.text, attachments: pending.attachments,
-            historyEnd: historyEnd, knownIDs: pending.knownIDs, pages: pages)
+        let decision = pending.resolution(in: pages)
         guard decision != .failed else { return .failed }
         do {
             let current = try await recoveryHistory(sessionID: sessionID, before: nil)
