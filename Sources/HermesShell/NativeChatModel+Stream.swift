@@ -771,6 +771,17 @@ extension NativeChatModel {
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
         guard !runtimeRetired else { return }
+        // A manual authoritative refresh can establish absence while an older
+        // automatic owner is asleep (or has not started yet). Release that
+        // owner now; absence is an explicit user-choice boundary.
+        if pendingAbsent && activeTurnRecovery == nil && !reconciling {
+            automaticReconciliationTask?.cancel()
+            automaticReconciliationTask = nil
+            automaticReconciliationTicket = nil
+            automaticReconciliationWaiting = false
+            automaticRecoveryQuiet = false
+            return
+        }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
