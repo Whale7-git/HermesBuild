@@ -907,11 +907,18 @@ extension NativeChatModel {
               latest.activeRunEvidence == .absent,
               latest.olderOffset > historyEnd else { return .failed }
         let generation = revision
-        var pages = [latest]
-        for _ in 0..<63 where (pages.last?.olderOffset ?? 0) > historyEnd {
+        if pendingHistoryWalk?.ownerID != pending.id ||
+            pendingHistoryWalk?.boundary != historyEnd ||
+            pendingHistoryWalk?.matchesHead(latest) != true {
+            pendingHistoryWalk = RecoveryHistoryWalk(ownerID: pending.id, boundary: historyEnd,
+                knownIDs: pending.knownIDs, text: pending.text,
+                attachmentPaths: Set(pending.attachments.map(\.path)), head: latest)
+        }
+        guard var walk = pendingHistoryWalk else { return .failed }
+        for _ in 0..<max(1, recoveryPagesPerPass) where !walk.complete {
             guard !Task.isCancelled, generation == revision,
                   pendingSend?.id == pending.id, !suspended else { return .failed }
-            let cursor = pages[pages.count - 1].olderOffset
+            let cursor = walk.cursor
             do {
                 let older = try await recoveryHistory(sessionID: sessionID, before: cursor)
                 guard generation == revision, pendingSend?.id == pending.id,
@@ -920,15 +927,18 @@ extension NativeChatModel {
                       older.activeRunEvidence == .absent,
                       older.rawMessageEndIndex == cursor,
                       older.olderOffset < cursor else { return .failed }
-                pages.append(older)
+                guard walk.append(older) else { pendingHistoryWalk = nil; return .failed }
+                pendingHistoryWalk = walk
             } catch {
                 if handleAuthenticationFailure(error) { return .failed }
                 notice = "较早的消息暂时无法同步，已保留发送记录，不会自动重发。"
                 return .failed
             }
         }
-        guard (pages.last?.olderOffset ?? Int.max) <= historyEnd else { return .failed }
-        let decision = pending.resolution(in: pages)
+        guard walk.complete else { return .failed }
+        let rawDecision = walk.pendingDecision
+        let decision: PendingReconcileResult = pending.submissionKey != nil && rawDecision == .absent
+            ? .failed : rawDecision
         guard decision != .failed else { return .failed }
         do {
             let current = try await recoveryHistory(sessionID: sessionID, before: nil)
@@ -936,8 +946,8 @@ extension NativeChatModel {
                   !Task.isCancelled, !suspended,
                   current.sessionID == sessionID, !current.readOnly,
                   current.activeRunEvidence == .absent,
-                  current.rawMessageEndIndex == latest.rawMessageEndIndex,
-                  current.messages == latest.messages else {
+                  walk.matchesHead(current) else {
+                pendingHistoryWalk = nil
                 notice = "同步期间消息发生变化，已保留原消息，请稍后重试。"
                 return .failed
             }
@@ -945,6 +955,7 @@ extension NativeChatModel {
             if handleAuthenticationFailure(error) { return .failed }
             return .failed
         }
+        pendingHistoryWalk = nil
         if decision == .delivered {
             guard acknowledgeDeliveredQueuedTurn(matching: pending) else {
                 uncertain = true

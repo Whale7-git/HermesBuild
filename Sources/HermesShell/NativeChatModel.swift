@@ -508,6 +508,11 @@ final class NativeChatModel: ObservableObject {
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?
+    // Runtime-only compact lookback, exact receipt/head scoped. A cold start
+    // re-verifies from the canonical head rather than trusting old proof.
+    var acceptedHistoryWalk: RecoveryHistoryWalk?
+    var pendingHistoryWalk: RecoveryHistoryWalk?
+    var recoveryPagesPerPass = 63
     /// Known missing status record; sparse read-only session recovery and
     /// explicit refresh remain available, never permission to replay a POST.
     @Published var unavailableRunStatusID: String?
@@ -966,12 +971,102 @@ final class NativeChatModel: ObservableObject {
 
     /// Explicit user override, never called by automatic retry or queue flush.
     /// Keep the queue paused and require a fresh authoritative GET afterwards.
-    func abandonAcceptedTurnRecovery() {
-        guard !submitting, !loading, !syncing, !running, !reconciling else { return }
-        guard clearAcceptedTurnRecovery() else { return }
+    var canConfirmEndedRunLocally: Bool {
+        guard !runtimeRetired, !suspended, !authenticationRequired,
+              !submitting, !loading, !syncing, !running, !reconciling,
+              !stopping, !recoveryRecordsUnreadable, pendingApprovals.isEmpty,
+              pendingClarifies.isEmpty else { return false }
+        guard let runID = activeTurnRecovery?.runID ?? unavailableRunStatusID,
+              streamID == nil || streamID == runID else { return false }
+        if let pending = pendingSend {
+            guard let receipt = activeTurnRecovery,
+                  receipt.pendingSendID == pending.id,
+                  receipt.submissionKey == pending.submissionKey else { return false }
+        }
+        return activeTurnRecovery?.terminalStatus != nil || unavailableRunStatusID == runID
+    }
+
+    /// Explicit external confirmation only. Never scheduled by polling.
+    /// The backend must reject live/ambiguous identities; retain the local
+    /// accepted receipt until a fresh canonical history window is readable.
+    func confirmEndedRunLocally() async -> Bool {
+        guard canConfirmEndedRunLocally,
+              let runID = activeTurnRecovery?.runID ?? unavailableRunStatusID else { return false }
+        let receipt = activeTurnRecovery
+        let generation = revision
+        reconciling = true
+        defer {
+            if revision == generation { reconciling = false }
+            if uncertain { scheduleAutomaticReconciliation() }
+        }
         pauseQueueForRecovery()
-        uncertain = true
-        notice = "已放弃本地任务记录，没有重发消息。请同步后再继续。"
+        // This is a user choice to resume the composer, not the queue.
+        setQueueAutomaticDispatchPaused(true)
+        guard localRecordIssues[.queuePause] == nil else { return false }
+        do {
+            let history = try await recoveryHistory(sessionID: sessionID, before: nil)
+            guard revision == generation, !runtimeRetired, !suspended, !Task.isCancelled,
+                  activeTurnRecovery == receipt, history.sessionID == sessionID,
+                  !history.readOnly, history.activeStreamID == nil,
+                  history.activeRunEvidence == .absent || history.unavailableRunID == runID else { return false }
+            // Never erase streamed text that has not yet appeared in the
+            // server transcript. The user can still copy it or use new chat.
+            let streamed = buffer.messages.filter { $0.role == "assistant" && $0.id.hasPrefix("streaming:") }
+            guard streamed.allSatisfy({ row in
+                history.messages.contains { $0.role == "assistant" && $0.content == row.content }
+            }) else {
+                notice = "最后的回复尚未出现在服务端历史，已保留当前内容；可先复制回复或新建会话。"
+                return false
+            }
+            if receipt?.terminalStatus == nil {
+                guard try await api.releaseMissingRunAfterUserConfirmation(sessionID: sessionID, runID: runID) else {
+                    notice = "服务端仍可能在运行，未解除发送限制。"
+                    return false
+                }
+            }
+            guard revision == generation, !runtimeRetired, !suspended, !Task.isCancelled,
+                  activeTurnRecovery == receipt else { return false }
+            let fresh = try await recoveryHistory(sessionID: sessionID, before: nil)
+            guard revision == generation, !runtimeRetired, !suspended, !Task.isCancelled,
+                  activeTurnRecovery == receipt, fresh.sessionID == sessionID,
+                  !fresh.readOnly, fresh.activeRunEvidence == .absent,
+                  fresh.activeStreamID == nil,
+                  fresh.rawMessageEndIndex == history.rawMessageEndIndex,
+                  fresh.messages == history.messages, fresh.tools == history.tools else {
+                notice = "历史或任务状态发生变化，已保留恢复记录。请重新确认。"
+                return false
+            }
+            guard clearAcceptedTurnRecovery() else { return false }
+            // The user acknowledged the old execution externally; this is
+            // NOT a fabricated RunTerminalStatus or a replay authorization.
+            streamID = nil
+            lastEventID = nil
+            buffer.terminal = false
+            try applySnapshot(fresh, preserveLoadedOlder: true)
+            acceptedHistoryWalk = nil
+            pendingHistoryWalk = nil
+            reapedTransportRunID = nil
+            unavailableRunStatusID = nil
+            uncertain = pendingSend != nil || recoveryRecordsUnreadable
+            error = nil
+            if !uncertain {
+                automaticReconciliationTask?.cancel()
+                automaticReconciliationTask = nil
+                automaticReconciliationTicket = nil
+                automaticReconciliationWaiting = false
+                automaticRecoveryQuiet = false
+                notice = "已按你的确认恢复原会话。旧任务未重发，队列保持暂停。"
+            }
+            return !uncertain
+        } catch {
+            if revision == generation && !runtimeRetired && !suspended {
+                if !handleAuthenticationFailure(error) {
+                    uncertain = true
+                    notice = "同步未完成，原消息和恢复记录已保留。"
+                }
+            }
+            return false
+        }
     }
 
     func abandonUnreadableActiveRecovery() {

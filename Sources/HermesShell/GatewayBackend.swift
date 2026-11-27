@@ -354,6 +354,22 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool {
+        guard runStore.canReleaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+        do {
+            // Bypass cooldown. A 200 (even canonical unknown) is not this
+            // legacy recovery path; the official resolver owns that case.
+            _ = try await perform(requests.runStatus(runID: runID))
+            return false
+        } catch let error as APIError {
+            guard case .http(let code, _) = error, code == 404 else { throw error }
+            try Task.checkCancellation()
+            guard runStore.releaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+            clearFailedRunProbes(runID: runID)
+            return true
+        }
+    }
+
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus) {
         guard runStore.runID(for: sessionID) == runID ||
               runStore.unresolvedRunID(for: sessionID) == runID else { return }
@@ -363,6 +379,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     }
 
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if runStore.wasUserReleased(sessionID: sessionID, runID: runID) { return .unknown }
         if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
             return .terminal(terminal)
         }
@@ -404,6 +421,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
               returnedSessionID == sessionID else {
             return recordProbeFailure(runID: runID)
         }
+        guard !runStore.wasUserReleased(sessionID: sessionID, runID: runID) else { return .unknown }
         switch status {
         case "unknown" where Self.canonicalUnknown(root):
             // A canonical lost execution is a real state, not a transport
