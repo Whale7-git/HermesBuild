@@ -1402,7 +1402,7 @@ import Foundation
                      "P0: unresolved completion must keep direct sending disabled")
         precondition(model.queueRecoveryPaused && model.queueAutomaticDispatchPaused,
                      "the unresolved run must retain the actual queue pause, independent of notice ownership")
-        precondition(model.presentationState.verificationPending && model.presentationState.showsNotice,
+        precondition(model.activity == .needsVerification && (model.presentationState.showsNotice || model.presentationState.showsProgress),
                      "unresolved completion must remain visible even if the exact receipt probe replaces the notice")
         model.disconnect()
     }
