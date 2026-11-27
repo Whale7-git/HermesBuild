@@ -68,7 +68,16 @@ extension NativeChatModel {
         // 只清「本次 load 自己置起的」过渡态。若 load 过程中已挂上流
         // （`.streaming`）或仍在显示缓存（`.cached`），那不是本函数该收的尾。
         defer {
-            if generation == revision, !phase.isRunning, !phase.isCached { transition(to: .idle) }
+            if generation == revision, !phase.isRunning {
+                if let savedAt = phase.cachedSince, syncing {
+                    transition(to: .cached(savedAt: savedAt, syncing: false))
+                } else if !phase.isCached {
+                    transition(to: .idle)
+                }
+                if unavailableRunStatusID != nil {
+                    scheduleAutomaticReconciliation()
+                }
+            }
         }
         // The page may prewarm and paint this same scoped history before GET.
         // One-shot per model; the authoritative request remains mandatory.
@@ -700,7 +709,7 @@ extension NativeChatModel {
     /// Single foreground GET-only owner. Time controls rate, not safety.
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
-        guard !runtimeRetired, unavailableRunStatusID == nil else { return }
+        guard !runtimeRetired else { return }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
@@ -718,7 +727,7 @@ extension NativeChatModel {
         let pendingID = pendingSend?.id
         let ticket = UUID()
         automaticReconciliationTicket = ticket
-        automaticRecoveryQuiet = true
+        automaticRecoveryQuiet = unavailableRunStatusID == nil
         automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket,
             onFinish: { [weak self] in
                 guard let self, self.automaticReconciliationTicket == ticket else { return }
@@ -736,17 +745,27 @@ extension NativeChatModel {
                 let delay: UInt64
                 if immediate && attempt == 0 {
                     delay = 0
+                } else if self.unavailableRunStatusID != nil {
+                    // A retired status record is not a terminal result. Keep a
+                    // sparse session/history GET path, never a new submission.
+                    delay = self.automaticReconciliationUnavailableNanoseconds
                 } else if attempt < self.automaticReconciliationDelaysNanoseconds.count {
                     delay = self.automaticReconciliationDelaysNanoseconds[attempt]
+                } else if elapsed >= self.automaticReconciliationVerySlowAfterNanoseconds {
+                    delay = self.automaticReconciliationUnavailableNanoseconds
                 } else {
                     delay = elapsed >= self.automaticReconciliationSlowAfterNanoseconds
                         ? self.automaticReconciliationSlowNanoseconds
                         : self.automaticReconciliationSteadyNanoseconds
                 }
+                // Jitter only real-time intervals; short injected test delays
+                // remain deterministic. Explicit wakeups are never delayed.
+                let jitteredDelay = delay >= 1_000_000_000
+                    ? delay - UInt64.random(in: 0...(delay / 10))
+                    : delay
                 self.automaticReconciliationWaiting = true
-                do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
-                      self.unavailableRunStatusID == nil else { return }
+                do { try await Task.sleep(nanoseconds: jitteredDelay) } catch { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket else { return }
                 self.automaticReconciliationWaiting = false
                 if DispatchTime.now().uptimeNanoseconds - began >= 20_000_000_000 {
                     self.automaticRecoveryQuiet = false
@@ -778,9 +797,12 @@ extension NativeChatModel {
                       (self.pendingSend?.id == pendingID ||
                        (pendingID != nil && self.pendingSend == nil)) else { return }
                 if let probe = self.activeRunProbeTask { await probe.value }
-                guard self.unavailableRunStatusID == nil,
-                      !Task.isCancelled, self.automaticReconciliationTicket == ticket,
-                      !self.suspended, !self.stopping, !self.authenticationRequired else { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      !self.suspended, !self.stopping, !self.authenticationRequired,
+                      (self.activeTurnRecovery?.runID == runID ||
+                       (runID != nil && self.activeTurnRecovery == nil)),
+                      (self.pendingSend?.id == pendingID ||
+                       (pendingID != nil && self.pendingSend == nil)) else { return }
                 // Bound expensive history crawls. A changed head is new evidence.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
                    let latest = self.latestRecoverySnapshot, latest.activeRunEvidence == .absent,
@@ -821,6 +843,9 @@ extension NativeChatModel {
                     self.activeRunProbeTask = nil
                     self.activeRunProbeRunID = nil
                     self.activeRunProbeTicket = nil
+                    if self.unavailableRunStatusID != nil {
+                        self.scheduleAutomaticReconciliation()
+                    }
                 }
             }
             do {
