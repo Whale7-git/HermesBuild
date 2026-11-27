@@ -158,18 +158,19 @@ private struct AttachmentPickerFile: Transferable {
     /// POST. Do not require a server reference just to enable the send button.
     var canSend: Bool { !isImporting && !isEditing && !draftRecoveryUnreadable }
     func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
-        guard canSend else { throw AttachmentError.invalidMetadata }
+        guard canSend, mayPersistDraft() else { throw AttachmentError.invalidMetadata }
         do {
             let payloads = try await coordinator.prepareForSend(sessionID: sessionID)
             try Task.checkCancellation()
-            guard !isImporting, !isEditing, batch.sessionID == sessionID else {
+            guard !isImporting, !isEditing, batch.sessionID == sessionID, mayPersistDraft() else {
                 throw AttachmentError.invalidMetadata
             }
             errorMessage = nil
             return payloads
         } catch {
-            if error is CancellationError { coordinator.cancelUploads() }
-            else { errorMessage = "附件尚未提交：\(error.localizedDescription)。草稿和已完成的附件引用已保留。" }
+            if !(error is CancellationError) && mayPersistDraft() {
+                errorMessage = "附件尚未提交：\(error.localizedDescription)。草稿和已完成的附件引用已保留。"
+            }
             throw error
         }
     }

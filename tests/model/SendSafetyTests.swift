@@ -1496,6 +1496,36 @@ import Foundation
         model.disconnect()
     }
 
+    // Actual queue dispatch persists one key in both protected records.
+    do {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = LocalDataFileStore(instanceID: "queue-key", accountScope: "account",
+            sessionID: "test", rootDirectory: root)
+        let store = ChatDraftStore(instanceID: "queue-key", accountScope: "account",
+            sessionID: "test", fileStore: files)
+        let service = PendingRecoveryService()
+        service.carriesRunSubmissionIdentity = true
+        service.failStart = false
+        let model = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+        await model.load()
+        model.setQueuedTurns([ChatQueuedTurn(id: "keyed-queue", text: "queued", attachments: [],
+            composerText: "queued", origin: .userInput, automaticAfterStreamID: nil)])
+        service.beforeStart = {
+            let pending = try! JSONDecoder().decode(NativeChatModel.PendingSend.self, from: store.loadPending().value!)
+            let queue = ChatSendQueueCodec.decode(store.loadQueuedResult().value!)!
+            precondition(queue.first?.submissionKey == pending.submissionKey &&
+                         pending.submissionKey == service.receivedKeys.last!)
+        }
+        let accepted = await model.flushQueuedIfNeeded()
+        precondition(accepted && model.queuedTurns.isEmpty && model.pendingSend == nil)
+        let receipt = try JSONDecoder().decode(ActiveTurnRecovery.self, from: store.loadActiveRun().value!)
+        precondition(receipt.submissionKey == service.receivedKeys.last! && service.startCalls == 1)
+        service.beforeStart = nil
+        model.disconnect()
+    }
+    print("SEND_SAFETY_KEYED_QUEUE_PASS durable queue, pending and accepted receipt use one submission key")
+
     // A stale accepted receipt with the same queue identity but another
     // dispatch key must not remove a newer attempt or its pending record.
     do {

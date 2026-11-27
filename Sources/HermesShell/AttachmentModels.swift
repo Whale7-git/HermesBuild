@@ -331,16 +331,20 @@ struct AttachmentBatch: Sendable {
         items[index].state = .uploading(next)
         return true
     }
-    mutating func complete(_ id: UUID, attempt: UUID, attachment: UploadedAttachment) {
-        guard let index = current(id, attempt:attempt) else { return }
+    @discardableResult
+    mutating func complete(_ id: UUID, attempt: UUID, attachment: UploadedAttachment) -> Bool {
+        guard let index = current(id, attempt:attempt) else { return false }
         items[index].state = .ready(attachment)
         // 服务端已有副本，本地不再需要原始字节。图片编辑时再按需下载，
         // 否则 8 个 20MB 附件会常驻到会话结束。
         if items[index].releasesBytesAfterUpload { items[index].data = Data() }
+        return true
     }
-    mutating func fail(_ id: UUID, attempt: UUID, message: String) {
-        guard let index = current(id, attempt:attempt) else { return }
+    @discardableResult
+    mutating func fail(_ id: UUID, attempt: UUID, message: String) -> Bool {
+        guard let index = current(id, attempt:attempt) else { return false }
         items[index].state = .failed(message)
+        return true
     }
     mutating func remove(_ id: UUID) { items.removeAll { $0.id == id } }
     /// Re-arm a failed upload without issuing a network request before send.
@@ -353,13 +357,17 @@ struct AttachmentBatch: Sendable {
     }
     /// Cancellation does not imply the transport has stopped. Invalidate its
     /// attempt but retain the local bytes for explicit retry on the next send.
-    mutating func suspendUploading() {
+    @discardableResult
+    mutating func suspendUploading() -> Bool {
+        var changed = false
         for index in items.indices {
             if case .uploading = items[index].state {
                 items[index].attempt = nil
                 items[index].state = .queued
+                changed = true
             }
         }
+        return changed
     }
     /// Replace atomically: a failed edit must leave the original ready payload
     /// intact, and an old upload attempt must never complete the edited chip.
@@ -930,6 +938,7 @@ enum AttachmentFileImport {
     /// A large upload may occupy the full byte budget by itself.
     private let maxInFlightBytes = 24 * 1024 * 1024
     private var waiting: [UUID] = []
+    private var preparationID: UUID?
     private var tasks: [UUID: (attempt: UUID, byteCount: Int, task: Task<Void, Never>)] = [:]
     init(sessionID: String, upload: @escaping Upload) {
         self.batch = AttachmentBatch(sessionID:sessionID)
@@ -959,7 +968,17 @@ enum AttachmentFileImport {
     /// The only entry point for upload transport. A failed or cancelled attempt
     /// never submits a chat POST; ready file references survive an upload retry.
     func prepareForSend(sessionID: String) async throws -> [UploadedAttachment] {
-        guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
+        guard batch.sessionID == sessionID, preparationID == nil else {
+            throw AttachmentError.invalidMetadata
+        }
+        let preparation = UUID()
+        preparationID = preparation
+        defer {
+            if preparationID == preparation {
+                if Task.isCancelled { cancelUploads() }
+                else { preparationID = nil }
+            }
+        }
         for draft in batch.items {
             if case .failed = draft.state { try batch.requeue(draft.id) }
             if draft.canResumeUpload && !waiting.contains(draft.id) {
@@ -970,7 +989,9 @@ enum AttachmentFileImport {
         let deadline = Date().addingTimeInterval(135)
         while true {
             try Task.checkCancellation()
-            guard batch.sessionID == sessionID else { throw AttachmentError.invalidMetadata }
+            guard preparationID == preparation, batch.sessionID == sessionID else {
+                throw CancellationError()
+            }
             if batch.canSend { return try batch.payload(for: sessionID) }
             if batch.items.contains(where: { if case .failed = $0.state { return true }; return false }) {
                 throw AttachmentError.uploadFailed
@@ -985,10 +1006,14 @@ enum AttachmentFileImport {
     /// Leave durable bytes queued after navigation/cancellation; late callbacks
     /// cannot make old attempts ready or overwrite another conversation.
     func cancelUploads() {
+        preparationID = nil
+        cancelUploadTransports()
+    }
+
+    private func cancelUploadTransports() {
         for task in tasks.values { task.task.cancel() }
         waiting.removeAll()
-        batch.suspendUploading()
-        onChange?(batch)
+        if batch.suspendUploading() { onChange?(batch) }
     }
     private func startQueuedIfPossible() {
         while tasks.count < maxConcurrentUploads, !waiting.isEmpty {
@@ -1015,14 +1040,16 @@ enum AttachmentFileImport {
                         self.onProgress?(self.batch)
                     }
                     try Task.checkCancellation()
-                    self?.batch.complete(id, attempt: attempt, attachment: attachment)
+                    if let self, self.batch.complete(id, attempt: attempt, attachment: attachment) {
+                        self.onChange?(self.batch)
+                    }
                 } catch {
-                    if !(error is CancellationError || Task.isCancelled) {
-                        self?.batch.fail(id, attempt: attempt, message: error.localizedDescription)
-                        // A failed preflight cannot submit a chat POST. Stop
-                        // the remaining transports instead of uploading more
-                        // unowned files after that failure.
-                        self?.cancelUploads()
+                    if !(error is CancellationError || Task.isCancelled),
+                       let self, self.batch.fail(id, attempt: attempt, message: error.localizedDescription) {
+                        self.onChange?(self.batch)
+                        // Keep the original preparation owner long enough to
+                        // observe failure instead of swallowing it as cancellation.
+                        self.cancelUploadTransports()
                     }
                 }
                 // A cancelled/removed request cannot reclaim a slot or
@@ -1031,7 +1058,6 @@ enum AttachmentFileImport {
                     self.tasks.removeValue(forKey: id)
                     self.startQueuedIfPossible()
                 }
-                if let self { self.onChange?(self.batch) }
             }
             tasks[id] = (attempt, draft.byteCount, task)
         }
@@ -1057,6 +1083,7 @@ enum AttachmentFileImport {
         onChange?(batch)
     }
     func reset(sessionID: String) {
+        preparationID = nil
         for value in tasks.values { value.task.cancel() }
         // Old-session requests continue to occupy slots until they exit.
         // A new session must not exceed the shared transport budget.
