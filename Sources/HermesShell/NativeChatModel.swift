@@ -299,6 +299,14 @@ final class NativeChatModel: ObservableObject {
     /// A cold offscreen owner may read history and attach SSE, but cannot
     /// dispatch an original turn or queued POST before a presentation claims it.
     var recoveryOnly = false
+    /// Presentation priority affects read-only polling, not send authority.
+    var recoveryPresentationVisible = true
+
+    func setRecoveryPresentationVisible(_ visible: Bool) {
+        guard recoveryPresentationVisible != visible else { return }
+        recoveryPresentationVisible = visible
+        if visible { scheduleAutomaticReconciliation(immediate: true) }
+    }
     var recoveryCheckpointRead = false
     var lastCheckpointWrite: TimeInterval = -.infinity
     private var checkpointEncodingTask: Task<Data?, Never>?
@@ -484,8 +492,8 @@ final class NativeChatModel: ObservableObject {
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?
-    /// Known missing status record; the user may retry an explicit GET or
-    /// open another chat, but this is never permission to replay a POST.
+    /// Known missing status record; sparse read-only session recovery and
+    /// explicit refresh remain available, never permission to replay a POST.
     @Published var unavailableRunStatusID: String?
     @Published var activeRecoveryUnreadable = false
     var authenticationReported = false
@@ -501,9 +509,28 @@ final class NativeChatModel: ObservableObject {
     var automaticReconciliationTicket: UUID?
     var automaticReconciliationWaiting = false
     @Published var automaticRecoveryQuiet = false
-    var automaticReconciliationSteadyNanoseconds: UInt64 = 60_000_000_000
-    var automaticReconciliationSlowNanoseconds: UInt64 = 120_000_000_000
-    var automaticReconciliationSlowAfterNanoseconds: UInt64 = 1_800_000_000_000
+    var automaticReconciliationSteadyNanoseconds: UInt64 = 3_000_000_000
+    var automaticReconciliationOffscreenNanoseconds: UInt64 = 10_000_000_000
+    var automaticReconciliationUnavailableNanoseconds: UInt64 = 20_000_000_000
+
+    /// Duration of a healthy task is deliberately not an input. Only
+    /// presentation, missing status and consecutive failures affect cadence.
+    func automaticReconciliationDelay(attempt: Int, failures: Int) -> UInt64 {
+        let steady = recoveryPresentationVisible
+            ? automaticReconciliationSteadyNanoseconds
+            : automaticReconciliationOffscreenNanoseconds
+        let normal = unavailableRunStatusID != nil
+            ? max(steady, automaticReconciliationUnavailableNanoseconds)
+            : steady
+        if failures > 0, !automaticReconciliationDelaysNanoseconds.isEmpty {
+            return max(normal, automaticReconciliationDelaysNanoseconds[
+                min(failures - 1, automaticReconciliationDelaysNanoseconds.count - 1)])
+        }
+        if attempt == 0, unavailableRunStatusID == nil, recoveryPresentationVisible {
+            return min(normal, automaticReconciliationDelaysNanoseconds.first ?? normal)
+        }
+        return normal
+    }
     // Transport evidence only, not delivery or terminal evidence.
     var reapedTransportRunID: String?
     var hidesRoutineRecoveryNotice: Bool {
@@ -513,8 +540,8 @@ final class NativeChatModel: ObservableObject {
             (error == nil || historyLoadFailurePending)
     }
     var automaticReconciliationDelaysNanoseconds: [UInt64] = [
-        2_000_000_000, 5_000_000_000, 10_000_000_000,
-        20_000_000_000, 40_000_000_000, 60_000_000_000
+        1_000_000_000, 2_000_000_000, 4_000_000_000,
+        8_000_000_000, 15_000_000_000, 30_000_000_000, 60_000_000_000
     ]
     /// 历史 GET 因**网络类**原因失败，还欠一次成功的权威读取。
     ///
@@ -531,9 +558,10 @@ final class NativeChatModel: ObservableObject {
     var stopAcknowledged = false
     var stopRejectedStatusCode: Int?
     var stopStatusPollDelaysNanoseconds: [UInt64] = [
-        1_000_000_000, 2_000_000_000, 4_000_000_000, 8_000_000_000,
-        15_000_000_000, 30_000_000_000, 60_000_000_000, 60_000_000_000
+        1_000_000_000, 1_000_000_000, 1_000_000_000
     ]
+    var stopStatusPollSteadyNanoseconds: UInt64 = 1_000_000_000
+    var stopStatusPollOffscreenNanoseconds: UInt64 = 10_000_000_000
     var buffer = ChatTranscript()
     var publishTask:Task<Void,Never>?
     var loadingOlder = false
@@ -1240,6 +1268,7 @@ final class ConversationRuntimeRegistry {
             entry.lastPresentation = presentation
             entry.access = access
             entries[key] = entry
+            entry.model.setRecoveryPresentationVisible(true)
             return entry.model
         }
         let model = make()
@@ -1253,6 +1282,7 @@ final class ConversationRuntimeRegistry {
         access &+= 1
         let model = make()
         model.recoveryOnly = true
+        model.setRecoveryPresentationVisible(false)
         model.pauseQueueForRecovery()
         entries[key] = Entry(model: model, presentation: nil,
             lastPresentation: UUID(), access: access)
@@ -1276,6 +1306,7 @@ final class ConversationRuntimeRegistry {
               entry.lastPresentation == presentation else { return false }
         entry.presentation = presentation
         entries[key] = entry
+        model.setRecoveryPresentationVisible(true)
         return true
     }
 
@@ -1287,6 +1318,7 @@ final class ConversationRuntimeRegistry {
         guard var entry = entries[key], entry.presentation == presentation else { return }
         entry.presentation = nil
         entries[key] = entry
+        entry.model.setRecoveryPresentationVisible(false)
     }
 
     var detached: [(Key, NativeChatModel)] {
@@ -1345,6 +1377,7 @@ final class ConversationRuntimeRegistry {
             guard var entry = entries[key] else { continue }
             entry.presentation = nil
             entries[key] = entry
+            entry.model.setRecoveryPresentationVisible(false)
         }
     }
 

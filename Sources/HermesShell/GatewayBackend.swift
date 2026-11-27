@@ -358,7 +358,15 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .terminal(terminal)
         }
         if runStore.unresolvedRunID(for: sessionID) == runID {
-            return try await verifyUnresolvedRun(sessionID: sessionID, runID: runID)
+            // The history and receipt paths share this cooldown. Missing
+            // status is never absence, and a second caller need not repeat GET.
+            if let retryAt = nextRunProbeAt[runID], Date().timeIntervalSince1970 < retryAt {
+                return .unresolved
+            }
+            let result = try await verifyUnresolvedRun(sessionID: sessionID, runID: runID)
+            if case .terminal = result { clearFailedRunProbes(runID: runID) }
+            else { nextRunProbeAt[runID] = Date().timeIntervalSince1970 + 20 }
+            return result
         }
         let now = Date().timeIntervalSince1970
         if let retryAt = nextRunProbeAt[runID], now < retryAt {
@@ -553,7 +561,7 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
                 clearFailedRunProbes(runID: unresolvedID)
                 return GatewayActiveRunHistory(evidence: .absent, pendingControls: nil)
             }
-            nextRunProbeAt[unresolvedID] = Date().timeIntervalSince1970 + 30
+            nextRunProbeAt[unresolvedID] = Date().timeIntervalSince1970 + 20
             return GatewayActiveRunHistory(evidence: .unknown, pendingControls: nil,
                 unavailableRunID: runStore.unresolvedRunID(for: sessionID))
         }

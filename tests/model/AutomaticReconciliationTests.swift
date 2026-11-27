@@ -6,6 +6,17 @@ extension ModelTests {
     @MainActor static func automaticReconciliationTests() async throws {
         let service = ActivityRecoveryService()
         let model = NativeChatModel(sessionID: "activity", api: service)
+        precondition(model.automaticReconciliationDelay(attempt: 0, failures: 0) == 1_000_000_000)
+        precondition(model.automaticReconciliationDelay(attempt: 10_000, failures: 0) == 3_000_000_000,
+                     "healthy long-running recovery must stay responsive")
+        precondition(model.automaticReconciliationDelay(attempt: 10, failures: 99) == 60_000_000_000)
+        model.setRecoveryPresentationVisible(false)
+        precondition(model.automaticReconciliationDelay(attempt: 10, failures: 0) == 10_000_000_000)
+        model.unavailableRunStatusID = "missing"
+        precondition(model.automaticReconciliationDelay(attempt: 10, failures: 0) == 20_000_000_000)
+        model.unavailableRunStatusID = nil
+        model.setRecoveryPresentationVisible(true)
+        model.automaticReconciliationSteadyNanoseconds = 4_000_000
         model.automaticReconciliationDelaysNanoseconds = [
             1_000_000, 2_000_000, 4_000_000
         ]
@@ -37,9 +48,7 @@ extension ModelTests {
             1_000_000, 2_000_000, 4_000_000
         ]
         locked.automaticReconciliationSteadyNanoseconds = 4_000_000
-        locked.automaticReconciliationSlowAfterNanoseconds = 0
-        locked.automaticReconciliationSlowNanoseconds = 4_000_000
-        await locked.load()
+         await locked.load()
         locked.scheduleAutomaticReconciliation()
         try await eventually { outage.historyCalls >= 5 }
         precondition(outage.postCalls == 0 && locked.uncertain && !locked.canSend,

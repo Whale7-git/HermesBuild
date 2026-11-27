@@ -12,6 +12,7 @@ import Foundation
     var stopErrorCode: Int?
     var stopTimeout = false
     var stopCalls = 0
+    var stopProbeCalls = 0
     var failStart = false
     var historyRows: [[String: Any]] = []
     var historyPageSize: Int?
@@ -70,7 +71,8 @@ import Foundation
         }
     }
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
-        active == runID ? .alive : .terminal(.cancelled)
+        stopProbeCalls += 1
+        return active == runID ? .alive : .terminal(.cancelled)
     }
     func steerNativeTurn(sessionID: String, text: String) async throws -> String? {
         steerCalls += 1
@@ -438,21 +440,24 @@ import Foundation
         model.disconnect()
     }
 
-    // A run that remains alive must exhaust its polling budget and stay locked.
+    // A run that remains alive must continue polling beyond the initial
+    // window and stay locked until exact terminal proof.
     do {
         let service = SendSafetyService()
         service.stopAcknowledgementOnly = true
         let model = NativeChatModel(sessionID: "stop-never-terminal", api: service)
         model.stopStatusPollDelaysNanoseconds = [10_000_000, 10_000_000]
+        model.stopStatusPollSteadyNanoseconds = 10_000_000
         await model.load()
         model.draft = "still running"; _ = await model.send()
         await model.stop()
-        try await ModelTests.eventually { model.stopStatusPollTask == nil }
+        try await ModelTests.eventually { service.stopProbeCalls >= 5 }
         precondition(model.stopping && !model.canSend && service.startCalls == 1
-                     && service.stopCalls == 1,
-                     "exhausted polling must not unlock, dispatch or issue another STOP")
-        precondition(model.notice?.contains("返回会话时将自动继续同步") == true,
-                     "poll budget exhaustion preserves lock and clearly explains safe foreground follow-up")
+                     && service.stopCalls == 1 && model.stopStatusPollTask != nil,
+                     "continuous STOP status polling must not unlock or repeat a POST")
+        service.active = nil
+        try await ModelTests.eventually { !model.stopping }
+        precondition(model.canSend && service.stopCalls == 1 && service.startCalls == 1)
         model.disconnect()
     }
 
@@ -1395,8 +1400,10 @@ import Foundation
                      "P0: no second POST was issued — got \(service.startCalls) start calls")
         precondition(!model.canSend,
                      "P0: unresolved completion must keep direct sending disabled")
-        precondition(model.notice == "连接已恢复，上一条回复状态尚未确认，已暂停队列。",
-                     "the recovery notice must explain both unresolved completion and the paused queue")
+        precondition(model.queueRecoveryPaused && model.queueAutomaticDispatchPaused,
+                     "the unresolved run must retain the actual queue pause, independent of notice ownership")
+        precondition(model.presentationState.verificationPending && model.presentationState.showsNotice,
+                     "unresolved completion must remain visible even if the exact receipt probe replaces the notice")
         model.disconnect()
     }
 

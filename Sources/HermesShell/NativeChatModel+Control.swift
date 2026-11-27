@@ -427,6 +427,7 @@ extension NativeChatModel {
                 stopAcknowledged = false
                 transition(to: .idle)
                 notice = "服务暂时找不到这次任务，尚不能确认是否停止。"
+                scheduleAutomaticReconciliation()
             case .terminal(let outcome):
                 guard rememberTerminalStatus(runID: active, outcome: outcome) else {
                     uncertain = true
@@ -471,7 +472,7 @@ extension NativeChatModel {
         }
     }
 
-    /// Only a few status GETs are permitted after an attempted STOP.
+    /// STOP remains a GET-only owner until a verified result or cancellation.
     /// A still-running/unknown run stays locked; polling never changes queue
     /// preferences or grants permission to dispatch the next turn.
     func scheduleStopStatusPolling() {
@@ -488,17 +489,25 @@ extension NativeChatModel {
                 self.stopStatusPollTicket = nil
             }) { [weak self] in
             guard let self else { return }
-            for delay in delays {
+            var attempt = 0
+            while !Task.isCancelled {
+                let delay: UInt64
+                if !self.recoveryPresentationVisible {
+                    delay = self.stopStatusPollOffscreenNanoseconds
+                } else if attempt < delays.count {
+                    delay = delays[attempt]
+                } else {
+                    delay = self.stopStatusPollSteadyNanoseconds
+                }
                 do { try await Task.sleep(nanoseconds: delay) }
                 catch { return }
                 guard !Task.isCancelled, generation == self.revision,
-                      self.streamID == active, self.stopping, !self.suspended else { return }
+                      self.streamID == active, self.stopping, !self.suspended,
+                      !self.authenticationRequired else { return }
                 await self.verifyPendingStop()
                 guard !Task.isCancelled, generation == self.revision,
                       self.streamID == active, self.stopping, !self.suspended else { return }
-            }
-            if generation == self.revision, self.streamID == active, self.stopping {
-                self.notice = "尚未确认是否停止，返回会话时将自动继续同步，不会重复发送请求。"
+                attempt = min(attempt + 1, delays.count)
             }
         }
     }
