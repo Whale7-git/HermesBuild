@@ -377,7 +377,8 @@ extension NativeChatModel {
         guard let id = pending.queuedTurnID else { return true }
         guard !queueRecoveryUnreadable else { return false }
         guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
-        guard queuedTurns[index].needsReconcile else { return false }
+        guard queuedTurns[index].needsReconcile,
+              queuedTurns[index].submissionKey == pending.submissionKey else { return false }
         var next = queuedTurns
         next.remove(at: index)
         return commitQueueMutation(next)
@@ -386,9 +387,11 @@ extension NativeChatModel {
     /// The accepted receipt survives a failed queue write or process death.
     /// Remove exactly its in-flight row, never a waiting sibling.
     @discardableResult
-    func retireAcceptedQueueTurn(id: String, nextRunID: String) -> Bool {
-        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return !queueRecoveryUnreadable }
-        guard queuedTurns[index].needsReconcile else { return false }
+    func retireAcceptedQueueTurn(id: String, nextRunID: String, submissionKey: String? = nil) -> Bool {
+        guard !queueRecoveryUnreadable else { return false }
+        guard let index = queuedTurns.firstIndex(where: { $0.id == id }) else { return true }
+        guard queuedTurns[index].needsReconcile,
+              queuedTurns[index].submissionKey == submissionKey else { return false }
         var next = queuedTurns
         next.remove(at: index)
         if index == 0, !next.isEmpty, next[0].delivery == .waiting {
@@ -728,12 +731,12 @@ extension NativeChatModel {
         // A disconnected stream may be declared finished only if a new user
         // row AND an assistant answer appear after this immutable boundary.
         activeTurnHistoryBoundary = confirmedHistoryEnd
-        pendingSend = PendingSend(id:pendingID, text:text, attachments:attachments,
+        let pending = PendingSend(id:pendingID, text:text, attachments:attachments,
                                   composerText:composerText, historyEnd:confirmedHistoryEnd,
                                   knownIDs:knownIDs, createdAt:startedAt, origin:origin,
                                   queuedTurnID: queuedTurnID, submissionKey: submissionKey,
                                   reasoningEffort: effort)
-        guard persistPendingSend().succeeded else {
+        guard preparePendingSubmission(pending).succeeded else {
             transition(to: .idle)
             uncertain = true
             error = "发送记录保存失败，本次未发送。请检查本地存储后重试。"
@@ -851,7 +854,8 @@ extension NativeChatModel {
             if handleAuthenticationFailure(error) {
                 return SubmitResult(accepted: false, completed: true)
             }
-            notice = "暂时无法确认消息是否送达，已保留草稿和附件，请同步状态。"
+            notice = "暂时无法确认消息是否送达，草稿和附件已保留，正在自动同步。"
+            scheduleAutomaticReconciliation()
             if resumeRequested { resumeRequested = false; await load(silent: true, preserveLoadedOlder: true) }
         }
         return SubmitResult(accepted: false, completed: true)

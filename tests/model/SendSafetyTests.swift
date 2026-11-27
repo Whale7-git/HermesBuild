@@ -1496,6 +1496,32 @@ import Foundation
         model.disconnect()
     }
 
+    // A stale accepted receipt with the same queue identity but another
+    // dispatch key must not remove a newer attempt or its pending record.
+    do {
+        let model = NativeChatModel(sessionID: "keyed-ownership", api: SendSafetyService())
+        let key = RunSubmissionIdentity.make()
+        let other = RunSubmissionIdentity.make()
+        let queued = ChatQueuedTurn(id: "same-queue", text: "same", attachments: [],
+            composerText: "same", origin: .userInput, automaticAfterStreamID: nil,
+            delivery: .uncertain, historyEnd: 0, knownIDs: [], submittedAt: 1,
+            submissionKey: key)
+        model.setQueuedTurns([queued])
+        model.pendingSend = NativeChatModel.PendingSend(id: "same-pending", text: "same",
+            attachments: [], composerText: "same", historyEnd: 0, knownIDs: [],
+            createdAt: 1, origin: .userInput, queuedTurnID: queued.id, submissionKey: key)
+        var receipt = ActiveTurnRecovery(runID: "run", historyEnd: 0, knownIDs: [],
+            text: "same", attachmentPaths: [], pendingSendID: "same-pending",
+            queuedTurnID: queued.id, submissionKey: other)
+        model.activeTurnRecovery = receipt
+        precondition(!model.settleAcceptedReceipt(receipt) && model.queuedTurns == [queued] &&
+                     model.pendingSend?.submissionKey == key)
+        receipt.submissionKey = key
+        model.activeTurnRecovery = receipt
+        precondition(model.settleAcceptedReceipt(receipt) && model.queuedTurns.isEmpty && model.pendingSend == nil)
+        model.disconnect()
+    }
+
     // Q205-01/02 and build206: refusing an in-flight clear must preserve
     // recovery evidence; the warning expires on a successful mutation.
     do {

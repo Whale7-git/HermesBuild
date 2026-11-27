@@ -452,11 +452,17 @@ extension NativeChatModel {
         }
         let messages = prefix + snap.messages
         let tools = prefixTools + snap.tools
-        // Identical periodic GETs must not rebuild the entire timeline.
-        if buffer.messages != messages { buffer.messages = messages }
-        if buffer.tools != tools { buffer.tools = tools }
-        buffer.usage = snap.usage
-        olderOffset = prefix.isEmpty ? snap.olderOffset : min(olderOffset, snap.olderOffset)
+        // Identical periodic GETs must not publish or budget the entire
+        // timeline again. A changed usage counter is still visible.
+        let messagesChanged = buffer.messages != messages
+        let toolsChanged = buffer.tools != tools
+        let newOffset = prefix.isEmpty ? snap.olderOffset : min(olderOffset, snap.olderOffset)
+        guard messagesChanged || toolsChanged || buffer.usage != snap.usage ||
+              olderOffset != newOffset || cachedHistoryDate != nil else { return }
+        if messagesChanged { buffer.messages = messages }
+        if toolsChanged { buffer.tools = tools }
+        if buffer.usage != snap.usage { buffer.usage = snap.usage }
+        olderOffset = newOffset
         _ = trimLoadedMessages()
         if let first = buffer.messages.first?.sourceIndex {
             olderOffset = max(olderOffset, first)
@@ -478,9 +484,10 @@ extension NativeChatModel {
                 unavailableRunStatusID = unavailable
                 automaticRecoveryQuiet = false
             }
-            notice = unavailableRunStatusID == nil
+            let message = unavailableRunStatusID == nil
                 ? "回复状态暂时无法确认，已保留消息，不会重复发送。"
                 : "这次任务的状态暂不可用，仍可查看消息；正在自动同步。"
+            if notice != message { notice = message }
             // Canonical content is readable even if the run bookkeeping has
             // expired. Never infer completion from display-only history.
             if unavailableRunStatusID != nil || (buffer.messages.isEmpty && buffer.tools.isEmpty) {

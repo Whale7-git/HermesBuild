@@ -801,6 +801,16 @@ final class NativeChatModel: ObservableObject {
         }
     }
 
+    /// Submission has a single verified commit boundary, rather than a
+    /// property observer write followed by a second identical disk write.
+    @discardableResult
+    func preparePendingSubmission(_ pending: PendingSend) -> LocalStoreWriteResult {
+        restoringRecoveryRecords = true
+        pendingSend = pending
+        restoringRecoveryRecords = false
+        return persistPendingSend()
+    }
+
     @discardableResult
     func persistPendingSend() -> LocalStoreWriteResult {
         guard !runtimeRetired else { return .failed(.diskWrite) }
@@ -843,8 +853,13 @@ final class NativeChatModel: ObservableObject {
     @discardableResult
     func settleAcceptedReceipt(_ receipt: ActiveTurnRecovery) -> Bool {
         guard !runtimeRetired, activeTurnRecovery == receipt else { return false }
+        // Validate both identities before mutating either record. A stale
+        // accepted receipt must not consume another attempt of the same row.
+        if let pending = pendingSend, pending.id == receipt.pendingSendID,
+           pending.submissionKey != receipt.submissionKey { return false }
         if let id = receipt.queuedTurnID,
-           !retireAcceptedQueueTurn(id: id, nextRunID: receipt.runID) { return false }
+           !retireAcceptedQueueTurn(id: id, nextRunID: receipt.runID,
+                                    submissionKey: receipt.submissionKey) { return false }
         if let pending = pendingSend, pending.id == receipt.pendingSendID {
             guard clearPendingSend(expectedID: pending.id) else { return false }
         }

@@ -151,7 +151,7 @@ struct ChatRecoveryCenter: View {
                         if let retention = capabilities.durableStatusRetentionSeconds {
                             statusRow(icon: "checkmark.shield", color: AppTheme.success,
                                 title: "服务支持持久任务状态",
-                                detail: "新任务的状态记录可保留约 \(max(1, retention / 3600)) 小时；旧任务仍需同步确认。")
+                                detail: "新任务支持服务端持久记录（\(retention >= 3600 && retention % 3600 == 0 ? "\(retention / 3600) 小时" : "\(retention) 秒")）；旧任务仍需同步确认。")
                         } else {
                             statusRow(icon: "info.circle", color: .secondary,
                                 title: "服务未声明持久任务状态",

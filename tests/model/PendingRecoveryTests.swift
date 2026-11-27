@@ -274,6 +274,47 @@ extension ModelTests {
             restored.disconnect()
         }
         print("PENDING_PASS durable submission key before transport, restart, no replay on absence")
+
+        // Targeted failure injection at both sides of the admission boundary.
+        // Reject the protected file read-back, not the whole storage root.
+        for failingPrefix in ["pending-", "active-run-"] {
+            let faultRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: faultRoot) }
+            let faultFiles = LocalDataFileStore(instanceID: "keyed-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: faultRoot,
+                destinationReadBackVerifier: { url, data in
+                    !url.lastPathComponent.hasPrefix(failingPrefix) &&
+                        (try? Data(contentsOf: url)) == data
+                })
+            let faultStore = ChatDraftStore(instanceID: "keyed-fault", accountScope: "account",
+                sessionID: "test", fileStore: faultFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            service.failStart = false
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: faultStore)
+            await model.load()
+            model.draft = "keep this draft"
+            _ = await model.send()
+            if failingPrefix == "pending-" {
+                precondition(service.startCalls == 0 && model.pendingSend != nil &&
+                             model.draft == "keep this draft" && !model.canSend,
+                             "failed pre-POST commit cannot send")
+            } else {
+                precondition(service.startCalls == 1 && faultStore.loadPending().value != nil &&
+                             model.activeTurnRecovery == nil && !model.canSend,
+                             "failed post-acceptance receipt must preserve the original pending proof")
+                let saved = try JSONDecoder().decode(NativeChatModel.PendingSend.self,
+                    from: faultStore.loadPending().value!)
+                precondition(saved.submissionKey == service.receivedKeys.last!)
+                model.disconnect()
+                let reopened = NativeChatModel(sessionID: "test", api: service, draftStore: faultStore)
+                precondition(reopened.pendingSend?.submissionKey == saved.submissionKey && !reopened.canSend)
+                precondition(service.startCalls == 1)
+                reopened.disconnect()
+            }
+            model.disconnect()
+        }
+        print("PENDING_PASS pre-POST write and post-acceptance receipt fault injection")
         // Corrupt pending data must not become sendable after a successful history GET.
         _ = durable.savePending(Data("invalid pending".utf8))
         let corrupt = NativeChatModel(sessionID: "test", api: PendingRecoveryService(), draftStore: durable)
