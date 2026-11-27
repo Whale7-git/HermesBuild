@@ -147,6 +147,9 @@ private struct AttachmentPickerFile: Transferable {
             self.batch = batch
             self.persist(batch)
         }
+        // An upload percentage does not change the protected draft. Avoid
+        // encoding and rewriting up to 40 MB for every progress callback.
+        coordinator.onProgress = { [weak self] batch in self?.batch = batch }
         restorePersistedDraft()
     }
 

@@ -48,7 +48,7 @@ extension ModelTests {
             1_000_000, 2_000_000, 4_000_000
         ]
         locked.automaticReconciliationSteadyNanoseconds = 4_000_000
-         await locked.load()
+        await locked.load()
         locked.scheduleAutomaticReconciliation()
         try await eventually { outage.historyCalls >= 5 }
         precondition(outage.postCalls == 0 && locked.uncertain && !locked.canSend,

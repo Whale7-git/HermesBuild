@@ -522,13 +522,25 @@ extension ModelTests {
             precondition(model.transcript.messages.map(\.id) == ["sent", "reply"])
             precondition(model.uncertain && !model.canSend && service.startCalls == 0)
             precondition(model.latestRecoverySnapshot == nil, "unknown status cannot authorize history proof")
+            let originalBoundary = model.confirmedHistoryEnd
             model.scheduleAutomaticReconciliation()
             precondition(model.unavailableRunStatusID == "expired-run" &&
                          model.automaticReconciliationTask != nil &&
                          model.presentationState.showsNotice,
                          "a missing run keeps sparse read-only recovery and visible uncertainty")
             let firstCalls = service.historyCalls
-            try await eventually { service.historyCalls >= firstCalls + 2 }
+            service.rows.append(["id": "later", "role": "assistant", "content": "newly stored reply"])
+            try await eventually { service.historyCalls >= firstCalls + 2 &&
+                model.transcript.messages.last?.id == "later" }
+            precondition(model.confirmedHistoryEnd == originalBoundary && model.latestRecoverySnapshot == nil,
+                         "display-only history must never authorize settlement")
+            // A delayed older or conflicting window cannot erase the new reply.
+            let newerRows = service.rows
+            service.rows = [["id": "sent", "role": "user", "content": "original"]]
+            let staleCalls = service.historyCalls
+            try await eventually { service.historyCalls > staleCalls }
+            precondition(model.transcript.messages.last?.id == "later")
+            service.rows = newerRows
             precondition(model.uncertain && !model.canSend && service.startCalls == 0,
                          "repeated missing status is not permission to send")
             model.draft = "must not send"
