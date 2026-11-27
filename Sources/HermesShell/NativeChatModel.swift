@@ -484,8 +484,8 @@ final class NativeChatModel: ObservableObject {
     /// Latest authoritative tail, retained only for bounded read-only recovery.
     /// Older verification pages are never inserted into the visible transcript.
     var latestRecoverySnapshot: ChatSnapshot?
-    /// Known missing status record; the user may retry an explicit GET or
-    /// open another chat, but this is never permission to replay a POST.
+    /// Known missing status record; sparse read-only session recovery and
+    /// explicit refresh remain available, never permission to replay a POST.
     @Published var unavailableRunStatusID: String?
     @Published var activeRecoveryUnreadable = false
     var authenticationReported = false
@@ -504,6 +504,8 @@ final class NativeChatModel: ObservableObject {
     var automaticReconciliationSteadyNanoseconds: UInt64 = 60_000_000_000
     var automaticReconciliationSlowNanoseconds: UInt64 = 120_000_000_000
     var automaticReconciliationSlowAfterNanoseconds: UInt64 = 1_800_000_000_000
+    var automaticReconciliationVerySlowAfterNanoseconds: UInt64 = 7_200_000_000_000
+    var automaticReconciliationUnavailableNanoseconds: UInt64 = 300_000_000_000
     // Transport evidence only, not delivery or terminal evidence.
     var reapedTransportRunID: String?
     var hidesRoutineRecoveryNotice: Bool {
