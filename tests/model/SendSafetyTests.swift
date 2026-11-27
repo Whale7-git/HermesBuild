@@ -1393,8 +1393,10 @@ import Foundation
                      "P0: the queued turn must NOT be auto-dispatched on an unproven finish")
         precondition(service.startCalls == 1,
                      "P0: no second POST was issued — got \(service.startCalls) start calls")
-        precondition(model.notice?.contains("无法确认") == true,
-                     "the user is told why sending is paused, not left guessing")
+        precondition(!model.canSend,
+                     "P0: unresolved completion must keep direct sending disabled")
+        precondition(model.notice == "连接已恢复，上一条回复状态尚未确认，已暂停队列。",
+                     "the recovery notice must explain both unresolved completion and the paused queue")
         model.disconnect()
     }
 
