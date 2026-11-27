@@ -553,6 +553,7 @@ final class NativeChatModel: ObservableObject {
     var stopStatusPollTask: Task<Void, Never>?
     var stopStatusPollTicket: UUID?
     var stopStatusProbeInFlight = false
+    var stopStatusProbeFailures = 0
     /// A 2xx response acknowledges the request, not completion. A 404/409 is
     /// a rejected request and must never be presented as a successful stop.
     var stopAcknowledged = false
