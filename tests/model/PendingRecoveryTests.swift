@@ -891,6 +891,28 @@ extension ModelTests {
         }
         print("PENDING_PASS multi-pass history budget and exact terminal with a later independent user turn")
 
+        // Gateway local index absence is not a remote execution result.
+        // Even a perfectly matching canonical reply must not unlock until
+        // the exact Run reports a terminal state.
+        do {
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            service.rows = [["id": "sent", "role": "user", "content": "original"],
+                            ["id": "reply", "role": "assistant", "content": "answer"]]
+            let model = NativeChatModel(sessionID: "test", api: service)
+            model.activeTurnRecovery = ActiveTurnRecovery(runID: "gateway-exact", historyEnd: 0,
+                knownIDs: [], text: "original", attachmentPaths: [])
+            await model.load()
+            if let probe = model.activeRunProbeTask { await probe.value }
+            precondition(!model.canSend && model.activeTurnRecovery != nil && service.startCalls == 0)
+            service.probeResults = [.terminal(.completed)]
+            await model.refresh(silent: true)
+            try await eventually { model.canSend && model.activeTurnRecovery == nil }
+            precondition(service.startCalls == 0 && model.queueRecoveryPaused)
+            model.disconnect()
+        }
+        print("PENDING_PASS gateway local absence cannot replace exact terminal proof")
+
         // Missing status is still not terminal. Explicit external confirmation
         // can retire a matching receipt, not a running or unrelated Run.
         do {

@@ -1123,9 +1123,22 @@ final class NativeChatModel: ObservableObject {
             // Never erase streamed text that has not yet appeared in the
             // server transcript. The user can still copy it or use new chat.
             let streamed = buffer.messages.filter { $0.role == "assistant" && $0.id.hasPrefix("streaming:") }
-            guard streamed.allSatisfy({ row in
-                history.messages.contains { $0.role == "assistant" && $0.content == row.content }
-            }) else {
+            // One old identical message must not satisfy several streamed
+            // segments. Match each in order, within this receipt's fresh rows.
+            let freshAnswers = history.messages.filter { row in
+                guard row.role == "assistant", let boundary = receipt?.historyEnd,
+                      let index = row.sourceIndex, index >= boundary else { return false }
+                return receipt?.knownIDs.contains(row.id) == false
+            }
+            var answerCursor = freshAnswers.startIndex
+            let allStreamedSaved = streamed.allSatisfy { row in
+                guard let index = freshAnswers[answerCursor...].firstIndex(where: {
+                    $0.content == row.content && $0.attachmentPaths == row.attachmentPaths
+                }) else { return false }
+                answerCursor = freshAnswers.index(after: index)
+                return true
+            }
+            guard allStreamedSaved else {
                 notice = "最后的回复尚未出现在服务端历史，已保留当前内容；可先复制回复或新建会话。"
                 return false
             }

@@ -361,10 +361,19 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
     func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool {
         guard runStore.canReleaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
         do {
-            // Bypass cooldown. A 200 (even canonical unknown) is not this
-            // legacy recovery path; the official resolver owns that case.
-            _ = try await perform(requests.runStatus(runID: runID))
-            return false
+            // Bypass cooldown. Never release a live or canonical unknown
+            // Run on user confirmation alone. Exact terminal evidence can
+            // also finish a previously interrupted local release.
+            let data = try await perform(requests.runStatus(runID: runID))
+            try Task.checkCancellation()
+            guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  root["run_id"] as? String == runID,
+                  root["session_id"] as? String == sessionID,
+                  let status = root["status"] as? String,
+                  RunTerminalStatus(rawValue: status) != nil,
+                  runStore.releaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
+            clearFailedRunProbes(runID: runID)
+            return true
         } catch let error as APIError {
             guard case .http(let code, _) = error, code == 404 else { throw error }
             try Task.checkCancellation()
