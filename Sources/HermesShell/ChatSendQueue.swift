@@ -40,13 +40,15 @@ struct ChatQueuedTurn: Identifiable, Equatable {
     var historyEnd: Int?
     var knownIDs: Set<String>
     var submittedAt: Double?
+    /// Persisted before POST; optional in older version-4 records.
+    var submissionKey: String?
 
     init(id: String = "queued-" + UUID().uuidString, text: String,
          attachments: [ChatAttachmentPayload], composerText: String,
          origin: ChatSendOrigin, automaticAfterStreamID: String?,
          delivery: ChatQueuedDelivery = .waiting,
          historyEnd: Int? = nil, knownIDs: Set<String> = [],
-         submittedAt: Double? = nil) {
+         submittedAt: Double? = nil, submissionKey: String? = nil) {
         self.id = id
         self.text = text
         self.attachments = attachments
@@ -57,6 +59,7 @@ struct ChatQueuedTurn: Identifiable, Equatable {
         self.historyEnd = historyEnd
         self.knownIDs = knownIDs
         self.submittedAt = submittedAt
+        self.submissionKey = submissionKey
     }
 
     var isWaiting: Bool { delivery == .waiting }
@@ -74,6 +77,7 @@ struct ChatQueuedTurn: Identifiable, Equatable {
         next.historyEnd = nil
         next.knownIDs = []
         next.submittedAt = nil
+        next.submissionKey = nil
         return next
     }
 
@@ -96,9 +100,14 @@ struct ChatQueuedTurn: Identifiable, Equatable {
     /// accepted when the window covers the saved boundary, contains no other
     /// new user row, and has no active server run.
     func resolution(in snapshot: ChatSnapshot) -> PendingReconcileResult {
-        DeliveryReconciliationPolicy.resolve(
+        resolution(in: [snapshot])
+    }
+
+    func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+        let result = DeliveryReconciliationPolicy.resolve(
             text: text, attachments: attachments, historyEnd: historyEnd,
-            knownIDs: knownIDs, snapshot: snapshot)
+            knownIDs: knownIDs, pages: pages)
+        return submissionKey != nil && result == .absent ? .failed : result
     }
 }
 
@@ -261,7 +270,7 @@ enum ChatSendQueueCodec {
     }
 
     private static func record(_ turn: ChatQueuedTurn) -> [String: Any] {
-        ["id": turn.id, "text": turn.text, "composer_text": turn.composerText,
+        var value: [String: Any] = ["id": turn.id, "text": turn.text, "composer_text": turn.composerText,
          "delivery": turn.delivery.rawValue,
          "attachments": turn.attachments.map(\.jsonObject),
          "system_placeholder": turn.origin == .systemPlaceholder,
@@ -269,6 +278,8 @@ enum ChatSendQueueCodec {
          "history_end": turn.historyEnd ?? NSNull(),
          "known_ids": turn.knownIDs.sorted(),
          "submitted_at": turn.submittedAt ?? NSNull()]
+        if let key = turn.submissionKey { value["submission_key"] = key }
+        return value
     }
 
     private static func decodeTurn(_ object: [String: Any], version: Int) -> ChatQueuedTurn? {
@@ -321,13 +332,20 @@ enum ChatSendQueueCodec {
             knownIDs = []
             submittedAt = nil
         }
+        let submissionKey: String?
+        if let raw = object["submission_key"] {
+            guard let key = raw as? String, !key.isEmpty, key.utf8.count <= 255,
+                  key.utf8.allSatisfy({ (33...126).contains($0) }) else { return nil }
+            submissionKey = key
+        } else { submissionKey = nil }
         return ChatQueuedTurn(id: id, text: text, attachments: attachments,
                               composerText: composerText,
                               origin: object["system_placeholder"] as? Bool == true
                                   ? .systemPlaceholder : .userInput,
                               automaticAfterStreamID: automatic,
                               delivery: delivery, historyEnd: historyEnd,
-                              knownIDs: knownIDs, submittedAt: submittedAt)
+                              knownIDs: knownIDs, submittedAt: submittedAt,
+                              submissionKey: submissionKey)
     }
 }
 

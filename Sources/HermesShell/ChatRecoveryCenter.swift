@@ -18,6 +18,7 @@ struct ChatRecoveryCenter: View {
     @State private var reconciling = false
     @State private var queueRecoveryID: String?
     @State private var resultText: String?
+    @State private var remoteRecoveryCapabilities: RunRecoveryCapabilities?
     private var queueStatus: ChatQueueStatus { ChatQueueStatus(turns: model.queuedTurns) }
 
     var body: some View {
@@ -146,6 +147,17 @@ struct ChatRecoveryCenter: View {
                     }
                 }
                 Section("后台运行") {
+                    if let capabilities = remoteRecoveryCapabilities {
+                        if let retention = capabilities.durableStatusRetentionSeconds {
+                            statusRow(icon: "checkmark.shield", color: AppTheme.success,
+                                title: "服务支持持久任务状态",
+                                detail: "新任务的状态记录可保留约 \(max(1, retention / 3600)) 小时；旧任务仍需同步确认。")
+                        } else {
+                            statusRow(icon: "info.circle", color: .secondary,
+                                title: "服务未声明持久任务状态",
+                                detail: "继续使用兼容恢复方式，不会重复发送。")
+                        }
+                    }
                     if model.activeTurnRecovery != nil {
                         statusRow(icon: model.running ? "waveform" : "questionmark.circle",
                                   color: AppTheme.warning,
@@ -315,6 +327,12 @@ struct ChatRecoveryCenter: View {
             }
             .navigationTitle("恢复中心")
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                // Read-only capability discovery on the exact backend object.
+                // An unavailable endpoint does not change any send authority.
+                let capabilities = try? await model.api.runRecoveryCapabilities()
+                if !Task.isCancelled { remoteRecoveryCapabilities = capabilities }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }

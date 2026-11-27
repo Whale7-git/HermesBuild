@@ -795,6 +795,9 @@ import Foundation
         let uncertainData = ChatSendQueueCodec.encode(uncertain)!
         precondition(ChatSendQueueCodec.decode(uncertainData) == uncertain,
                      "version 3 preserves an uncertain delivery state")
+        uncertain[0].submissionKey = RunSubmissionIdentity.make()
+        precondition(ChatSendQueueCodec.decode(ChatSendQueueCodec.encode(uncertain)!) == uncertain,
+                     "keyed queue recovery preserves its exact submission key")
         let version2 = try JSONSerialization.data(withJSONObject: [
             "version": 2,
             "items": [[

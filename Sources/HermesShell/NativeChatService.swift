@@ -16,6 +16,23 @@ struct UnknownRunResolutionOffer: Equatable, Sendable {
     let executionGeneration: Int
 }
 
+/// A stable, random, non-secret identity for one admitted submission. Never
+/// derive it from the message or reuse it for a different user action.
+enum RunSubmissionIdentity {
+    static func make() -> String { "hermes-ios-" + UUID().uuidString.lowercased() }
+    static func valid(_ key: String) -> Bool {
+        !key.isEmpty && key.utf8.count <= 255 && key.utf8.allSatisfy { (33...126).contains($0) }
+    }
+}
+
+/// What the current deployment actually advertises, not an inference from
+/// its version or backend kind. No capability grants permission to replay.
+struct RunRecoveryCapabilities: Equatable, Sendable {
+    let idempotencySupported: Bool
+    let durableStatusRetentionSeconds: Int?
+    let unknownResolutionSupported: Bool
+}
+
 @MainActor
 protocol NativeChatService:AnyObject {
     func requiresAuthentication(after error: Error) -> Bool
@@ -24,6 +41,10 @@ protocol NativeChatService:AnyObject {
     var runRecoveryUnavailable: Bool { get }
     /// Only an explicit Gateway implementation may opt into /v1/runs options.
     var supportsReasoningEffort: Bool { get }
+    /// Client transport can carry a per-submission key, even on old Gateways.
+    /// This is not a claim about the remote deployment's durability.
+    var carriesRunSubmissionIdentity: Bool { get }
+    func runRecoveryCapabilities() async throws -> RunRecoveryCapabilities?
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot
     /// Bounded recovery-only status probe. A missing active_stream_id cannot
     /// prove completion; this method lets a durable receipt verify its exact
@@ -41,6 +62,8 @@ protocol NativeChatService:AnyObject {
     /// refuse non-default effort, rather than silently dropping the option.
     func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload],
                          reasoningEffort:String?) async throws -> String
+    func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload],
+                         reasoningEffort:String?, submissionKey:String?) async throws -> String
     func stopNativeTurn(streamID:String) async throws
     /// 运行中追加引导。nil 表示已受理；非 nil 是服务端的降级原因。
     /// 必须在协议里声明：否则调用按静态类型派发，只会命中 extension 的默认实现。
@@ -61,6 +84,8 @@ extension NativeChatService {
     func requiresAuthentication(after error: Error) -> Bool { false }
     var runRecoveryUnavailable: Bool { false }
     var supportsReasoningEffort: Bool { false }
+    var carriesRunSubmissionIdentity: Bool { false }
+    func runRecoveryCapabilities() async throws -> RunRecoveryCapabilities? { nil }
     /// Unknown is fail-closed. A backend that cannot prove the exact run is
     /// alive must never turn the receipt into permission to send again.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
@@ -86,14 +111,23 @@ extension NativeChatService {
         guard reasoningEffort == nil else { throw NativeChatServiceError.reasoningUnsupported }
         return try await startNativeTurn(sessionID:sessionID,text:text,attachments:attachments)
     }
+    func startNativeTurn(sessionID:String,text:String,attachments:[ChatAttachmentPayload],
+                         reasoningEffort:String?, submissionKey:String?) async throws -> String {
+        // Existing non-Gateway implementations retain their original witness.
+        // Do not silently drop a key from a backend that promised to carry it.
+        guard submissionKey == nil else { throw NativeChatServiceError.submissionIdentityUnsupported }
+        return try await startNativeTurn(sessionID:sessionID,text:text,attachments:attachments,
+                                         reasoningEffort:reasoningEffort)
+    }
 }
 
 enum NativeChatServiceError: LocalizedError {
-    case attachmentsUnsupported, reasoningUnsupported
+    case attachmentsUnsupported, reasoningUnsupported, submissionIdentityUnsupported
     var errorDescription: String? {
         switch self {
         case .attachmentsUnsupported: return "当前聊天服务未实现附件发送，附件未提交。"
         case .reasoningUnsupported: return "当前聊天后端不支持推理强度覆盖，消息未发送；请改用服务端默认。"
+        case .submissionIdentityUnsupported: return "当前服务无法携带发送标识，本次未发送。"
         }
     }
 }

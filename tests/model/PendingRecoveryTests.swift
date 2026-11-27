@@ -28,6 +28,9 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var failHistoryAfterProbe = false
     var rowsAfterProbe: [[String: Any]]?
     var failStart = true
+    var carriesRunSubmissionIdentity = false
+    var receivedKeys: [String?] = []
+    var beforeStart: (() -> Void)?
     var historyWait: CheckedContinuation<ChatSnapshot, Error>?
     var holdHistory = false
     var startCalls = 0
@@ -77,6 +80,12 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
         if failStart { throw URLError(.networkConnectionLost) }
         active = "accepted"
         return "accepted"
+    }
+    func startNativeTurn(sessionID: String, text: String, attachments: [ChatAttachmentPayload],
+                         reasoningEffort: String?, submissionKey: String?) async throws -> String {
+        receivedKeys.append(submissionKey)
+        beforeStart?()
+        return try await startNativeTurn(sessionID: sessionID, text: text, attachments: attachments)
     }
     func streamNativeTurn(streamID: String, lastEventID: String?, onFrame: (SSEFrame) async throws -> Bool) async throws {
         streamCursors.append(lastEventID)
@@ -227,6 +236,44 @@ extension ModelTests {
         precondition(resolvedResult == .delivered && durable.loadPending().value == nil)
         restored.disconnect()
         print("PENDING_PASS durable direct POST survives restart and resolves without replay")
+
+        // Keyed admission can be accepted before a user row is written.
+        // A lost response plus empty history is not authority to retry.
+        do {
+            let keyedRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: keyedRoot) }
+            let keyedFiles = LocalDataFileStore(instanceID: "keyed", accountScope: "account",
+                sessionID: "test", rootDirectory: keyedRoot)
+            let keyedStore = ChatDraftStore(instanceID: "keyed", accountScope: "account",
+                sessionID: "test", fileStore: keyedFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: keyedStore)
+            await model.load()
+            service.beforeStart = {
+                let stored = try! JSONDecoder().decode(NativeChatModel.PendingSend.self,
+                    from: keyedStore.loadPending().value!)
+                precondition(stored.submissionKey == service.receivedKeys.last! &&
+                             RunSubmissionIdentity.valid(stored.submissionKey!),
+                             "the same key must be on disk before network transport")
+            }
+            model.draft = "keyed submission"
+            _ = await model.send()
+            precondition(service.startCalls == 1 && model.pendingSend?.submissionKey != nil)
+            let key = model.pendingSend?.submissionKey
+            model.disconnect()
+            service.beforeStart = nil
+            let restored = NativeChatModel(sessionID: "test", api: service, draftStore: keyedStore)
+            precondition(restored.pendingSend?.submissionKey == key)
+            let missing = await restored.reconcilePending()
+            precondition(missing == .failed && !restored.canSend && !restored.canResendPending &&
+                         service.startCalls == 1,
+                         "missing history cannot authorize replay of a keyed admission")
+            let retried = await restored.resendPending()
+            precondition(!retried && service.startCalls == 1)
+            restored.disconnect()
+        }
+        print("PENDING_PASS durable submission key before transport, restart, no replay on absence")
         // Corrupt pending data must not become sendable after a successful history GET.
         _ = durable.savePending(Data("invalid pending".utf8))
         let corrupt = NativeChatModel(sessionID: "test", api: PendingRecoveryService(), draftStore: durable)

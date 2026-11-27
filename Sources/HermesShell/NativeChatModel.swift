@@ -692,11 +692,22 @@ final class NativeChatModel: ObservableObject {
         // Optional for backward compatibility. Text and attachment equality
         // never grants ownership of another queued transaction.
         var queuedTurnID: String? = nil
+        /// Optional so old protected records never falsely claim a keyed POST.
+        var submissionKey: String? = nil
+        var reasoningEffort: String? = nil
 
         func resolution(in snapshot: ChatSnapshot) -> PendingReconcileResult {
-            DeliveryReconciliationPolicy.resolve(
+            resolution(in: [snapshot])
+        }
+
+        func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+            let result = DeliveryReconciliationPolicy.resolve(
                 text: text, attachments: attachments, historyEnd: historyEnd,
-                knownIDs: knownIDs, snapshot: snapshot)
+                knownIDs: knownIDs, pages: pages)
+            // Without a returned Run ID, a Gateway's local empty run index
+            // cannot prove that a keyed request was never admitted. A queued
+            // admission may not have produced any visible history yet.
+            return submissionKey != nil && result == .absent ? .failed : result
         }
     }
     @Published var pendingRecoveryUnreadable = false
@@ -851,7 +862,8 @@ final class NativeChatModel: ObservableObject {
             runID: runID, historyEnd: activeTurnHistoryBoundary,
             knownIDs: knownIDs, text: text,
             attachmentPaths: Set(attachments.map(\.path)),
-            pendingSendID: pendingSend?.id, queuedTurnID: pendingSend?.queuedTurnID)
+            pendingSendID: pendingSend?.id, queuedTurnID: pendingSend?.queuedTurnID,
+            submissionKey: pendingSend?.submissionKey)
         if let command = pendingSlashCommand, attachments.isEmpty {
             switch command.kind {
             case .compress, .reset: receipt.commandAllowsEmptyReply = true
