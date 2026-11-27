@@ -1,4 +1,4 @@
-# Hermes 2.59.0 / build240
+# Hermes 2.60.0 / build241
 
 # HermesBuild
 

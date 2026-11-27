@@ -20,6 +20,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var historyPageCalls = 0
     var historyCalls = 0
     var appendHeadOnOlderPage = false
+    var failOlderPageOnce = false
     var active: String?
     var statusUnknown = false
     var unavailableRunID: String?
@@ -51,6 +52,10 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
             pageOffset = lower
             if before != nil {
                 historyPageCalls += 1
+                if failOlderPageOnce {
+                    failOlderPageOnce = false
+                    throw URLError(.networkConnectionLost)
+                }
                 // Simulates a concurrent append during history lookback.
                 if appendHeadOnOlderPage {
                     appendHeadOnOlderPage = false
@@ -809,6 +814,45 @@ extension ModelTests {
             model.disconnect()
         }
         print("PENDING_PASS completed receipt waits for matching final history")
+
+        // Completed streamed reply with the user row beyond the newest page.
+        // A transient older-page failure must not strand the original receipt.
+        do {
+            let service = PendingRecoveryService()
+            service.historyPageLimit = 60
+            service.rows = [["id": "sent", "role": "user", "content": "long task"]]
+            service.rows += (0..<180).map { index in
+                ["id": "tool-\(index)", "role": "tool",
+                 "tool_call_id": "tool-\(index)", "content": "completed"]
+            }
+            service.rows.append(["id": "answer", "role": "assistant", "content": "complete streamed answer"])
+            service.failOlderPageOnce = true
+            let model = NativeChatModel(sessionID: "test", api: service)
+            model.activeTurnRecovery = ActiveTurnRecovery(runID: "long-terminal", historyEnd: 0,
+                knownIDs: [], text: "long task", attachmentPaths: [], terminalStatus: .completed)
+            model.streamID = "long-terminal"
+            model.buffer.messages = [ChatMessage(id: "streaming:long-terminal", role: "assistant",
+                content: "complete streamed answer")]
+            model.buffer.terminal = true
+            model.uncertain = true
+            model.automaticReconciliationDelaysNanoseconds = [2_000_000]
+            model.automaticReconciliationSteadyNanoseconds = 4_000_000
+            model.automaticDeepRecoveryRetryNanoseconds = 8_000_000
+            await model.load(silent: true)
+            precondition(model.error == nil && model.latestRecoverySnapshot?.olderOffset == 122 &&
+                         model.buffer.messages.last?.id == "streaming:long-terminal" && !model.canSend,
+                         "valid partial head must survive final-history gate without losing visible reply")
+            try await eventually { model.activeTurnRecovery == nil && model.canSend &&
+                model.automaticReconciliationTask == nil }
+            precondition(model.buffer.messages.last?.id == "answer" &&
+                         service.historyPageCalls >= 4 && service.startCalls == 0,
+                         "same-head pagination recovers after transient failure and stops polling")
+            let calls = service.historyCalls
+            try await Task.sleep(nanoseconds: 20_000_000)
+            precondition(service.historyCalls == calls && model.queueRecoveryPaused)
+            model.disconnect()
+        }
+        print("PENDING_PASS completed streamed long reply converges after same-head pagination retry")
 
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must

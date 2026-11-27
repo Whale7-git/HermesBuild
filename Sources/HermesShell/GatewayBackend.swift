@@ -354,6 +354,14 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus) {
+        guard runStore.runID(for: sessionID) == runID ||
+              runStore.unresolvedRunID(for: sessionID) == runID else { return }
+        if runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: outcome) {
+            clearFailedRunProbes(runID: runID)
+        }
+    }
+
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
             return .terminal(terminal)

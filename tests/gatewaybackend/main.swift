@@ -390,6 +390,23 @@ actor ConcurrencyProbe {
         check(confirmedTerminal == .terminal(.completed),
               "exact terminal evidence remains available after tombstone retirement")
 
+        // A durable model receipt can repair a stale exact backend index.
+        let restoredScope = "instance|restored-terminal-index"
+        let restoredIndex = backend(scope: restoredScope)
+        _ = try await restoredIndex.startNativeTurn(sessionID: "s", text: "fixture")
+        let localIndex = GatewayRunStore(scope: restoredScope, defaults: defaults)
+        transport.statusCode = 404
+        restoredIndex.restoreVerifiedRunTerminal(sessionID: "s", runID: "other-run", outcome: .completed)
+        check(localIndex.runID(for: "s") == run, "different receipt cannot retire current Run")
+        restoredIndex.restoreVerifiedRunTerminal(sessionID: "s", runID: run, outcome: .completed)
+        check(localIndex.runID(for: "s") == nil &&
+              localIndex.terminalOutcome(sessionID: "s", runID: run) == .completed,
+              "exact durable terminal repairs stale backend index without remote status")
+        let restoredHistory = try await restoredIndex.history(sessionID: "s", before: nil)
+        check(restoredHistory.activeRunEvidence == .absent,
+              "history is available after restoring exact verified terminal")
+        transport.statusCode = 200
+
         // A real deployment must explicitly advertise the canonical endpoint
         // and return the exact unknown admission. 404 never qualifies.
         let resolveScope = "instance|explicit-unknown-resolution"
