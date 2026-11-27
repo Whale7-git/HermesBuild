@@ -68,7 +68,16 @@ extension NativeChatModel {
         // 只清「本次 load 自己置起的」过渡态。若 load 过程中已挂上流
         // （`.streaming`）或仍在显示缓存（`.cached`），那不是本函数该收的尾。
         defer {
-            if generation == revision, !phase.isRunning, !phase.isCached { transition(to: .idle) }
+            if generation == revision, !phase.isRunning {
+                if let savedAt = phase.cachedSince, syncing {
+                    transition(to: .cached(savedAt: savedAt, syncing: false))
+                } else if !phase.isCached {
+                    transition(to: .idle)
+                }
+                if unavailableRunStatusID != nil {
+                    scheduleAutomaticReconciliation()
+                }
+            }
         }
         // The page may prewarm and paint this same scoped history before GET.
         // One-shot per model; the authoritative request remains mandatory.
@@ -700,7 +709,7 @@ extension NativeChatModel {
     /// Single foreground GET-only owner. Time controls rate, not safety.
     /// Immediate wake replaces a sleeping timer, never an in-flight GET.
     func scheduleAutomaticReconciliation(immediate: Bool = false) {
-        guard !runtimeRetired, unavailableRunStatusID == nil else { return }
+        guard !runtimeRetired else { return }
         if immediate && automaticReconciliationWaiting {
             automaticReconciliationTask?.cancel()
             automaticReconciliationTask = nil
@@ -718,7 +727,7 @@ extension NativeChatModel {
         let pendingID = pendingSend?.id
         let ticket = UUID()
         automaticReconciliationTicket = ticket
-        automaticRecoveryQuiet = true
+        automaticRecoveryQuiet = unavailableRunStatusID == nil
         automaticReconciliationTask = RecoveryScheduler.shared.startOwner(key: recoveryOwnerKey, ticket: ticket,
             onFinish: { [weak self] in
                 guard let self, self.automaticReconciliationTicket == ticket else { return }
@@ -730,23 +739,19 @@ extension NativeChatModel {
             guard let self else { return }
             let began = DispatchTime.now().uptimeNanoseconds
             var attempt = 0
+            var failures = 0
             var lastDeepHistoryEnd: Int?
             while !Task.isCancelled && self.automaticReconciliationTicket == ticket {
-                let elapsed = DispatchTime.now().uptimeNanoseconds - began
-                let delay: UInt64
-                if immediate && attempt == 0 {
-                    delay = 0
-                } else if attempt < self.automaticReconciliationDelaysNanoseconds.count {
-                    delay = self.automaticReconciliationDelaysNanoseconds[attempt]
-                } else {
-                    delay = elapsed >= self.automaticReconciliationSlowAfterNanoseconds
-                        ? self.automaticReconciliationSlowNanoseconds
-                        : self.automaticReconciliationSteadyNanoseconds
-                }
+                let delay: UInt64 = immediate && attempt == 0 ? 0
+                    : self.automaticReconciliationDelay(attempt: attempt, failures: failures)
+                // Jitter only real-time intervals; short injected test delays
+                // remain deterministic. Explicit wakeups are never delayed.
+                let jitteredDelay = delay >= 1_000_000_000
+                    ? delay - UInt64.random(in: 0...(delay / 10))
+                    : delay
                 self.automaticReconciliationWaiting = true
-                do { try await Task.sleep(nanoseconds: delay) } catch { return }
-                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
-                      self.unavailableRunStatusID == nil else { return }
+                do { try await Task.sleep(nanoseconds: jitteredDelay) } catch { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket else { return }
                 self.automaticReconciliationWaiting = false
                 if DispatchTime.now().uptimeNanoseconds - began >= 20_000_000_000 {
                     self.automaticRecoveryQuiet = false
@@ -762,14 +767,28 @@ extension NativeChatModel {
                 if self.error != nil && !self.historyLoadFailurePending &&
                     self.pendingSend == nil && self.activeTurnRecovery == nil &&
                     self.reapedTransportRunID == nil { return }
-                if self.loading || self.syncing || self.reconciling || self.submitting {
+                if self.loading || self.syncing || self.reconciling || self.submitting ||
+                    self.streamTask != nil || self.activeRunProbeTask != nil {
                     attempt += 1
                     continue
                 }
                 if self.pendingSend != nil {
                     _ = await self.reconcilePending()
+                } else if let active = self.reapedTransportRunID,
+                          self.streamID == active, self.activeTurnRecovery?.runID == active,
+                          self.activeTurnRecovery?.terminalStatus == nil,
+                          self.unavailableRunStatusID == nil, attempt % 5 != 0 {
+                    // The transport is gone but its exact Run is known. Most
+                    // ticks are lightweight status GETs; refresh history
+                    // periodically and always after verified completion.
+                    await self.settleReapedRunTransport(active: active, generation: self.revision)
                 } else {
                     await self.refresh(silent: true, preserveLoadedOlder: true)
+                }
+                if self.error != nil || self.historyLoadFailurePending {
+                    failures = min(failures + 1, 64)
+                } else {
+                    failures = 0
                 }
                 guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
                       !self.suspended, !self.authenticationRequired, !self.stopping,
@@ -778,9 +797,12 @@ extension NativeChatModel {
                       (self.pendingSend?.id == pendingID ||
                        (pendingID != nil && self.pendingSend == nil)) else { return }
                 if let probe = self.activeRunProbeTask { await probe.value }
-                guard self.unavailableRunStatusID == nil,
-                      !Task.isCancelled, self.automaticReconciliationTicket == ticket,
-                      !self.suspended, !self.stopping, !self.authenticationRequired else { return }
+                guard !Task.isCancelled, self.automaticReconciliationTicket == ticket,
+                      !self.suspended, !self.stopping, !self.authenticationRequired,
+                      (self.activeTurnRecovery?.runID == runID ||
+                       (runID != nil && self.activeTurnRecovery == nil)),
+                      (self.pendingSend?.id == pendingID ||
+                       (pendingID != nil && self.pendingSend == nil)) else { return }
                 // Bound expensive history crawls. A changed head is new evidence.
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
                    let latest = self.latestRecoverySnapshot, latest.activeRunEvidence == .absent,
@@ -821,6 +843,9 @@ extension NativeChatModel {
                     self.activeRunProbeTask = nil
                     self.activeRunProbeRunID = nil
                     self.activeRunProbeTicket = nil
+                    if self.unavailableRunStatusID != nil {
+                        self.scheduleAutomaticReconciliation()
+                    }
                 }
             }
             do {
@@ -1389,6 +1414,7 @@ extension NativeChatModel {
         } catch {
             guard accepts(runContext(for: active, generation: generation)), !Task.isCancelled else { return }
             if handleAuthenticationFailure(error) { return }
+            self.error = error.localizedDescription
             lockDownRunStatus(unconfirmed)
         }
     }
@@ -1417,6 +1443,7 @@ extension NativeChatModel {
         if streamTask != nil { return }
         await refresh(silent: !transcript.messages.isEmpty, preserveLoadedOlder: true)
         noteRunRecoveryState()
+        scheduleAutomaticReconciliation(immediate: true)
     }
 
     /// Only the pending reconciliation owner may refresh while holding the

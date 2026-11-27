@@ -18,6 +18,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     /// Simulate the backend's 60-raw-record history window.
     var historyPageLimit: Int?
     var historyPageCalls = 0
+    var historyCalls = 0
     var appendHeadOnOlderPage = false
     var active: String?
     var statusUnknown = false
@@ -36,6 +37,7 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var streamCursors: [String?] = []
 
     func history(sessionID: String, before: Int?) async throws -> ChatSnapshot {
+        historyCalls += 1
         if failHistory { throw URLError(.notConnectedToInternet) }
         var visibleRows = rows
         var pageOffset = offset
@@ -514,24 +516,34 @@ extension ModelTests {
                 ["id": "reply", "role": "assistant", "content": "already stored"]
             ]
             let model = NativeChatModel(sessionID: "test", api: service)
+            model.automaticReconciliationUnavailableNanoseconds = 5_000_000
+            model.automaticReconciliationSteadyNanoseconds = 3_000_000
             await model.load()
             precondition(model.transcript.messages.map(\.id) == ["sent", "reply"])
             precondition(model.uncertain && !model.canSend && service.startCalls == 0)
             precondition(model.latestRecoverySnapshot == nil, "unknown status cannot authorize history proof")
             model.scheduleAutomaticReconciliation()
             precondition(model.unavailableRunStatusID == "expired-run" &&
-                         model.automaticReconciliationTask == nil &&
+                         model.automaticReconciliationTask != nil &&
                          model.presentationState.showsNotice,
-                         "a known missing run stops futile background polling without unlocking")
+                         "a missing run keeps sparse read-only recovery and visible uncertainty")
+            let firstCalls = service.historyCalls
+            try await eventually { service.historyCalls >= firstCalls + 2 }
+            precondition(model.uncertain && !model.canSend && service.startCalls == 0,
+                         "repeated missing status is not permission to send")
             model.draft = "must not send"
             let sent = await model.send()
             precondition(!sent && service.startCalls == 0)
             service.statusUnknown = false
             service.unavailableRunID = nil
-            await model.refresh()
-            precondition(model.unavailableRunStatusID == nil && model.canSend && service.startCalls == 0,
-                         "an explicit authoritative refresh can restore sending without replay")
+            try await eventually { model.unavailableRunStatusID == nil && model.canSend }
+            precondition(service.startCalls == 0,
+                         "a later authoritative GET can restore sending without replay or manual refresh")
             model.disconnect()
+            let stoppedCalls = service.historyCalls
+            try await Task.sleep(nanoseconds: 20_000_000)
+            precondition(service.historyCalls == stoppedCalls && model.automaticReconciliationTask == nil,
+                         "disconnect stops sparse recovery")
         }
 
         // A confirmed terminal status must survive an unreachable final GET,
