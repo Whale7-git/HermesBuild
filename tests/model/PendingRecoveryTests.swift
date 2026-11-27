@@ -315,6 +315,57 @@ extension ModelTests {
             model.disconnect()
         }
         print("PENDING_PASS pre-POST write and post-acceptance receipt fault injection")
+
+        // Fail queue retirement after the accepted Run has committed.
+        // The original durable queue and pending identities must survive.
+        do {
+            let queueRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: queueRoot) }
+            let writes = AtomicReadBackCounter()
+            let queueFiles = LocalDataFileStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: queueRoot,
+                destinationReadBackVerifier: { url, data in
+                    if url.lastPathComponent.hasPrefix("queue-"), writes.next() >= 3 { return false }
+                    return (try? Data(contentsOf: url)) == data
+                })
+            let queueStore = ChatDraftStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", fileStore: queueFiles)
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            service.failStart = false
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: queueStore)
+            await model.load()
+            // Keep a sibling so retirement requires an atomic replacement
+            // instead of a deletion, which uses a different storage path.
+            model.setQueuedTurns([
+                ChatQueuedTurn(id: "first", text: "first", attachments: [], composerText: "first",
+                    origin: .userInput, automaticAfterStreamID: nil),
+                ChatQueuedTurn(id: "sibling", text: "sibling", attachments: [], composerText: "sibling",
+                    origin: .userInput, automaticAfterStreamID: nil)
+            ])
+            _ = await model.flushQueuedIfNeeded()
+            precondition(service.startCalls == 1 && model.queuedTurns.count == 2 &&
+                         model.pendingSend != nil && model.activeTurnRecovery != nil &&
+                         model.queueAutomaticDispatchPaused,
+                         "failed queue retirement preserves all protected transaction evidence")
+            let durableQueue = ChatSendQueueCodec.decode(queueStore.loadQueuedResult().value!)!
+            let pending = try JSONDecoder().decode(NativeChatModel.PendingSend.self, from: queueStore.loadPending().value!)
+            let receipt = try JSONDecoder().decode(ActiveTurnRecovery.self, from: queueStore.loadActiveRun().value!)
+            precondition(durableQueue.first?.submissionKey == pending.submissionKey &&
+                         receipt.submissionKey == pending.submissionKey)
+            model.disconnect()
+            let repairedFiles = LocalDataFileStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", rootDirectory: queueRoot)
+            let repairedStore = ChatDraftStore(instanceID: "queue-fault", accountScope: "account",
+                sessionID: "test", fileStore: repairedFiles)
+            let restored = NativeChatModel(sessionID: "test", api: service, draftStore: repairedStore)
+            await restored.load()
+            precondition(restored.queuedTurns.map(\.id) == ["sibling"] &&
+                         restored.pendingSend == nil && service.startCalls == 1,
+                         "relaunch retires only the original accepted row, without sending the sibling")
+            restored.disconnect()
+        }
+        print("PENDING_PASS queue retirement fault and restart settlement without replay")
         // Corrupt pending data must not become sendable after a successful history GET.
         _ = durable.savePending(Data("invalid pending".utf8))
         let corrupt = NativeChatModel(sessionID: "test", api: PendingRecoveryService(), draftStore: durable)

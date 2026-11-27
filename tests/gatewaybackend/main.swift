@@ -406,6 +406,10 @@ actor ConcurrencyProbe {
         let missingOffer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run)
         check(missingOffer == nil, "404 is not an eligible unknown execution")
         transport.statusCode = 200
+        let canonicalUnknown = try await resolver.history(sessionID: "s", before: nil)
+        check(canonicalUnknown.activeRunEvidence == .unknown &&
+              canonicalUnknown.unavailableRunID == run,
+              "canonical unknown retains a visible, exact recovery identity even without a model receipt")
         guard let offer = try await resolver.unknownRunResolutionOffer(sessionID: "s", runID: run) else {
             preconditionFailure("exact advertised unknown admission should be offered")
         }
