@@ -1443,6 +1443,7 @@ extension NativeChatModel {
         if streamTask != nil { return }
         await refresh(silent: !transcript.messages.isEmpty, preserveLoadedOlder: true)
         noteRunRecoveryState()
+        scheduleAutomaticReconciliation(immediate: true)
     }
 
     /// Only the pending reconciliation owner may refresh while holding the
