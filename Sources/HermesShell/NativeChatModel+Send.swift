@@ -265,6 +265,7 @@ extension NativeChatModel {
               queuedTurns.first?.id == id,
               queuedTurns.first?.delivery == .uncertain else { return false }
 
+        restoreKeyedQueuedPendingIfNeeded()
         if let pending = pendingSend, pending.queuedTurnID == id {
             switch await reconcilePending() {
             case .delivered:
@@ -274,7 +275,8 @@ extension NativeChatModel {
                 discardPending(restoreDraft: false)
                 guard pendingSend == nil else { return false }
             case .failed:
-                error = "仍无法确认队列首条消息是否送达，暂不能发送，请稍后同步。"
+                error = pendingDeliveryIsVerified ? "消息已送达，仍需确认任务是否结束。请在恢复中心处理。"
+                    : "仍无法确认队列首条消息是否送达，暂不能发送，请稍后同步。"
                 return false
             }
         } else if pendingSend != nil {

@@ -53,6 +53,7 @@ extension NativeChatModel {
         guard allowWhileReconciling || !reconciling else { return }
         if running && streamTask != nil { return }
         restoreUnreadableRecoveryRecords()
+        restoreKeyedQueuedPendingIfNeeded()
         // A previous idle snapshot must never serve as proof for this GET.
         latestRecoverySnapshot = nil
         publishTask?.cancel()
@@ -514,7 +515,10 @@ extension NativeChatModel {
         // missing. Only the exact transaction can retire its pending record.
         if let receipt = activeTurnRecovery, let pending = pendingSend, !submitting,
            receipt.pendingSendID == pending.id, receipt.submissionKey == pending.submissionKey {
-            _ = settleAcceptedReceipt(receipt)
+            if settleAcceptedReceipt(receipt) {
+                settleAcceptedAttachments(pending.attachments.map(\.path))
+                if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
+            }
         }
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.

@@ -902,7 +902,8 @@ extension ModelTests {
                 sessionID: "test", fileStore: files)
             let receipt = ActiveTurnRecovery(runID: "expired-manual", historyEnd: 0,
                 knownIDs: [], text: "original", attachmentPaths: [])
-            precondition(store.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let encoded = try JSONEncoder().encode(receipt)
+            precondition(store.saveActiveRun(encoded).succeeded)
             let service = PendingRecoveryService()
             service.statusUnknown = true
             service.unavailableRunID = receipt.runID
@@ -924,6 +925,12 @@ extension ModelTests {
             let restored = NativeChatModel(sessionID: "test", api: service, draftStore: store)
             await restored.load()
             precondition(restored.canSend && restored.queueUserPaused && service.startCalls == 0)
+            service.failStart = false
+            service.carriesRunSubmissionIdentity = true
+            restored.draft = "a new explicit message"
+            _ = await restored.send()
+            precondition(service.startCalls == 1 && service.sent.last?.0 == "a new explicit message",
+                         "the original session can actually submit a new turn after recovery")
             restored.disconnect()
         }
         print("PENDING_PASS explicit same-session release of a missing Run, failure and restart")
@@ -948,6 +955,36 @@ extension ModelTests {
             model.disconnect()
         }
         print("PENDING_PASS keyed delivery versus execution; user-confirmed original session continuation")
+
+        // Restore a crash between queue and PendingSend commits. Recovery
+        // reuses the original identity for read-only proof, never sends it.
+        do {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let files = LocalDataFileStore(instanceID: "orphan-key", accountScope: "account",
+                sessionID: "test", rootDirectory: root)
+            let store = ChatDraftStore(instanceID: "orphan-key", accountScope: "account",
+                sessionID: "test", fileStore: files)
+            let key = RunSubmissionIdentity.make()
+            let orphan = ChatQueuedTurn(id: "orphan", text: "queued", attachments: [],
+                composerText: "queued", origin: .userInput, automaticAfterStreamID: nil,
+                delivery: .submitting, historyEnd: 0, knownIDs: [], submittedAt: 1, submissionKey: key)
+            let encoded = ChatSendQueueCodec.encode([orphan])!
+            precondition(store.saveQueued(encoded).succeeded)
+            let service = PendingRecoveryService()
+            service.rows = [["id": "sent", "role": "user", "content": "queued"],
+                            ["id": "answer", "role": "assistant", "content": "complete"]]
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+            await model.load()
+            precondition(model.pendingSend?.submissionKey == key &&
+                         model.pendingSend?.queuedTurnID == orphan.id && !model.canSend &&
+                         model.pendingDeliveryIsVerified && service.startCalls == 0)
+            let confirmed = await model.confirmDeliveredPendingEndedLocally()
+            precondition(confirmed && model.canSend && model.pendingSend == nil &&
+                         model.queuedTurns.isEmpty && service.startCalls == 0 && model.queueUserPaused)
+            model.disconnect()
+        }
+        print("PENDING_PASS orphaned keyed queue reconstructs exact pending proof and never resends")
 
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must

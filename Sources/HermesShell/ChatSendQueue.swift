@@ -107,7 +107,9 @@ struct ChatQueuedTurn: Identifiable, Equatable {
         let result = DeliveryReconciliationPolicy.resolve(
             text: text, attachments: attachments, historyEnd: historyEnd,
             knownIDs: knownIDs, pages: pages)
-        return submissionKey != nil && result == .absent ? .failed : result
+        // Keyed uncertain queue records require the same pending-delivery
+        // and execution recovery path as direct sends, not a separate exit.
+        return submissionKey != nil ? .failed : result
     }
 }
 

@@ -161,6 +161,7 @@ final class NativeChatModel: ObservableObject {
     /// 正交事实的打包视图，供 `ChatPhase` 的谓词统一消费。
     var facts: ChatFacts {
         ChatFacts(readOnly: readOnly, uncertain: uncertain || recoveryRecordsUnreadable
+                  || queuedTurns.contains(where: { $0.needsReconcile && $0.submissionKey != nil })
                   || (activeTurnRecovery != nil && !phase.isRunning), suspended: suspended || runtimeRetired,
                   reconciling: reconciling, hasPendingSend: pendingSend != nil,
                   pendingAbsent: pendingAbsent, sendingWhileRunning: sendingWhileRunning)
@@ -801,6 +802,24 @@ final class NativeChatModel: ObservableObject {
             return turn
         })
         if !queuedTurns.isEmpty { pauseQueueForRecovery() }
+    }
+
+    /// A crash can leave the keyed queue record committed just before its
+    /// PendingSend record. Reconstruct the exact delivery evidence, not a
+    /// new submission. An unrelated accepted or unreadable record owns priority.
+    func restoreKeyedQueuedPendingIfNeeded() {
+        guard !runtimeRetired, !submitting, !running, !recoveryRecordsUnreadable,
+              pendingSend == nil, activeTurnRecovery == nil,
+              let turn = queuedTurns.first, turn.delivery == .uncertain,
+              let key = turn.submissionKey, turn.hasRecoveryEvidence,
+              RunSubmissionIdentity.valid(key), let submittedAt = turn.submittedAt else { return }
+        let pending = PendingSend(id: "local-recovered-" + turn.id, text: turn.text,
+            attachments: turn.attachments, composerText: turn.composerText,
+            historyEnd: turn.historyEnd, knownIDs: turn.knownIDs, createdAt: submittedAt,
+            origin: turn.origin, queuedTurnID: turn.id, submissionKey: key)
+        _ = preparePendingSubmission(pending)
+        uncertain = true
+        pauseQueueForRecovery()
     }
 
     func abandonUnreadablePending() {
