@@ -511,6 +511,23 @@ extension NativeChatModel {
            !ChatFinalHistoryGate.canReplace(
                snap, sessionID: sessionID, receipt: activeTurnRecovery,
                streamedAssistantPresent: true, expectedRunID: streamID) {
+            // Valid partial head is evidence for a contiguous older-page walk.
+            // Keep the visible streamed reply until the complete proof exists.
+            if let receipt = activeTurnRecovery,
+               streamID == nil || streamID == receipt.runID,
+               let boundary = receipt.historyEnd,
+               snap.activeRunEvidence == .absent, !snap.readOnly,
+               snap.olderOffset > boundary {
+                latestRecoverySnapshot = snap
+                uncertain = true
+                readOnly = false
+                pauseQueueForRecovery()
+                if receipt.terminalStatus != nil { streamID = nil }
+                notice = receipt.terminalStatus != nil
+                    ? "回复已结束，正在补齐历史消息。"
+                    : "正在核对这次回复的完整历史。"
+                return
+            }
             throw ChatCoreError.server("最终历史尚未确认本轮回复，流式内容已保留")
         }
         if verifiedTerminalRunID == nil, let record = lastFinalizedRecord {
@@ -732,7 +749,7 @@ extension NativeChatModel {
             return false
         }
         guard RunFinalizer.canSettle(pages, sessionID: sessionID, runID: receipt.runID,
-            receipt: receipt, outcome: .completed, requireReply: true) else {
+            receipt: receipt, outcome: receipt.terminalStatus ?? .completed, requireReply: true) else {
             notice = "尚无法确认原消息与回复是否匹配，暂不能发送。"
             return false
         }
@@ -813,6 +830,7 @@ extension NativeChatModel {
             var attempt = 0
             var failures = 0
             var lastDeepHistoryEnd: Int?
+            var lastDeepAttemptAt: UInt64?
             while !Task.isCancelled && self.automaticReconciliationTicket == ticket {
                 let delay: UInt64 = immediate && attempt == 0 ? 0
                     : self.automaticReconciliationDelay(attempt: attempt, failures: failures)
@@ -880,12 +898,15 @@ extension NativeChatModel {
                        (runID != nil && self.activeTurnRecovery == nil)),
                       (self.pendingSend?.id == pendingID ||
                        (pendingID != nil && self.pendingSend == nil)) else { return }
-                // Bound expensive history crawls. A changed head is new evidence.
+                // A stable head can still gain readable older pages later.
+                // Bound expensive crawls independently of the fast status GET.
+                let now = DispatchTime.now().uptimeNanoseconds
                 if self.activeTurnRecovery != nil && !self.running && self.error == nil,
                    let latest = self.latestRecoverySnapshot, latest.activeRunEvidence == .absent,
-                   (attempt == 1 || attempt == self.automaticReconciliationDelaysNanoseconds.count - 1 ||
-                    lastDeepHistoryEnd != latest.rawMessageEndIndex) {
+                   lastDeepHistoryEnd != latest.rawMessageEndIndex ||
+                    lastDeepAttemptAt.map({ now - $0 >= self.automaticDeepRecoveryRetryNanoseconds }) != false {
                     lastDeepHistoryEnd = latest.rawMessageEndIndex
+                    lastDeepAttemptAt = now
                     _ = await self.reconcileLongAcceptedRun()
                 }
                 if self.running || (!self.uncertain && self.pendingSend == nil &&
@@ -920,7 +941,7 @@ extension NativeChatModel {
                     self.activeRunProbeTask = nil
                     self.activeRunProbeRunID = nil
                     self.activeRunProbeTicket = nil
-                    if self.unavailableRunStatusID != nil {
+                    if self.uncertain || self.activeTurnRecovery != nil || self.pendingSend != nil {
                         self.scheduleAutomaticReconciliation()
                     }
                 }
@@ -1057,6 +1078,10 @@ extension NativeChatModel {
                         self.transition(to: .streaming(connected: false))
                     }
                     self.reconciling = false
+                    // Arm read-only recovery after releasing stream ownership.
+                    if self.uncertain || self.activeTurnRecovery != nil || self.pendingSend != nil {
+                        self.scheduleAutomaticReconciliation()
+                    }
                 }
             }
             var active = streamID
@@ -1243,6 +1268,10 @@ extension NativeChatModel {
                                 runID: active, receipt: receipt, outcome: outcome,
                                 requireReply: streamedAssistantPresent) { break }
                             if attempt == 2 {
+                                if snap.sessionID == sessionID, !snap.readOnly,
+                                   snap.activeRunEvidence == .absent {
+                                    latestRecoverySnapshot = snap
+                                }
                                 uncertain = true
                                 pauseQueueForRecovery()
                                 transition(to: .idle)

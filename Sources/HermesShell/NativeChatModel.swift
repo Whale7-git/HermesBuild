@@ -427,7 +427,14 @@ final class NativeChatModel: ObservableObject {
 
     func recoveryHistory(sessionID: String, before: Int?) async throws -> ChatSnapshot {
         try await RecoveryScheduler.shared.perform(instance: recoveryInstance, session: sessionID) {
-            try await api.history(sessionID: sessionID, before: before)
+            // Repair an interrupted local index commit only from durable
+            // exact terminal evidence, never a guess from history or 404.
+            if sessionID == self.sessionID, let receipt = activeTurnRecovery,
+               let outcome = receipt.terminalStatus {
+                api.restoreVerifiedRunTerminal(sessionID: sessionID, runID: receipt.runID,
+                                               outcome: outcome)
+            }
+            return try await api.history(sessionID: sessionID, before: before)
         }
     }
 
@@ -521,6 +528,7 @@ final class NativeChatModel: ObservableObject {
     var automaticReconciliationSteadyNanoseconds: UInt64 = 3_000_000_000
     var automaticReconciliationOffscreenNanoseconds: UInt64 = 10_000_000_000
     var automaticReconciliationUnavailableNanoseconds: UInt64 = 20_000_000_000
+    var automaticDeepRecoveryRetryNanoseconds: UInt64 = 30_000_000_000
 
     /// Duration of a healthy task is deliberately not an input. Only
     /// presentation, missing status and consecutive failures affect cadence.

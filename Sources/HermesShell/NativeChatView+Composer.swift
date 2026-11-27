@@ -9,6 +9,9 @@ extension NativeChatView {
         if model.draftRecoveryUnreadable { return "本地草稿暂不可读，请在恢复中心重试读取。" }
         if model.authenticationRequired { return "登录后即可继续发送。" }
         if model.stopping { return "正在确认是否停止，暂不能发送。" }
+        if model.activeTurnRecovery?.terminalStatus != nil && model.uncertain {
+            return "回复已结束，正在补齐历史消息。"
+        }
         if model.unavailableRunStatusID != nil {
             return "任务状态暂不可用，正在自动同步；仍可阅读消息。"
         }

@@ -161,7 +161,9 @@ struct ChatRecoveryCenter: View {
                     if model.activeTurnRecovery != nil {
                         statusRow(icon: model.running ? "waveform" : "questionmark.circle",
                                   color: AppTheme.warning,
-                                  title: model.running ? "服务端任务仍在运行" : "上一条回复是否结束尚未确认",
+                                  title: model.activeTurnRecovery?.terminalStatus != nil
+                                    ? "回复已结束，等待历史补齐"
+                                    : (model.running ? "服务端任务仍在运行" : "上一条回复是否结束尚未确认"),
                                   detail: "运行标识已保存；状态查询不会重复提交消息。")
                         if !model.running {
                             Button("已确认任务状态，放弃本地记录", role: .destructive) {
