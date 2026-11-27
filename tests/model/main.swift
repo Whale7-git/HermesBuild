@@ -538,6 +538,10 @@ var transcriptPublications = 0
             stopped.disconnect()
             staleStopService.active = "new-stream"
             await stopped.load()
+            precondition(stopped.stopping && stopped.streamID == "old-stream" && !stopped.canSend,
+                         "a different active history alone cannot supersede an unconfirmed STOP")
+            staleStopService.confirmsOldTerminal = true
+            await stopped.load()
             if failStop { staleStopService.pending?.resume(throwing:URLError(.networkConnectionLost)) }
             else { staleStopService.pending?.resume(returning:()) }
             staleStopService.pending = nil
@@ -919,6 +923,11 @@ enum CacheTestError: Error { case unauthorized }
     var active = "old-stream"
     var historyCalls = 0
     var pending: CheckedContinuation<Void,Error>?
+    var confirmsOldTerminal = false
+    func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
+        if runID == "old-stream" && confirmsOldTerminal { return .terminal(.cancelled) }
+        return .unknown
+    }
     func history(sessionID:String,before:Int?) async throws -> ChatSnapshot {
         historyCalls += 1
         let s: [String:Any] = ["session_id":sessionID,"messages":[],"read_only":false,"active_stream_id":active]

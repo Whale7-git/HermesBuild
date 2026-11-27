@@ -322,9 +322,14 @@ struct AttachmentBatch: Sendable {
             return false
         }
     }
-    mutating func progress(_ id: UUID, attempt: UUID, fraction: Double) {
-        guard fraction.isFinite, let index = current(id, attempt:attempt), case .uploading(let previous) = items[index].state else { return }
-        items[index].state = .uploading(max(previous, min(1, max(0, fraction))))
+    @discardableResult
+    mutating func progress(_ id: UUID, attempt: UUID, fraction: Double) -> Bool {
+        guard fraction.isFinite, let index = current(id, attempt:attempt),
+              case .uploading(let previous) = items[index].state else { return false }
+        let next = min(1, max(0, fraction))
+        guard next > previous else { return false }
+        items[index].state = .uploading(next)
+        return true
     }
     mutating func complete(_ id: UUID, attempt: UUID, attachment: UploadedAttachment) {
         guard let index = current(id, attempt:attempt) else { return }
@@ -913,7 +918,9 @@ enum AttachmentFileImport {
     typealias Upload = @MainActor (String, AttachmentDraft,
                                    @escaping @MainActor (Double) -> Void) async throws -> UploadedAttachment
     private(set) var batch: AttachmentBatch
+    /// Durable mutation callback; progress is purely presentational.
     var onChange: (@MainActor (AttachmentBatch) -> Void)?
+    var onProgress: (@MainActor (AttachmentBatch) -> Void)?
     private let upload: Upload
     /// Only two multipart bodies may be built/sent concurrently. Eight large
     /// drafts already consume the composer byte budget; eight parallel uploads
@@ -1003,8 +1010,9 @@ enum AttachmentFileImport {
             let task = Task { [weak self, upload] in
                 do {
                     let attachment = try await upload(sessionID, draft) { [weak self] fraction in
-                        self?.batch.progress(id, attempt: attempt, fraction: fraction)
-                        if let self { self.onChange?(self.batch) }
+                        guard let self,
+                              self.batch.progress(id, attempt: attempt, fraction: fraction) else { return }
+                        self.onProgress?(self.batch)
                     }
                     try Task.checkCancellation()
                     self?.batch.complete(id, attempt: attempt, attachment: attachment)

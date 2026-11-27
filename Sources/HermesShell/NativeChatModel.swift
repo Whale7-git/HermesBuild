@@ -191,12 +191,21 @@ final class NativeChatModel: ObservableObject {
     /// True once a whole older page no longer fits the data budget. The cursor
     /// stays put, so the range is never skipped; UI explains how to read it.
     @Published var olderLimitReached = false
-    /// Older immutable history can load while the agent is streaming. Only
-    /// conflicting submission, reconciliation, or ambiguous delivery locks it.
+    /// Reading canonical history is independent of permission to send.
+    /// Never replace optimistic/streamed rows or pending interactive controls.
+    var canDisplayUnverifiedHistory: Bool {
+        !runtimeRetired && !submitting && !stopping && !suspended &&
+            streamID == nil && lastEventID == nil && pendingSend == nil &&
+            pendingApprovals.isEmpty && pendingClarifies.isEmpty &&
+            buffer.messages.allSatisfy {
+                $0.sourceIndex != nil && $0.delivery == .confirmed &&
+                    !$0.id.hasPrefix("streaming:") && !$0.id.hasPrefix("local-")
+            }
+    }
     var canLoadOlderHistory: Bool {
         cachedHistoryDate == nil && olderOffset > 0 && !olderLimitReached && !loadingOlder
-            && !loading && !syncing && !submitting && !stopping
-            && !reconciling && !uncertain && !suspended
+            && !loading && !syncing && !submitting && !stopping && !reconciling && !suspended
+            && (!uncertain || (unavailableRunStatusID != nil && canDisplayUnverifiedHistory))
     }
     @Published var error: String?
     @Published var notice: String?
@@ -503,7 +512,7 @@ final class NativeChatModel: ObservableObject {
     var activeRunProbeTask: Task<Void,Never>?
     var activeRunProbeRunID: String?
     var activeRunProbeTicket: UUID?
-    /// A single bounded, read-only recovery owner for uncertain sends/runs.
+    /// A single, cancellable read-only recovery owner for uncertain sends/runs.
     /// It never submits a chat POST or resumes a user-paused queue.
     var automaticReconciliationTask: Task<Void, Never>?
     var automaticReconciliationTicket: UUID?

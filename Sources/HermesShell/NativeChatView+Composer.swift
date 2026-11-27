@@ -10,7 +10,7 @@ extension NativeChatView {
         if model.authenticationRequired { return "登录后即可继续发送。" }
         if model.stopping { return "正在确认是否停止，暂不能发送。" }
         if model.unavailableRunStatusID != nil {
-            return "原任务状态暂不可用，可同步重试或新建会话。"
+            return "任务状态暂不可用，正在自动同步；仍可阅读消息。"
         }
         if model.uncertain || model.recoveryRecordsUnreadable {
             if model.syncing || model.loading || model.reconciling {

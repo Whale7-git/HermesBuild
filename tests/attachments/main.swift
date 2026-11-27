@@ -153,7 +153,34 @@ var batch = AttachmentBatch(sessionID:"s1")
 let fileID = try batch.append(name:"image.png", mime:"image/png", data:bytes)
 check(batch.items.count == 1 && !batch.canSend, "imported file blocks send until uploaded")
 let attempt = try batch.begin(fileID)
-batch.progress(fileID, attempt:attempt, fraction:0.5)
+check(batch.progress(fileID, attempt:attempt, fraction:0.5), "new upload progress is a presentation change")
+check(!batch.progress(fileID, attempt:attempt, fraction:0.5), "identical progress is ignored")
+check(!batch.progress(fileID, attempt:attempt, fraction:0.1), "regressive progress is ignored")
+check(!batch.progress(fileID, attempt:UUID(), fraction:0.9), "stale attempt cannot publish progress")
+
+// Progress callbacks are presentation-only; only actual draft transitions
+// trigger the persistence adapter.
+do {
+    var durableChanges = 0
+    var progressChanges = 0
+    var durableDuringUpload = 0
+    let coordinator = AttachmentUploadCoordinator(sessionID: "progress-fixture") { _, _, report in
+        durableDuringUpload = durableChanges
+        report(0.2)
+        report(0.2)
+        report(0.1)
+        report(0.8)
+        check(durableChanges == durableDuringUpload, "upload percentages never invoke durable mutation callback")
+        return attachment
+    }
+    coordinator.onChange = { _ in durableChanges += 1 }
+    coordinator.onProgress = { _ in progressChanges += 1 }
+    _ = try coordinator.add(name: attachment.name, mime: attachment.mime, data: Data([1, 2, 3]))
+    let uploaded = try await coordinator.prepareForSend(sessionID: "progress-fixture")
+    check(progressChanges == 2, "only changed progress reaches presentation")
+    check(uploaded == [attachment] && durableChanges > durableDuringUpload,
+          "completed server reference still invokes durable mutation callback")
+}
 check(batch.items[0].state == .uploading(0.5), "real byte progress exposed")
 batch.complete(fileID, attempt:UUID(), attachment:attachment)
 check(!batch.canSend, "stale attempt cannot complete upload")

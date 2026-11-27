@@ -441,8 +441,32 @@ extension NativeChatModel {
                 }
                 let finalHistory = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
-                guard finalHistory.sessionID == sessionID,
-                      finalHistory.activeRunEvidence == .absent, !finalHistory.readOnly else {
+                guard finalHistory.sessionID == sessionID, !finalHistory.readOnly else {
+                    uncertain = true
+                    pauseQueueForRecovery()
+                    notice = "任务已结束，最后的回复尚未同步，请稍后重试。"
+                    return
+                }
+                // A different authoritative active Run can replace an
+                // external STOP owner only after exact terminal proof of
+                // the original and when there is no local submission/stream
+                // content to settle. Never retire a protected local receipt.
+                if case .active(let replacement) = finalHistory.activeRunEvidence,
+                   replacement != active, activeTurnRecovery == nil, pendingSend == nil,
+                   !recoveryRecordsUnreadable, lastEventID == nil,
+                   buffer.messages.allSatisfy({ $0.sourceIndex != nil && $0.delivery == .confirmed }),
+                   pendingApprovals.isEmpty, pendingClarifies.isEmpty {
+                    try applySnapshot(finalHistory, preserveLoadedOlder: true)
+                    stopStatusPollTask?.cancel()
+                    stopStatusPollTask = nil
+                    stopStatusPollTicket = nil
+                    stopAcknowledged = false
+                    stopRejectedStatusCode = nil
+                    pauseQueueForRecovery()
+                    attach(streamID: replacement)
+                    return
+                }
+                guard finalHistory.activeRunEvidence == .absent else {
                     uncertain = true
                     pauseQueueForRecovery()
                     notice = "任务已结束，最后的回复尚未同步，请稍后重试。"

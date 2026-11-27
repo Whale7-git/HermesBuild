@@ -180,7 +180,7 @@ struct ChatRecoveryCenter: View {
                                     unknownResolutionOffer = offer
                                     confirmUnknownResolution = offer != nil
                                     if offer == nil {
-                                        resultText = "服务没有提供可安全处理的失联任务记录。消息已保留，可重新同步或新建会话。"
+                                        resultText = "当前服务无法确认这次任务是否结束。你仍可阅读消息，也可以新建会话继续聊天。"
                                     }
                                 } catch {
                                     resultText = "暂时无法检查恢复方式，请稍后同步。"

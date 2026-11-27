@@ -38,6 +38,15 @@ extension NativeChatModel {
     func load(silent: Bool = false, preserveLoadedOlder: Bool = false,
               allowWhileReconciling: Bool = false) async {
         guard !runtimeRetired else { return }
+        // A detached presentation may reopen while STOP is waiting for its
+        // exact Run even after SSE was torn down. Loading ordinary history
+        // must never replace that STOP-owned phase.
+        if stopping {
+            suspended = false
+            await verifyPendingStop()
+            if stopping { scheduleStopStatusPolling() }
+            return
+        }
         if submitting { resumeRequested = true; return }
         guard !syncing, !loading else { return }
         // A-07：核对流程自己持有 `reconciling`，只有它能带 allowWhileReconciling 进来。
@@ -74,7 +83,7 @@ extension NativeChatModel {
                 } else if !phase.isCached {
                     transition(to: .idle)
                 }
-                if unavailableRunStatusID != nil {
+                if uncertain || pendingSend != nil || activeTurnRecovery != nil {
                     scheduleAutomaticReconciliation()
                 }
             }
@@ -161,6 +170,13 @@ extension NativeChatModel {
             guard generation == revision, olderOffset == requestedOffset,
                   !Task.isCancelled, !suspended else { return }
             guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
+            // Unknown status is not send authority, but an exact adjacent
+            // history page is safe to display without altering recovery proof.
+            if uncertain {
+                guard unavailableRunStatusID != nil, canDisplayUnverifiedHistory,
+                      snap.rawMessageEndIndex == requestedOffset,
+                      snap.olderOffset < requestedOffset else { return }
+            }
             let oldIDs = Set(buffer.messages.map(\.id))
             let newMessages = snap.messages.filter { !oldIDs.contains($0.id) }
             let toolIDs = Set(buffer.tools.map(\.id))
@@ -186,8 +202,10 @@ extension NativeChatModel {
             olderLimitReached = false
             self.recordRuntimeLog(.info, "paging",
                 "page ok added=\(newMessages.count) offset=\(snap.olderOffset)")
-            confirmedHistory?.prepend(snap)
-            if let confirmedHistory { historyStore?.schedule(confirmedHistory) }
+            if !uncertain && snap.activeRunEvidence != .unknown {
+                confirmedHistory?.prepend(snap)
+                if let confirmedHistory { historyStore?.schedule(confirmedHistory) }
+            }
             flush()
         } catch {
             // A dismissed page cancels its GET. Cancellation, suspension and
@@ -400,6 +418,53 @@ extension NativeChatModel {
         return !uncertain
     }
 
+    /// Display a server-owned history window while execution status is unknown.
+    /// This never writes confirmedHistoryEnd, retires a receipt or grants
+    /// sending permission. Preserve a contiguous older prefix when possible.
+    private func displayUnverifiedHistory(_ snap: ChatSnapshot) {
+        guard canDisplayUnverifiedHistory else { return }
+        let existing = buffer.messages
+        let oldTail = existing.last?.sourceIndex
+        if let oldTail {
+            guard snap.rawMessageEndIndex > oldTail else { return }
+            let oldByIndex = Dictionary(existing.compactMap { message in
+                message.sourceIndex.map { ($0, message.id) }
+            }, uniquingKeysWith: { first, _ in first })
+            let newByIndex = Dictionary(snap.messages.compactMap { message in
+                message.sourceIndex.map { ($0, message.id) }
+            }, uniquingKeysWith: { first, _ in first })
+            // A changed overlapping row may be a rewrite or a stale response.
+            // Keep the existing projection until ordinary authoritative sync.
+            guard snap.messages.allSatisfy({ message in
+                guard let index = message.sourceIndex, let oldID = oldByIndex[index] else { return true }
+                return oldID == message.id
+            }), existing.allSatisfy({ message in
+                guard let index = message.sourceIndex, index >= snap.olderOffset else { return true }
+                return newByIndex[index] == message.id
+            }) else { return }
+        }
+        let contiguous = oldTail.map { snap.olderOffset <= $0 + 1 } ?? false
+        let prefix = contiguous ? existing.filter { ($0.sourceIndex ?? Int.max) < snap.olderOffset } : []
+        let prefixIDs = Set(prefix.map(\.id))
+        let incomingIDs = Set(snap.tools.map(\.id))
+        let prefixTools = buffer.tools.filter { tool in
+            !incomingIDs.contains(tool.id) && tool.afterMessageID.map { prefixIDs.contains($0) } == true
+        }
+        let messages = prefix + snap.messages
+        let tools = prefixTools + snap.tools
+        // Identical periodic GETs must not rebuild the entire timeline.
+        if buffer.messages != messages { buffer.messages = messages }
+        if buffer.tools != tools { buffer.tools = tools }
+        buffer.usage = snap.usage
+        olderOffset = prefix.isEmpty ? snap.olderOffset : min(olderOffset, snap.olderOffset)
+        _ = trimLoadedMessages()
+        if let first = buffer.messages.first?.sourceIndex {
+            olderOffset = max(olderOffset, first)
+        }
+        if cachedHistoryDate != nil { transition(to: .idle) }
+        flush()
+    }
+
     func applySnapshot(_ snap:ChatSnapshot, preserveLoadedOlder: Bool = false,
                        verifiedTerminalRunID: String? = nil) throws {
         guard snap.sessionID == sessionID else { throw ChatCoreError.malformed("history session mismatch") }
@@ -415,22 +480,11 @@ extension NativeChatModel {
             }
             notice = unavailableRunStatusID == nil
                 ? "回复状态暂时无法确认，已保留消息，不会重复发送。"
-                : "服务暂时找不到原任务。消息已保留，可重新同步或新建会话。"
-            // Reading the transcript and authorizing another POST are different
-            // operations. On a cold open with no local content to protect,
-            // show returned history even while Run status is unavailable.
-            // Do not change confirmedHistoryEnd, cursor, receipt, or send gate.
-            if buffer.messages.isEmpty && buffer.tools.isEmpty && lastEventID == nil &&
-               pendingSend == nil && pendingApprovals.isEmpty && pendingClarifies.isEmpty {
-                buffer.messages = snap.messages
-                buffer.tools = snap.tools
-                buffer.usage = snap.usage
-                olderOffset = snap.olderOffset
-                _ = trimLoadedMessages()
-                if let first = buffer.messages.first?.sourceIndex {
-                    olderOffset = max(olderOffset, first)
-                }
-                flush()
+                : "这次任务的状态暂不可用，仍可查看消息；正在自动同步。"
+            // Canonical content is readable even if the run bookkeeping has
+            // expired. Never infer completion from display-only history.
+            if unavailableRunStatusID != nil || (buffer.messages.isEmpty && buffer.tools.isEmpty) {
+                displayUnverifiedHistory(snap)
             }
             // History lookup failure cannot erase the accepted receipt. Probe
             // the exact Run independently, including after a run-status 404;
@@ -746,8 +800,10 @@ extension NativeChatModel {
                     : self.automaticReconciliationDelay(attempt: attempt, failures: failures)
                 // Jitter only real-time intervals; short injected test delays
                 // remain deterministic. Explicit wakeups are never delayed.
+                // Do not wake before the Gateway's missing-status cooldown,
+                // otherwise every other tick skips the actual exact-Run GET.
                 let jitteredDelay = delay >= 1_000_000_000
-                    ? delay - UInt64.random(in: 0...(delay / 10))
+                    ? delay + UInt64.random(in: 0...(delay / 10))
                     : delay
                 self.automaticReconciliationWaiting = true
                 do { try await Task.sleep(nanoseconds: jitteredDelay) } catch { return }
@@ -768,7 +824,7 @@ extension NativeChatModel {
                     self.pendingSend == nil && self.activeTurnRecovery == nil &&
                     self.reapedTransportRunID == nil { return }
                 if self.loading || self.syncing || self.reconciling || self.submitting ||
-                    self.streamTask != nil || self.activeRunProbeTask != nil {
+                    self.loadingOlder || self.streamTask != nil || self.activeRunProbeTask != nil {
                     attempt += 1
                     continue
                 }
@@ -781,6 +837,9 @@ extension NativeChatModel {
                     // The transport is gone but its exact Run is known. Most
                     // ticks are lightweight status GETs; refresh history
                     // periodically and always after verified completion.
+                    // A lightweight status GET must not reuse a stale history
+                    // snapshot as the current tick's deep-reconciliation proof.
+                    self.latestRecoverySnapshot = nil
                     await self.settleReapedRunTransport(active: active, generation: self.revision)
                 } else {
                     await self.refresh(silent: true, preserveLoadedOlder: true)
@@ -911,12 +970,16 @@ extension NativeChatModel {
                     self.automaticRecoveryQuiet = false
                     self.uncertain = true
                     self.pauseQueueForRecovery()
-                    self.revision &+= 1
-                    self.streamTask?.cancel()
-                    self.streamTask = nil
-                    self.streamID = nil
+                    // Do not invalidate a concurrent read-only page on each
+                    // repeated 404 when no stream remains to retire.
+                    if self.streamID != nil || self.streamTask != nil || self.running {
+                        self.revision &+= 1
+                        self.streamTask?.cancel()
+                        self.streamTask = nil
+                        self.streamID = nil
+                    }
                     self.transition(to: .idle)
-                    self.notice = "服务暂时找不到原任务，消息已保留。可重新同步或新建会话。"
+                    self.notice = "这次任务的状态暂不可用，仍可查看消息；正在自动同步。"
                 case .unknown:
                     self.uncertain = true
                     self.pauseQueueForRecovery()
