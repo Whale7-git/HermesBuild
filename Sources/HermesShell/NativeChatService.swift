@@ -51,6 +51,7 @@ protocol NativeChatService:AnyObject {
     /// run without replaying the original POST.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus)
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String)
     /// Explicit external user confirmation of a missing execution record.
     /// No remote mutation, no synthetic terminal result, no original POST.
     func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool
@@ -94,6 +95,7 @@ extension NativeChatService {
     /// alive must never turn the receipt into permission to send again.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus) {}
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String) {}
     func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool { false }
     func unknownRunResolutionOffer(sessionID: String, runID: String) async throws -> UnknownRunResolutionOffer? { nil }
     func resolveUnknownRun(_ offer: UnknownRunResolutionOffer) async throws -> ActiveRunProbe { .unknown }

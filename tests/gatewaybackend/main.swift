@@ -390,6 +390,43 @@ actor ConcurrencyProbe {
         check(confirmedTerminal == .terminal(.completed),
               "exact terminal evidence remains available after tombstone retirement")
 
+        // Legacy missing status requires explicit external confirmation;
+        // a fresh live/unknown response may never clear the local identity.
+        let userScope = "instance|user-released"
+        let userBackend = backend(scope: userScope)
+        let userStore = GatewayRunStore(scope: userScope, defaults: defaults)
+        userBackend.restoreAcceptedRunIdentity(sessionID: "s", runID: run)
+        check(userStore.runID(for: "s") == run,
+              "durable model receipt repairs a missing local index")
+        userBackend.restoreAcceptedRunIdentity(sessionID: "s", runID: "competing")
+        check(userStore.runID(for: "s") == run, "restoration cannot overwrite another Run")
+        transport.statusCode = 404
+        for _ in 0..<3 { _ = try await userBackend.history(sessionID: "s", before: nil) }
+        check(userStore.unresolvedRunID(for: "s") == run, "receipt-only 404 preserves identity")
+        transport.statusCode = 200
+        transport.status = "running"
+        let refusedLive = try await userBackend.releaseMissingRunAfterUserConfirmation(sessionID: "s", runID: run)
+        check(!refusedLive && userStore.unresolvedRunID(for: "s") == run,
+              "fresh live status defeats local confirmation")
+        transport.statusCode = 404
+        let beforeReleasePosts = transport.requests.filter { $0.httpMethod == "POST" }.count
+        let wrongRelease = try await userBackend.releaseMissingRunAfterUserConfirmation(sessionID: "s", runID: "other")
+        check(!wrongRelease, "foreign Run cannot be released")
+        let released = try await userBackend.releaseMissingRunAfterUserConfirmation(sessionID: "s", runID: run)
+        check(released && userStore.wasUserReleased(sessionID: "s", runID: run) &&
+              userStore.unresolvedRunID(for: "s") == nil &&
+              userStore.terminalOutcome(sessionID: "s", runID: run) == nil,
+              "user acknowledgement is durable but never a fabricated terminal")
+        let reopenedBackend = backend(scope: userScope)
+        reopenedBackend.restoreAcceptedRunIdentity(sessionID: "s", runID: run)
+        let releasedHistory = try await reopenedBackend.history(sessionID: "s", before: nil)
+        check(releasedHistory.activeRunEvidence == .absent && userStore.runID(for: "s") == nil,
+              "relaunch cannot resurrect user-released Run")
+        check(transport.requests.filter { $0.httpMethod == "POST" }.count == beforeReleasePosts,
+              "explicit local release emits no POST")
+        transport.statusCode = 200
+        transport.status = "completed"
+
         // A durable model receipt can repair a stale exact backend index.
         let restoredScope = "instance|restored-terminal-index"
         let restoredIndex = backend(scope: restoredScope)

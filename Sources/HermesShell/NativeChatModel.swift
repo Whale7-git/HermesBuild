@@ -429,10 +429,14 @@ final class NativeChatModel: ObservableObject {
         try await RecoveryScheduler.shared.perform(instance: recoveryInstance, session: sessionID) {
             // Repair an interrupted local index commit only from durable
             // exact terminal evidence, never a guess from history or 404.
-            if sessionID == self.sessionID, let receipt = activeTurnRecovery,
-               let outcome = receipt.terminalStatus {
-                api.restoreVerifiedRunTerminal(sessionID: sessionID, runID: receipt.runID,
-                                               outcome: outcome)
+            if !runtimeRetired, !suspended, sessionID == self.sessionID,
+               let receipt = activeTurnRecovery {
+                if let outcome = receipt.terminalStatus {
+                    api.restoreVerifiedRunTerminal(sessionID: sessionID, runID: receipt.runID,
+                                                   outcome: outcome)
+                } else {
+                    api.restoreAcceptedRunIdentity(sessionID: sessionID, runID: receipt.runID)
+                }
             }
             return try await api.history(sessionID: sessionID, before: before)
         }
@@ -713,14 +717,18 @@ final class NativeChatModel: ObservableObject {
             resolution(in: [snapshot])
         }
 
-        func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
-            let result = DeliveryReconciliationPolicy.resolve(
+        func deliveryEvidence(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+            DeliveryReconciliationPolicy.resolve(
                 text: text, attachments: attachments, historyEnd: historyEnd,
                 knownIDs: knownIDs, pages: pages)
-            // Without a returned Run ID, a Gateway's local empty run index
-            // cannot prove that a keyed request was never admitted. A queued
-            // admission may not have produced any visible history yet.
-            return submissionKey != nil && result == .absent ? .failed : result
+        }
+
+        func resolution(in pages: [ChatSnapshot]) -> PendingReconcileResult {
+            // Without a returned Run ID, an empty local Gateway index cannot
+            // prove either absence or execution completion. A matched user row
+            // proves delivery, NOT that the agent has finished.
+            guard submissionKey == nil else { return .failed }
+            return deliveryEvidence(in: pages)
         }
     }
     @Published var pendingRecoveryUnreadable = false
@@ -857,6 +865,7 @@ final class NativeChatModel: ObservableObject {
         restoringRecoveryRecords = true
         pendingSend = nil
         restoringRecoveryRecords = false
+        pendingHistoryWalk = nil
         pendingAbsent = false
         return true
     }
@@ -964,6 +973,7 @@ final class NativeChatModel: ObservableObject {
         }
         recordSuccessfulLocalWrite(record: .activeRun)
         activeTurnRecovery = nil
+        acceptedHistoryWalk = nil
         _ = draftStore?.saveCheckpoint(nil)
         activeTurnHistoryBoundary = nil
         return true
@@ -972,10 +982,7 @@ final class NativeChatModel: ObservableObject {
     /// Explicit user override, never called by automatic retry or queue flush.
     /// Keep the queue paused and require a fresh authoritative GET afterwards.
     var canConfirmEndedRunLocally: Bool {
-        guard !runtimeRetired, !suspended, !authenticationRequired,
-              !submitting, !loading, !syncing, !running, !reconciling,
-              !stopping, !recoveryRecordsUnreadable, pendingApprovals.isEmpty,
-              pendingClarifies.isEmpty else { return false }
+        guard canBeginExplicitRecovery else { return false }
         guard let runID = activeTurnRecovery?.runID ?? unavailableRunStatusID,
               streamID == nil || streamID == runID else { return false }
         if let pending = pendingSend {
@@ -986,6 +993,96 @@ final class NativeChatModel: ObservableObject {
         return activeTurnRecovery?.terminalStatus != nil || unavailableRunStatusID == runID
     }
 
+    private var canBeginExplicitRecovery: Bool {
+        !runtimeRetired && !recoveryOnly && !suspended && !authenticationRequired &&
+            !submitting && !loading && !syncing && !running && !reconciling &&
+            !loadingOlder && !stopping && !recoveryRecordsUnreadable &&
+            pendingApprovals.isEmpty && pendingClarifies.isEmpty
+    }
+
+    var pendingDeliveryIsVerified: Bool {
+        guard activeTurnRecovery == nil, let pending = pendingSend,
+              pending.submissionKey != nil, let head = latestRecoverySnapshot,
+              head.sessionID == sessionID, !head.readOnly,
+              head.activeRunEvidence == .absent, unavailableRunStatusID == nil else { return false }
+        if pending.deliveryEvidence(in: [head]) == .delivered { return true }
+        return pendingHistoryWalk.map {
+            $0.ownerID == pending.id && $0.boundary == pending.historyEnd &&
+                $0.knownIDs == pending.knownIDs && $0.text == pending.text &&
+                $0.attachmentPaths == Set(pending.attachments.map(\.path)) &&
+                $0.matchesHead(head) && $0.provesPendingDelivery
+        } == true
+    }
+
+    var canConfirmPendingEndedLocally: Bool {
+        canBeginExplicitRecovery && streamID == nil && pendingDeliveryIsVerified &&
+            !buffer.messages.contains { $0.id.hasPrefix("streaming:") }
+    }
+
+    private func beginExplicitRecovery() -> UInt? {
+        guard canBeginExplicitRecovery else { return nil }
+        // Fence old GET callbacks and timers before the user-owned operation.
+        revision &+= 1
+        automaticReconciliationTask?.cancel()
+        automaticReconciliationTask = nil
+        automaticReconciliationTicket = nil
+        automaticReconciliationWaiting = false
+        automaticRecoveryQuiet = false
+        activeRunProbeTask?.cancel()
+        activeRunProbeTask = nil
+        activeRunProbeRunID = nil
+        activeRunProbeTicket = nil
+        reconciling = true
+        pauseQueueForRecovery()
+        setQueueAutomaticDispatchPaused(true)
+        guard localRecordIssues[.queuePause] == nil else {
+            reconciling = false
+            scheduleAutomaticReconciliation()
+            return nil
+        }
+        return revision
+    }
+
+    /// The original keyed POST is never replayed. A fresh stable canonical
+    /// history proves delivery; the person separately confirms execution
+    /// ended in the service because the Run ID response was lost.
+    func confirmDeliveredPendingEndedLocally() async -> Bool {
+        guard canConfirmPendingEndedLocally, let pending = pendingSend,
+              let head = latestRecoverySnapshot,
+              let generation = beginExplicitRecovery() else { return false }
+        defer {
+            if revision == generation { reconciling = false }
+            if uncertain { scheduleAutomaticReconciliation() }
+        }
+        do {
+            let fresh = try await recoveryHistory(sessionID: sessionID, before: nil)
+            guard revision == generation, !runtimeRetired, !suspended, !Task.isCancelled,
+                  pendingSend?.id == pending.id, pendingSend?.submissionKey == pending.submissionKey,
+                  activeTurnRecovery == nil, fresh.sessionID == sessionID, !fresh.readOnly,
+                  fresh.activeRunEvidence == .absent, fresh.olderOffset == head.olderOffset,
+                  fresh.rawMessageEndIndex == head.rawMessageEndIndex,
+                  fresh.messages == head.messages, fresh.tools == head.tools else {
+                notice = "历史或任务状态已变化，未解除发送限制。"
+                return false
+            }
+            guard acknowledgeDeliveredQueuedTurn(matching: pending),
+                  clearPendingSend(expectedID: pending.id) else { return false }
+            settleAcceptedAttachments(pending.attachments.map(\.path))
+            if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
+            buffer.terminal = false
+            try applySnapshot(fresh, preserveLoadedOlder: true)
+            uncertain = recoveryRecordsUnreadable
+            error = nil
+            notice = "已按你的确认恢复原会话。原消息未重发，队列保持暂停。"
+            return !uncertain
+        } catch {
+            if revision == generation && !runtimeRetired && !suspended {
+                if !handleAuthenticationFailure(error) { uncertain = true }
+            }
+            return false
+        }
+    }
+
     /// Explicit external confirmation only. Never scheduled by polling.
     /// The backend must reject live/ambiguous identities; retain the local
     /// accepted receipt until a fresh canonical history window is readable.
@@ -993,16 +1090,11 @@ final class NativeChatModel: ObservableObject {
         guard canConfirmEndedRunLocally,
               let runID = activeTurnRecovery?.runID ?? unavailableRunStatusID else { return false }
         let receipt = activeTurnRecovery
-        let generation = revision
-        reconciling = true
+        guard let generation = beginExplicitRecovery() else { return false }
         defer {
             if revision == generation { reconciling = false }
             if uncertain { scheduleAutomaticReconciliation() }
         }
-        pauseQueueForRecovery()
-        // This is a user choice to resume the composer, not the queue.
-        setQueueAutomaticDispatchPaused(true)
-        guard localRecordIssues[.queuePause] == nil else { return false }
         do {
             let history = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard revision == generation, !runtimeRetired, !suspended, !Task.isCancelled,
@@ -1031,6 +1123,7 @@ final class NativeChatModel: ObservableObject {
                   activeTurnRecovery == receipt, fresh.sessionID == sessionID,
                   !fresh.readOnly, fresh.activeRunEvidence == .absent,
                   fresh.activeStreamID == nil,
+                  fresh.olderOffset == history.olderOffset,
                   fresh.rawMessageEndIndex == history.rawMessageEndIndex,
                   fresh.messages == history.messages, fresh.tools == history.tools else {
                 notice = "历史或任务状态发生变化，已保留恢复记录。请重新确认。"
@@ -1134,9 +1227,9 @@ final class NativeChatModel: ObservableObject {
         let verification = uncertain || (hasPendingSend && !submitting) ||
             currentActivity == .needsVerification || recoveryRecordsUnreadable ||
             runRecoveryNoticeShown
-        let recovery = hidesRoutineRecoveryNotice ||
-            (automaticReconciliationTask != nil &&
-             (historyLoadFailurePending || activeTurnRecovery != nil || reapedTransportRunID != nil))
+        // After the quiet grace period show the real actionable state, not
+        // a permanent spinner simply because a read-only timer still exists.
+        let recovery = hidesRoutineRecoveryNotice
         return SessionPresentationState(activity: currentActivity,
             transcriptAvailable: !transcript.messages.isEmpty,
             routineRecovery: recovery, requiresAction: requiresAction,

@@ -650,7 +650,7 @@ enum RunFinalizer {
     static func canSettle(_ pages: [ChatSnapshot], sessionID: String,
                           runID: String, receipt: ActiveTurnRecovery?,
                           outcome: RunTerminalStatus,
-                          requireReply: Bool) -> Bool {
+                          requireReply: Bool, allowAdditionalUsers: Bool = false) -> Bool {
         guard let newest = pages.first, newest.sessionID == sessionID,
               newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
         if let receipt, receipt.runID != runID { return false }
@@ -658,7 +658,8 @@ enum RunFinalizer {
         if let receipt {
             return receipt.confirmsCompletion(in: pages,
                 allowEmptyReply: !requireReply &&
-                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true))
+                    (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true),
+                allowAdditionalUsers: allowAdditionalUsers)
         }
         return !requireReply
     }
@@ -682,7 +683,6 @@ struct RecoveryHistoryWalk {
     private var newestFresh: ChatMessage?
     // Walking backwards: the next relevant row after a candidate user
     // determines whether its answer appears before another user's turn.
-    private var followingRole: String?
     private(set) var matchingAnsweredUsers = 0
     private var assistantSinceNextUser = false
 
@@ -733,7 +733,6 @@ struct RecoveryHistoryWalk {
                 }
                 assistantSinceNextUser = false
             }
-            followingRole = row.role
         }
         cursor = page.olderOffset
         return true
@@ -741,14 +740,15 @@ struct RecoveryHistoryWalk {
 
     var complete: Bool { cursor <= boundary }
 
-    func provesAccepted(_ receipt: ActiveTurnRecovery, requireReply: Bool) -> Bool {
+    func provesAccepted(_ receipt: ActiveTurnRecovery, requireReply: Bool,
+                        allowAdditionalUsers: Bool = false) -> Bool {
         guard complete, ownerID == receipt.runID, boundary == receipt.historyEnd,
               knownIDs == receipt.knownIDs, text == receipt.text,
               attachmentPaths == receipt.attachmentPaths else { return false }
         // An exact saved terminal result proves execution ended independently
         // of another device's later user message. Require one unambiguous
         // matching accepted row and its own following assistant response.
-        if receipt.terminalStatus == .completed {
+        if allowAdditionalUsers && receipt.terminalStatus == .completed {
             if matchingAcceptedUsers == 1 && matchingAnsweredUsers == 1 { return true }
         }
         guard userCount == 1, matchingAcceptedUsers == 1 else { return false }
@@ -757,11 +757,8 @@ struct RecoveryHistoryWalk {
             (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true)
     }
 
-    var pendingDecision: PendingReconcileResult {
-        guard complete else { return .failed }
-        if userCount == 1 && matchingPendingUsers == 1 { return .delivered }
-        return userCount == 0 ? .absent : .failed
-    }
+    var provesPendingDelivery: Bool { complete && userCount == 1 && matchingPendingUsers == 1 }
+    var provesPendingAbsence: Bool { complete && userCount == 0 }
 }
 
 /// A post-acceptance receipt for the latest turn, distinct from PendingSend.
@@ -793,7 +790,8 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
     /// Read-only proof from a contiguous suffix, newest page first. Tool rows
     /// occupy raw indexes but aren't rendered; never treat a gap as proof that
     /// there was only one user submission after the accepted POST.
-    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false) -> Bool {
+    func confirmsCompletion(in pages: [ChatSnapshot], allowEmptyReply: Bool = false,
+                            allowAdditionalUsers: Bool = false) -> Bool {
         guard let newest = pages.first, let oldest = pages.last,
               let historyEnd, newest.activeRunEvidence == .absent, !newest.readOnly,
               oldest.olderOffset <= historyEnd else { return false }
@@ -815,7 +813,7 @@ struct ActiveTurnRecovery: Codable, Equatable, Sendable {
         let newUsers = fresh.filter { $0.role == "user" }
         // Only exact terminal evidence permits an unambiguous earlier turn
         // to settle when another user message arrived later.
-        if terminalStatus == .completed {
+        if allowAdditionalUsers && terminalStatus == .completed {
             let matches = newUsers.filter {
                 $0.content == text && Set($0.attachmentPaths) == attachmentPaths
             }

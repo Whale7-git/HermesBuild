@@ -255,6 +255,16 @@ final class GatewayRunStore {
         return found
     }
 
+    /// A durable model receipt can repair a lost local index after restart.
+    /// Never overwrite a different Run, terminal, tombstone or user release.
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String) {
+        guard isValid, !persistenceFailed, !runID.isEmpty,
+              current()[sessionID] == nil, unresolvedRunID(for: sessionID) == nil,
+              currentTerminals()[sessionID] == nil,
+              !wasUserReleased(sessionID: sessionID, runID: runID) else { return }
+        remember(runID: runID, sessionID: sessionID)
+    }
+
     func remember(runID: String, sessionID: String) {
         guard isValid else { noteRetired(); return }
         // A delayed status response must not resurrect a 404-retired Run.

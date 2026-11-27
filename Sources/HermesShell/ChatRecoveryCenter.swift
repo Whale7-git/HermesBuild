@@ -14,6 +14,7 @@ struct ChatRecoveryCenter: View {
     @State private var confirmAbandonUnreadable = false
     @State private var confirmAbandonDraft = false
     @State private var confirmAbandonActive = false
+    @State private var confirmPendingEnded = false
     @State private var confirmAbandonCorruptActive = false
     @State private var reconciling = false
     @State private var queueRecoveryID: String?
@@ -61,7 +62,8 @@ struct ChatRecoveryCenter: View {
                 Section("发送状态") {
                     statusRow(icon: model.hasPendingSend ? "paperplane.badge.clock" : "checkmark.circle",
                               color: model.hasPendingSend ? AppTheme.warning : AppTheme.success,
-                              title: model.hasPendingSend ? "上一条消息的发送结果尚未确认" : "没有待确认的消息",
+                              title: model.pendingDeliveryIsVerified ? "已确认消息送达，任务状态待确认" :
+                                (model.hasPendingSend ? "上一条消息的发送结果尚未确认" : "没有待确认的消息"),
                               detail: model.hasPendingSend
                                 ? "同步仅查看历史；在确认之前不会重复发送。"
                                 : "普通发送没有留下未决记录。")
@@ -79,6 +81,11 @@ struct ChatRecoveryCenter: View {
                         }
                         .disabled(reconciling || model.loading || model.syncing
                                   || model.submitting || model.reconciling)
+                    }
+                    if model.canConfirmPendingEndedLocally {
+                        Button("已确认任务结束，恢复原会话") { confirmPendingEnded = true }
+                        Text("已在历史中找到原消息。请先在服务端确认任务结束；不会重发或继续队列。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -292,6 +299,19 @@ struct ChatRecoveryCenter: View {
             } message: {
                 Text("不会重发、停止或删除服务端消息。请先确认历史中是否已收到这条消息。")
             }
+            .confirmationDialog("确认这条消息的任务已结束？", isPresented: $confirmPendingEnded,
+                                titleVisibility: .visible) {
+                Button("确认结束并恢复原会话", role: .destructive) {
+                    Task {
+                        let recovered = await model.confirmDeliveredPendingEndedLocally()
+                        resultText = recovered ? "原会话已恢复，可以继续发送。"
+                            : (model.notice ?? "尚无法安全恢复。")
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("历史中的用户消息只能证明送达，不能证明执行结束。请先通过服务端确认任务已结束。本操作不重发原消息，队列保持暂停。")
+            }
             .confirmationDialog("确认旧任务已经在服务端结束？",
                                 isPresented: $confirmAbandonActive, titleVisibility: .visible) {
                 Button("确认结束并恢复原会话", role: .destructive) {
@@ -376,7 +396,9 @@ struct ChatRecoveryCenter: View {
             switch result {
             case .delivered: resultText = "已在历史中找到消息，不会重复发送。"
             case .absent: resultText = "服务端历史中没有找到这条发送；返回会话后可选择重发或放弃。"
-            case .failed: resultText = "暂时无法确认发送结果。未重复发送，请稍后再试。"
+            case .failed: resultText = model.pendingDeliveryIsVerified
+                ? "消息已送达，尚未确认任务结束。可按服务端实际状态处理。"
+                : "暂时无法确认发送结果。未重复发送，请稍后再试。"
             }
         }
     }

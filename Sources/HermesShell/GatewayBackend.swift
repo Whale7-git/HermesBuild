@@ -354,6 +354,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    func restoreAcceptedRunIdentity(sessionID: String, runID: String) {
+        runStore.restoreAcceptedRunIdentity(sessionID: sessionID, runID: runID)
+    }
+
     func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool {
         guard runStore.canReleaseMissingRun(sessionID: sessionID, runID: runID) else { return false }
         do {

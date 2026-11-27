@@ -898,6 +898,10 @@ extension NativeChatModel {
         if pendingSend == nil { return .delivered }
         guard pendingSend?.id == pending.id else { return .failed }
         if pendingAbsent { return .absent }
+        if pendingDeliveryIsVerified {
+            notice = "历史已确认消息送达；请在服务端确认任务结束后恢复原会话。"
+            return .failed
+        }
 
         // If the latest page does not cover the pre-POST boundary, read back
         // through contiguous raw history indexes. These GETs never send a turn.
@@ -909,6 +913,9 @@ extension NativeChatModel {
         let generation = revision
         if pendingHistoryWalk?.ownerID != pending.id ||
             pendingHistoryWalk?.boundary != historyEnd ||
+            pendingHistoryWalk?.knownIDs != pending.knownIDs ||
+            pendingHistoryWalk?.text != pending.text ||
+            pendingHistoryWalk?.attachmentPaths != Set(pending.attachments.map(\.path)) ||
             pendingHistoryWalk?.matchesHead(latest) != true {
             pendingHistoryWalk = RecoveryHistoryWalk(ownerID: pending.id, boundary: historyEnd,
                 knownIDs: pending.knownIDs, text: pending.text,
@@ -926,20 +933,22 @@ extension NativeChatModel {
                       older.sessionID == sessionID, !older.readOnly,
                       older.activeRunEvidence == .absent,
                       older.rawMessageEndIndex == cursor,
-                      older.olderOffset < cursor else { return .failed }
+                      older.olderOffset < cursor else { pendingHistoryWalk = nil; return .failed }
                 guard walk.append(older) else { pendingHistoryWalk = nil; return .failed }
                 pendingHistoryWalk = walk
             } catch {
                 if handleAuthenticationFailure(error) { return .failed }
+                if HistoryLoadFailure.classify(error) != .transient { pendingHistoryWalk = nil }
                 notice = "较早的消息暂时无法同步，已保留发送记录，不会自动重发。"
                 return .failed
             }
         }
         guard walk.complete else { return .failed }
-        let rawDecision = walk.pendingDecision
-        let decision: PendingReconcileResult = pending.submissionKey != nil && rawDecision == .absent
-            ? .failed : rawDecision
-        guard decision != .failed else { return .failed }
+        let rawDecision: PendingReconcileResult = walk.provesPendingDelivery ? .delivered :
+            (walk.provesPendingAbsence ? .absent : .failed)
+        guard rawDecision != .failed else { return .failed }
+        if pending.submissionKey != nil && rawDecision == .absent { return .failed }
+        let decision = rawDecision
         do {
             let current = try await recoveryHistory(sessionID: sessionID, before: nil)
             guard generation == revision, pendingSend?.id == pending.id,
@@ -953,6 +962,12 @@ extension NativeChatModel {
             }
         } catch {
             if handleAuthenticationFailure(error) { return .failed }
+            return .failed
+        }
+        if pending.submissionKey != nil {
+            // A durable keyed admission with a lost response still lacks a
+            // Run identity. Keep delivery proof separate from execution.
+            notice = "历史已确认消息送达；请在服务端确认任务结束后恢复原会话。"
             return .failed
         }
         pendingHistoryWalk = nil

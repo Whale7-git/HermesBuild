@@ -24,6 +24,8 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     var active: String?
     var statusUnknown = false
     var unavailableRunID: String?
+    var allowUserRelease = false
+    var userReleaseCalls = 0
     var readOnly = false
     var failHistory = false
     var failHistoryAfterProbe = false
@@ -72,6 +74,14 @@ private final class AtomicReadBackCounter: @unchecked Sendable {
     }
     func startNativeTurn(sessionID: String, text: String) async throws -> String {
         try await startNativeTurn(sessionID: sessionID, text: text, attachments: [])
+    }
+    func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool {
+        userReleaseCalls += 1
+        guard allowUserRelease, sessionID == "test", runID == unavailableRunID,
+              active == nil else { return false }
+        statusUnknown = false
+        unavailableRunID = nil
+        return true
     }
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         probeCalls += 1
@@ -853,6 +863,91 @@ extension ModelTests {
             model.disconnect()
         }
         print("PENDING_PASS completed streamed long reply converges after same-head pagination retry")
+
+        // Force a one-page work budget: the next tick must continue at the
+        // previous cursor, not restart at the newest page.
+        do {
+            let service = PendingRecoveryService()
+            service.historyPageLimit = 3
+            service.rows = [["id": "sent", "role": "user", "content": "long task"]]
+            service.rows += (0..<16).map { ["id": "tool-\($0)", "role": "tool", "content": "done"] }
+            service.rows.append(["id": "reply", "role": "assistant", "content": "complete"])
+            // A second legitimate turn cannot erase exact terminal proof.
+            service.rows += [["id": "other-user", "role": "user", "content": "other"],
+                             ["id": "other-reply", "role": "assistant", "content": "other answer"]]
+            let model = NativeChatModel(sessionID: "test", api: service)
+            model.activeTurnRecovery = ActiveTurnRecovery(runID: "multi-page", historyEnd: 0,
+                knownIDs: [], text: "long task", attachmentPaths: [], terminalStatus: .completed)
+            model.recoveryPagesPerPass = 1
+            model.automaticReconciliationDelaysNanoseconds = [2_000_000]
+            model.automaticReconciliationSteadyNanoseconds = 4_000_000
+            await model.load()
+            try await eventually { model.canSend && model.activeTurnRecovery == nil &&
+                model.automaticReconciliationTask == nil }
+            precondition(service.historyPageCalls >= 6 && service.historyPageCalls <= 8 &&
+                         service.startCalls == 0 && model.queueRecoveryPaused,
+                         "resumable compact proof must converge, with exact terminal and no replay")
+            model.disconnect()
+        }
+        print("PENDING_PASS multi-pass history budget and exact terminal with a later independent user turn")
+
+        // Missing status is still not terminal. Explicit external confirmation
+        // can retire a matching receipt, not a running or unrelated Run.
+        do {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let files = LocalDataFileStore(instanceID: "manual", accountScope: "account",
+                sessionID: "test", rootDirectory: root)
+            let store = ChatDraftStore(instanceID: "manual", accountScope: "account",
+                sessionID: "test", fileStore: files)
+            let receipt = ActiveTurnRecovery(runID: "expired-manual", historyEnd: 0,
+                knownIDs: [], text: "original", attachmentPaths: [])
+            precondition(store.saveActiveRun(try JSONEncoder().encode(receipt)).succeeded)
+            let service = PendingRecoveryService()
+            service.statusUnknown = true
+            service.unavailableRunID = receipt.runID
+            service.probeResults = [.unresolved]
+            service.rows = [["id": "sent", "role": "user", "content": "original"],
+                            ["id": "reply", "role": "assistant", "content": "answer"]]
+            let model = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+            await model.load()
+            if let probe = model.activeRunProbeTask { await probe.value }
+            precondition(model.canConfirmEndedRunLocally && !model.canSend && service.userReleaseCalls == 0)
+            let denied = await model.confirmEndedRunLocally()
+            precondition(!denied && model.activeTurnRecovery == receipt && !model.canSend)
+            service.allowUserRelease = true
+            let confirmed = await model.confirmEndedRunLocally()
+            precondition(confirmed && model.canSend && store.loadActiveRun().value == nil &&
+                         model.queueUserPaused && model.automaticReconciliationTask == nil &&
+                         service.startCalls == 0 && service.userReleaseCalls == 2)
+            model.disconnect()
+            let restored = NativeChatModel(sessionID: "test", api: service, draftStore: store)
+            await restored.load()
+            precondition(restored.canSend && restored.queueUserPaused && service.startCalls == 0)
+            restored.disconnect()
+        }
+        print("PENDING_PASS explicit same-session release of a missing Run, failure and restart")
+
+        // The original keyed POST response was lost. A visible user row alone
+        // is delivery proof, not permission to send another request.
+        do {
+            let service = PendingRecoveryService()
+            service.carriesRunSubmissionIdentity = true
+            let model = NativeChatModel(sessionID: "test", api: service)
+            await model.load()
+            model.draft = "lost response"
+            _ = await model.send()
+            service.rows += [["id": "sent", "role": "user", "content": "lost response"],
+                             ["id": "reply", "role": "assistant", "content": "answer"]]
+            let result = await model.reconcilePending()
+            precondition(result == .failed && model.pendingDeliveryIsVerified &&
+                         model.canConfirmPendingEndedLocally && !model.canSend && !model.canResendPending)
+            let confirmed = await model.confirmDeliveredPendingEndedLocally()
+            precondition(confirmed && model.canSend && model.pendingSend == nil &&
+                         model.queueUserPaused && service.startCalls == 1)
+            model.disconnect()
+        }
+        print("PENDING_PASS keyed delivery versus execution; user-confirmed original session continuation")
 
         // Long-running agent: a single answer can be separated from its
         // accepted user message by >60 invisible tool rows. A normal GET must
