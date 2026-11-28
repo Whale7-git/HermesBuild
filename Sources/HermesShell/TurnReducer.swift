@@ -104,7 +104,7 @@ enum TurnReducer {
             // 幂等窗口内：同 key 重放是安全的，且服务端不会执行第二次（G1）。
             // 超过 24h：重放会真的新建一轮，所以必须停下来问用户（G1）。
             if sending.canReplay {
-                let delay = backoffSeconds(attempts: sending.attempts)
+                let delay = backoffSeconds(failures: sending.attempts - 1)
                 return .init(turn: .sending(sending),
                              effects: [.replaySubmission(key: sending.submissionKey, afterSeconds: delay)])
             }
@@ -185,10 +185,11 @@ enum TurnReducer {
         }
     }
 
-    /// 重放退避。503 带 `Retry-After` 时由引擎覆盖这个值（G7）。
-    static func backoffSeconds(attempts: Int) -> Double {
+    /// 重放退避。`failures` 是第几次失败，从 1 开始——第一次失败等 1 秒。
+    /// 503 带 `Retry-After` 时由引擎覆盖这个值（G7）。
+    static func backoffSeconds(failures: Int) -> Double {
         let ladder: [Double] = [1, 2, 5, 15, 60, 120]
-        let index = max(0, min(attempts - 1, ladder.count - 1))
+        let index = max(0, min(failures - 1, ladder.count - 1))
         return ladder[index]
     }
 }

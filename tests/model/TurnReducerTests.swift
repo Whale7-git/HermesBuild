@@ -125,9 +125,9 @@ extension ModelTests {
                "reset returns to idle")
 
         // MARK: 退避阶梯
-        expect(TurnReducer.backoffSeconds(attempts: 1) == 1, "backoff starts at 1s")
-        expect(TurnReducer.backoffSeconds(attempts: 6) == 120, "backoff caps at 120s")
-        expect(TurnReducer.backoffSeconds(attempts: 99) == 120, "backoff never exceeds the cap")
+        expect(TurnReducer.backoffSeconds(failures: 1) == 1, "backoff starts at 1s")
+        expect(TurnReducer.backoffSeconds(failures: 6) == 120, "backoff caps at 120s")
+        expect(TurnReducer.backoffSeconds(failures: 99) == 120, "backoff never exceeds the cap")
 
         print("PASS turnreducer (\(checks) checks)")
     }
