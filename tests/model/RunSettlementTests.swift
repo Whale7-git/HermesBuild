@@ -123,6 +123,35 @@ extension ModelTests {
         expect(!isRunReportedActive(try emptyHistory(unknown: true), runID: "run-1"),
                "an unknown/tombstoned snapshot must not read as active")
 
+        // MARK: - T03 SSE 断开后 GET 确认终态即可恢复
+
+        // 流断了、历史还没追上，但 status 已给出 completed + 最终回复：
+        // 这正是「长任务断线后回来」的形状，必须能结算。
+        expect(RunFinalizer.canSettle([try emptyHistory(unknown: true)],
+                                      sessionID: "s1", runID: "run-1", receipt: receipt,
+                                      outcome: .completed, requireReply: true,
+                                      recoveredOutput: "断线前已经生成的回复"),
+               "T03 a GET-confirmed terminal settles a reaped stream")
+
+        // MARK: - T04 结算后必须真的能发下一条
+
+        // 结算成功 = uncertain 清空；这里固定住「终态 + 无未决事务」时
+        // 新消息必须被允许，而不是只看某个布尔值。
+        let settledFacts = ChatFacts(readOnly: false, uncertain: false, suspended: false,
+                                     reconciling: false, hasPendingSend: false,
+                                     pendingAbsent: false,
+                                     sendingWhileRunning: false)
+        expect(ChatPhase.idle.allowsNewTurn(settledFacts),
+               "T04 a settled idle session must allow the next message")
+
+        // 仍然不确定时保持锁定（这是刻意保留的安全边界，不是遗漏）
+        let uncertainFacts = ChatFacts(readOnly: false, uncertain: true, suspended: false,
+                                       reconciling: false, hasPendingSend: false,
+                                       pendingAbsent: false,
+                                       sendingWhileRunning: false)
+        expect(!ChatPhase.idle.allowsNewTurn(uncertainFacts),
+               "T04 a genuinely unresolved session must still be locked")
+
         if failures.isEmpty {
             print("PASS runsettlement (\(checks) checks)")
         } else {
