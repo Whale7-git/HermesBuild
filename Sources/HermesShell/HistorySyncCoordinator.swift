@@ -653,7 +653,7 @@ final class HistorySyncCoordinator<Page: HistorySyncPage> {
         let olderOffset = Self.lower(previousOlderOffset, page.olderOffset)
         let rawEndIndex = Self.higher(previousRawEnd, page.rawMessageEndIndex)
         let regressed = previousRawEnd.map { page.rawMessageEndIndex < $0 } ?? false
-        let reachedStart = (olderOffset ?? 0) <= 0
+        let reachedStart = olderOffset <= 0
         cursor = HistorySyncCursor(olderOffset: olderOffset,
                                    rawEndIndex: rawEndIndex,
                                    exhausted: cursor.exhausted || reachedStart)
