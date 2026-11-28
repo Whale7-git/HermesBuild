@@ -87,9 +87,13 @@ enum TurnReducer {
                                               unresolvedByOwnerRestart: false)),
                          effects: [.attachStream(runID: runID, lastEventID: nil)])
 
-        case let .submitRejected(rejection):
+        case .submitRejected:
             // 明确被拒 = 服务端没受理（permission_denied 明确无 reservation，G8）。
             // 回到 idle，让用户看到真实原因；不保留 sending，避免误以为还在等。
+            //
+            // TODO(S5 文案收敛): 这里和「幂等窗口过期」共用同一条 notice，
+            // 语义并不准确——拒绝是确定性失败，过期是「重放不再安全」。
+            // 两者都该有各自的措辞，但不该在这一阶段改文案。
             return .init(turn: .idle,
                          effects: [.notifyUser(.submissionExpiredWithoutAnswer)])
 
