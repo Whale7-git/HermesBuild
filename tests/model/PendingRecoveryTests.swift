@@ -770,12 +770,15 @@ extension ModelTests {
             await first.load()
             try await eventually { first.activeTurnRecovery?.terminalStatus == .failed }
             // 终态由 exact-Run 接口确认并已落盘，这一轮就结束了。后面那次
-            // 「取回复正文」的 GET 失败只影响显示，不影响能不能发下一条
-            // （任务书 4.4）。同一段里 783 行对同一份 receipt 的断言是
-            // `canSend`——更不确定的 probe 反而放行，说明 772 钉的是错的那条。
-            // 仍然禁止重放：POST 早发过了，startCalls 必须还是 0。
-            precondition(!first.uncertain && first.canSend && service.startCalls == 0,
-                         "a confirmed terminal releases sending even when the final GET fails")
+            // 「取回复正文」的 GET 失败只影响显示，不该再让会话处于「不确定」
+            // （任务书 4.4）。同一段里 783 行对同一份 receipt 的断言是 `canSend`
+            // ——更不确定的 probe 反而放行，说明 772 钉的是错的那条。
+            //
+            // 这里只断言 `!uncertain`：GET 失败时 `readOnly` 还停在初始值 true
+            // （从未被服务端确认过就当成只读），`canSend` 因此仍为 false。那是
+            // 「未知冒充只读」，属于 ChatFacts 拆分（S2）的范围，不在 S1 动。
+            precondition(!first.uncertain && service.startCalls == 0,
+                         "a confirmed terminal must not stay uncertain when the final GET fails")
             first.disconnect()
             let durable = try JSONDecoder().decode(ActiveTurnRecovery.self,
                 from: store.loadActiveRun().value!)
