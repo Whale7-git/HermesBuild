@@ -145,6 +145,69 @@ final class NativeChatModel: ObservableObject {
     /// 不该让人发不出下一条消息，这是本次重构要解决的核心症状。
     @Published var gate = SendGate()
 
+    /// 新状态机的影子副本（P2c）。**只观测，不参与任何判定。**
+    ///
+    /// 各路径在事实发生时把它喂进来，`TurnReducer` 算出下一态。这一步不改行为：
+    /// 旧的 `uncertain` / `ChatFacts` 照旧决定能不能发。目的是在真机上收集
+    /// 「新旧判定不一致」的时刻——那种时刻要么是我漏了路径，要么是旧逻辑错了，
+    /// 两种都必须先看见再动手。
+    private(set) var turn: Turn = .idle
+
+    /// 影子分歧计数，供诊断页与运行时日志读取。
+    private(set) var turnShadowMismatchCount = 0
+
+    /// 把一个**已经发生的事实**喂给新状态机。
+    ///
+    /// 不执行返回的 effects（P3 才接管），只记录分歧。事件必须是既成事实，
+    /// 不能是意图——否则影子对比就失去意义。
+    func observeTurnEvent(_ event: TurnEvent, _ note: @autoclosure () -> String = "") {
+        let before = turn
+        let transition = TurnReducer.reduce(before, event)
+        turn = transition.turn
+
+        // 影子对比：新状态机认为「这一轮结束了」时，旧判定是否也放行了？
+        // 只在不一致时记一行，且只含状态名，不含正文与会话标识。
+        let nextAllows = turn.allowsNewMessage
+        let legacyAllows = canSend
+        if nextAllows != legacyAllows {
+            turnShadowMismatchCount += 1
+            recordRuntimeLog(.warning, "turn-shadow",
+                "mismatch new=\(nextAllows) old=\(legacyAllows) "
+                + "from=\(Self.turnLabel(before)) to=\(Self.turnLabel(turn)) "
+                + "event=\(Self.eventLabel(event)) \(note())")
+        }
+    }
+
+    /// 日志里只写状态名，不写 runID / 正文（避免跨会话串味）。
+    static func turnLabel(_ turn: Turn) -> String {
+        switch turn {
+        case .idle: return "idle"
+        case .sending: return "sending"
+        case .running(let running):
+            if running.terminal != nil { return "running(terminal)" }
+            if running.unresolvedByOwnerRestart { return "running(unknown)" }
+            return "running(live)"
+        }
+    }
+
+    static func eventLabel(_ event: TurnEvent) -> String {
+        switch event {
+        case .submitStarted: return "submitStarted"
+        case .submitAccepted: return "submitAccepted"
+        case .submitRejected: return "submitRejected"
+        case .submitTransportFailure: return "submitTransportFailure"
+        case .streamEvent: return "streamEvent"
+        case .streamUnavailable: return "streamUnavailable"
+        case .statusTerminal: return "statusTerminal"
+        case .statusAlive: return "statusAlive"
+        case .statusUnknownByOwnerRestart: return "statusUnknownByOwnerRestart"
+        case .resolvedByUser: return "resolvedByUser"
+        case .shutdownRequested: return "shutdownRequested"
+        case .backfillCompleted: return "backfillCompleted"
+        case .reset: return "reset"
+        }
+    }
+
     /// 把 `gate` 的判定投影到兼容属性。过渡期每个改动 `gate` 的地方都要调一次。
     func syncUncertain() {
         let next = gate.blocksNewTurn
