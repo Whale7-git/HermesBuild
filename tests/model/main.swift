@@ -216,6 +216,7 @@ var transcriptPublications = 0
         try await pendingRecoveryTests()
         try await activityRecoveryTests()
         historyClassificationTests()
+        try runSettlementTests()
         try await automaticReconciliationTests()
         try await runPagingBudgetTests()
         runQueuePresentationTests()

@@ -644,24 +644,57 @@ enum RunTerminalEvidence {
     }
 }
 
+/// True only when this exact Run is being reported as still active.
+///
+/// A snapshot that reports no active Run, an unknown/tombstoned Run, or a
+/// different Run does not contradict a terminal result for `runID`. This is the
+/// distinction that previously turned an expired `/v1/runs/{id}` (404 →
+/// tombstone) into a permanent send lock.
+func isRunReportedActive(_ snap: ChatSnapshot, runID: String) -> Bool {
+    if case .active(let activeRun) = snap.activeRunEvidence { return activeRun == runID }
+    return false
+}
+
 /// One final-history evidence policy used by all transport/status owners.
 /// The exact receipt cannot be replaced by another Run's evidence.
 enum RunFinalizer {
+    /// Whether an authoritatively terminal Run may be settled.
+    ///
+    /// The history snapshot is no longer required to prove the Run ended: a
+    /// validated terminal status already is that proof. What history may still
+    /// do is *contradict* it — if the same Run is being reported as active, the
+    /// snapshot is stale and must not settle. A tombstoned (`unknown`) or
+    /// expired-status snapshot never blocks, which is what previously locked a
+    /// conversation forever once `/v1/runs/{id}` started returning 404.
+    ///
+    /// `recoveredOutput` is the Run status endpoint's own `output` (the final
+    /// reply text). When history has not caught up yet, that is still reliable
+    /// content evidence for a `completed` turn, so the user can keep chatting
+    /// instead of waiting for a match that may never arrive.
     static func canSettle(_ pages: [ChatSnapshot], sessionID: String,
                           runID: String, receipt: ActiveTurnRecovery?,
                           outcome: RunTerminalStatus,
-                          requireReply: Bool, allowAdditionalUsers: Bool = false) -> Bool {
+                          requireReply: Bool, allowAdditionalUsers: Bool = false,
+                          recoveredOutput: String? = nil) -> Bool {
         guard let newest = pages.first, newest.sessionID == sessionID,
-              newest.activeRunEvidence == .absent, !newest.readOnly else { return false }
+              !newest.readOnly else { return false }
+        // Only this exact Run being still alive contradicts its own terminal
+        // result. Another Run's evidence belongs to a different turn.
+        if case .active(let activeRun) = newest.activeRunEvidence, activeRun == runID { return false }
         if let receipt, receipt.runID != runID { return false }
         if outcome != .completed { return true }
         if let receipt {
-            return receipt.confirmsCompletion(in: pages,
+            if receipt.confirmsCompletion(in: pages,
                 allowEmptyReply: !requireReply &&
                     (receipt.terminalAllowsEmptyReply == true || receipt.commandAllowsEmptyReply == true),
-                allowAdditionalUsers: allowAdditionalUsers)
+                allowAdditionalUsers: allowAdditionalUsers) { return true }
+            // History has not matched yet; the Run's own final response is
+            // already in hand, so the turn is settled and content is preserved.
+            if let recoveredOutput, !recoveredOutput.isEmpty { return true }
+            return false
         }
-        return !requireReply
+        if !requireReply { return true }
+        return !(recoveredOutput?.isEmpty ?? true)
     }
 }
 

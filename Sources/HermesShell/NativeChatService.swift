@@ -50,6 +50,11 @@ protocol NativeChatService:AnyObject {
     /// prove completion; this method lets a durable receipt verify its exact
     /// run without replaying the original POST.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe
+    /// The final reply text the Run reported with its terminal status, if any.
+    /// Content evidence that does not depend on history having caught up.
+    func runTerminalOutput(sessionID: String, runID: String) -> String?
+    /// The Run this session already settled against a validated terminal status.
+    func settledTerminalRunID(sessionID: String) -> String?
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus)
     func restoreAcceptedRunIdentity(sessionID: String, runID: String)
     /// Explicit external user confirmation of a missing execution record.
@@ -94,6 +99,8 @@ extension NativeChatService {
     /// Unknown is fail-closed. A backend that cannot prove the exact run is
     /// alive must never turn the receipt into permission to send again.
     func probeActiveRun(sessionID:String,runID:String) async throws -> ActiveRunProbe { .unknown }
+    func runTerminalOutput(sessionID: String, runID: String) -> String? { nil }
+    func settledTerminalRunID(sessionID: String) -> String? { nil }
     func restoreVerifiedRunTerminal(sessionID: String, runID: String, outcome: RunTerminalStatus) {}
     func restoreAcceptedRunIdentity(sessionID: String, runID: String) {}
     func releaseMissingRunAfterUserConfirmation(sessionID: String, runID: String) async throws -> Bool { false }
