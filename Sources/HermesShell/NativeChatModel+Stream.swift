@@ -141,11 +141,16 @@ extension NativeChatModel {
                 if failure == .transient {
                     // 错误本身仍然要暴露：网络不可用正是用户该看到的信息。
                     self.error = error.localizedDescription
-                    // 读不到历史 ≠ 服务端状态未知。D 类旧实现把这两件事写成一个
-                    // 等式，长回合结束后就再也发不出下一条。现在它只让历史显示为
-                    // 「未同步」，自动核对照旧退避重试，直到 `applySnapshot` 补上。
-                    // D：只说明历史没读到，不构成任何 Run / POST / 写盘事实。
-                    gate.historyFresh = false
+                    // 读不到历史本身不是 Run 事实。但「这一轮到底结束了没有」
+                    // 取决于本地有没有已结算的证据：
+                    //   已结算 → 确定结束，失败只是历史没读到（D，不影响发送）
+                    //   否则   → 连「服务端有没有 Run 在跑」都答不上来（A），
+                    //            当成 D 处理就会在真有一轮在跑时放行重发。
+                    if case .settled = gate.run {
+                        gate.historyFresh = false
+                    } else {
+                        gate.run = .unknown(runID: activeTurnRecovery?.runID)
+                    }
                     syncUncertain()
                     if let savedAt = cachedHistoryDate {
                         transition(to: .cached(savedAt: savedAt, syncing: false))
@@ -162,8 +167,12 @@ extension NativeChatModel {
                 } else {
                     historyLoadFailurePending = false
                     self.error = error.localizedDescription
-                    // D：历史读不到 ≠ 服务端有 Run 在跑。
-                    gate.historyFresh = false
+                    // 同 transient 分支：没有已结算证据时这是 A，不是 D。
+                    if case .settled = gate.run {
+                        gate.historyFresh = false
+                    } else {
+                        gate.run = .unknown(runID: activeTurnRecovery?.runID)
+                    }
                     syncUncertain()
                     // 缓存失败保留 `.cached`（历史还在屏幕上），只是不再声称在核对。
                     if let savedAt = cachedHistoryDate {
