@@ -51,6 +51,12 @@ extension ModelTests {
             }
         }
 
+        /// `isFinished` 只挂在 `Turn.Running` 上，`Turn` 不转发它——「结束」是 Run 的属性。
+        func finished(_ turn: Turn) -> Bool {
+            if case .running(let live) = turn { return live.isFinished }
+            return false
+        }
+
         func replayKeys(_ effects: [TurnEffect]) -> [String] {
             effects.compactMap { effect in
                 if case .replaySubmission(let key, _) = effect { return key }
@@ -140,7 +146,7 @@ extension ModelTests {
         let unknownTurn = Turn.running(running(unknown: true))
         expect(!unknownTurn.allowsNewMessage,
                "G2: an unresolved owner-restart unknown keeps later turns waiting")
-        expect(!unknownTurn.isFinished && !unknownTurn.awaitsReplyBackfill,
+        expect(!finished(unknownTurn) && !unknownTurn.awaitsReplyBackfill,
                "G2: unknown is not terminal, so it triggers neither settlement nor backfill")
         expect(unknownTurn.runID == "run-1",
                "G2: the run id survives so resolve-unknown can address it")
@@ -175,7 +181,7 @@ extension ModelTests {
 
         for outcome in [RunTerminalStatus.completed, .failed, .cancelled, .interrupted] {
             let settledTurn = Turn.running(running(terminal: outcome))
-            expect(settledTurn.isFinished && settledTurn.allowsNewMessage,
+            expect(finished(settledTurn) && settledTurn.allowsNewMessage,
                    "G3: \(outcome.rawValue) ends the run, so the next message is allowed")
             expect(settledTurn.awaitsReplyBackfill,
                    "G3: \(outcome.rawValue) still needs the history backfill")
@@ -196,7 +202,7 @@ extension ModelTests {
         // MARK: - G4 status 会被清理；terminal + output 才是本地真相
 
         let settledNoBody = Turn.running(running(terminal: .completed, output: nil))
-        expect(settledNoBody.isFinished && settledNoBody.allowsNewMessage,
+        expect(finished(settledNoBody) && settledNoBody.allowsNewMessage,
                "G4: the terminal alone ends the turn, before any body arrives")
         expect(settledNoBody.output == nil,
                "G4: a missing output reads as nil, not as an empty answer")
@@ -282,10 +288,11 @@ extension ModelTests {
 
         // MARK: - G7 503：等待时长是数据，不是写死的策略
 
-        expect(TurnReducer.backoffSeconds(attempts: 1) < TurnReducer.backoffSeconds(attempts: 4),
+        expect(TurnReducer.backoffSeconds(failures: 1) < TurnReducer.backoffSeconds(failures: 4),
                "G7: the fallback ladder backs off instead of hot-looping")
+        // 一次传输失败后 attempts == 2，重放延迟按 failures == 1 取档。
         expect(lostResponse.effects ==
-               [.replaySubmission(key: "abc", afterSeconds: TurnReducer.backoffSeconds(attempts: 2))],
+               [.replaySubmission(key: "abc", afterSeconds: TurnReducer.backoffSeconds(failures: 1))],
                "G7: the retry delay rides in the effect, so a Retry-After can override it")
         expect(TurnReducer.reduce(Turn.running(running()), .statusAlive).effects ==
                [.pollStatus(runID: "run-1", afterSeconds: 60)],

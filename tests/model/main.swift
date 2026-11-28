@@ -220,6 +220,7 @@ var transcriptPublications = 0
         sendGateTests()
         turnStateTests()
         turnReducerTests()
+        officialContractTests()
         try await automaticReconciliationTests()
         try await runPagingBudgetTests()
         runQueuePresentationTests()

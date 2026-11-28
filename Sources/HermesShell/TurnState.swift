@@ -139,4 +139,17 @@ enum Turn: Equatable, Sendable {
         if case .running(let running) = self { return running.output }
         return nil
     }
+
+    /// 这一轮是否已经在协议上结束。
+    ///
+    /// `idle` 为真（没有未完成的轮次），`sending` 为假，`.running` 取决于是否
+    /// 已拿到终态。与 `allowsNewMessage` 只在 `sending` 上不同——发送中的轮次
+    /// 既没结束也不允许再发。
+    var isFinished: Bool {
+        switch self {
+        case .idle: return true
+        case .sending: return false
+        case .running(let running): return running.terminal != nil
+        }
+    }
 }
