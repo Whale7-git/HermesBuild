@@ -769,7 +769,13 @@ extension ModelTests {
             let first = NativeChatModel(sessionID: "test", api: service, draftStore: store)
             await first.load()
             try await eventually { first.activeTurnRecovery?.terminalStatus == .failed }
-            precondition(first.uncertain && !first.canSend)
+            // 终态由 exact-Run 接口确认并已落盘，这一轮就结束了。后面那次
+            // 「取回复正文」的 GET 失败只影响显示，不影响能不能发下一条
+            // （任务书 4.4）。同一段里 783 行对同一份 receipt 的断言是
+            // `canSend`——更不确定的 probe 反而放行，说明 772 钉的是错的那条。
+            // 仍然禁止重放：POST 早发过了，startCalls 必须还是 0。
+            precondition(!first.uncertain && first.canSend && service.startCalls == 0,
+                         "a confirmed terminal releases sending even when the final GET fails")
             first.disconnect()
             let durable = try JSONDecoder().decode(ActiveTurnRecovery.self,
                 from: store.loadActiveRun().value!)
