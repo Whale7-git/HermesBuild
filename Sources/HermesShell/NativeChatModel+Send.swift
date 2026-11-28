@@ -896,6 +896,30 @@ extension NativeChatModel {
             }
             self.error = error.localizedDescription
             recordRuntimeLog(.error, "send", "post fail err=\(error.localizedDescription)")
+            // 官方幂等保证：同一个 `Idempotency-Key` 的重试是安全的。服务端在
+            // ledger 里已有 reservation 时返回 202 replay，带**原来的 run_id**，
+            // 不会执行第二次（docs: "An identical retry returns the original
+            // run_id with HTTP 202 and Idempotency-Replayed: true"）。
+            // 所以「响应丢了」不需要变成「请用户核对」，补一次就够。
+            //
+            // 只在可重试的失败上做：409 `idempotency_key_conflict` 说明同一个 key
+            // 配了不同 payload（这是 bug，重试也只会再冲突）；401 走认证分支；
+            // 400/422 是请求本身不合法。超过 ledger 的 24 小时保留期后再重试会
+            // 真的新建一轮，因此这里只补一次、且必须有 key。
+            if let key = submissionKey, Self.isRetryableSubmitFailure(error),
+               let replayed = try? await api.startNativeTurn(
+                   sessionID: sessionID, text: text, attachments: attachments,
+                   reasoningEffort: effort, submissionKey: key) {
+                recordRuntimeLog(.info, "send", "post fail recovered by idempotent replay")
+                self.error = nil
+                setDelivery(.accepted, for: pendingID)
+                gate.pending = .none
+                syncUncertain()
+                transition(to: .streaming(connected: false))
+                attach(streamID: replayed)
+                flush()
+                return SubmitResult(accepted: true, completed: true)
+            }
             // POST 结果不明：退回静止态，用 pending 锁住发送。
             // 不保留 `.submitting`——那会让界面永远停在「正在发送…」。
             //
@@ -926,6 +950,27 @@ extension NativeChatModel {
             if resumeRequested { resumeRequested = false; await load(silent: true, preserveLoadedOlder: true) }
         }
         return SubmitResult(accepted: false, completed: true)
+    }
+
+    /// POST 失败是否值得用同一个幂等 key 再补一次。
+    ///
+    /// 判据只有一条：**这个错误是否能证明「服务端已经明确拒绝」**。能证明的就不补——
+    /// 补了也是同样的拒绝，而且会把一个真实的请求错误伪装成网络抖动。
+    /// 其余（连接中断、超时、5xx、503 排水）都属于「不知道服务端有没有受理」，
+    /// 正是幂等 ledger 存在的意义。
+    static func isRetryableSubmitFailure(_ error: Error) -> Bool {
+        // `HTTPStatusProviding` 是仓库已有的抽象（`APIError` 等都实现了），
+        // 用它判断就不必在这里认识具体的错误枚举。
+        if let status = (error as? HTTPStatusProviding)?.httpStatusHint {
+            // 400/422 请求不合法；401/403 认证；409 是 key 配了不同 payload。
+            // 这些都重试无益。5xx（含 503 runtime_draining / storage_unavailable）可以补。
+            return !(400...499).contains(status)
+        }
+        if let urlError = error as? URLError {
+            // 取消不是失败；其余网络类错误都可以补。
+            return urlError.code != .cancelled
+        }
+        return true
     }
 
     /// 最后一条尚未确认送达的本地用户气泡 id；视图据此显示三态并提供核对入口。
