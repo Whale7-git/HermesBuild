@@ -18,15 +18,15 @@ extension ModelTests {
         // MARK: sending —— G1 幂等
         func sending(attempts: Int = 1,
                      lastAttemptAt: Date = Date(),
-                     rejection: Turn.Sending.Rejection? = nil) -> Turn {
-            .sending(.init(submissionKey: "key-1", text: "hi", attachments: [],
-                           attempts: attempts, lastAttemptAt: lastAttemptAt,
-                           rejection: rejection))
+                     rejection: Turn.Sending.Rejection? = nil) -> Turn.Sending {
+            .init(submissionKey: "key-1", text: "hi", attachments: [],
+                  attempts: attempts, lastAttemptAt: lastAttemptAt,
+                  rejection: rejection)
         }
 
-        expect(!sending().allowsNewMessage,
+        expect(!Turn.sending(sending()).allowsNewMessage,
                "an in-flight POST blocks a second one")
-        expect(sending().submissionKey == "key-1",
+        expect(Turn.sending(sending()).submissionKey == "key-1",
                "the submission key survives for replay")
         expect(sending().canReplay, "a plain network failure can be replayed")
         expect(!sending(lastAttemptAt: Date().addingTimeInterval(-25 * 60 * 60)).canReplay,
