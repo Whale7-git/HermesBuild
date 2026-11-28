@@ -310,7 +310,10 @@ extension NativeChatModel {
             defer {
                 reconciling = false
                 if gate.pending == .reconciling {
-                    gate.pending = .none
+                    // 窗口关闭时账要结清，但落点取决于这笔 POST 有没有结算：
+                    // 还留着 pendingSend 说明它可能已经到达服务端，只能落回
+                    // 「结果未知」；写成 `.none` 就是放行重发。
+                    gate.pending = pendingSend == nil ? .none : .awaitingDecision
                     syncUncertain()
                 }
             }
@@ -963,7 +966,8 @@ extension NativeChatModel {
         defer {
             reconciling = false
             if gate.pending == .reconciling {
-                gate.pending = .none
+                // 同上：GET 失败时 pendingSend 仍在，这一笔依然「结果未知」。
+                gate.pending = pendingSend == nil ? .none : .awaitingDecision
                 syncUncertain()
             }
         }
