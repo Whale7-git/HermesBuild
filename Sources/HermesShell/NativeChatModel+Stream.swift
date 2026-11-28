@@ -411,10 +411,15 @@ extension NativeChatModel {
                     allowAdditionalUsers: allowAdditionalUsers)
             } == true
         } == true
+        // The Run's own final reply, persisted with its terminal status. When
+        // history has not matched yet this is still content evidence, so an
+        // ended turn does not keep the composer locked.
+        let recoveredOutput = api.runTerminalOutput(sessionID: sessionID, runID: runID)
         guard (snap.sessionID == sessionID && walked) ||
               RunFinalizer.canSettle(pages, sessionID: sessionID, runID: runID,
                 receipt: receipt, outcome: outcome, requireReply: streamedReply,
-                allowAdditionalUsers: allowAdditionalUsers) else {
+                allowAdditionalUsers: allowAdditionalUsers,
+                recoveredOutput: recoveredOutput) else {
             latestRecoverySnapshot = snap
             uncertain = true
             pauseQueueForRecovery()
@@ -1339,15 +1344,20 @@ extension NativeChatModel {
                         }
                         let receipt = activeTurnRecovery
                         var snap = try await recoveryHistory(sessionID:sessionID,before:nil)
+                        let recoveredOutput = api.runTerminalOutput(sessionID: sessionID, runID: active)
                         for attempt in 0..<3 {
                             guard accepts(runContext(for: active, generation: generation)),
                                   !Task.isCancelled else { return }
                             if RunFinalizer.canSettle([snap], sessionID: sessionID,
                                 runID: active, receipt: receipt, outcome: outcome,
-                                requireReply: streamedAssistantPresent) { break }
+                                requireReply: streamedAssistantPresent,
+                                recoveredOutput: recoveredOutput) { break }
                             if attempt == 2 {
+                                // Only this Run being reported alive contradicts
+                                // its own terminal result; a missing or
+                                // tombstoned status does not.
                                 if snap.sessionID == sessionID, !snap.readOnly,
-                                   snap.activeRunEvidence == .absent {
+                                   !isRunReportedActive(snap, runID: active) {
                                     latestRecoverySnapshot = snap
                                 }
                                 uncertain = true

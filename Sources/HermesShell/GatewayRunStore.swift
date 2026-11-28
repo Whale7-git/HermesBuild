@@ -13,6 +13,9 @@ final class GatewayRunStore {
     private struct TerminalReceipt: Codable, Equatable {
         let runID: String
         let outcome: RunTerminalStatus
+        /// The Run status endpoint's own final reply text. Optional so records
+        /// written before this field existed still decode.
+        var output: String? = nil
     }
     private var terminalReceipts: [String: TerminalReceipt] = [:]
     private var unresolved: [String: String]
@@ -179,18 +182,28 @@ final class GatewayRunStore {
     /// This is only a handoff to the protected model receipt, never proof
     /// of final transcript delivery or permission to send again.
     @discardableResult
-    func recordTerminal(runID: String, sessionID: String, outcome: RunTerminalStatus) -> Bool {
+    func recordTerminal(runID: String, sessionID: String, outcome: RunTerminalStatus,
+                        output: String? = nil) -> Bool {
         guard isValid, !wasUserReleased(sessionID: sessionID, runID: runID),
               current()[sessionID].map({ $0 == runID }) ?? true,
               unresolvedRunID(for: sessionID).map({ $0 == runID }) ?? true else { return false }
         var records = currentTerminals()
         if let old = records[sessionID], old.runID == runID, old.outcome != outcome { return false }
-        records[sessionID] = TerminalReceipt(runID: runID, outcome: outcome)
+        let keptOutput = (output?.isEmpty ?? true) ? records[sessionID]?.output : output
+        records[sessionID] = TerminalReceipt(runID: runID, outcome: outcome,
+                                            output: keptOutput)
         guard persistTerminals(records) else { persistenceFailed = true; return false }
         if unresolvedRunID(for: sessionID) == runID,
            !clearUnresolved(runID: runID, sessionID: sessionID) { return false }
         finish(runID: runID)
         return !persistenceFailed
+    }
+
+    /// The final reply text the Run reported at settle time, if it was captured.
+    func terminalOutput(sessionID: String, runID: String) -> String? {
+        guard isValid, let receipt = currentTerminals()[sessionID], receipt.runID == runID,
+              let output = receipt.output, !output.isEmpty else { return nil }
+        return output
     }
 
     func discardTerminal(sessionID: String) {

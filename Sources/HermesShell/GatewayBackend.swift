@@ -391,6 +391,11 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         }
     }
 
+    /// Terminal content evidence that does not require history to have caught up.
+    func runTerminalOutput(sessionID: String, runID: String) -> String? {
+        runStore.terminalOutput(sessionID: sessionID, runID: runID)
+    }
+
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         if runStore.wasUserReleased(sessionID: sessionID, runID: runID) { return .unknown }
         if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {
@@ -454,8 +459,14 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
             return .alive
         case "completed", "failed", "cancelled", "interrupted":
             clearFailedRunProbes(runID: runID)
+            // The Run's own final reply. Persisted with the terminal outcome so
+            // a conversation can be settled even while history lags behind.
+            let rawOutput = (root["output"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let output = (rawOutput?.isEmpty ?? true) ? nil : rawOutput
             guard let terminal = RunTerminalStatus(rawValue: status),
-                  runStore.recordTerminal(runID: runID, sessionID: sessionID, outcome: terminal) else { return .unknown }
+                  runStore.recordTerminal(runID: runID, sessionID: sessionID,
+                                          outcome: terminal, output: output) else { return .unknown }
             return .terminal(terminal)
         default:
             return recordProbeFailure(runID: runID)
