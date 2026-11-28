@@ -56,22 +56,8 @@ SESSION_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)$")
 MESSAGES_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)/messages$")
 RUN_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)$")
 EVENTS_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)/events$")
-RESOLVE_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)/resolve-unknown$")
 RUN_ACTION_RE = re.compile(r"^/v1/runs/([A-Za-z0-9_-]+)/(stop|steer|approval|clarify)$")
 SESSION_ACTION_RE = re.compile(r"^/api/sessions/([A-Za-z0-9_-]+)/(model|fork)$")
-
-# Mirrors the deployed Gateway's RunTerminalStatus set. Anything else is a
-# live/indeterminate Run and must never be presented as settled.
-TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
-NON_TERMINAL_STATUSES = frozenset({
-    "queued", "running", "waiting_for_approval", "waiting_for_clarification",
-    "stopping", "unknown",
-})
-SCENARIO_KEYS = frozenset({
-    "status_404", "events_404", "status_latency_ms", "status", "output",
-})
-# Upper bound keeps a bad fixture from wedging a UI test run.
-MAX_STATUS_LATENCY_MS = 10_000
 
 
 def fixture(name: str):
@@ -102,18 +88,6 @@ class GatewayState:
             self.unknown = []
             self.finalization_lag_ms = 0
             self.stream_interval_ms = 30
-            # Fault-injection switches for Run status/events reads. Both 404
-            # flags are independent on purpose: the deployed Gateway keeps the
-            # Run status for 3600s but its stream only 300s, so a real client
-            # can see status 200 while /events is already 404.
-            self.scenario = {
-                "status_404": False,
-                "events_404": False,
-                "status_latency_ms": 0,
-                "status": None,
-                "output": None,
-            }
-            self.resolved_runs = []
 
     def remember(self, method, path, query, headers):
         # Never include credential values or user message contents in logs.
@@ -158,7 +132,7 @@ class GatewayState:
             }
             return run_id
 
-    def finish_run(self, run_id, status="completed", output=None):
+    def finish_run(self, run_id, status="completed"):
         with self.lock:
             record = self.runs.get(run_id)
             if not record:
@@ -168,85 +142,13 @@ class GatewayState:
                 return
             record["settled"] = True
             self.message_count += 1
-            text = output if output is not None else self.stream_text()
-            record["output"] = text
+            text = "".join(e.get("delta", "") for e in self.events
+                           if e.get("event") == "message.delta")
             self.rows(record["session_id"]).append({
                 "id": self.message_count, "role": "assistant",
                 "session_id": record["session_id"], "content": text,
                 "timestamp": 1795150002,
             })
-
-    def stream_text(self):
-        """Final reply text the stream fixture would have produced."""
-        with self.lock:
-            return "".join(e.get("delta", "") for e in self.events
-                           if e.get("event") == "message.delta")
-
-    def project_run(self, record):
-        """GET /v1/runs/{id} body: id/status/output, plus live identity.
-
-        `output` is always present. It carries the final reply only for a
-        terminal status; a live or indeterminate Run reports null so a client
-        cannot mistake an empty string for a settled answer.
-        """
-        with self.lock:
-            scenario = dict(self.scenario)
-            status = scenario["status"] or record["status"]
-            if scenario["output"] is not None:
-                output = scenario["output"]
-            elif status in TERMINAL_STATUSES:
-                output = record.get("output")
-            else:
-                output = None
-            projection = {
-                "run_id": record["run_id"],
-                "id": record["run_id"],
-                "session_id": record["session_id"],
-                "status": status,
-                "output": output,
-            }
-            if record.get("admission_id"):
-                projection["admission_id"] = record["admission_id"]
-            if record.get("execution_generation") is not None:
-                projection["execution_generation"] = record["execution_generation"]
-            return projection
-
-    def resolve_unknown(self, run_id):
-        """Authority answer for a Run whose status/stream was lost.
-
-        Grants the next execution generation and returns the authoritative
-        terminal projection. Fixture-only: it settles the Run record but does
-        not rewrite conversation history, so history assertions stay honest
-        about what the backend actually persisted.
-        """
-        with self.lock:
-            record = self.runs.get(run_id)
-            if record is None:
-                return None
-            scenario = dict(self.scenario)
-            status = scenario["status"] if scenario["status"] in TERMINAL_STATUSES \
-                else "completed"
-            output = scenario["output"]
-            if output is None:
-                output = record.get("output") or self.stream_text()
-            record["admission_id"] = record.get("admission_id") or f"adm-{run_id}"
-            generation = int(record.get("execution_generation") or 0) + 1
-            record["execution_generation"] = generation
-            record["status"] = status
-            record["output"] = output
-            record["settled"] = True
-            self.resolved_runs.append({
-                "run_id": run_id, "status": status,
-                "admission_id": record["admission_id"],
-                "execution_generation": generation,
-            })
-            return {
-                "run_id": run_id, "id": run_id,
-                "session_id": record["session_id"],
-                "status": status, "output": output,
-                "admission_id": record["admission_id"],
-                "execution_generation": generation,
-            }
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -389,47 +291,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
         run_match = RUN_RE.fullmatch(path)
         if method == "GET" and run_match:
-            run_id = run_match.group(1)
             with self.state.lock:
-                delay_ms = self.state.scenario["status_latency_ms"]
-                expired = self.state.scenario["status_404"]
-            if delay_ms:
-                time.sleep(min(MAX_STATUS_LATENCY_MS, delay_ms) / 1000.0)
-            if expired:
-                # The Run status TTL lapsed: the read vanishes even though the
-                # Run itself existed a moment ago. Never fall back to history.
-                return self.json_response(404, {"error": {"message": "unknown run"}})
-            with self.state.lock:
-                run = self.state.runs.get(run_id)
-                body = self.state.project_run(run) if run else None
-            return self.json_response(200, body) if body else self.json_response(
-                404, {"error": {"message": "unknown run"}})
-
-        resolve_match = RESOLVE_RE.fullmatch(path)
-        if method == "POST" and resolve_match:
-            run_id = resolve_match.group(1)
-            with self.state.lock:
-                known = run_id in self.state.runs
-            if not known:
-                return self.json_response(404, {"error": {"message": "unknown run"}})
-            self.body_json()
-            body = self.state.resolve_unknown(run_id)
-            if body is None:
-                return self.json_response(404, {"error": {"message": "unknown run"}})
-            return self.json_response(200, body)
+                run = self.state.runs.get(run_match.group(1))
+                return self.json_response(200, dict(run)) if run else self.json_response(
+                    404, {"error": {"message": "unknown run"}})
 
         events_match = EVENTS_RE.fullmatch(path)
         if method == "GET" and events_match:
             run_id = events_match.group(1)
             with self.state.lock:
-                events_404 = self.state.scenario["events_404"]
-                known = run_id in self.state.runs
+                if run_id not in self.state.runs:
+                    return self.json_response(404, {"error": {"message": "unknown run"}})
                 frames = [dict(x) for x in self.state.events]
-            if events_404:
-                # Stream TTL (300s) can expire while status (3600s) survives.
-                return self.json_response(404, {"error": {"message": "unknown run stream"}})
-            if not known:
-                return self.json_response(404, {"error": {"message": "unknown run"}})
             last = query.get("last_seq", [self.headers.get("Last-Event-ID", "")])[0]
             if last.isdigit():
                 frames = [x for x in frames if int(x["id"]) > int(last)]
@@ -519,50 +392,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "unknown": list(self.state.unknown),
                     "accepted_runs": list(self.state.accepted_runs),
                     "delivered_event_ids": list(self.state.delivered_event_ids),
-                    "resolved_runs": list(self.state.resolved_runs),
-                    "scenario": dict(self.state.scenario),
                 })
-        if method == "GET" and path == "/__control/scenario":
-            with self.state.lock:
-                return self.json_response(200, dict(self.state.scenario))
-        if method == "POST" and path == "/__control/scenario":
-            payload = self.body_json()
-            if not isinstance(payload, dict):
-                return self.json_response(400, {"error": {"message": "scenario must be an object"}})
-            unknown = sorted(set(payload) - SCENARIO_KEYS)
-            if unknown:
-                return self.json_response(400, {
-                    "error": {"message": f"unknown scenario key: {', '.join(unknown)}"}})
-            patch = {}
-            for key in ("status_404", "events_404"):
-                if key in payload:
-                    if type(payload[key]) is not bool:
-                        return self.json_response(400, {
-                            "error": {"message": f"{key} must be boolean"}})
-                    patch[key] = payload[key]
-            if "status_latency_ms" in payload:
-                delay = payload["status_latency_ms"]
-                if type(delay) is not int or not 0 <= delay <= MAX_STATUS_LATENCY_MS:
-                    return self.json_response(400, {
-                        "error": {"message": "invalid status_latency_ms"}})
-                patch["status_latency_ms"] = delay
-            if "status" in payload:
-                status = payload["status"]
-                if status is not None and status not in TERMINAL_STATUSES \
-                        and status not in NON_TERMINAL_STATUSES:
-                    return self.json_response(400, {
-                        "error": {"message": "unknown run status"}})
-                patch["status"] = status
-            if "output" in payload:
-                output = payload["output"]
-                if output is not None and not isinstance(output, str):
-                    return self.json_response(400, {
-                        "error": {"message": "output must be string or null"}})
-                patch["output"] = output
-            with self.state.lock:
-                self.state.scenario.update(patch)
-                applied = dict(self.state.scenario)
-            return self.json_response(200, applied)
         if method == "POST" and path == "/__control/reset":
             self.state.reset()
             return self.json_response(200, {"reset": True})
