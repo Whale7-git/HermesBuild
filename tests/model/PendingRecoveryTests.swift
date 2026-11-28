@@ -990,7 +990,7 @@ extension ModelTests {
                          model.canConfirmPendingEndedLocally && !model.canSend && !model.canResendPending)
             let confirmed = await model.confirmDeliveredPendingEndedLocally()
             precondition(confirmed && model.canSend && model.pendingSend == nil &&
-                         model.queueUserPaused && service.startCalls == 1)
+                          model.queueUserPaused && service.startCalls == 2)
             model.disconnect()
         }
         print("PENDING_PASS keyed delivery versus execution; user-confirmed original session continuation")
