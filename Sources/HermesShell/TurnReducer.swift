@@ -99,11 +99,15 @@ enum TurnReducer {
 
         case let .submitTransportFailure(at):
             guard case .sending(var sending) = turn else { return .init(turn: turn, effects: []) }
+            // 先判断能不能重放，再更新时间戳：`canReplay` 衡量的是「上一次尝试
+            // 距今多远」，一旦先把 `lastAttemptAt` 改成 now，窗口判断就永远为真，
+            // 过期分支变成死代码。
+            let stillWithinLedger = sending.canReplay
             sending.attempts += 1
             sending.lastAttemptAt = at
             // 幂等窗口内：同 key 重放是安全的，且服务端不会执行第二次（G1）。
             // 超过 24h：重放会真的新建一轮，所以必须停下来问用户（G1）。
-            if sending.canReplay {
+            if stillWithinLedger {
                 let delay = backoffSeconds(failures: sending.attempts - 1)
                 return .init(turn: .sending(sending),
                              effects: [.replaySubmission(key: sending.submissionKey, afterSeconds: delay)])
