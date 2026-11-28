@@ -43,7 +43,10 @@ extension NativeChatModel {
         } catch {
             guard revision == generation, !runtimeRetired, !suspended else { return false }
             if handleAuthenticationFailure(error) { return false }
-            uncertain = true
+            // 这次 resolve 问的就是「这条 Run 到底结束没有」，resolve 失败即答案
+            // 仍然未知。这是 Run 事实（A），与历史是否新鲜无关。
+            gate.run = .unknown(runID: offer.runID)
+            syncUncertain()
             notice = "暂时无法确认恢复结果，不会自动重复提交。请同步状态。"
             return false
         }
@@ -144,7 +147,16 @@ extension NativeChatModel {
         if incomplete {
             for pending in nextApprovals { _ = upsertPendingApproval(pending) }
             for pending in nextClarifies { _ = upsertPendingClarify(pending) }
-            uncertain = true
+            // 控制面投影没读全：这是一笔**未决的本地事务**（用户还欠服务端一个
+            // 审批/澄清答复，卡片可能被答错），不是历史不新鲜。所以落 B 的
+            // `awaitingDecision`，绝不能只写 `historyFresh`——那会在卡片可能
+            // 张冠李戴的情况下放开输入栏。
+            // 已有更强的未决事实（核对在途 / 已受理未退休）时不降级：那两种
+            // 状态都不许把界面引向「重发」，而 `awaitingDecision` 会。
+            if gate.pending == .none || gate.pending == .absent {
+                gate.pending = .awaitingDecision
+            }
+            syncUncertain()
             pauseQueueForRecovery()
             notice = "还有需要你处理的请求，暂时未能完整加载。已保留原请求，暂不能发送。"
             return
@@ -371,7 +383,10 @@ extension NativeChatModel {
             guard generation == revision, streamID == active else { return }
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
-            uncertain = true
+            // STOP 只是请求，不是终态证据（见下方注释）；这次调用要确认的是
+            // 「这条 Run 停了没有」，所以是 A。
+            gate.run = .unknown(runID: active)
+            syncUncertain()
             pauseQueueForRecovery()
             if let stopError = error as? ChatStopHTTPError,
                case .rejected(let code) = stopError {
@@ -425,7 +440,11 @@ extension NativeChatModel {
                 stopStatusProbeFailures = 0
                 unavailableRunStatusID = active
                 automaticRecoveryQuiet = false
-                uncertain = true
+                // 服务端找不到这条 Run：没有终态证据，Run 的死活仍然未知。
+                // 这里故意把相位拉回 `.idle` 却保留锁——锁必须活在 gate.run 上，
+                // 不能靠相位代劳。
+                gate.run = .unknown(runID: active)
+                syncUncertain()
                 pauseQueueForRecovery()
                 streamID = nil
                 stopAcknowledged = false
@@ -435,14 +454,21 @@ extension NativeChatModel {
             case .terminal(let outcome):
                 stopStatusProbeFailures = 0
                 guard rememberTerminalStatus(runID: active, outcome: outcome) else {
-                    uncertain = true
+                    // 终态已经由 probe 证明（Run 事实），失败的只是「把这份终态
+                    // 写进本地 receipt」：编码/写盘失败，或与已存终态冲突。
+                    // 这是本地持久化（C），不是 Run 未知。
+                    gate.store = .degraded(reason: "terminalEvidence")
+                    syncUncertain()
                     pauseQueueForRecovery()
                     return
                 }
                 let finalHistory = try await recoveryHistory(sessionID: sessionID, before: nil)
                 guard accepts(context), stopping, !Task.isCancelled else { return }
                 guard finalHistory.sessionID == sessionID, !finalHistory.readOnly else {
-                    uncertain = true
+                    // 终态已落盘，缺的只是「最后一屏正文」。这是历史新鲜度（D），
+                    // 刻意不进发送判定。
+                    gate.historyFresh = false
+                    syncUncertain()
                     pauseQueueForRecovery()
                     notice = "任务已结束，最后的回复尚未同步，请稍后重试。"
                     return
@@ -467,7 +493,15 @@ extension NativeChatModel {
                     return
                 }
                 guard finalHistory.activeRunEvidence == .absent else {
-                    uncertain = true
+                    // 旧 Run 的终态已证，但最终历史没说「现在没有别的 Run」。
+                    // 快照明确点名了另一条 run 就记 active；说不清就记 unknown。
+                    // 两者都只关 Run 的事（A），与正文是否同步无关。
+                    if case .active(let other) = finalHistory.activeRunEvidence {
+                        gate.run = .active(runID: other)
+                    } else {
+                        gate.run = .unknown(runID: active)
+                    }
+                    syncUncertain()
                     pauseQueueForRecovery()
                     notice = "任务已结束，最后的回复尚未同步，请稍后重试。"
                     return
@@ -496,7 +530,10 @@ extension NativeChatModel {
             if handleAuthenticationFailure(error) { return }
             self.error = error.localizedDescription
             stopStatusProbeFailures = min(stopStatusProbeFailures + 1, 64)
-            uncertain = true
+            // 触发原因是读失败（GET 抛错），但断言的是「Run 是否已停」仍未知：
+            // 按保守口径归 A，绝不因为一次 GET 失败就在 STOP 未确认时放开输入栏。
+            gate.run = .unknown(runID: active)
+            syncUncertain()
             pauseQueueForRecovery()
             notice = "暂时无法同步停止状态或最后的回复，不会重复发送消息。"
         }
@@ -574,7 +611,11 @@ extension NativeChatModel {
         // 登录失效是相位本身，不是叠加在相位上的事实：直接落 `.needsLogin`。
         transition(to: .needsLogin)
         readOnly = true
-        uncertain = true
+        // 401 不能证明这笔在途 POST 没被受理，也不能证明服务端那条 Run 消失了
+        // （见下方注释）：Run 的结局只能记 unknown。`.needsLogin` 相位本身已经
+        // 挡住发送，这里的作用是防止别的路径误放行。
+        gate.run = .unknown(runID: activeTurnRecovery?.runID)
+        syncUncertain()
         // Hide the transcript and disable every mutation while unauthenticated.
         // A 401 alone does not prove the account or accepted POST disappeared.
         // AppState's explicit account retirement performs scoped deletion.

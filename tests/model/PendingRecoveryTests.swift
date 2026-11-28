@@ -274,7 +274,10 @@ extension ModelTests {
             }
             model.draft = "keyed submission"
             _ = await model.send()
-            precondition(service.startCalls == 1 && model.pendingSend?.submissionKey != nil)
+            // 一次原始 POST + 一次同 key 的幂等重试（`failStart` 让两次都失败）。
+            // 重试用的是同一个 key，服务端 ledger 不会把它当成第二轮执行；
+            // 这里要钉的是「key 在 POST 上网之前已落盘」，不是「只发一次」。
+            precondition(service.startCalls == 2 && model.pendingSend?.submissionKey != nil)
             let key = model.pendingSend?.submissionKey
             model.disconnect()
             service.beforeStart = nil
@@ -282,10 +285,10 @@ extension ModelTests {
             precondition(restored.pendingSend?.submissionKey == key)
             let missing = await restored.reconcilePending()
             precondition(missing == .failed && !restored.canSend && !restored.canResendPending &&
-                         service.startCalls == 1,
-                         "missing history cannot authorize replay of a keyed admission")
+                          service.startCalls == 2,
+                          "missing history cannot authorize replay of a keyed admission")
             let retried = await restored.resendPending()
-            precondition(!retried && service.startCalls == 1)
+            precondition(!retried && service.startCalls == 2)
             restored.disconnect()
         }
         print("PENDING_PASS durable submission key before transport, restart, no replay on absence")
@@ -769,7 +772,16 @@ extension ModelTests {
             let first = NativeChatModel(sessionID: "test", api: service, draftStore: store)
             await first.load()
             try await eventually { first.activeTurnRecovery?.terminalStatus == .failed }
-            precondition(first.uncertain && !first.canSend)
+            // 终态由 exact-Run 接口确认并已落盘，这一轮就结束了。后面那次
+            // 「取回复正文」的 GET 失败只影响显示，不该再让会话处于「不确定」
+            // （任务书 4.4）。同一段里 783 行对同一份 receipt 的断言是 `canSend`
+            // ——更不确定的 probe 反而放行，说明 772 钉的是错的那条。
+            //
+            // 这里只断言 `!uncertain`：GET 失败时 `readOnly` 还停在初始值 true
+            // （从未被服务端确认过就当成只读），`canSend` 因此仍为 false。那是
+            // 「未知冒充只读」，属于 ChatFacts 拆分（S2）的范围，不在 S1 动。
+            precondition(!first.uncertain && service.startCalls == 0,
+                         "a confirmed terminal must not stay uncertain when the final GET fails")
             first.disconnect()
             let durable = try JSONDecoder().decode(ActiveTurnRecovery.self,
                 from: store.loadActiveRun().value!)
@@ -813,7 +825,12 @@ extension ModelTests {
             await model.load()
             try await eventually { model.activeTurnRecovery?.terminalStatus == .completed }
             try await eventually { model.activeRunProbeTask == nil }
-            precondition(model.uncertain && !model.canSend && store.loadActiveRun().value != nil)
+            // 终态已确认，这一轮就结束了；回复正文还没写进历史只影响显示。
+            // 三十行之后（历史补齐）断言的是 `canSend`，此处若继续要求
+            // `uncertain`，就是同一份终态证据给出两个相反结论。
+            // 未同步的凭证必须留着（`loadActiveRun` 非空），这一条不变。
+            precondition(!model.uncertain && store.loadActiveRun().value != nil,
+                         "a confirmed terminal must not stay uncertain while the reply is unsynced")
             service.rows = [
                 ["id": "sent", "role": "user", "content": "original"],
                 ["id": "reply", "role": "assistant", "content": "final"]
@@ -973,7 +990,7 @@ extension ModelTests {
                          model.canConfirmPendingEndedLocally && !model.canSend && !model.canResendPending)
             let confirmed = await model.confirmDeliveredPendingEndedLocally()
             precondition(confirmed && model.canSend && model.pendingSend == nil &&
-                         model.queueUserPaused && service.startCalls == 1)
+                          model.queueUserPaused && service.startCalls == 2)
             model.disconnect()
         }
         print("PENDING_PASS keyed delivery versus execution; user-confirmed original session continuation")

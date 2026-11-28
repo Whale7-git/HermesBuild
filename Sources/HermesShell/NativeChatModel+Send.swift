@@ -215,12 +215,20 @@ extension NativeChatModel {
             // failed, retain the original queued and pending evidence.
             if activeTurnRecovery?.queuedTurnID == queued.id {
                 if let receipt = activeTurnRecovery, !settleAcceptedReceipt(receipt) {
-                    uncertain = true
+                    // 已受理，但本地结算没写进去。这不是「投递未知」，绝不能落成
+                    // `.none`/`.absent`——那条队列行还在，重发就是对已在跑的 run
+                    // 再 POST 一次。
+                    gate.pending = .acceptedUnretired
+                    syncUncertain()
                     pauseQueueForRecovery()
                 }
             }
             if let index = queuedTurns.firstIndex(where: { $0.id == queued.id }) {
                 queuedTurns[index].delivery = .uncertain
+                // 服务端已受理（result.accepted），这一行只是删不掉。置回 `.waiting`
+                // 会让 `ChatQueueDispatchPlan` 直接再 dispatch 同一条消息。
+                gate.pending = .acceptedUnretired
+                syncUncertain()
                 queuedTurns[index].automaticAfterStreamID = nil
                 persistQueue()
                 pauseQueueForRecovery()
@@ -292,8 +300,23 @@ extension NativeChatModel {
                 return false
             }
             reconciling = true
-            defer { reconciling = false }
-            uncertain = true
+            // 核对窗口内必须继续挡发送：这是 GET 在途（可能是多次 await、数秒），
+            // 放行会让用户或自动 flush 把同一条 uncertain 队列消息再 POST 一次。
+            gate.pending = .reconciling
+            syncUncertain()
+            // 但窗口一关就必须结清：`applySnapshot` 刻意绕过 `.reconciling`
+            // 不动它（那是并发发送的闸），所以任何提前 return 都得在这里收尾，
+            // 否则它会永久挡住发送。
+            defer {
+                reconciling = false
+                if gate.pending == .reconciling {
+                    // 窗口关闭时账要结清，但落点取决于这笔 POST 有没有结算：
+                    // 还留着 pendingSend 说明它可能已经到达服务端，只能落回
+                    // 「结果未知」；写成 `.none` 就是放行重发。
+                    gate.pending = pendingSend == nil ? .none : .awaitingDecision
+                    syncUncertain()
+                }
+            }
             let generation = revision
             func stillOwnsProof() -> Bool {
                 generation == revision && !runtimeRetired && !suspended && !Task.isCancelled
@@ -338,28 +361,52 @@ extension NativeChatModel {
                 }
                 guard stillOwnsProof() else { return false }
                 try applySnapshot(snapshot, preserveLoadedOlder: true)
-                guard stillOwnsProof(), activeTurnRecovery == nil else { uncertain = true; return false }
+                guard stillOwnsProof(), activeTurnRecovery == nil else {
+                    // 证明权已丢，或还有一份已受理未确认结束的 Run：这个 Run 的死活
+                    // 现在确认不了，只能记 `.unknown`（无 id 也要锁）。
+                    gate.run = .unknown(runID: activeTurnRecovery?.runID)
+                    syncUncertain()
+                    return false
+                }
                 switch decision {
                 case .delivered:
                     guard queuedTurns.first?.id == id else { return false }
                     var next = queuedTurns
                     next.removeFirst()
-                    guard commitQueueMutation(next) else { uncertain = true; return false }
-                    uncertain = false
+                    guard commitQueueMutation(next) else {
+                        // 送达已被历史证实，锁的是「这条队列记录删不掉」；它不是
+                        // 「没送到」，所以只能是 acceptedUnretired。
+                        gate.pending = .acceptedUnretired
+                        syncUncertain()
+                        return false
+                    }
+                    gate.pending = .none
+                    syncUncertain()
                     error = nil
                     notice = "已确认这条消息此前送达；队列记录已清除，不会重复发送。"
                     return false
                 case .absent:
-                    break
+                    // 完整分页 + 稳定 head 证明服务端没有这条：这一笔待核对事务就此
+                    // 结清（随后 `retryQueuedTurn` 会把它排成一条**全新的** POST，
+                    // 不是重放旧请求）。不结清的话，`.reconciling` 会一直留在这里。
+                    gate.pending = .none
+                    syncUncertain()
                 case .failed:
-                    uncertain = true
+                    // 证据不足（分页不连续 / 窗口没覆盖 boundary / keyed 记录），
+                    // 投递结果仍未确定：保持锁，绝不当成 proven absent。
+                    gate.pending = .awaitingDecision
+                    syncUncertain()
                     error = "仍无法确认队列首条消息是否送达，暂不能发送，请稍后同步。"
                     return false
                 }
             } catch {
                 guard stillOwnsProof() else { return false }
                 if handleAuthenticationFailure(error) { return false }
-                uncertain = true
+                // 触发源是历史读取失败（D），但这处断言的是「这笔 POST 仍未结算」；
+                // 按保守口径留在 pending，历史新鲜度只做记录。
+                gate.historyFresh = false
+                gate.pending = .awaitingDecision
+                syncUncertain()
                 self.error = "同步队列消息失败：\(error.localizedDescription)"
                 return false
             }
@@ -718,7 +765,10 @@ extension NativeChatModel {
                 guard let key = queuedTurns.first(where: { $0.id == queuedTurnID })?.submissionKey,
                       RunSubmissionIdentity.valid(key) else {
                     transition(to: .idle)
-                    uncertain = true
+                    // 什么都没发出去：POST 根本没离开设备。锁必须落在「本地记录
+                    // 不完整」上，不能写成「投递未知」（那会诱使按结果未知处理）。
+                    gate.store = .degraded(reason: "queue-record-incomplete")
+                    syncUncertain()
                     pauseQueueForRecovery()
                     error = "发送记录不完整，本次未发送。"
                     return SubmitResult(accepted: false, completed: false)
@@ -740,7 +790,10 @@ extension NativeChatModel {
                                   reasoningEffort: effort)
         guard preparePendingSubmission(pending).succeeded else {
             transition(to: .idle)
-            uncertain = true
+            // 同样没发出：PendingSend 已经在内存里（hasPendingSend 自会挡发送），
+            // 这里锁的是「写不进盘」这件事。
+            gate.store = .degraded(reason: "pending-save-failed")
+            syncUncertain()
             error = "发送记录保存失败，本次未发送。请检查本地存储后重试。"
             return SubmitResult(accepted: false, completed: false)
         }
@@ -803,7 +856,10 @@ extension NativeChatModel {
                settleAcceptedReceipt(receipt) {
                 // Durable queue removal (if any) and pending retirement succeeded.
             } else {
-                uncertain = true
+                // 服务端已受理，只是 receipt / 队列行没能结算掉。这里必须是
+                // acceptedUnretired：写成 `.none` 就等于放行重发同一条消息。
+                gate.pending = .acceptedUnretired
+                syncUncertain()
                 pauseQueueForRecovery()
                 notice = "服务端已接收消息，但本地记录未能保存。请勿重发，稍后同步。"
             }
@@ -840,10 +896,43 @@ extension NativeChatModel {
             }
             self.error = error.localizedDescription
             recordRuntimeLog(.error, "send", "post fail err=\(error.localizedDescription)")
-            // POST 结果不明：退回静止态，用 uncertain 锁住发送。
+            // 官方幂等保证：同一个 `Idempotency-Key` 的重试是安全的。服务端在
+            // ledger 里已有 reservation 时返回 202 replay，带**原来的 run_id**，
+            // 不会执行第二次（docs: "An identical retry returns the original
+            // run_id with HTTP 202 and Idempotency-Replayed: true"）。
+            // 所以「响应丢了」不需要变成「请用户核对」，补一次就够。
+            //
+            // 只在可重试的失败上做：409 `idempotency_key_conflict` 说明同一个 key
+            // 配了不同 payload（这是 bug，重试也只会再冲突）；401 走认证分支；
+            // 400/422 是请求本身不合法。超过 ledger 的 24 小时保留期后再重试会
+            // 真的新建一轮，因此这里只补一次、且必须有 key。
+            if let key = submissionKey, Self.isRetryableSubmitFailure(error),
+               let replayed = try? await api.startNativeTurn(
+                   sessionID: sessionID, text: text, attachments: attachments,
+                   reasoningEffort: effort, submissionKey: key) {
+                recordRuntimeLog(.info, "send", "post fail recovered by idempotent replay")
+                self.error = nil
+                setDelivery(.accepted, for: pendingID)
+                gate.pending = .none
+                syncUncertain()
+                transition(to: .streaming(connected: false))
+                attach(streamID: replayed)
+                flush()
+                return SubmitResult(accepted: true, completed: true)
+            }
+            // POST 结果不明：退回静止态，用 pending 锁住发送。
             // 不保留 `.submitting`——那会让界面永远停在「正在发送…」。
+            //
+            // 这里只写 `pending`，不写 `historyFresh`：错误的类型看起来像「读失败」，
+            // 但它断言的是「服务端可能已经执行了这轮工具调用」。按错误类型归到历史
+            // 新鲜度会立刻放开 canSend，用户重发即重复执行。
+            // 明确被拒（400/401）暂不单独分流：`SendGate` 里没有「被拒」这一值，
+            // 而 401 不能证明这次 POST 没被受理（见 handleAuthenticationFailure），
+            // 409 更是服务端已换会话、POST 其实已生效。宁可多锁一次会话，
+            // 也不在这里引入任何可重发路径。
             transition(to: .idle)
-            uncertain = true
+            gate.pending = .awaitingDecision
+            syncUncertain()
             setDelivery(.unconfirmed, for:pendingID)
             flush()
             // 供用户直接重发：不覆盖等待期间新输入的内容。
@@ -861,6 +950,27 @@ extension NativeChatModel {
             if resumeRequested { resumeRequested = false; await load(silent: true, preserveLoadedOlder: true) }
         }
         return SubmitResult(accepted: false, completed: true)
+    }
+
+    /// POST 失败是否值得用同一个幂等 key 再补一次。
+    ///
+    /// 判据只有一条：**这个错误是否能证明「服务端已经明确拒绝」**。能证明的就不补——
+    /// 补了也是同样的拒绝，而且会把一个真实的请求错误伪装成网络抖动。
+    /// 其余（连接中断、超时、5xx、503 排水）都属于「不知道服务端有没有受理」，
+    /// 正是幂等 ledger 存在的意义。
+    static func isRetryableSubmitFailure(_ error: Error) -> Bool {
+        // `HTTPStatusProviding` 是仓库已有的抽象（`APIError` 等都实现了），
+        // 用它判断就不必在这里认识具体的错误枚举。
+        if let status = (error as? HTTPStatusProviding)?.httpStatusHint {
+            // 400/422 请求不合法；401/403 认证；409 是 key 配了不同 payload。
+            // 这些都重试无益。5xx（含 503 runtime_draining / storage_unavailable）可以补。
+            return !(400...499).contains(status)
+        }
+        if let urlError = error as? URLError {
+            // 取消不是失败；其余网络类错误都可以补。
+            return urlError.code != .cancelled
+        }
+        return true
     }
 
     /// 最后一条尚未确认送达的本地用户气泡 id；视图据此显示三态并提供核对入口。
@@ -889,9 +999,23 @@ extension NativeChatModel {
         // 核对不是相位，而是与相位正交的事实：这次 GET 自己会走 `.syncing`，
         // 「核对中」与「同步中」必须同时成立。
         reconciling = true
-        defer { reconciling = false }
         pendingAbsent = false
-        uncertain = true
+        // 核对窗口（可能跨多次 await）内禁止并发发送：这里绝不能只记历史新鲜度，
+        // 否则用户或自动 flush 会把同一笔尚未结算的 POST 再发一次。
+        gate.pending = .reconciling
+        syncUncertain()
+        // 同 prepareQueuedTurnForRetry：窗口关闭时必须结清。
+        // `reconcilePending` 有多条提前 return（`pendingSend == nil`、
+        // `pendingAbsent`、`pendingDeliveryIsVerified`），它们都不会走到末尾的
+        // 赋值点，`applySnapshot` 又特意不清 `.reconciling`。
+        defer {
+            reconciling = false
+            if gate.pending == .reconciling {
+                // 同上：GET 失败时 pendingSend 仍在，这一笔依然「结果未知」。
+                gate.pending = pendingSend == nil ? .none : .awaitingDecision
+                syncUncertain()
+            }
+        }
         latestRecoverySnapshot = nil
         // A-07：这个 GET 归核对流程所有，必须允许在 reconciling 置位期间执行，
         // 且不能再让 refresh() 把标志抹掉（resetReconciling: false）。
@@ -975,7 +1099,10 @@ extension NativeChatModel {
         pendingHistoryWalk = nil
         if decision == .delivered {
             guard acknowledgeDeliveredQueuedTurn(matching: pending) else {
-                uncertain = true
+                // 历史已证实送达，只是队列行删不掉（写失败 / key 不匹配）。
+                // 这不是「投递未知」，但同样不能放行：行还在，重试会再 POST。
+                gate.pending = .acceptedUnretired
+                syncUncertain()
                 return .failed
             }
             guard clearPendingSend(expectedID: pending.id) else { return .failed }
@@ -983,12 +1110,15 @@ extension NativeChatModel {
             settleAcceptedAttachments(pending.attachments.map(\.path))
             if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             notice = "已从完整历史确认消息送达；没有重新提交。"
-            uncertain = false
+            gate.pending = .none
+            syncUncertain()
             pendingAbsent = false
         } else {
             // A proven absence enables only explicit user choice, never POST.
             pendingAbsent = true
-            uncertain = false
+            // 全文件唯一「服务端权威证明这条没送到」的地方：只有这个状态允许重发。
+            gate.pending = .absent
+            syncUncertain()
             notice = "未找到这条消息，可自行决定是否重试。"
         }
         flush()
@@ -1007,7 +1137,9 @@ extension NativeChatModel {
         }
         guard clearPendingSend(expectedID: pending.id) else { return false }
         buffer.messages.removeAll { $0.id == pending.id }
-        uncertain = false
+        // 证据已清：这一刻起没有未结算的 POST（随即 submit 会重新写 pending）。
+        gate.pending = .none
+        syncUncertain()
         // A new draft typed while the first POST waited belongs to the next
         // turn. Retrying the original payload must not overwrite or send it.
         let consumeDraft = draft == pending.composerText
@@ -1031,7 +1163,12 @@ extension NativeChatModel {
         ChatAttachmentPlaceholderStore.shared.forgetLocal(
             scope: displayScope, sessionID: sessionID, id: pending.id)
         buffer.messages.removeAll { $0.id == pending.id }
-        uncertain = stillUncertain
+        // 放弃时若核对还没证明后台不存在，锁必须留在 `pending` 上：此时
+        // `pendingSend` 被标记 hidden 但仍藏着证据，界面看起来 idle + 空队列，
+        // 解锁就等于允许重发一条可能已在服务端执行的消息。
+        let retainedPending: SendGate.PendingState = stillUncertain ? .awaitingDecision : .none
+        gate.pending = retainedPending
+        syncUncertain()
         pendingAbsent = false
         if stillUncertain {
             var retained = pending

@@ -133,7 +133,23 @@ final class NativeChatModel: ObservableObject {
     /// 后端声明这段历史只读（联网核对完成前也一律只读）。与相位正交。
     @Published var readOnly = true
     /// POST 结果待核对。与相位正交：可以一边跑新一轮一边留着上一笔待核对。
+    ///
+    /// S1 过渡期仍然是可写属性，但它最终的语义是 `gate.blocksNewTurn` 的只读派生。
+    /// 各赋值点正在逐处改成「先更新 `gate` 的具体字段，再调用 `syncUncertain()`」，
+    /// 这样 UI 不必同时改，而判定依据已经从「谁最后写谁赢」变成四个具名事实。
     @Published var uncertain = false
+
+    /// 发送判定的唯一来源（S1）。四项事实，互不覆盖。
+    ///
+    /// D 类（历史新鲜度）刻意不参与 `blocksNewTurn`——长回合结束后历史没追上
+    /// 不该让人发不出下一条消息，这是本次重构要解决的核心症状。
+    @Published var gate = SendGate()
+
+    /// 把 `gate` 的判定投影到兼容属性。过渡期每个改动 `gate` 的地方都要调一次。
+    func syncUncertain() {
+        let next = gate.blocksNewTurn
+        if uncertain != next { uncertain = next }
+    }
     /// 已离开会话页，连接暂停。**不代表本轮结束**——服务端那一轮仍在跑，
     /// 所以这是与相位正交的独立事实，不能塞进枚举。
     @Published var suspended = false
@@ -784,7 +800,19 @@ final class NativeChatModel: ObservableObject {
             }
         }
         // An accessible file is not proof of remote absence or completion.
-        uncertain = true
+        // 只承认真正恢复出来的事实：坏掉的 pending 字节可能藏着一条已发出的 POST（B），
+        // 坏掉的 active-run 记录可能藏着一个仍在服务端执行的 Run（A）；
+        // 恢复出来的队列项若自己就是 `.uncertain`，那是「这条可能已经发出去」，
+        // 同样属于 B。只有「队列里全是普通待发项」时才是纯读取降级（D）。
+        let restoredUncertainTurn = queuedTurns.contains { $0.delivery == .uncertain }
+        if pendingRecoveryUnreadable || pendingSend != nil || restoredUncertainTurn {
+            gate.pending = .awaitingDecision
+        } else if activeRecoveryUnreadable || activeTurnRecovery != nil {
+            gate.run = .unknown(runID: activeTurnRecovery?.runID)
+        } else {
+            gate.historyFresh = false
+        }
+        syncUncertain()
         pauseQueueForRecovery()
         if !recoveryRecordsUnreadable {
             notice = "已恢复本地记录，正在等待联网同步，不会自动重发。"
@@ -818,7 +846,8 @@ final class NativeChatModel: ObservableObject {
             historyEnd: turn.historyEnd, knownIDs: turn.knownIDs, createdAt: submittedAt,
             origin: turn.origin, queuedTurnID: turn.id, submissionKey: key)
         _ = preparePendingSubmission(pending)
-        uncertain = true
+        gate.pending = .awaitingDecision
+        syncUncertain()
         pauseQueueForRecovery()
     }
 
@@ -828,7 +857,9 @@ final class NativeChatModel: ObservableObject {
         guard result.succeeded else { recordLocalWrite(result, record: .pendingSend); return }
         pendingRecoveryUnreadable = false
         recordSuccessfulLocalWrite(record: .pendingSend)
-        uncertain = true // A subsequent GET is still required.
+        // 本地证据已被销毁，但 POST 可能已经到达服务端：仍按「结果未知」处理。
+        gate.pending = .awaitingDecision
+        syncUncertain()
         notice = "已放弃损坏的本地记录，请同步消息后再发送。"
     }
 
@@ -876,7 +907,8 @@ final class NativeChatModel: ObservableObject {
         let result = draftStore?.savePending(nil) ?? .ok
         guard result.succeeded else {
             recordLocalWrite(result, record: .pendingSend)
-            uncertain = true
+            gate.store = .degraded(reason: result.failure?.rawValue ?? "diskWrite")
+            syncUncertain()
             pauseQueueForRecovery()
             return false
         }
@@ -975,7 +1007,9 @@ final class NativeChatModel: ObservableObject {
         guard !runtimeRetired else { return false }
         guard let receipt = activeTurnRecovery else { return true }
         guard settleAcceptedReceipt(receipt) else {
-            uncertain = true
+            // 退休失败：受理证据还在磁盘上，写不下/删不掉就是存储降级。
+            gate.store = .degraded(reason: "receiptUnretired")
+            syncUncertain()
             pauseQueueForRecovery()
             return false
         }
@@ -987,7 +1021,8 @@ final class NativeChatModel: ObservableObject {
         let result = draftStore?.saveActiveRun(nil) ?? .ok
         guard result.succeeded else {
             recordLocalWrite(result, record: .activeRun)
-            uncertain = true
+            gate.store = .degraded(reason: result.failure?.rawValue ?? "diskWrite")
+            syncUncertain()
             return false
         }
         recordSuccessfulLocalWrite(record: .activeRun)
@@ -1090,13 +1125,22 @@ final class NativeChatModel: ObservableObject {
             if pending.queuedTurnID == nil { clearOriginalDraft(pending.composerText) }
             buffer.terminal = false
             try applySnapshot(fresh, preserveLoadedOlder: true)
-            uncertain = recoveryRecordsUnreadable
+            // 这笔 POST 已被权威历史确认并成功退休；剩下只有记录不可读，属历史新鲜度。
+            // 同一份快照的 activeRunEvidence == .absent 也权威地证明了没有在跑的 Run。
+            gate.run = SendGate.RunState.none
+            gate.pending = SendGate.PendingState.none
+            gate.historyFresh = !recoveryRecordsUnreadable
+            syncUncertain()
             error = nil
             notice = "已按你的确认恢复原会话。原消息未重发，队列保持暂停。"
             return !uncertain
         } catch {
             if revision == generation && !runtimeRetired && !suspended {
-                if !handleAuthenticationFailure(error) { uncertain = true }
+                if !handleAuthenticationFailure(error) {
+                    // 一次核对 GET 失败只说明历史没追上，不是发送锁。
+                    gate.historyFresh = false
+                    syncUncertain()
+                }
             }
             return false
         }
@@ -1172,7 +1216,11 @@ final class NativeChatModel: ObservableObject {
             pendingHistoryWalk = nil
             reapedTransportRunID = nil
             unavailableRunStatusID = nil
-            uncertain = pendingSend != nil || recoveryRecordsUnreadable
+            // 权威历史已证明没有在跑的 Run；这不是伪造终态，只是「没有 Run」。
+            gate.run = SendGate.RunState.none
+            gate.pending = pendingSend != nil ? .awaitingDecision : SendGate.PendingState.none
+            gate.historyFresh = !recoveryRecordsUnreadable
+            syncUncertain()
             error = nil
             if !uncertain {
                 automaticReconciliationTask?.cancel()
@@ -1186,7 +1234,8 @@ final class NativeChatModel: ObservableObject {
         } catch {
             if revision == generation && !runtimeRetired && !suspended {
                 if !handleAuthenticationFailure(error) {
-                    uncertain = true
+                    gate.historyFresh = false
+                    syncUncertain()
                     notice = "同步未完成，原消息和恢复记录已保留。"
                 }
             }
@@ -1201,7 +1250,9 @@ final class NativeChatModel: ObservableObject {
         activeRecoveryUnreadable = false
         recordSuccessfulLocalWrite(record: .activeRun)
         pauseQueueForRecovery()
-        uncertain = true
+        // 记录被销毁 = 再也无法证明那个 Run 是否还在服务端跑。
+        gate.run = .unknown(runID: activeTurnRecovery?.runID)
+        syncUncertain()
         notice = "已放弃损坏的任务记录，请同步消息；不会自动重发或继续队列。"
     }
 
@@ -1331,7 +1382,8 @@ final class NativeChatModel: ObservableObject {
         if let data = restored?.value {
             if let pending = try? JSONDecoder().decode(PendingSend.self, from: data) {
                 pendingSend = pending
-                uncertain = true
+                gate.pending = .awaitingDecision
+                syncUncertain()
                 if pending.hiddenFromTranscript != true {
                     buffer.messages = [ChatMessage(id: pending.id, role: "user", content: pending.text,
                         timestamp: pending.createdAt, sourceIndex: nil,
@@ -1340,13 +1392,17 @@ final class NativeChatModel: ObservableObject {
                 }
                 notice = "上次消息尚未确认送达，不会自动重发。"
             } else {
-                uncertain = true
+                // 坏字节里可能藏着一条未结算的 POST：保守按 B 处理。
+                gate.pending = .awaitingDecision
+                syncUncertain()
                 pendingRecoveryUnreadable = true
                 localRecordIssues[.pendingSend] = LocalDataIssue(kind: .queue, failure: .corruptFile, observedAt: Date())
             }
         } else if let failure = restored?.result.failure {
             pendingRecoveryUnreadable = true
-            uncertain = true
+            // 读失败同样可能藏着一条已发出的 POST（B/D 混合，按保守的 B 处理）。
+            gate.pending = .awaitingDecision
+            syncUncertain()
             localRecordIssues[.pendingSend] = LocalDataIssue(kind: .queue, failure: failure, observedAt: Date())
         }
         let restoredActive = draftStore?.loadActiveRun()
@@ -1355,18 +1411,23 @@ final class NativeChatModel: ObservableObject {
                 activeTurnRecovery = receipt
                 activeTurnHistoryBoundary = receipt.historyEnd
                 if pendingSend == nil {
-                    uncertain = true
+                    gate.run = .unknown(runID: receipt.runID)
+                    syncUncertain()
                     notice = "正在同步上次回复，不会重复发送消息。"
                 }
             } else {
                 activeRecoveryUnreadable = true
-                uncertain = true
+                // 坏记录可能藏着一个仍在跑的 Run：A/D 混合，按 A 处理。
+                gate.run = .unknown(runID: activeTurnRecovery?.runID)
+                syncUncertain()
                 localRecordIssues[.activeRun] = LocalDataIssue(
                     kind: .runRecovery, failure: .corruptFile, observedAt: Date())
             }
         } else if let failure = restoredActive?.result.failure {
             activeRecoveryUnreadable = true
-            uncertain = true
+            // 读失败同样可能藏着一个仍在跑的 Run：A/D 混合，按 A 处理。
+            gate.run = .unknown(runID: activeTurnRecovery?.runID)
+            syncUncertain()
             localRecordIssues[.activeRun] = LocalDataIssue(
                 kind: .runRecovery, failure: failure, observedAt: Date())
         }
@@ -1383,7 +1444,9 @@ final class NativeChatModel: ObservableObject {
             restoreQueueSnapshot(restored)
         } else if loadedQueue?.value != nil || loadedQueue?.result.failure != nil {
             queueRecoveryUnreadable = true
-            uncertain = true
+            // 队列文件坏 ≠ 有未结算的 POST：只记历史新鲜度，队列闸门由 queuePersistenceFailed 单独管。
+            gate.historyFresh = false
+            syncUncertain()
             pauseQueueForRecovery()
             recordLocalWrite(.failed(loadedQueue?.result.failure ?? .corruptFile), kind: .queue)
         }
