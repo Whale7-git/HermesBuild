@@ -218,6 +218,7 @@ var transcriptPublications = 0
         historyClassificationTests()
         try runSettlementTests()
         sendGateTests()
+        turnStateTests()
         try await automaticReconciliationTests()
         try await runPagingBudgetTests()
         runQueuePresentationTests()
