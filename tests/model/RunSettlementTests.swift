@@ -40,11 +40,19 @@ extension ModelTests {
 
         // MARK: - T01 已确认 completed，历史一直不匹配，也要能结算
 
-        // 墓碑（status 过期后的 .unknown）不得再阻塞结算
+        // 墓碑（status 过期后的 .unknown）本身不再是阻塞理由 —— 非 completed
+        // 终态直接由此结算。
         expect(RunFinalizer.canSettle([try emptyHistory(unknown: true)],
                                       sessionID: "s1", runID: "run-1", receipt: receipt,
-                                      outcome: .completed, requireReply: false),
-               "T01 tombstoned snapshot must not block settlement")
+                                      outcome: .failed, requireReply: false),
+               "T01 tombstoned snapshot must not block a non-completed terminal")
+
+        // 但 completed 仍需要内容证据：墓碑不能冒充「有回复」。
+        // requireReply=false 只表示这一轮没有流式回复，不代表可以凭空算完成。
+        expect(!RunFinalizer.canSettle([try emptyHistory(unknown: true)],
+                                       sessionID: "s1", runID: "run-1", receipt: receipt,
+                                       outcome: .completed, requireReply: false),
+               "T01 completed without content evidence must stay locked")
 
         // 历史尚未写入回复，但服务端给了 output —— 内容已可靠取得，允许结算
         expect(RunFinalizer.canSettle([try emptyHistory(unknown: true)],
