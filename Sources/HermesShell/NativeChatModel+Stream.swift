@@ -1147,6 +1147,11 @@ extension NativeChatModel {
                     let settled = self.settleAcceptedReceipt(receipt)
                     // 本地这笔 POST 与本地记录的可读性。`.alive` 这个 A 事实刻意
                     // 不写进 `gate.run`：运行中由相位挡发送，写进去会连 steer 一起锁死。
+                    //
+                    // 但它是一次权威确认，之前 404 / 超时留下的 `.unknown` 到此为止。
+                    // 不清的话，那个「确认不了的 Run」会一直挡住发送——这正是
+                    // PendingRecoveryTests:641 抓到的那条。
+                    if case .unknown = self.gate.run { self.gate.run = .none }
                     if self.pendingSend == nil {
                         self.gate.pending = .none
                     } else {
