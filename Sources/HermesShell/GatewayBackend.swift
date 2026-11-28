@@ -396,6 +396,10 @@ final class GatewayBackend: ObservableObject, HermesBackend, DiscoveryProviding,
         runStore.terminalOutput(sessionID: sessionID, runID: runID)
     }
 
+    func settledTerminalRunID(sessionID: String) -> String? {
+        runStore.settledRunID(sessionID: sessionID)
+    }
+
     func probeActiveRun(sessionID: String, runID: String) async throws -> ActiveRunProbe {
         if runStore.wasUserReleased(sessionID: sessionID, runID: runID) { return .unknown }
         if let terminal = runStore.terminalOutcome(sessionID: sessionID, runID: runID) {

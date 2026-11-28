@@ -199,6 +199,13 @@ final class GatewayRunStore {
         return !persistenceFailed
     }
 
+    /// The Run this session already settled against a validated terminal status.
+    /// A later history refresh that reports `unknown` must not re-lock it.
+    func settledRunID(sessionID: String) -> String? {
+        guard isValid, let receipt = currentTerminals()[sessionID] else { return nil }
+        return receipt.runID
+    }
+
     /// The final reply text the Run reported at settle time, if it was captured.
     func terminalOutput(sessionID: String, runID: String) -> String? {
         guard isValid, let receipt = currentTerminals()[sessionID], receipt.runID == runID,

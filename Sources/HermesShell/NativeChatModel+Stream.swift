@@ -527,7 +527,16 @@ extension NativeChatModel {
         }
         // A status GET failure is not authoritative absence. Preserve the
         // streamed accumulator, SSE cursor, request cards and send lock.
-        if snap.activeRunEvidence == .unknown {
+        //
+        // Unless this session already settled: a Run that reached a validated
+        // terminal status does not become unfinished again because a later
+        // history read cannot see its bookkeeping (the server drops run status
+        // an hour after the terminal state). Re-locking here is what made the
+        // composer flip back to "syncing" right after a successful settle.
+        let alreadySettled = verifiedTerminalRunID != nil ||
+            (activeTurnRecovery == nil && pendingSend == nil &&
+             api.settledTerminalRunID(sessionID: sessionID) != nil)
+        if snap.activeRunEvidence == .unknown && !alreadySettled {
             latestRecoverySnapshot = nil
             uncertain = true
             pauseQueueForRecovery()
