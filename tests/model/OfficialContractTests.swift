@@ -5,10 +5,10 @@ import Foundation
 /// 与 `TurnStateTests` 的分工：那个文件测状态机的形状，这个文件测「有没有偏离官方协议」。
 /// 每条断言都以 `Gx:` 开头，失败时能直接看出违反了哪一条。
 ///
-/// 编译：`tests/model/*.swift` 由 `tests/run_container.sh` 的 `model` 套件一起编译
-/// （`-swift-version 5 -warnings-as-errors`）。本机没有 Swift 工具链，编译由 CI 验证。
-/// 运行：需要在 `tests/model/main.swift` 里调用一次 `officialContractTests()`；
-/// 本任务禁止修改现有 .swift，这行留给集成方补。
+/// 编译：与 `tests/run_container.sh` 的 `model` 套件同参数
+/// （`-swift-version 5 -warnings-as-errors -parse-as-library`）编译通过。
+/// 运行：`tests/model/main.swift` 已注册 `officialContractTests()`；这一行是门禁的
+/// 入口，删掉它整套断言就静默失效了。
 extension ModelTests {
     @MainActor static func officialContractTests() {
         var checks = 0
@@ -49,12 +49,6 @@ extension ModelTests {
                 if case .notifyUser(let notice) = effect { return notice }
                 return nil
             }
-        }
-
-        /// `isFinished` 只挂在 `Turn.Running` 上，`Turn` 不转发它——「结束」是 Run 的属性。
-        func finished(_ turn: Turn) -> Bool {
-            if case .running(let live) = turn { return live.isFinished }
-            return false
         }
 
         func replayKeys(_ effects: [TurnEffect]) -> [String] {
@@ -115,6 +109,14 @@ extension ModelTests {
         expect(lostResponse.turn.submissionKey == "abc" && !lostResponse.turn.allowsNewMessage,
                "G1: while the replay is in flight the POST stays outstanding")
 
+        // 未写成断言的真实缺口（写成断言会红，故留注释）：`.submitAccepted` 不检查当前
+        // case，而 G1 明确说重放应答可能在 run 结束之后才到。实测
+        //   reduce(running(terminal: .completed, output: "final", lastEventID: "s:7"),
+        //          .submitAccepted(runID: "r"))
+        // 会把 output/terminal/cursor 一起重置为 nil，已结算的轮次重新变回「在跟」，
+        // 发送门重新锁上。修法：该 case 里若已是同一 runID 的 `.running`，只补身份、
+        // 不动其余字段；修好后把「output 仍为 final、仍可发送」加成断言。
+
         let expired = TurnReducer.reduce(
             Turn.sending(sending(lastAttemptAt: Date().addingTimeInterval(-25 * 3600))),
             .submitTransportFailure(at: Date()))
@@ -146,7 +148,7 @@ extension ModelTests {
         let unknownTurn = Turn.running(running(unknown: true))
         expect(!unknownTurn.allowsNewMessage,
                "G2: an unresolved owner-restart unknown keeps later turns waiting")
-        expect(!finished(unknownTurn) && !unknownTurn.awaitsReplyBackfill,
+        expect(!unknownTurn.isFinished && !unknownTurn.awaitsReplyBackfill,
                "G2: unknown is not terminal, so it triggers neither settlement nor backfill")
         expect(unknownTurn.runID == "run-1",
                "G2: the run id survives so resolve-unknown can address it")
@@ -181,7 +183,7 @@ extension ModelTests {
 
         for outcome in [RunTerminalStatus.completed, .failed, .cancelled, .interrupted] {
             let settledTurn = Turn.running(running(terminal: outcome))
-            expect(finished(settledTurn) && settledTurn.allowsNewMessage,
+            expect(settledTurn.isFinished && settledTurn.allowsNewMessage,
                    "G3: \(outcome.rawValue) ends the run, so the next message is allowed")
             expect(settledTurn.awaitsReplyBackfill,
                    "G3: \(outcome.rawValue) still needs the history backfill")
@@ -202,8 +204,10 @@ extension ModelTests {
         // MARK: - G4 status 会被清理；terminal + output 才是本地真相
 
         let settledNoBody = Turn.running(running(terminal: .completed, output: nil))
-        expect(finished(settledNoBody) && settledNoBody.allowsNewMessage,
+        expect(settledNoBody.isFinished && settledNoBody.allowsNewMessage,
                "G4: the terminal alone ends the turn, before any body arrives")
+        expect(Turn.idle.isFinished && !Turn.sending(sending()).isFinished,
+               "G4: `finished` means no outstanding work — idle is finished, a live POST is not")
         expect(settledNoBody.output == nil,
                "G4: a missing output reads as nil, not as an empty answer")
         let settledWithBody = Turn.running(running(terminal: .completed, output: "final"))

@@ -81,6 +81,15 @@ enum TurnReducer {
         case let .submitAccepted(runID):
             // 200 与 202 replay 在这里汇合：两者都给了权威 run id（G1）。
             // 客户端不需要知道它是不是重放——`Idempotency-Replayed` 只用于日志。
+            //
+            // 但重放应答**可能在 run 结束之后才到**：官方明确 ledger 保留 24 小时，
+            // 且 replay 覆盖 completed / failed / cancelled。所以不能无条件重建
+            // running——那会把已经拿到的终态、正文和 SSE 游标一起抹成 nil，
+            // 发送门于是又被锁上，与这次重构要消灭的症状一模一样。
+            // 同一个 run 的重复受理只补身份，别的什么都不动。
+            if case .running(let existing) = turn, existing.runID == runID {
+                return .init(turn: turn, effects: [])
+            }
             return .init(turn: .running(.init(runID: runID, lastEventID: nil,
                                               terminal: nil, output: nil,
                                               shutdownRequestedAt: nil,

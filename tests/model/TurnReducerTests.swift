@@ -129,6 +129,26 @@ extension ModelTests {
         expect(TurnReducer.backoffSeconds(failures: 6) == 120, "backoff caps at 120s")
         expect(TurnReducer.backoffSeconds(failures: 99) == 120, "backoff never exceeds the cap")
 
+
+        // MARK: G1 迟到的重放应答
+        // 官方：replay 覆盖 completed/failed/cancelled，且 ledger 留 24h。
+        // 所以「已结算后再收到一次 202」是正常时序，不能把终态抹掉。
+        let settledTurn = TurnReducer.reduce(
+            TurnReducer.reduce(withCursor.turn, .statusTerminal(.completed, output: "final")),
+            .streamEvent(id: "99")).turn
+        let lateReplay = TurnReducer.reduce(settledTurn, .submitAccepted(runID: "run-1"))
+        expect(lateReplay.turn == settledTurn,
+               "a late replay of the same run must not reset a settled turn")
+        expect(lateReplay.turn.allowsNewMessage,
+               "a late replay must not re-lock sending")
+        expect(lateReplay.effects.isEmpty,
+               "a late replay of the same run needs no new attachment")
+
+        // 不同 run 的受理仍然是新的一轮
+        let otherRun = TurnReducer.reduce(settledTurn, .submitAccepted(runID: "run-2"))
+        expect(otherRun.turn.runID == "run-2", "a different run id starts a new turn")
+        expect(!otherRun.turn.allowsNewMessage, "a different run is live again")
+
         print("PASS turnreducer (\(checks) checks)")
     }
 }
