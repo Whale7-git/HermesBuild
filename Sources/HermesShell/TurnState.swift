@@ -100,12 +100,19 @@ enum Turn: Equatable, Sendable {
 
     /// 是否允许发送一条新的普通消息。
     ///
-    /// 只有两种阻塞：正在发送（避免重复），或有一轮在跑（服务端忙）。
-    /// 历史同步、连接状态、notice 文案都不在这里。
+    /// 只有两种情况阻塞：正在发送（避免重复），或有一轮真的在跑
+    /// （服务端忙，且同一会话不能并发两轮）。
+    ///
+    /// **带 `terminal` 的 `.running` 不阻塞**：终态一到，这一轮在协议上就结束了，
+    /// 剩下的只是正文还没写进历史（G4）。历史同步永远不是发送的前提。
     var allowsNewMessage: Bool {
         switch self {
-        case .idle: return true
-        case .sending, .running: return false
+        case .idle:
+            return true
+        case .sending:
+            return false
+        case .running(let running):
+            return running.terminal != nil
         }
     }
 
