@@ -300,11 +300,20 @@ extension NativeChatModel {
                 return false
             }
             reconciling = true
-            defer { reconciling = false }
             // 核对窗口内必须继续挡发送：这是 GET 在途（可能是多次 await、数秒），
             // 放行会让用户或自动 flush 把同一条 uncertain 队列消息再 POST 一次。
             gate.pending = .reconciling
             syncUncertain()
+            // 但窗口一关就必须结清：`applySnapshot` 刻意绕过 `.reconciling`
+            // 不动它（那是并发发送的闸），所以任何提前 return 都得在这里收尾，
+            // 否则它会永久挡住发送。
+            defer {
+                reconciling = false
+                if gate.pending == .reconciling {
+                    gate.pending = .none
+                    syncUncertain()
+                }
+            }
             let generation = revision
             func stillOwnsProof() -> Bool {
                 generation == revision && !runtimeRetired && !suspended && !Task.isCancelled
@@ -942,12 +951,22 @@ extension NativeChatModel {
         // 核对不是相位，而是与相位正交的事实：这次 GET 自己会走 `.syncing`，
         // 「核对中」与「同步中」必须同时成立。
         reconciling = true
-        defer { reconciling = false }
         pendingAbsent = false
         // 核对窗口（可能跨多次 await）内禁止并发发送：这里绝不能只记历史新鲜度，
         // 否则用户或自动 flush 会把同一笔尚未结算的 POST 再发一次。
         gate.pending = .reconciling
         syncUncertain()
+        // 同 prepareQueuedTurnForRetry：窗口关闭时必须结清。
+        // `reconcilePending` 有多条提前 return（`pendingSend == nil`、
+        // `pendingAbsent`、`pendingDeliveryIsVerified`），它们都不会走到末尾的
+        // 赋值点，`applySnapshot` 又特意不清 `.reconciling`。
+        defer {
+            reconciling = false
+            if gate.pending == .reconciling {
+                gate.pending = .none
+                syncUncertain()
+            }
+        }
         latestRecoverySnapshot = nil
         // A-07：这个 GET 归核对流程所有，必须允许在 reconciling 置位期间执行，
         // 且不能再让 refresh() 把标志抹掉（resetReconciling: false）。
