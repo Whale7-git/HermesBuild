@@ -802,8 +802,10 @@ final class NativeChatModel: ObservableObject {
         // An accessible file is not proof of remote absence or completion.
         // 只承认真正恢复出来的事实：坏掉的 pending 字节可能藏着一条已发出的 POST（B），
         // 坏掉的 active-run 记录可能藏着一个仍在服务端执行的 Run（A）；
-        // 只剩队列记录时这只是读取降级（D），不许再长出发送锁。
-        if pendingRecoveryUnreadable || pendingSend != nil {
+        // 恢复出来的队列项若自己就是 `.uncertain`，那是「这条可能已经发出去」，
+        // 同样属于 B。只有「队列里全是普通待发项」时才是纯读取降级（D）。
+        let restoredUncertainTurn = queuedTurns.contains { $0.delivery == .uncertain }
+        if pendingRecoveryUnreadable || pendingSend != nil || restoredUncertainTurn {
             gate.pending = .awaitingDecision
         } else if activeRecoveryUnreadable || activeTurnRecovery != nil {
             gate.run = .unknown(runID: activeTurnRecovery?.runID)
