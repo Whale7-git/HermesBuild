@@ -822,7 +822,12 @@ extension ModelTests {
             await model.load()
             try await eventually { model.activeTurnRecovery?.terminalStatus == .completed }
             try await eventually { model.activeRunProbeTask == nil }
-            precondition(model.uncertain && !model.canSend && store.loadActiveRun().value != nil)
+            // 终态已确认，这一轮就结束了；回复正文还没写进历史只影响显示。
+            // 三十行之后（历史补齐）断言的是 `canSend`，此处若继续要求
+            // `uncertain`，就是同一份终态证据给出两个相反结论。
+            // 未同步的凭证必须留着（`loadActiveRun` 非空），这一条不变。
+            precondition(!model.uncertain && store.loadActiveRun().value != nil,
+                         "a confirmed terminal must not stay uncertain while the reply is unsynced")
             service.rows = [
                 ["id": "sent", "role": "user", "content": "original"],
                 ["id": "reply", "role": "assistant", "content": "final"]
