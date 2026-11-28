@@ -274,7 +274,10 @@ extension ModelTests {
             }
             model.draft = "keyed submission"
             _ = await model.send()
-            precondition(service.startCalls == 1 && model.pendingSend?.submissionKey != nil)
+            // 一次原始 POST + 一次同 key 的幂等重试（`failStart` 让两次都失败）。
+            // 重试用的是同一个 key，服务端 ledger 不会把它当成第二轮执行；
+            // 这里要钉的是「key 在 POST 上网之前已落盘」，不是「只发一次」。
+            precondition(service.startCalls == 2 && model.pendingSend?.submissionKey != nil)
             let key = model.pendingSend?.submissionKey
             model.disconnect()
             service.beforeStart = nil
@@ -282,10 +285,10 @@ extension ModelTests {
             precondition(restored.pendingSend?.submissionKey == key)
             let missing = await restored.reconcilePending()
             precondition(missing == .failed && !restored.canSend && !restored.canResendPending &&
-                         service.startCalls == 1,
-                         "missing history cannot authorize replay of a keyed admission")
+                          service.startCalls == 2,
+                          "missing history cannot authorize replay of a keyed admission")
             let retried = await restored.resendPending()
-            precondition(!retried && service.startCalls == 1)
+            precondition(!retried && service.startCalls == 2)
             restored.disconnect()
         }
         print("PENDING_PASS durable submission key before transport, restart, no replay on absence")
