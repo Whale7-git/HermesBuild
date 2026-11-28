@@ -126,4 +126,10 @@ enum Turn: Equatable, Sendable {
         if case .sending(let sending) = self { return sending.submissionKey }
         return nil
     }
+
+    /// 服务端报的最终回复。历史滞后时这是唯一的内容证据（G4）。
+    var output: String? {
+        if case .running(let running) = self { return running.output }
+        return nil
+    }
 }
