@@ -133,9 +133,9 @@ extension ModelTests {
         // MARK: G1 迟到的重放应答
         // 官方：replay 覆盖 completed/failed/cancelled，且 ledger 留 24h。
         // 所以「已结算后再收到一次 202」是正常时序，不能把终态抹掉。
-        let settledTurn = TurnReducer.reduce(
-            TurnReducer.reduce(withCursor.turn, .statusTerminal(.completed, output: "final")),
-            .streamEvent(id: "99")).turn
+        let terminalTurn = TurnReducer.reduce(withCursor.turn,
+            .statusTerminal(.completed, output: "final")).turn
+        let settledTurn = TurnReducer.reduce(terminalTurn, .streamEvent(id: "99")).turn
         let lateReplay = TurnReducer.reduce(settledTurn, .submitAccepted(runID: "run-1"))
         expect(lateReplay.turn == settledTurn,
                "a late replay of the same run must not reset a settled turn")
